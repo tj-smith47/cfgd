@@ -7280,7 +7280,14 @@ fn format_module_action_item_deploy_truncates_many_files() {
     };
     let item = super::format_module_action_item(&action);
     assert!(item.starts_with("deploy "));
-    assert!(item.contains("5 files"));
+    assert!(
+        !item.contains("files"),
+        "the count is the row's detail, never the subject's trailer: {item}"
+    );
+    assert_eq!(
+        super::action_produced_detail(&Action::Module(action)).as_deref(),
+        Some("5 files")
+    );
 }
 
 #[test]
@@ -13619,7 +13626,14 @@ fn format_module_action_item_deploy_many_files_truncates() {
     );
     let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("5 files"), "got: {}", items[0]);
+    assert!(
+        items[0].starts_with("deploy /home/user/.f0, /home/user/.f1")
+            && !items[0].contains("files"),
+        "two targets, and the count left to the detail, got: {}",
+        items[0]
+    );
+    let details: Vec<Option<String>> = phase.actions().map(super::action_produced_detail).collect();
+    assert_eq!(details, vec![Some("5 files".to_string())]);
 }
 
 #[test]
@@ -21060,7 +21074,7 @@ fn retain_actions_and_batches_shrinks_a_batch_before_dropping_it() {
 #[test]
 fn a_withheld_file_leaves_the_declared_set_with_it() {
     // Pruning one file from a two-file batch must not leave the survivor
-    // rendering `(1 of 2 files)` — that shape claims the other file CONVERGED
+    // rendering `1 of 2 files` — that shape claims the other file CONVERGED
     // when it was withheld by a pending decision. The declared set shrinks
     // with the batch, so the render and the persisted id both describe the
     // batch that remains.
@@ -23855,9 +23869,14 @@ fn a_deployed_file_matching_its_source_is_elided_and_the_subset_names_itself() {
         items.contains("keys.lua") && !items.contains("init.lua"),
         "only the changed file survives, got:\n{items}"
     );
-    assert!(
-        items.contains("(1 of 2 files)"),
-        "a subset names its count against the declared set, got:\n{items}"
+    let details: Vec<String> = files_phase
+        .actions()
+        .filter_map(super::action_produced_detail)
+        .collect();
+    assert_eq!(
+        details,
+        vec!["1 of 2 files".to_string()],
+        "a subset counts against the declared set, in the row's detail"
     );
 
     // A module that still has work runs its hooks around it.

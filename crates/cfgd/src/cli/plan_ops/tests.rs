@@ -2496,7 +2496,7 @@ fn a_skipped_module_file_reports_the_same_reason_the_profile_arm_does() {
 
 #[test]
 fn a_skipped_module_file_leaves_the_declared_set_with_it() {
-    // The survivor must not render `(1 of 2 files)` — that shape claims the
+    // The survivor must not render `1 of 2 files` — that shape claims the
     // skipped sibling CONVERGED when it was refused over an unmanaged target.
     let tmp = tempfile::tempdir().unwrap();
     let kept_source = tmp.path().join("kept-src.conf");

@@ -38,7 +38,7 @@ pub use adopt::{
     apply_conflict_policy, is_unmanaged_file, mark_unmanaged_drift, module_file_desired_hash,
     sweep_label, sweep_unmanaged_file_targets, unmanaged_conflict_error,
 };
-pub use apply::{action_matches_phase_filter, render_caveats};
+pub use apply::{action_matches_phase_filter, action_produced_detail, render_caveats};
 pub use env::recorded_manager_path_dirs;
 #[cfg(any(test, feature = "test-helpers"))]
 pub use env_engine::{

@@ -1501,3 +1501,56 @@ fn header_omits_the_sources_row_when_nothing_composed() {
         "a purely local run must not claim a source: {out:?}"
     );
 }
+
+/// A count an action produces is the row's DETAIL on the plan tree too, so
+/// the preview bullet and the apply's status row state one fact in one slot.
+/// `deploy a, b (6 files)` baked the count into its subject while the env
+/// write beside it said `— 3 vars, 3 aliases`; both now read the ONE producer.
+#[test]
+fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
+    let files: Vec<crate::modules::ResolvedFile> = (0..5)
+        .map(|i| crate::modules::ResolvedFile {
+            source: PathBuf::from(format!("/cache/mod/f{i}")),
+            target: PathBuf::from(format!("/home/u/.f{i}")),
+            is_git_source: false,
+            strategy: None,
+            encryption: None,
+            permissions: None,
+            patch: None,
+        })
+        .collect();
+    let deploy = Action::Module(crate::reconciler::ModuleAction::local(
+        "big",
+        crate::reconciler::ModuleActionKind::DeployFiles {
+            declared_total: files.len(),
+            files,
+        },
+    ));
+    let env = Action::Env(crate::reconciler::EnvAction::WriteEnvFile {
+        path: PathBuf::from("/home/u/.cfgd.env"),
+        content: String::new(),
+        vars: 3,
+        aliases: 1,
+    });
+    let plan = plan_of(vec![
+        phase(PhaseName::Prerequisites, vec![env]),
+        phase(PhaseName::Files, vec![deploy]),
+    ]);
+
+    let (printer, cap) = Printer::for_test_doc();
+    render_plan_tree(&plan, None, &printer);
+    drop(printer);
+    let out = crate::output::strip_ansi(&cap.human());
+    assert!(
+        out.contains("- deploy /home/u/.f0, /home/u/.f1 — 5 files"),
+        "the count sits after the em-dash, beside the subject: {out}"
+    );
+    assert!(
+        !out.contains("files)"),
+        "no subject carries a parenthesised count: {out}"
+    );
+    assert!(
+        out.contains("- write /home/u/.cfgd.env — 3 vars, 1 alias"),
+        "the env write states its produced counts in the same slot: {out}"
+    );
+}

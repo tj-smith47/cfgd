@@ -19,7 +19,22 @@ pub struct SectionGuard<'p> {
 impl<'p> SectionGuard<'p> {
     pub fn bullet(&self, text: impl Into<String>) -> &Self {
         self.renderer
-            .render_bullet(self.sink.as_ref(), self.depth, &text.into(), None);
+            .render_bullet(self.sink.as_ref(), self.depth, &text.into(), None, None);
+        self
+    }
+
+    /// A bullet carrying a detail — the plan-preview counterpart of a status
+    /// line's `.detail(...)`, for a planned action whose row states what it
+    /// will produce (`deploy a, b — 6 files`). Rendered muted after the
+    /// em-dash, the way an apply row's own produced fact is.
+    pub fn bullet_detail(&self, text: impl Into<String>, detail: impl Into<String>) -> &Self {
+        self.renderer.render_bullet(
+            self.sink.as_ref(),
+            self.depth,
+            &text.into(),
+            None,
+            Some(&detail.into()),
+        );
         self
     }
 
@@ -33,8 +48,13 @@ impl<'p> SectionGuard<'p> {
             role: Role::Accent,
             text: format!("{}:", marker.into()),
         };
-        self.renderer
-            .render_bullet(self.sink.as_ref(), self.depth, &body.into(), Some(&label));
+        self.renderer.render_bullet(
+            self.sink.as_ref(),
+            self.depth,
+            &body.into(),
+            Some(&label),
+            None,
+        );
         self
     }
 

@@ -97,6 +97,7 @@ fn plan_output_roundtrips_through_emit() {
                             targets: vec![],
                             origin: None,
                             manager: None,
+                            detail: None,
                         },
                         PlanActionOutput {
                             description: "install fd via brew".into(),
@@ -104,6 +105,7 @@ fn plan_output_roundtrips_through_emit() {
                             targets: vec![],
                             origin: None,
                             manager: None,
+                            detail: None,
                         },
                     ],
                 )],
@@ -118,6 +120,7 @@ fn plan_output_roundtrips_through_emit() {
                         targets: vec!["/home/u/.gitconfig".into()],
                         origin: None,
                         manager: None,
+                        detail: None,
                     }],
                 )],
             },

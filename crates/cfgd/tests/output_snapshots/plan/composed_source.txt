@@ -9,11 +9,11 @@ Plan
 
 Phase: Prerequisites
   cfgd:env
-    - write <HOME>/.cfgd.env
+    - write <HOME>/.cfgd.env — 1 var
     - inject source line into <HOME>/.bashrc
     - inject source line into <HOME>/.zshenv
     - inject source line into <HOME>/.profile
-    - write <HOME>/.config/environment.d/cfgd.conf
+    - write <HOME>/.config/environment.d/cfgd.conf — 1 var
   cfgd:session
     - publish 1 var to the session manager
 

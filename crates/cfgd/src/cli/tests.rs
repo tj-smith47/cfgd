@@ -15416,6 +15416,78 @@ fn every_sidecar_report_is_worded_by_sidecar_outcome_detail() {
     );
 }
 
+/// A count an action PRODUCES is its row's detail, never a parenthetical
+/// trailer on its subject. `deploy a, b (6 files)` stated its count in the
+/// subject while the env-write row twenty lines up stated the same kind of
+/// fact in the detail (`write ~/.cfgd.env — 3 vars, 3 aliases`); the rule was
+/// already in `output-module.md`, but its pin walked `cli/**` bodies only, so
+/// a subject built in `reconciler/format.rs` escaped it. Walks that file's
+/// string literals for a trailing `(…)` group whose body is an interpolated
+/// count followed by a noun; a parenthetical that NAMES (`(alias: {})`, a
+/// version in `({})`) carries no count and passes, or takes a
+/// `// name-row-ok:` marker where the shape is ambiguous.
+#[test]
+fn every_produced_count_is_an_action_rows_detail() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cfgd-core/src/reconciler/format.rs");
+    let body = production_body(&std::fs::read_to_string(&path).expect("format.rs is checked out"));
+    let lines: Vec<&str> = body.lines().collect();
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        for literal in line.split('"').skip(1).step_by(2) {
+            if !literal.contains('(') {
+                continue;
+            }
+            judged += 1;
+            if counts_in_a_trailer(literal) && !label_hatched(&lines, n, "// name-row-ok:") {
+                offenders.push(format!(
+                    "{}:{}: a produced count is the row's detail (`action_produced_detail`), not a subject trailer: {literal}",
+                    path.display(),
+                    n + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        judged >= 3,
+        "the walk must reach the subject literals carrying parentheticals, judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a count a step produces lives in its row's detail:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Whether `literal` ends on a parenthetical whose body is `{…} <noun>` or
+/// `{…} of {…} <noun>` — an interpolated count and the thing counted.
+fn counts_in_a_trailer(literal: &str) -> bool {
+    let Some(open) = literal.rfind('(') else {
+        return false;
+    };
+    let Some(body) = literal[open + 1..].strip_suffix(')') else {
+        return false;
+    };
+    fn after_count(s: &str) -> Option<&str> {
+        let rest = s.strip_prefix('{')?;
+        let close = rest.find('}')?;
+        Some(&rest[close + 1..])
+    }
+    let Some(rest) = after_count(body) else {
+        return false;
+    };
+    let rest = rest
+        .strip_prefix(" of ")
+        .and_then(after_count)
+        .unwrap_or(rest);
+    let noun = rest.trim_start();
+    rest.starts_with(' ') && !noun.is_empty() && noun.chars().all(|c| c.is_ascii_alphabetic())
+}
+
 /// Every surface rendering the `Sources` section builds its rows through the
 /// ONE table builder. `cfgd source list` and `cfgd daemon status` had shipped
 /// two tables under one section name with disjoint columns, so the same

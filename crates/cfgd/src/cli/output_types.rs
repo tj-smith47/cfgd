@@ -453,6 +453,13 @@ pub struct PlanActionOutput {
     /// The row's `cfgd:managers` detail, `Some` only for `Action::Manager`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manager: Option<ManagerActionOutput>,
+    /// What the action PRODUCES, as the tree states it beside the subject
+    /// (`6 files`, `1 of 6 files`, `3 vars, 3 aliases`) — the plan preview's
+    /// bullet detail and the apply row's detail are this one string. Omitted
+    /// for an action with no produced count; never folded into
+    /// `description`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1512,6 +1519,7 @@ mod tests {
                         targets: vec![],
                         origin: None,
                         manager: None,
+                        detail: None,
                     }],
                 )],
             }],
@@ -1585,6 +1593,7 @@ mod tests {
                     targets: vec!["/etc/hosts".to_string()],
                     origin: None,
                     manager: None,
+                    detail: None,
                 }],
             )],
         };
@@ -1615,6 +1624,7 @@ mod tests {
             targets: vec![],
             origin: None,
             manager: None,
+            detail: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["description"], json!("configure systemd"));
@@ -1641,6 +1651,7 @@ mod tests {
             targets: vec!["/etc/hosts".to_string()],
             origin: None,
             manager: None,
+            detail: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(

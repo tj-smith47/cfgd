@@ -590,32 +590,18 @@ fn format_module_action_body(action: &ModuleAction) -> String {
                 .collect();
             parts.join("; ")
         }
-        ModuleActionKind::DeployFiles {
-            files,
-            declared_total,
-        } => {
+        ModuleActionKind::DeployFiles { files, .. } => {
+            // The subject names the targets only. How many the deploy writes,
+            // and against how many the module declares, is a fact the step
+            // PRODUCES and so is the row's detail (`deploy_files_summary`),
+            // the slot the sibling env-write row already puts its counts in.
             let targets: Vec<String> = files.iter().map(|f| f.target.display_posix()).collect();
             let shown = if targets.len() <= 3 {
                 targets.join(", ")
             } else {
                 targets[..2].join(", ")
             };
-            // A subset names its count against the DECLARED set, so "one file
-            // changed" (`deploy init.lua (1 of 6 files)`) and "nothing
-            // changed" (no action at all) can never render alike; a full
-            // deploy keeps the shape it always had.
-            if targets.len() < *declared_total {
-                format!(
-                    "deploy {} ({} of {} files)",
-                    shown,
-                    targets.len(),
-                    declared_total
-                )
-            } else if targets.len() <= 3 {
-                format!("deploy {shown}")
-            } else {
-                format!("deploy {} ({} files)", shown, targets.len())
-            }
+            format!("deploy {shown}")
         }
         ModuleActionKind::RunScript { script, phase } => {
             // Raw body: this same string feeds both `ApplyRun::preview`

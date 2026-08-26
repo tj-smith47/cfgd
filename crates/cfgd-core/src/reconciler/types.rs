@@ -424,7 +424,7 @@ pub enum ModuleActionKind {
         /// entries whose deployed target already matches.
         files: Vec<crate::modules::ResolvedFile>,
         /// How many files the module DECLARES, converged entries included.
-        /// The pair is what lets a render say `deploy init.lua (1 of 6 files)`
+        /// The pair is what lets a row's detail say `1 of 6 files`
         /// and the persisted `module:<name>:files:<n>` id keep naming the
         /// declared set whatever subset survived elision.
         declared_total: usize,
@@ -867,7 +867,7 @@ impl Phase {
                         let batched = files.len();
                         files.retain(|file| keep_file(&file.target));
                         // A withheld entry leaves the declared set with it, or
-                        // the survivor count renders as `(k of N files)` — a
+                        // the survivor count renders as `k of N files` — a
                         // shape that reads as the other N−k having CONVERGED
                         // when they were pruned by a pending decision.
                         // Saturating: a `declared_total` that somehow undercounts

@@ -601,7 +601,9 @@ name differs from the manager-specific one, it follows after `alias:`:
 `npm install neovim (5.4.0, alias: neovim-npm)` installs npm's `neovim` for a module entry
 named `neovim-npm`. A profile's own package lines carry neither, since a profile names a
 manager and a package directly. A deploy naming more than three targets lists the first
-two and a count (`deploy a, b (12 files)`).
+two, with the count as the row's detail (`deploy a, b — 12 files`); a deploy of only the
+files that changed counts them against the module's declared set (`deploy init.lua — 1 of
+6 files`). The apply row carries the same detail, beside the same subject.
 
 Each phase groups its actions by the owner that declared them (`profile:<name>`,
 `module:<name>`), so a bullet's owner is visible without reading the action text.

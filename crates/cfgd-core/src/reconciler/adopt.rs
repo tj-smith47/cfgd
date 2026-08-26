@@ -355,7 +355,7 @@ pub fn sweep_unmanaged_file_targets(
                                     skipped.push(file_target);
                                     files.remove(j);
                                     // The skipped file leaves the declared set
-                                    // with it: a `(k of N files)` render must
+                                    // with it: a `k of N files` detail must
                                     // mean the other N−k converged, and this
                                     // one was refused, not converged.
                                     *declared_total = declared_total.saturating_sub(1);

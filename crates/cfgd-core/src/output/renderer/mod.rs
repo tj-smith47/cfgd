@@ -1044,6 +1044,7 @@ impl Renderer {
         depth: usize,
         text: &str,
         marker: Option<&crate::output::component::StatusLabel>,
+        detail: Option<&str>,
     ) {
         if self.verbosity == Verbosity::Quiet {
             return;
@@ -1051,8 +1052,14 @@ impl Renderer {
         let subject = finalize_subject(&self.theme, text, marker, None, None);
         // The dash is structure, the text is content: muting it gives a run of
         // bullets a scan column instead of leaving every character on the
-        // line at the terminal's default with nothing to read against.
-        let body = format!("{}{}", self.theme.muted.apply_to("- "), subject);
+        // line at the terminal's default with nothing to read against. A
+        // detail joins after the same em-dash a status row's does, muted the
+        // way a produced count is on the apply tree.
+        let mut body = format!("{}{}", self.theme.muted.apply_to("- "), subject);
+        if let Some(detail) = detail {
+            body.push_str(" — ");
+            body.push_str(&self.theme.muted.apply_to(cursor_safe(detail)).to_string());
+        }
         self.emit_with(w, |e| {
             e.flush_section_headers();
             e.open_top_group(TopGroup::Bullet);
@@ -1238,7 +1245,7 @@ mod tests {
         }
 
         assert_styled("heading", |r, s| r.render_heading(s, "h"));
-        assert_styled("bullet", |r, s| r.render_bullet(s, 0, "b", None));
+        assert_styled("bullet", |r, s| r.render_bullet(s, 0, "b", None, None));
         assert_styled("stream_line", |r, s| r.render_stream_line(s, 0, "l"));
         assert_styled("hint", |r, s| r.render_hint(s, 0, "h"));
         assert_styled("code_block", |r, s| {
@@ -1477,7 +1484,7 @@ mod tests {
                     )
                 }),
                 TopGroup::Hint => Some(|r, w| r.render_hint(w, 0, "run cfgd apply")),
-                TopGroup::Bullet => Some(|r, w| r.render_bullet(w, 0, "item", None)),
+                TopGroup::Bullet => Some(|r, w| r.render_bullet(w, 0, "item", None, None)),
                 TopGroup::CodeBlock => {
                     Some(|r, w| r.render_code_block(w, 0, &["let x = 1;".to_string()]))
                 }
@@ -1523,7 +1530,7 @@ mod tests {
     #[test]
     fn bullet_uses_dash_glyph() {
         let (r, sink, buf) = capture();
-        r.render_bullet(&sink, 1, "foo", None);
+        r.render_bullet(&sink, 1, "foo", None, None);
         let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("  - foo"), "got: {s:?}");
     }
@@ -1533,7 +1540,7 @@ mod tests {
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Quiet);
-        r.render_bullet(&sink, 1, "foo", None);
+        r.render_bullet(&sink, 1, "foo", None, None);
         assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 
@@ -1993,7 +2000,7 @@ mod tests {
         // The bullet is what drains the kvs and what flushes the still-
         // deferred section header. All of it is ONE emission.
         let before = f.cycles();
-        f.renderer.render_bullet(&f.sink, 1, "applied", None);
+        f.renderer.render_bullet(&f.sink, 1, "applied", None, None);
         assert_eq!(
             f.cycles() - before,
             1,
@@ -2027,7 +2034,7 @@ mod tests {
         let (r, sink, buf) = capture();
         r.render_section_open("Section", true);
         r.render_kv("Key", "value");
-        r.render_bullet(&sink, 1, "child", None);
+        r.render_bullet(&sink, 1, "child", None, None);
         r.render_section_close(&sink);
 
         let out = crate::test_helpers::captured_text(&buf);

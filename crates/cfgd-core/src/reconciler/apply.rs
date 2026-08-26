@@ -100,6 +100,45 @@ fn env_write_summary(action: &Action) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(", "))
 }
 
+/// What a module file deploy puts on the machine, for the detail beside its
+/// own line: `deploy a, b — 6 files`, or `— 1 of 6 files` for a subset.
+///
+/// A subset counts against the DECLARED set, so "one file changed" and
+/// "nothing changed" (no action at all) can never render alike. A full deploy
+/// of three targets or fewer names every one of them in its subject already,
+/// so it carries no count: the detail would restate the row.
+fn deploy_files_summary(action: &Action) -> Option<String> {
+    let Action::Module(ModuleAction {
+        kind:
+            ModuleActionKind::DeployFiles {
+                files,
+                declared_total,
+            },
+        ..
+    }) = action
+    else {
+        return None;
+    };
+    let written = files.len();
+    if written < *declared_total {
+        Some(format!("{written} of {declared_total} files"))
+    } else if written > 3 {
+        Some(crate::pluralize(written, "file"))
+    } else {
+        None
+    }
+}
+
+/// The fact an action PRODUCES, worded for the detail slot of its own row —
+/// the ONE producer both trees read, so the plan's bullet and the apply's
+/// status line state the same count one beat apart, and `-o json`'s plan
+/// payload carries it as `detail` rather than folded into `description`.
+///
+/// `None` for an action that produces nothing worth a count.
+pub fn action_produced_detail(action: &Action) -> Option<String> {
+    env_write_summary(action).or_else(|| deploy_files_summary(action))
+}
+
 /// A planned action that is a no-op by construction. Its subject already states
 /// why nothing happened, so the tree renders it at the role that text implies
 /// and attaches no `unchanged` detail.
@@ -1926,7 +1965,7 @@ impl<'a> super::Reconciler<'a> {
                         "unchanged".to_string()
                     })
                 } else {
-                    env_write_summary(action)
+                    action_produced_detail(action)
                 };
                 // Every action that DID something is timed, however briefly: a
                 // threshold makes the suffix's absence ambiguous between "fast"

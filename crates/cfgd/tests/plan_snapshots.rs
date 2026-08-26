@@ -70,6 +70,7 @@ fn happy_plan_output() -> PlanOutput {
                     targets: vec!["/etc/hosts".to_string()],
                     origin: None,
                     manager: None,
+                    detail: None,
                 }],
             )],
         }],
@@ -99,6 +100,7 @@ fn owner_groups_plan_output() -> PlanOutput {
                         targets: vec!["sl".to_string(), "cowsay".to_string()],
                         origin: None,
                         manager: None,
+                        detail: None,
                     }],
                 ),
                 PlanGroupOutput::new(
@@ -109,6 +111,7 @@ fn owner_groups_plan_output() -> PlanOutput {
                         targets: vec!["neovim".to_string()],
                         origin: Some("team".to_string()),
                         manager: None,
+                        detail: None,
                     }],
                 ),
             ],
