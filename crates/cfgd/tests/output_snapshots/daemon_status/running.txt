@@ -1,13 +1,12 @@
 Daemon Status
-✓ Daemon is running
+✓ Daemon running
 
 PID                 4242
 Uptime              3600s
-Reconcile interval  300s
-Sync interval       900s
-Drift count         7
-Last reconcile      2d ago
-Last sync           2d ago
+Reconcile Interval  300s
+Sync Interval       900s
+Drift Count         7
+Last Reconcile      2d ago
 
 Sources
   Name   Status  Drift  Last Sync

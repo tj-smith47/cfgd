@@ -95,8 +95,8 @@ golden_doc!(regression, config_reconcile_settings, |p, cap| {
     let doc = Doc::new().heading("Configuration").section("Daemon", |s| {
         s.subsection("Reconcile", |r| {
             r.kv("Interval", "5m")
-                .kv("On change", "yes")
-                .kv("Auto apply", "yes")
+                .kv("On Change", "yes")
+                .kv("Auto Apply", "yes")
         })
         .subsection("Sync", |y| y.kv("Interval", "10m"))
     });

@@ -449,7 +449,7 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
         } else {
             sec.kv("Entries", dotfiles.len().to_string());
             if !sorted_tools.is_empty() {
-                sec.kv("Detected tools", sorted_tools.join(", "));
+                sec.kv("Detected Tools", sorted_tools.join(", "));
             }
         }
     }
@@ -467,12 +467,12 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
         }
         if !shell_result.path_additions.is_empty() {
             sec.kv(
-                "PATH additions",
+                "PATH Additions",
                 shell_result.path_additions.len().to_string(),
             );
         }
         if let Some(pm) = &shell_result.plugin_manager {
-            sec.kv("Plugin manager", pm);
+            sec.kv("Plugin Manager", pm);
         }
     }
 

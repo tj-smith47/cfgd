@@ -21,14 +21,14 @@ Module Registries
   internal  git@example.com:org/internal-modules.git
 
 Module Security
-  Require signatures  yes
+  Require Signatures  yes
 
 Daemon
   Enabled  yes
   Reconcile
     Interval    5m
-    On change   yes
-    Auto apply  no
+    On Change   yes
+    Auto Apply  no
   Sync
     Interval  1h
 

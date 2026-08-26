@@ -1,6 +1,6 @@
 Checkin
-  Server status   ok
-  Config changed  false
+  Server Status   ok
+  Config Changed  false
 
 Drift
   ✓ 3 drift items reported

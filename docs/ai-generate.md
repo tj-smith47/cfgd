@@ -444,12 +444,12 @@ Use `--scan-only` to inspect what cfgd finds on your system without starting an 
 $ cfgd generate --scan-only
 Scanning Dotfiles
   Entries         23
-  Detected tools  git, nvim, starship, tmux, zsh
+  Detected Tools  git, nvim, starship, tmux, zsh
 
 Scanning zsh Config
   Aliases         14
   Exports         8
-  PATH additions  3
+  PATH Additions  3
 
 ✓ Scan complete — use without --scan-only to generate config
 ```

@@ -255,7 +255,7 @@ fn cmd_generate_scan_only_path_additions_reported() {
     assert!(result.is_ok(), "should succeed: {:?}", result.err());
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scan complete") || output.contains("PATH additions"),
+        output.contains("Scan complete") || output.contains("PATH Additions"),
         "should complete scan, got: {output}"
     );
 }
@@ -996,7 +996,7 @@ fn cmd_generate_scan_only_detects_tool_from_dotfiles() {
     let output = cfgd_core::test_helpers::captured_text(&buf);
     // Scanner should detect tmux and vim from the dotfiles
     assert!(
-        output.contains("Detected tools") || output.contains("dotfile"),
+        output.contains("Detected Tools") || output.contains("dotfile"),
         "should detect tools from dotfiles, got: {output}"
     );
 }
@@ -1028,7 +1028,7 @@ fn cmd_generate_scan_only_with_plugin_manager() {
     let output = cfgd_core::test_helpers::captured_text(&buf);
     // Should detect oh-my-zsh as plugin manager
     assert!(
-        output.contains("Plugin manager")
+        output.contains("Plugin Manager")
             || output.contains("oh-my-zsh")
             || output.contains("Scan complete"),
         "should complete scan, got: {output}"

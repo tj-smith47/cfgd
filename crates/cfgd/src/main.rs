@@ -282,7 +282,11 @@ fn main() -> anyhow::Result<()> {
         tracing_subscriber::fmt()
             .with_env_filter(cfgd_core::tracing_env_filter(filter))
             .with_target(false)
-            .without_time()
+            // Stamped, because `cfgd daemon run >> daemon.log` is this
+            // subscriber's long-lived case: a reconcile every 30s and a sync
+            // every 5s are a cadence, and a cadence is unreadable in a log
+            // where no elapsed time is representable.
+            .with_timer(cfgd_core::output::LocalTimeOfDay)
             // The writer folds every event, and the fold strips ANSI: colours the
             // formatter emitted would be eaten anyway, and left on they would
             // also paint SGR into a redirected stderr, which the formatter

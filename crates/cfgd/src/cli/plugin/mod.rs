@@ -299,7 +299,8 @@ pub fn plugin_main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(cfgd_core::tracing_env_filter("warn"))
         .with_target(false)
-        .without_time()
+        // Same dialect as the primary CLI: one binary, one stamp.
+        .with_timer(cfgd_core::output::LocalTimeOfDay)
         // Same reason as the primary CLI: the writer folds every event, and the
         // fold strips ANSI.
         .with_ansi(false)

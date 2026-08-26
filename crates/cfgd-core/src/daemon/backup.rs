@@ -76,7 +76,7 @@ impl BackupTask {
             tracing::warn!(
                 backup = %spec.name,
                 schedule = %schedule_str,
-                "backup timer: schedule is neither an interval nor a cron expression — no timer installed"
+                "daemon: backup schedule is neither an interval nor a cron expression — no timer installed"
             );
             return None;
         };
@@ -87,7 +87,7 @@ impl BackupTask {
                 tracing::warn!(
                     backup = %spec.name,
                     schedule = %schedule_str,
-                    "backup timer: schedule has no upcoming occurrence — retrying later"
+                    "daemon: backup schedule has no upcoming occurrence — retrying later"
                 );
                 now + SCHEDULE_STALL_RETRY
             });
@@ -166,7 +166,7 @@ impl BackupTask {
                 tracing::warn!(
                     backup = %self.spec.name,
                     schedule = %self.schedule_str,
-                    "backup timer: schedule has no upcoming occurrence — retrying later"
+                    "daemon: backup schedule has no upcoming occurrence — retrying later"
                 );
                 self.next_fire = now + SCHEDULE_STALL_RETRY;
                 return missed;
@@ -449,7 +449,7 @@ impl BackupTimers {
                 tracing::warn!(
                     backup = %task.spec.name,
                     missed_fires = missed,
-                    "backup: schedule elapsed while the daemon was busy — skipped the missed {}",
+                    "daemon: backup schedule elapsed while the daemon was busy — skipped the missed {}",
                     crate::plural_noun(missed as usize, "fire")
                 );
             }
@@ -528,7 +528,7 @@ pub(super) fn resolve_backup_tasks(
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                "backup timers: source composition failed — falling back to locally-declared backups"
+                "daemon: backup timers — source composition failed, falling back to locally-declared backups"
             );
             (
                 local.merged.backups.clone(),
@@ -545,7 +545,7 @@ pub(super) fn resolve_backup_tasks(
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                "backup timers: state store unavailable — interval schedules restart from now"
+                "daemon: backup timers — state store unavailable, interval schedules restart from now"
             );
             None
         }
@@ -598,7 +598,7 @@ pub(super) fn run_scheduled_backups(
         Err(e) => {
             tracing::error!(
                 error = %e,
-                "scheduled backup: state store error — runs skipped"
+                "daemon: scheduled backup state store error — runs skipped"
             );
             return;
         }
@@ -634,7 +634,7 @@ pub(super) fn run_scheduled_backups(
     let reports = match run.execute_backups(printer) {
         Ok((_, reports)) => reports,
         Err(e) => {
-            tracing::error!(error = %e, "scheduled backup: run could not be rendered");
+            tracing::error!(error = %e, "daemon: scheduled backup run could not be rendered");
             return;
         }
     };
@@ -651,24 +651,27 @@ pub(super) fn run_scheduled_backups(
     for ((_, spec), report) in due.iter().zip(&reports) {
         match (&report.skipped, &report.error, &report.record) {
             (Some(holder), _, _) => {
-                tracing::info!(backup = %spec.name, holder = %holder, "scheduled backup skipped: the unit is already running elsewhere");
+                tracing::info!(
+                    "daemon: scheduled backup {} skipped — already running under {holder}",
+                    spec.name
+                );
             }
             (None, Some(e), _) => {
-                tracing::warn!(backup = %spec.name, error = %e, "scheduled backup: the run could not be recorded");
+                tracing::warn!(backup = %spec.name, error = %e, "daemon: scheduled backup run could not be recorded");
             }
             (None, None, Some(record)) => match &record.error {
                 Some(e) => {
-                    tracing::warn!(backup = %record.name, error = %e, "scheduled backup completed with errors");
+                    tracing::warn!(backup = %record.name, error = %e, "daemon: scheduled backup completed with errors");
                 }
                 None => {
-                    tracing::info!(backup = %record.name, "scheduled backup completed");
+                    tracing::info!("daemon: scheduled backup {} completed", record.name);
                 }
             },
             // Unreachable while `run_backup_group` fills exactly one of the
             // three: a report with none of them is a unit whose outcome was
             // lost, which is worth a line rather than silence.
             (None, None, None) => {
-                tracing::warn!(backup = %spec.name, "scheduled backup produced no outcome");
+                tracing::warn!(backup = %spec.name, "daemon: scheduled backup produced no outcome");
             }
         }
     }

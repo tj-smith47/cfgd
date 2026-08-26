@@ -86,11 +86,11 @@ fn a_status_detail_cannot_repaint_the_line_it_is_written_on() {
 #[test]
 fn a_kv_key_and_value_cannot_repaint_the_rows_they_are_written_on() {
     let (printer, screen) = Printer::for_test_live_terminal(24, 120);
-    printer.kv("Server status", poisoned("ok"));
+    printer.kv("Server Status", poisoned("ok"));
     printer.kv(poisoned("Device"), "d-1");
     printer.flush();
     let held = screen.contents();
-    assert_row_survived(&held, "Server status");
+    assert_row_survived(&held, "Server Status");
     // The KEY's own word, never the value beside it: `d-1` is written after
     // the erase lands, so it stands on the row whether the key was folded or
     // not and would pin only the value fold a second time.

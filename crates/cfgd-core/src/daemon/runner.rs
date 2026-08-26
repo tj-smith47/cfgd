@@ -37,6 +37,41 @@ const TICK_FAILED_MSG: &str = "daemon tick failed; loop continues";
 /// while the other arms of the select drive the loop.
 const BACKUP_IDLE_PARK: Duration = Duration::from_secs(3600);
 
+/// How long after a pull the checkout's own filesystem events keep arriving.
+///
+/// notify delivers asynchronously and emits nothing that says "the last write
+/// of that checkout has been reported", so the fold below is a window rather
+/// than a drain. Two seconds is long enough for a checkout's events to land and
+/// short enough that an edit made just after a pull still earns its own line —
+/// and misfiling one costs a log line only: which reconcile the event triggers
+/// is decided further down, untouched by this.
+const PULL_ECHO_WINDOW: Duration = Duration::from_secs(2);
+
+/// The watch events a pull of a source's own checkout raises.
+///
+/// The `local` source's clone IS the config directory, and the watcher follows
+/// that directory recursively — so a pull that moves the ref rewrites files
+/// under the watch and notify reports every one of them. Those events describe
+/// the pull the log has already reported by name and commit range, not an edit
+/// anybody made, and reporting each of them again turns one `sync: pulled` into
+/// a screenful.
+#[derive(Default)]
+pub(super) struct PullEchoes(HashMap<PathBuf, Instant>);
+
+impl PullEchoes {
+    /// Note that `repo`'s working tree was just rewritten by a pull.
+    pub(super) fn note_pull(&mut self, repo: &Path) {
+        self.0.insert(repo.to_path_buf(), Instant::now());
+    }
+
+    /// Whether a pull inside the window accounts for `path`. Expires as it
+    /// reads, so a long-lived daemon's map holds only the trees still echoing.
+    fn explains(&mut self, path: &Path) -> bool {
+        self.0.retain(|_, at| at.elapsed() < PULL_ECHO_WINDOW);
+        self.0.keys().any(|repo| path.starts_with(repo))
+    }
+}
+
 pub(super) struct DaemonLoopContext {
     pub state: Arc<Mutex<DaemonState>>,
     pub hooks: Arc<dyn DaemonHooks>,
@@ -114,6 +149,7 @@ pub(super) async fn run_daemon_loop(
     sync_interval_secs: Arc<AtomicU64>,
 ) -> Result<()> {
     let mut last_change: HashMap<PathBuf, Instant> = HashMap::new();
+    let mut pull_echoes = PullEchoes::default();
     let debounce = Duration::from_millis(DEBOUNCE_MS);
 
     loop {
@@ -121,7 +157,7 @@ pub(super) async fn run_daemon_loop(
 
         tokio::select! {
             Some(path) = triggers.file_rx.recv() => {
-                if let Err(e) = handle_file_change_tick(&ctx, &mut last_change, debounce, path).await {
+                if let Err(e) = handle_file_change_tick(&ctx, &mut last_change, &mut pull_echoes, debounce, path).await {
                     tracing::error!(error = %e, tick = "file_change", "{TICK_FAILED_MSG}");
                 }
             }
@@ -133,7 +169,7 @@ pub(super) async fn run_daemon_loop(
             }
 
             Some(()) = triggers.sync_rx.recv() => {
-                if let Err(e) = handle_sync_tick(&ctx, &mut sync_tasks).await {
+                if let Err(e) = handle_sync_tick(&ctx, &mut sync_tasks, &mut pull_echoes).await {
                     tracing::error!(error = %e, tick = "sync", "{TICK_FAILED_MSG}");
                 }
             }
@@ -179,6 +215,7 @@ pub(super) async fn run_daemon_loop(
 pub(super) async fn handle_file_change_tick(
     ctx: &DaemonLoopContext,
     last_change: &mut HashMap<PathBuf, Instant>,
+    pull_echoes: &mut PullEchoes,
     debounce: Duration,
     path: PathBuf,
 ) -> Result<()> {
@@ -190,7 +227,18 @@ pub(super) async fn handle_file_change_tick(
     }
     last_change.insert(path.clone(), now);
 
-    tracing::info!(path = %path.posix(), "file changed");
+    // The event is named relative to the config dir, because that is the name
+    // the file has in the repository the reader edits — an absolute cache path
+    // names the same file in a directory they never opened.
+    let config_dir = ctx.config_path.parent().unwrap_or(Path::new("."));
+    if pull_echoes.explains(&path) {
+        tracing::debug!(path = %path.posix(), "watch: file rewritten by a pull");
+    } else {
+        match path.strip_prefix(config_dir) {
+            Ok(rel) => tracing::info!("watch: config changed {}", rel.posix()),
+            Err(_) => tracing::info!("watch: file changed {}", path.posix()),
+        }
+    }
 
     // A change to a config/source/`.git` path is a desired-state UPDATE that
     // triggers a reconcile below — it is NOT drift. Only a change to a managed
@@ -224,7 +272,7 @@ pub(super) async fn handle_file_change_tick(
                 }
             }
             Err(e) => {
-                tracing::warn!(error = %e, "cannot open state store for drift recording");
+                tracing::warn!(error = %e, "watch: cannot open state store for drift recording");
             }
         }
     } else {
@@ -285,7 +333,7 @@ pub(super) async fn handle_reconcile_tick(
     ctx: &DaemonLoopContext,
     reconcile_tasks: &mut [ReconcileTask],
 ) -> Result<()> {
-    tracing::trace!("reconcile tick");
+    tracing::trace!("reconcile: tick");
     let now = Instant::now();
 
     let mut ran_default = false;
@@ -340,12 +388,12 @@ pub(super) async fn handle_reconcile_tick(
             let entity_name = task.entity.clone();
             let task_auto_apply = task.auto_apply;
             let task_drift_policy = task.drift_policy.clone();
-            tracing::info!(
+            tracing::debug!(
                 module = %entity_name,
                 interval = %task.interval.as_secs(),
                 auto_apply = task_auto_apply,
                 drift_policy = ?task_drift_policy,
-                "per-module reconcile tick"
+                "reconcile: per-module tick"
             );
             let cp = ctx.config_path.clone();
             let po = ctx.profile_override.clone();
@@ -389,7 +437,7 @@ pub(super) async fn handle_reconcile_tick(
     }
 
     if !ran_default {
-        tracing::trace!("default reconcile task not due this tick");
+        tracing::trace!("reconcile: default task not due this tick");
     }
     Ok(())
 }
@@ -397,8 +445,9 @@ pub(super) async fn handle_reconcile_tick(
 pub(super) async fn handle_sync_tick(
     ctx: &DaemonLoopContext,
     sync_tasks: &mut [SyncTask],
+    pull_echoes: &mut PullEchoes,
 ) -> Result<()> {
-    tracing::trace!("sync tick");
+    tracing::trace!("sync: tick");
     let now = Instant::now();
     // Collected across the loop rather than fired per source: two sources
     // changing in one tick want ONE reconcile of the whole profile, not one
@@ -423,6 +472,7 @@ pub(super) async fn handle_sync_tick(
         )
         .await;
         if changed {
+            pull_echoes.note_pull(&task.repo_path);
             // The sync tick is the one tick that knowingly rewrites the source
             // cache under the reconcile branch's feet. It runs on its own timer
             // in the same select loop, and the fetch replaces whole checkouts,
@@ -433,8 +483,8 @@ pub(super) async fn handle_sync_tick(
                 apply_after_sync.push(task.source_name.clone());
             } else {
                 tracing::info!(
-                    source = %task.source_name,
-                    "changes detected but auto-apply is disabled — run `cfgd sync` interactively"
+                    "sync: {} changed — auto-apply is off, run `cfgd sync` to apply",
+                    task.source_name
                 );
             }
         }
@@ -442,8 +492,9 @@ pub(super) async fn handle_sync_tick(
 
     if !apply_after_sync.is_empty() {
         tracing::info!(
-            sources = %apply_after_sync.join(", "),
-            "source changed and auto-apply is enabled — reconciling now"
+            "reconcile: {} {} changed — reconciling",
+            crate::plural_noun(apply_after_sync.len(), "source"),
+            apply_after_sync.join(", ")
         );
         // `sync.autoApply` says "apply what the refresh brought" and is set per
         // source, so the reconcile it triggers forces `Auto` for this tick
@@ -529,7 +580,7 @@ fn refresh_backup_timers(
             if degraded.is_some() {
                 tracing::warn!(
                     adopted = summary.is_some(),
-                    "backup timers: source composition unavailable — retrying"
+                    "daemon: backup timers — source composition unavailable, retrying"
                 );
             }
             summary
@@ -537,7 +588,7 @@ fn refresh_backup_timers(
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                "backup timers: profile resolution failed — keeping the running timer set, retrying"
+                "daemon: backup timers — profile resolution failed, keeping the running timer set and retrying"
             );
             timers.arm_retry(now, DegradedReason::ProfileUnresolved);
             None
@@ -579,7 +630,7 @@ pub(super) async fn handle_backup_tick(
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    "backup timers: config reload failed — keeping the running timer set, retrying"
+                    "daemon: backup timers — config reload failed, keeping the running timer set and retrying"
                 );
                 backup_timers.arm_retry(now, DegradedReason::ConfigUnreadable);
             }
@@ -600,12 +651,12 @@ pub(super) async fn handle_backup_tick(
     // agrees on one path; `None` here means that derivation already failed, and
     // re-deriving it would just fail the same way.
     let Some(state_dir) = ctx.state_dir_override.clone() else {
-        tracing::error!("backup: no state directory resolved at startup — runs skipped");
+        tracing::error!("daemon: no state directory resolved at startup — backup runs skipped");
         return Ok(());
     };
 
     for (_, spec) in &due {
-        tracing::info!(backup = %spec.name, "scheduled backup tick");
+        tracing::debug!(backup = %spec.name, "daemon: scheduled backup tick");
     }
     // One dispatch for the whole due set, not one per unit: the fire renders as
     // a single run — header, `Backups` pseudo-phase, rollup — and a per-unit
@@ -631,7 +682,7 @@ pub(super) async fn handle_backup_tick(
 }
 
 pub(super) async fn handle_version_check_tick(ctx: &DaemonLoopContext) -> Result<()> {
-    tracing::trace!("version check tick");
+    tracing::trace!("daemon: version check tick");
     // Load the live config so the check honors `spec.update.policy`. A load
     // failure degrades to the default policy (Prompt → Notify in the daemon's
     // non-interactive context) rather than skipping the check entirely.
@@ -644,7 +695,7 @@ pub(super) async fn handle_version_check_tick(ctx: &DaemonLoopContext) -> Result
 }
 
 pub(super) async fn handle_compliance_tick(ctx: &DaemonLoopContext) -> Result<()> {
-    tracing::trace!("compliance snapshot tick");
+    tracing::trace!("daemon: compliance snapshot tick");
     if let Some(ref cc) = ctx.compliance_config {
         let cp = ctx.config_path.clone();
         let po = ctx.profile_override.clone();

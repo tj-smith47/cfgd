@@ -146,8 +146,8 @@ pub fn cmd_checkin(
     // value, folded through `cursor_safe` at the renderer so a response
     // cannot repaint the line describing it. The `-o json` payload below
     // carries the response verbatim; the fold is display-only.
-    printer.kv("Server status", &resp.status);
-    printer.kv("Config changed", resp.config_changed.to_string());
+    printer.kv("Server Status", &resp.status);
+    printer.kv("Config Changed", resp.config_changed.to_string());
 
     if let Some(ref desired) = resp.desired_config {
         printer.status_simple(Role::Warn, "Server pushed desired config");
@@ -605,10 +605,10 @@ spec:
         let row = plain
             .lines()
             .map(str::trim)
-            .find(|l| l.starts_with("Server status"))
+            .find(|l| l.starts_with("Server Status"))
             .unwrap_or_else(|| panic!("the kv row must still render: {plain:?}"));
         assert_eq!(
-            row.trim_start_matches("Server status").trim(),
+            row.trim_start_matches("Server Status").trim(),
             "ok",
             "the row's whole value is the status, with the escapes gone: {row:?}"
         );
@@ -788,7 +788,7 @@ spec:
 
         let human = cap.human();
         assert!(
-            human.contains("Server status"),
+            human.contains("Server Status"),
             "should print 'Server status', got: {human}"
         );
 

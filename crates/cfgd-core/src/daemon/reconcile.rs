@@ -36,7 +36,7 @@ pub(crate) fn setup_file_watcher(
                                     tracing::debug!("file watcher channel full — event coalesced");
                                 }
                                 Err(e) => {
-                                    tracing::warn!(error = %e, "file watcher event dropped");
+                                    tracing::warn!(error = %e, "watch: file watcher event dropped");
                                 }
                             }
                         }
@@ -64,14 +64,14 @@ pub(crate) fn setup_file_watcher(
                 RecursiveMode::NonRecursive
             };
             if let Err(e) = watcher.watch(path, mode) {
-                tracing::warn!(path = %path.posix(), error = %e, "cannot watch path");
+                tracing::warn!(path = %path.posix(), error = %e, "watch: cannot watch path");
             }
         } else if let Some(parent) = path.parent() {
             // Watch parent directory so we detect file creation
             if parent.exists()
                 && let Err(e) = watcher.watch(parent, RecursiveMode::NonRecursive)
             {
-                tracing::warn!(path = %parent.posix(), error = %e, "cannot watch path");
+                tracing::warn!(path = %parent.posix(), error = %e, "watch: cannot watch path");
             }
         }
     }
@@ -80,7 +80,7 @@ pub(crate) fn setup_file_watcher(
     if config_dir.exists()
         && let Err(e) = watcher.watch(config_dir, RecursiveMode::Recursive)
     {
-        tracing::warn!(path = %config_dir.posix(), error = %e, "cannot watch config dir");
+        tracing::warn!(path = %config_dir.posix(), error = %e, "watch: cannot watch config dir");
     }
 
     Ok(watcher)
@@ -94,7 +94,7 @@ pub(crate) fn discover_managed_paths(
     let cfg = match config::load_config(config_path) {
         Ok(c) => c,
         Err(e) => {
-            tracing::warn!(error = %e, "cannot load config for file discovery");
+            tracing::warn!(error = %e, "watch: cannot load config for file discovery");
             return Vec::new();
         }
     };
@@ -111,7 +111,7 @@ pub(crate) fn discover_managed_paths(
     let resolved = match config::resolve_profile(profile_name, &profiles_dir) {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!(error = %e, "cannot resolve profile for file discovery");
+            tracing::warn!(error = %e, "watch: cannot resolve profile for file discovery");
             return Vec::new();
         }
     };
@@ -217,11 +217,33 @@ impl crate::reconciler::RunExecutor for TickExecutor<'_> {
     }
 }
 
+/// Run one reconcile tick and say, on the daemon's log, what it came to.
+///
+/// The announcement is the OUTCOME, not the start: a heartbeat per tick is
+/// contentless — four of them in a row and no completion was what a reader of
+/// this log actually got — while the outcome is the only line that distinguishes
+/// a tick that converged from a tick that hung. [`reconcile_tick`] answers with
+/// the sentence, or with `None` for a tick that never reached a verdict; every
+/// one of those arms says why at `warn` or `error` on its way out, so start and
+/// finish balance whichever way the tick ends.
 pub(crate) fn handle_reconcile(
     config_path: &Path,
     profile_override: Option<&str>,
     ctx: ReconcileCtx<'_>,
 ) {
+    if let Some(outcome) = reconcile_tick(config_path, profile_override, ctx) {
+        tracing::info!("reconcile: complete — {outcome}");
+    }
+}
+
+/// The tick itself. `Some(outcome)` is the sentence
+/// [`handle_reconcile`] completes; `None` is a tick that ended before it
+/// reached a verdict.
+fn reconcile_tick(
+    config_path: &Path,
+    profile_override: Option<&str>,
+    ctx: ReconcileCtx<'_>,
+) -> Option<String> {
     let ReconcileCtx {
         state,
         notifier,
@@ -237,10 +259,9 @@ pub(crate) fn handle_reconcile(
         abort,
         cache,
     } = ctx;
-    if let Some(name) = module_filter {
-        tracing::info!(module = %name, "running per-module reconciliation check");
-    } else {
-        tracing::info!("running reconciliation check");
+    match module_filter {
+        Some(name) => tracing::debug!(module = %name, "reconcile: running per-module check"),
+        None => tracing::debug!("reconcile: running check"),
     }
 
     // Try to acquire the apply lock (non-blocking). If a CLI apply is in
@@ -251,7 +272,7 @@ pub(crate) fn handle_reconcile(
             Ok(d) => d,
             Err(e) => {
                 tracing::error!(error = %e, "reconcile: cannot determine state directory");
-                return;
+                return None;
             }
         },
     };
@@ -264,11 +285,11 @@ pub(crate) fn handle_reconcile(
             ref holder,
         })) => {
             tracing::debug!(holder = %holder, "reconcile: skipping — apply lock held");
-            return;
+            return None;
         }
         Err(e) => {
             tracing::warn!(error = %e, "reconcile: cannot acquire apply lock");
-            return;
+            return None;
         }
     };
 
@@ -291,7 +312,7 @@ pub(crate) fn handle_reconcile(
         let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
             Some(p) => p.to_string(),
             None => {
-                tracing::error!("no profile configured — skipping reconciliation");
+                tracing::error!("reconcile: no profile configured — skipping");
                 return Err(DerivationSkipped);
             }
         };
@@ -347,7 +368,7 @@ pub(crate) fn handle_reconcile(
         })
     });
     let Ok(derived) = derived else {
-        return;
+        return None;
     };
     // A source with no local cache, or one whose checkout came from an origin
     // the spec no longer names, is skipped by the composition and said out loud
@@ -377,12 +398,12 @@ pub(crate) fn handle_reconcile(
         Ok(s) => s,
         Err(e) => {
             tracing::error!(error = %e, "reconcile: state store error");
-            return;
+            return None;
         }
     };
     let Some(store) = held_store.get() else {
         tracing::error!("reconcile: state store unavailable");
-        return;
+        return None;
     };
 
     // Process auto-apply decisions for source items
@@ -409,7 +430,7 @@ pub(crate) fn handle_reconcile(
         crate::reconciler::owns_decision_store(config_path, explicit_state_dir, scope);
     let subscribed: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
     if owns_the_store && let Err(e) = store.discard_decisions_not_in(&subscribed) {
-        tracing::warn!(error = %e, "failed to discard decisions of removed sources");
+        tracing::warn!(error = %e, "reconcile: failed to discard decisions of removed sources");
     }
 
     let available_managers = registry.available_package_managers();
@@ -443,7 +464,7 @@ pub(crate) fn handle_reconcile(
         Ok(out) => out,
         Err(e) => {
             tracing::error!(error = %e, "reconcile: package planning failed");
-            return;
+            return None;
         }
     };
 
@@ -470,7 +491,7 @@ pub(crate) fn handle_reconcile(
                         "cfgd could not read the source decision state ({e}), so this reconcile was skipped rather than applying items that may be awaiting your review. Run `cfgd status` to inspect."
                     ),
                 );
-                return;
+                return None;
             }
         }
     } else {
@@ -510,7 +531,7 @@ pub(crate) fn handle_reconcile(
                     "cfgd could not read the source decision state ({e}), so this reconcile was skipped rather than applying items that may be awaiting your review. Run `cfgd status` to inspect."
                 ),
             );
-            return;
+            return None;
         }
     };
     let pending_exclusions =
@@ -532,7 +553,7 @@ pub(crate) fn handle_reconcile(
         Ok(planned) => planned,
         Err(e) => {
             tracing::error!(error = %e, "reconcile: file planning failed");
-            return;
+            return None;
         }
     };
 
@@ -569,7 +590,7 @@ pub(crate) fn handle_reconcile(
         Ok(p) => p,
         Err(e) => {
             tracing::error!(error = %e, "reconcile: plan generation failed");
-            return;
+            return None;
         }
     };
 
@@ -628,7 +649,7 @@ pub(crate) fn handle_reconcile(
             Ok(backups) => reconciler.backing_up(backups),
             Err(e) => {
                 tracing::error!(error = %e, "reconcile: unmanaged-file pass failed");
-                return;
+                return None;
             }
         }
     } else {
@@ -672,17 +693,17 @@ pub(crate) fn handle_reconcile(
         resolved,
         resolved_modules_ref.as_slice(),
     ) {
-        tracing::warn!(error = %e, "failed to refresh recorded file hashes");
+        tracing::warn!(error = %e, "reconcile: failed to refresh recorded file hashes");
     }
 
-    if effective_total == 0 {
+    let outcome = if effective_total == 0 {
         tracing::debug!("reconcile: no drift detected");
 
         // This reconcile is the ground-truth snapshot: nothing drifts now, so
         // every outstanding drift row has healed. Clear them and reset the
         // in-memory count so `/status` and `/drift` both return to 0.
         if let Err(e) = store.resolve_all_drift() {
-            tracing::warn!(error = %e, "failed to resolve outstanding drift on clean tick");
+            tracing::warn!(error = %e, "reconcile: failed to resolve outstanding drift on clean tick");
         }
         rt.block_on(async {
             let mut st = state.lock().await;
@@ -691,8 +712,12 @@ pub(crate) fn handle_reconcile(
                 source.drift_count = 0;
             }
         });
+        Some("nothing to do".to_string())
     } else {
-        tracing::info!(actions = effective_total, "reconcile: drift detected");
+        tracing::info!(
+            "reconcile: drift detected in {}",
+            crate::pluralize(effective_total, "resource")
+        );
 
         // The plan's action set is the exact current drift set. Record each
         // diverging resource (UPSERT — no duplicate rows across ticks)...
@@ -707,7 +732,7 @@ pub(crate) fn handle_reconcile(
                     Some("drift detected"),
                     config::LOCAL_LAYER,
                 ) {
-                    tracing::warn!(error = %e, "failed to record drift");
+                    tracing::warn!(error = %e, "reconcile: failed to record drift");
                 }
                 current_drift.push((rtype, rid));
             }
@@ -715,7 +740,7 @@ pub(crate) fn handle_reconcile(
         // ...then resolve any still-unresolved rows NOT in the current set:
         // they healed since the last tick.
         if let Err(e) = store.resolve_drift_not_in(&current_drift) {
-            tracing::warn!(error = %e, "failed to resolve healed drift rows");
+            tracing::warn!(error = %e, "reconcile: failed to resolve healed drift rows");
         }
 
         // The onDrift hooks of the profile and of every drifted module, as one
@@ -767,7 +792,10 @@ pub(crate) fn handle_reconcile(
             let drift_script_path_dirs = crate::reconciler::all_recorded_path_dirs(store);
 
             if !profile_hooks.is_empty() {
-                tracing::info!(count = profile_hooks.len(), "running onDrift scripts");
+                tracing::debug!(
+                    count = profile_hooks.len(),
+                    "reconcile: running onDrift scripts"
+                );
                 let owner = crate::reconciler::Owner::profile(profile_name);
                 let _group = hooks_phase.owner(&owner, hook_width);
                 let script_env =
@@ -800,20 +828,20 @@ pub(crate) fn handle_reconcile(
                         },
                     ) {
                         Ok((desc, _, _)) => {
-                            tracing::info!(script = %desc, "onDrift script completed");
+                            tracing::debug!(script = %desc, "reconcile: onDrift script completed");
                         }
                         Err(e) => {
-                            tracing::error!(error = %e, "onDrift script failed");
+                            tracing::error!(error = %e, "reconcile: onDrift script failed");
                         }
                     }
                 }
             }
 
             for module in &drifted_modules {
-                tracing::info!(
+                tracing::debug!(
                     module = %module.name,
                     count = module.on_drift_scripts.len(),
-                    "running module onDrift scripts"
+                    "reconcile: running module onDrift scripts"
                 );
                 let owner = crate::reconciler::Owner::module(&module.name);
                 let _group = hooks_phase.owner(&owner, hook_width);
@@ -849,10 +877,10 @@ pub(crate) fn handle_reconcile(
                         },
                     ) {
                         Ok((desc, _, _)) => {
-                            tracing::info!(module = %module.name, script = %desc, "module onDrift script completed");
+                            tracing::debug!(module = %module.name, script = %desc, "reconcile: module onDrift script completed");
                         }
                         Err(e) => {
-                            tracing::error!(module = %module.name, error = %e, "module onDrift script failed");
+                            tracing::error!(module = %module.name, error = %e, "reconcile: module onDrift script failed");
                         }
                     }
                 }
@@ -895,9 +923,9 @@ pub(crate) fn handle_reconcile(
 
         match drift_policy {
             config::DriftPolicy::Auto => {
-                tracing::info!(
+                tracing::debug!(
                     actions = effective_total,
-                    "drift policy is Auto — applying actions"
+                    "reconcile: drift policy is Auto — applying actions"
                 );
                 let run = crate::reconciler::ApplyRun::new(run_ctx(), &plan);
                 let mut exec = TickExecutor {
@@ -918,14 +946,14 @@ pub(crate) fn handle_reconcile(
                         | crate::reconciler::RunDisposition::Declined
                         | crate::reconciler::RunDisposition::BackupsApplied { .. } => None,
                     }) {
-                    Ok(None) => {}
+                    Ok(None) => Some("nothing to do".to_string()),
                     Ok(Some(result)) => {
                         let succeeded = result.succeeded();
                         let failed = result.failed();
-                        tracing::info!(
+                        tracing::debug!(
                             succeeded = succeeded,
                             failed = failed,
-                            "auto-apply complete"
+                            "reconcile: auto-apply complete"
                         );
                         // Self-heal the tracking table on a full (non-module)
                         // reconcile: drop rows whose package is gone (partial
@@ -942,12 +970,12 @@ pub(crate) fn handle_reconcile(
                                         if let Err(e) =
                                             store.remove_managed_resource("package", &rid)
                                         {
-                                            tracing::warn!(resource = %rid, error = %e, "failed to GC stale package tracking row");
+                                            tracing::warn!(resource = %rid, error = %e, "reconcile: failed to GC stale package tracking row");
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    tracing::warn!(error = %e, "failed to compute stale package tracking rows")
+                                    tracing::warn!(error = %e, "reconcile: failed to compute stale package tracking rows")
                                 }
                             }
                             // Prune packages whose custom/scripted manager block
@@ -963,13 +991,13 @@ pub(crate) fn handle_reconcile(
                                         if let Err(e) =
                                             store.remove_managed_resource("package", &rid)
                                         {
-                                            tracing::warn!(resource = %rid, error = %e, "failed to GC orphaned package tracking row");
+                                            tracing::warn!(resource = %rid, error = %e, "reconcile: failed to GC orphaned package tracking row");
                                         }
                                     }
                                 }
                                 Ok(_) => {}
                                 Err(e) => {
-                                    tracing::warn!(error = %e, "failed to compute orphaned package rows")
+                                    tracing::warn!(error = %e, "reconcile: failed to compute orphaned package rows")
                                 }
                             }
                         }
@@ -1006,20 +1034,36 @@ pub(crate) fn handle_reconcile(
                                 }
                             });
                         }
+
+                        // The tally the on-screen rollup above this line was
+                        // built from, so the log and the rollup cannot disagree
+                        // about how many actions succeeded. `outcome_counts` is
+                        // silent about failures — the rollup gives them their
+                        // own line — but a single-line log has no second line,
+                        // so it names them here or hides them entirely.
+                        let tally = result.tally();
+                        let counts = crate::reconciler::outcome_counts(&tally);
+                        Some(match tally.failed {
+                            0 => counts,
+                            failed => format!("{counts}, {failed} failed"),
+                        })
                     }
                     Err(e) => {
-                        tracing::error!(error = %e, "auto-apply failed");
+                        tracing::error!(error = %e, "reconcile: auto-apply failed");
                         if notify_on_drift {
                             notifier.notify(
                                 "cfgd: auto-apply failed",
                                 &format!("Auto-apply failed: {}. Run `cfgd apply` manually.", e),
                             );
                         }
+                        None
                     }
                 }
             }
             config::DriftPolicy::NotifyOnly | config::DriftPolicy::Prompt => {
-                tracing::info!("drift policy is NotifyOnly — recording drift, not applying");
+                tracing::debug!(
+                    "reconcile: drift policy is NotifyOnly — recording drift, not applying"
+                );
                 // A tick that detected drift and chose not to act still has to
                 // show WHAT drifted, so it renders the preview tree — never an
                 // execution tree — and closes on a verdict instead of a rollup.
@@ -1041,15 +1085,27 @@ pub(crate) fn handle_reconcile(
                         ),
                     );
                 }
+                Some(format!(
+                    "{} drifted, none applied",
+                    crate::pluralize(effective_total, "action")
+                ))
             }
         }
-    }
+    };
+
+    // A per-module tick names its module: the log carries ticks of both
+    // cadences interleaved, and a bare completion sentence cannot say which of
+    // them just converged.
+    let outcome = match module_filter {
+        Some(name) => outcome.map(|sentence| format!("module {name}: {sentence}")),
+        None => outcome,
+    };
 
     // Server check-in + pending-config consumption are profile-wide
     // operations; skip them for per-module ticks so a fast per-module cadence
     // doesn't hammer the gateway or race the default reconcile.
     if module_filter.is_some() {
-        return;
+        return outcome;
     }
 
     // Server check-in after reconciliation
@@ -1067,19 +1123,21 @@ pub(crate) fn handle_reconcile(
                 .as_object()
                 .map(|obj| obj.keys().cloned().collect())
                 .unwrap_or_default();
+            tracing::debug!(keys = ?keys, "daemon: pending server config keys");
             tracing::info!(
-                keys = ?keys,
-                "consumed pending server config — next reconcile will pick up changes"
+                "daemon: consumed pending server config — next reconcile will pick up changes"
             );
             if let Err(e) = crate::state::clear_pending_server_config() {
-                tracing::warn!(error = %e, "failed to clear pending server config");
+                tracing::warn!(error = %e, "daemon: failed to clear pending server config");
             }
         }
         Ok(None) => {}
         Err(e) => {
-            tracing::warn!(error = %e, "failed to load pending server config");
+            tracing::warn!(error = %e, "daemon: failed to load pending server config");
         }
     }
+
+    outcome
 }
 
 /// Narrow a planned tick down to one module's own work.

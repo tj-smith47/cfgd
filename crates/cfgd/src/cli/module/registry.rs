@@ -416,9 +416,9 @@ pub fn cmd_module_upgrade(
     }
 
     printer.kv_block([
-        ("Old commit", old_entry.commit.as_str()),
-        ("New commit", new_commit.as_str()),
-        ("New integrity", new_integrity.as_str()),
+        ("Old Commit", old_entry.commit.as_str()),
+        ("New Commit", new_commit.as_str()),
+        ("New Integrity", new_integrity.as_str()),
     ]);
 
     // Check for signature on new ref

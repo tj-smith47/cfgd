@@ -30,6 +30,34 @@ use std::sync::{Arc, RwLock};
 use super::Printer;
 use super::renderer::LiveBarState;
 
+/// The wall clock every human-readable cfgd subscriber stamps its events with:
+/// the local time of day, `%H:%M:%S`.
+///
+/// Local rather than UTC, and time-of-day rather than a full instant, because
+/// the reader is a person at the machine — someone tailing `cfgd daemon run`'s
+/// log, or reading a warning a one-shot command emitted seconds ago. The
+/// question they ask of a stamp is "how long ago", and a date they already know
+/// plus an offset they have to apply answers it slower than the clock on their
+/// own wall does.
+///
+/// The in-cluster binaries keep the formatter's default RFC 3339 UTC: their
+/// events are collected, correlated across nodes and read long after the fact,
+/// which is the opposite reader.
+///
+/// A clock that cannot be read leaves the field empty rather than failing the
+/// event — `tracing_subscriber` substitutes `<unknown time>` for an `Err`, and
+/// an event whose message was going to say something useful is worth more than
+/// the stamp it lost. `chrono::Local` has no failing arm today; the `write!`
+/// does.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LocalTimeOfDay;
+
+impl tracing_subscriber::fmt::time::FormatTime for LocalTimeOfDay {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        write!(w, "{}", chrono::Local::now().format("%H:%M:%S"))
+    }
+}
+
 /// Where a routed event goes, and the latch that says whether routing is still
 /// working — the SAME latch every renderer writing this region consults, so a
 /// terminal judged dead is dead for both writers rather than re-probed once per
@@ -397,6 +425,68 @@ mod tests {
         assert!(
             writer.make_writer().route.is_none(),
             "each sink made after the latch falls through to stderr"
+        );
+    }
+
+    /// The daemon's log line, composed the way the binary composes it:
+    /// `HH:MM:SS  INFO <subsystem>: <sentence>`. The two spaces are not a
+    /// choice — `tracing_subscriber`'s level token carries its own leading
+    /// space, so a `%H:%M:%S` timer yields them and nothing formats the level
+    /// by hand. A subscriber built without the timer prints `<sentence>` with
+    /// no way to tell when the daemon said it, which is what shipped before.
+    #[test]
+    fn a_daemon_log_line_opens_with_its_local_time_and_level() {
+        #[derive(Clone)]
+        struct Capture(std::sync::Arc<std::sync::Mutex<String>>);
+        impl io::Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push_str(&String::from_utf8_lossy(buf));
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl MakeWriter<'_> for Capture {
+            type Writer = Self;
+            fn make_writer(&self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let subscriber = tracing_subscriber::fmt()
+            // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
+            .with_writer(Capture(buf.clone()))
+            .with_timer(LocalTimeOfDay)
+            .with_ansi(false)
+            .with_target(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("reconcile: complete — nothing to do");
+        });
+
+        // raw-capture-ok: a tracing writer's buffer, asserted byte-exact — an ANSI-stripping read would pass with `with_ansi` dropped
+        let line = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let line = line.trim_end();
+        let (stamp, rest) = line.split_at(8);
+        assert!(
+            stamp.len() == 8
+                && stamp.as_bytes()[2] == b':'
+                && stamp.as_bytes()[5] == b':'
+                && stamp
+                    .chars()
+                    .filter(|c| *c != ':')
+                    .all(|c| c.is_ascii_digit()),
+            "a daemon log line opens with a local `HH:MM:SS` stamp: {line:?}"
+        );
+        assert_eq!(
+            rest, "  INFO reconcile: complete — nothing to do",
+            "the stamp is followed by exactly two spaces, the level, and the \
+             `<subsystem>: <sentence>` message: {line:?}"
         );
     }
 }

@@ -262,44 +262,44 @@ fn or_unavailable(value: &Option<String>) -> String {
 
 /// Build the `paths` human + structured `Doc` from a collected payload.
 pub fn build_paths_doc(output: &PathsOutput) -> Doc {
-    let mut doc = Doc::new().heading("cfgd directories");
-    doc = doc.kv("scope", output.scope);
+    let mut doc = Doc::new().heading("cfgd Directories");
+    doc = doc.kv("Scope", output.scope);
 
     let config = &output.config;
     doc = doc.section("Config", |s| {
         s.kv_block([
-            ("dir", config.dir.clone()),
-            ("source", config.source.label().to_string()),
-            ("file", config.file.clone()),
+            ("Directory", config.dir.clone()),
+            ("Source", config.source.label().to_string()),
+            ("File", config.file.clone()),
         ])
     });
 
     let state = &output.state;
     doc = doc.section("State", |s| {
         s.kv_block([
-            ("dir", or_unavailable(&state.dir)),
-            ("source", state.source.label().to_string()),
-            ("db", or_unavailable(&state.db)),
-            ("applyLock", or_unavailable(&state.apply_lock)),
+            ("Directory", or_unavailable(&state.dir)),
+            ("Source", state.source.label().to_string()),
+            ("Database", or_unavailable(&state.db)),
+            ("Apply Lock", or_unavailable(&state.apply_lock)),
         ])
     });
 
     let cache = &output.cache;
     doc = doc.section("Cache", |s| {
         s.kv_block([
-            ("dir", or_unavailable(&cache.dir)),
-            ("source", cache.source.label().to_string()),
-            ("sources", or_unavailable(&cache.sources)),
-            ("modules", or_unavailable(&cache.modules)),
+            ("Directory", or_unavailable(&cache.dir)),
+            ("Source", cache.source.label().to_string()),
+            ("Sources", or_unavailable(&cache.sources)),
+            ("Modules", or_unavailable(&cache.modules)),
         ])
     });
 
     let runtime = &output.runtime;
     doc = doc.section("Runtime", |s| {
         s.kv_block([
-            ("dir", or_unavailable(&runtime.dir)),
-            ("source", runtime.source.label().to_string()),
-            ("socket", runtime.socket.clone()),
+            ("Directory", or_unavailable(&runtime.dir)),
+            ("Source", runtime.source.label().to_string()),
+            ("Socket", runtime.socket.clone()),
         ])
     });
 
@@ -590,11 +590,11 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         cmd_paths(&cli, &printer, &DirSources::all_default()).expect("cmd_paths must succeed");
         let out = cfgd_core::test_helpers::captured_text(&buf);
-        assert!(out.contains("cfgd directories"), "heading missing: {out}");
+        assert!(out.contains("cfgd Directories"), "heading missing: {out}");
         for label in ["Config", "State", "Cache", "Runtime"] {
             assert!(out.contains(label), "section {label} missing: {out}");
         }
-        assert!(out.contains("applyLock"), "applyLock kv missing: {out}");
+        assert!(out.contains("Apply Lock"), "apply-lock kv missing: {out}");
     }
 
     #[test]
@@ -638,7 +638,7 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         cmd_paths(&cli, &printer, &DirSources::all_default()).expect("cmd_paths must succeed");
         let out = cfgd_core::test_helpers::captured_text(&buf);
-        assert!(out.contains("scope"), "scope kv missing: {out}");
+        assert!(out.contains("Scope"), "scope kv missing: {out}");
         assert!(out.contains("user"), "scope value missing: {out}");
     }
 

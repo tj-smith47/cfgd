@@ -111,6 +111,9 @@ pub fn profile_inventory_blocks(resolved: &ResolvedProfile) -> Vec<(&'static str
 /// Flatten a `PackagesSpec` into `(label, value)` rows in the same order the
 /// pre-Doc handler printed them, so empty profiles produce zero rows (skipping
 /// the section entirely) without an aggregated `has_packages` flag.
+// name-row-ok: every key here is the `spec.packages` path the user wrote, so it
+// stays in the config's own spelling rather than being Title Cased into a key
+// no cfgd.yaml contains
 fn package_display_rows(pkgs: &PackagesSpec) -> Vec<(String, String)> {
     let mut rows = Vec::new();
     if let Some(brew) = &pkgs.brew {

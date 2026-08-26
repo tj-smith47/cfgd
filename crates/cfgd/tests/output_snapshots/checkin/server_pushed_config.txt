@@ -1,6 +1,6 @@
 Checkin
-  Server status   ok
-  Config changed  true
+  Server Status   ok
+  Config Changed  true
 
 ⚠ Server pushed desired config
 

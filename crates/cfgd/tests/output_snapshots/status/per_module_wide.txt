@@ -1,6 +1,6 @@
 Status: dev-tools
   Status        Drifted
-  Last applied  2026-05-14T10:00:00Z
+  Last Applied  2026-05-14T10:00:00Z
 
 Installed Packages
   ✓ neovim  — brew

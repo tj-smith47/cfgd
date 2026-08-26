@@ -339,6 +339,86 @@ mod tests {
         );
     }
 
+    /// The rule under a table's header spans the WHOLE grid, never one column
+    /// short of it. It is joined by `──` where the header is joined by `  `,
+    /// which is what makes the two widths agree — a join that ever stops
+    /// matching leaves the rule visibly under-hanging the last column, and the
+    /// eye reads the grid as one column narrower than it is.
+    ///
+    /// Walks the shapes a table can take rather than one fixture, so the next
+    /// column kind (a wrapped cell, a clamped cell, a wide glyph) is measured
+    /// by this test the day it is added.
+    #[test]
+    fn every_table_shape_rules_the_full_width_of_its_grid() {
+        let cases: Vec<(&str, Table)> = vec![
+            ("single column", Table::new(["Name"]).row(["alice"])),
+            (
+                "header wider than every row",
+                Table::new(["Reconcile Interval", "Drift"]).row(["300s", "0"]),
+            ),
+            (
+                "row wider than its header",
+                Table::new(["Name", "Status"]).row(["a-very-long-source-name", "Active"]),
+            ),
+            (
+                "the daemon status Sources grid",
+                Table::new(["Name", "Status", "Drift", "Last Sync"])
+                    .row(["local", "Active", "0", "never"])
+                    .row(["team", "Failed", "7", "2d ago"]),
+            ),
+            (
+                "wide glyphs",
+                Table::new(["Name", "Score"])
+                    .row(["京都", "100"])
+                    .row(["ok", "3"]),
+            ),
+            ("emoji", Table::new(["Icon", "Meaning"]).row(["✅", "done"])),
+            (
+                "an empty cell in the last column",
+                Table::new(["Name", "Note"]).row(["local", ""]),
+            ),
+            (
+                "wrapping cells",
+                Table::new(["Name", "Description"])
+                    .wrapping()
+                    .row(["mod", "a description long enough to break across lines"]),
+            ),
+        ];
+        for (label, t) in cases {
+            let buf = Arc::new(Mutex::new(String::new()));
+            let sink = NarrowSink(StringSink(buf.clone()), 40);
+            let r = Renderer::new(Theme::default(), Verbosity::Normal);
+            r.render_table(&sink, 0, &t);
+            let out = crate::test_helpers::captured_text(&buf);
+            let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+            let header = lines
+                .first()
+                .unwrap_or_else(|| panic!("{label}: no header line rendered:\n{out}"));
+            let rule = lines
+                .get(1)
+                .unwrap_or_else(|| panic!("{label}: no rule line rendered:\n{out}"));
+            assert!(
+                rule.trim_start().starts_with('─'),
+                "{label}: the second line must be the rule:\n{out}"
+            );
+            // Untrimmed: a column is as wide as its widest CELL, so the header
+            // row's own trailing pad is part of the grid the rule spans.
+            let grid = UnicodeWidthStr::width(*header);
+            assert_eq!(
+                UnicodeWidthStr::width(*rule),
+                grid,
+                "{label}: the rule must span the full grid width:\n{out}"
+            );
+            for row in &lines[2..] {
+                assert_eq!(
+                    UnicodeWidthStr::width(*row),
+                    grid,
+                    "{label}: every data row occupies the full grid width:\n{out}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn row_appends_keep_rows_and_roles_in_lockstep() {
         let t = Table::new(["a", "b"]).row(["1", "2"]).row(["3", "4"]);

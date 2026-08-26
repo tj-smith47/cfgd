@@ -13605,6 +13605,187 @@ fn no_surface_spells_the_sources_section_a_second_way() {
     );
 }
 
+/// Words a title leaves lowercase unless it opens with them — the ordinary
+/// title-case exception list, and why `Conflicts with Current Config` and
+/// `Signing with` are correct as written.
+const TITLE_SMALL_WORDS: &[&str] = &[
+    "a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "of", "on", "or", "per", "the",
+    "to", "via", "vs", "with",
+];
+
+/// Whether `label` is title case: every word capitalized, bar a small word
+/// that is not the first. A word opening with a non-letter (`(k8s)`, `.sops`)
+/// is left to its own spelling.
+fn is_title_case(label: &str) -> bool {
+    label.split_whitespace().enumerate().all(|(i, word)| {
+        let Some(first) = word.chars().next() else {
+            return true;
+        };
+        if !first.is_alphabetic() || first.is_uppercase() {
+            return true;
+        }
+        i > 0 && TITLE_SMALL_WORDS.contains(&word.trim_end_matches(':'))
+    })
+}
+
+/// Whether the literal on line `n` is covered by `marker`, on its own line, on
+/// the line above, or on the doc block of the function that builds it — rows
+/// pushed in a loop are nowhere near the reason they keep their own spelling.
+fn label_hatched(lines: &[&str], n: usize, marker: &str) -> bool {
+    if lines[n].contains(marker) || n.checked_sub(1).is_some_and(|p| lines[p].contains(marker)) {
+        return true;
+    }
+    let mut i = n;
+    while i > 0 {
+        let code = lines[i].trim_start();
+        if code.starts_with("fn ") || code.contains(" fn ") {
+            let mut j = i;
+            while j > 0 {
+                let above = lines[j - 1].trim_start();
+                if !above.starts_with("//") {
+                    return false;
+                }
+                if above.contains(marker) {
+                    return true;
+                }
+                j -= 1;
+            }
+            return false;
+        }
+        i -= 1;
+    }
+    false
+}
+
+/// Returns the text inside the balanced bracket opened at `open`, so a scan of
+/// a `kv_block([...])` argument stops at that call rather than running into
+/// the next one.
+fn bracketed_span(body: &str, open: usize) -> (usize, &str) {
+    let bytes = body.as_bytes();
+    let mut depth = 0usize;
+    let mut end = open;
+    for (i, b) in bytes.iter().enumerate().skip(open) {
+        match b {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    (end, &body[open..end])
+}
+
+/// Every label in the left column of a rendered fact is title case, whichever
+/// slot it occupies: a kv key, a kv row pushed into a block, a `KvPair`, or a
+/// table header. `cfgd daemon status` printed `Reconcile interval` two rows
+/// above a `Last Sync` table column, so one screen taught two conventions for
+/// the same thing and neither was the product's.
+///
+/// A label that NAMES a thing rather than describing a fact — a `spec.packages`
+/// path, a tool's own name — keeps that thing's spelling and says so with a
+/// `// name-row-ok:` marker, the same hatch `every_result_line_is_sentence_case`
+/// takes.
+#[test]
+fn every_rendered_label_is_title_case() {
+    let mut offenders = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        let mut labels: Vec<(usize, String)> = Vec::new();
+        // The single-key composers name their key first; a `.kv_block` /
+        // `.kv_rows` / `Table::new` argument holds a list of them.
+        for (at, _) in body.match_indices(".kv(") {
+            let rest = &body[at + ".kv(".len()..];
+            if let Some(lit) = rest
+                .trim_start()
+                .strip_prefix('"')
+                .and_then(|r| r.split('"').next())
+            {
+                labels.push((at, lit.to_string()));
+            }
+        }
+        for opener in ["KvPair::new(", "KvPair::annotated(", "KvPair::nested("] {
+            for (at, _) in body.match_indices(opener) {
+                let rest = &body[at + opener.len()..];
+                if let Some(lit) = rest
+                    .trim_start()
+                    .strip_prefix('"')
+                    .and_then(|r| r.split('"').next())
+                {
+                    labels.push((at, lit.to_string()));
+                }
+            }
+        }
+        for opener in [".push((", "kv_block(", "kv_rows(", "Table::new("] {
+            for (at, _) in body.match_indices(opener) {
+                let open = at + opener.len() - 1;
+                let (_, span) = bracketed_span(&body, open);
+                // Only the first literal of each tuple is a label; the value
+                // beside it is prose and keeps its own case.
+                for (rel, _) in span.match_indices('(').chain(span.match_indices('[')) {
+                    let after = &span[rel + 1..];
+                    if let Some(lit) = after
+                        .trim_start()
+                        .strip_prefix('"')
+                        .and_then(|r| r.split('"').next())
+                    {
+                        labels.push((open + rel, lit.to_string()));
+                    }
+                }
+                if opener == "Table::new(" {
+                    for (rel, _) in span.match_indices(", \"") {
+                        if let Some(lit) = span[rel + 3..].split('"').next() {
+                            labels.push((open + rel, lit.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+        for (at, label) in labels {
+            if label.is_empty() {
+                continue;
+            }
+            seen.push(label.clone());
+            if is_title_case(&label) {
+                continue;
+            }
+            let n = body[..at].matches('\n').count();
+            if lines[n].trim_start().starts_with("//")
+                || label_hatched(&lines, n, "// name-row-ok:")
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {label:?}", path.display(), n + 1));
+        }
+    }
+    // One witness per composer shape: a `.kv` key, a `KvPair`, a tuple pushed
+    // into a row vector, and a table header. A regex that quietly stopped
+    // matching one of the four would otherwise pass by finding nothing.
+    for witness in ["Scope", "Files Hash", "Drift Count", "Last Sync"] {
+        assert!(
+            seen.iter().any(|l| l == witness),
+            "the walk no longer reaches the composer that renders {witness:?} \
+             — it found {} labels",
+            seen.len()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a rendered label is title case (a label that names a thing takes a \
+         `// name-row-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        !is_title_case("Reconcile interval") && is_title_case("Reconcile Interval"),
+        "the case rule itself must separate the two spellings it exists to judge"
+    );
+}
+
 /// A command a message tells the reader to run is quoted in backticks, the one
 /// quoting that survives every surface: a hint, an error, a clap help line and
 /// the docs all render the same token, and the terminal theme paints it. Single
@@ -15278,16 +15459,17 @@ fn render_daemon_status_human_running_with_sources_and_update() {
     ));
     drop(printer);
     let output = cap.human();
-    assert!(output.contains("Daemon is running"), "got: {output}");
+    assert!(output.contains("Daemon running"), "got: {output}");
     assert!(output.contains("4242"), "PID missing: {output}");
     assert!(output.contains("3600s"), "uptime missing: {output}");
     assert!(
-        output.contains("Last reconcile"),
+        output.contains("Last Reconcile"),
         "last_reconcile row missing: {output}"
     );
-    assert!(
-        output.contains("Last sync"),
-        "last_sync row missing: {output}"
+    assert_eq!(
+        output.matches("Last Sync").count(),
+        1,
+        "the Sources table's column is the only sync label: {output}"
     );
     assert!(
         output.contains("Update available: 9.9.9"),
@@ -15322,15 +15504,14 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
     ));
     drop(printer);
     let output = cap.human();
-    assert!(output.contains("Daemon is running"));
-    // When last_reconcile / last_sync are None the rows are not printed
+    assert!(output.contains("Daemon running"));
     assert!(
-        !output.contains("Last reconcile"),
-        "Last reconcile row should be skipped: {output}"
+        !output.contains("Last Reconcile"),
+        "Last Reconcile row should be skipped: {output}"
     );
     assert!(
-        !output.contains("Last sync"),
-        "Last sync row should be skipped: {output}"
+        !output.contains("Last Sync"),
+        "with no sources there is no table to carry a sync label: {output}"
     );
     assert!(
         !output.contains("Update available"),

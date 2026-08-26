@@ -30,7 +30,7 @@ pub fn cmd_module_build(
         header.push(("Target".to_string(), t.to_string()));
     }
     if let Some(img) = base_image {
-        header.push(("Base image".to_string(), img.to_string()));
+        header.push(("Base Image".to_string(), img.to_string()));
     }
 
     let default_platform = cfgd_core::oci::current_platform();
@@ -498,7 +498,7 @@ mod tests {
         // Negative: when None was passed, the optional kv entries must be
         // absent from the header.
         assert!(
-            !output.contains("Base image"),
+            !output.contains("Base Image"),
             "Base image kv entry must be absent when base_image=None: {output}"
         );
     }

@@ -4,13 +4,13 @@ Module: dev-tools
   Directory      /etc/cfgd/modules/dev-tools
   Source         remote (locked)
   URL            git@example.com:cfgd/modules.git
-  Pinned ref     v1.2.3
+  Pinned Ref     v1.2.3
   Commit         deadbeef1234567890abcdef1234567890abcdef
   Integrity      sha256:cafef00d
   Status         Synced
-  Last applied   2026-05-14T10:00:00Z
-  Packages hash  abc123def456
-  Files hash     789ghi012jkl
+  Last Applied   2026-05-14T10:00:00Z
+  Packages Hash  abc123def456
+  Files Hash     789ghi012jkl
 
 Packages
   ✓ ripgrep → brew install ripgrep (14.1.0)

@@ -643,30 +643,30 @@ Windows is always system-scope; `--scope system` is a no-op there.
 
 ```console
 $ cfgd --scope system paths
-cfgd directories
-  scope  system
+cfgd Directories
+  Scope  system
 
 Config
-  dir     /etc/cfgd
-  source  default
-  file    /etc/cfgd/cfgd.yaml
+  Directory  /etc/cfgd
+  Source     default
+  File       /etc/cfgd/cfgd.yaml
 
 State
-  dir        /var/lib/cfgd
-  source     default
-  db         /var/lib/cfgd/state.db
-  applyLock  /var/lib/cfgd/apply.lock
+  Directory   /var/lib/cfgd
+  Source      default
+  Database    /var/lib/cfgd/state.db
+  Apply Lock  /var/lib/cfgd/apply.lock
 
 Cache
-  dir      /var/cache/cfgd
-  source   default
-  sources  /var/cache/cfgd/sources
-  modules  /var/cache/cfgd/modules
+  Directory  /var/cache/cfgd
+  Source     default
+  Sources    /var/cache/cfgd/sources
+  Modules    /var/cache/cfgd/modules
 
 Runtime
-  dir     /run/cfgd
-  source  default
-  socket  /run/cfgd/cfgd.sock
+  Directory  /run/cfgd
+  Source     default
+  Socket     /run/cfgd/cfgd.sock
 ```
 
 ### Overriding a directory root
@@ -710,30 +710,30 @@ have to guess where a host is reading or writing:
 
 ```console
 $ cfgd paths
-cfgd directories
-  scope  user
+cfgd Directories
+  Scope  user
 
 Config
-  dir     /home/you/.config/cfgd
-  source  default
-  file    /home/you/.config/cfgd/cfgd.yaml
+  Directory  /home/you/.config/cfgd
+  Source     default
+  File       /home/you/.config/cfgd/cfgd.yaml
 
 State
-  dir        /home/you/.local/state/cfgd
-  source     default
-  db         /home/you/.local/state/cfgd/state.db
-  applyLock  /home/you/.local/state/cfgd/apply.lock
+  Directory   /home/you/.local/state/cfgd
+  Source      default
+  Database    /home/you/.local/state/cfgd/state.db
+  Apply Lock  /home/you/.local/state/cfgd/apply.lock
 
 Cache
-  dir      /home/you/.cache/cfgd
-  source   default
-  sources  /home/you/.cache/cfgd/sources
-  modules  /home/you/.cache/cfgd/modules
+  Directory  /home/you/.cache/cfgd
+  Source     default
+  Sources    /home/you/.cache/cfgd/sources
+  Modules    /home/you/.cache/cfgd/modules
 
 Runtime
-  dir     /run/user/1000/cfgd
-  source  default
-  socket  /run/user/1000/cfgd/cfgd.sock
+  Directory  /run/user/1000/cfgd
+  Source     default
+  Socket     /run/user/1000/cfgd/cfgd.sock
 ```
 
 `cfgd paths -o json` (or `-o yaml`) emits the same data as a structured object

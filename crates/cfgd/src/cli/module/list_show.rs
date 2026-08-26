@@ -139,7 +139,7 @@ pub fn build_module_show_doc(
     if let Some(entry) = lock_entry {
         rows.push(KvPair::new("Source", "remote (locked)"));
         rows.push(KvPair::new("URL", &entry.url));
-        rows.push(KvPair::new("Pinned ref", &entry.pinned_ref));
+        rows.push(KvPair::new("Pinned Ref", &entry.pinned_ref));
         rows.push(KvPair::new("Commit", &entry.commit));
         rows.push(KvPair::new("Integrity", &entry.integrity));
     } else {
@@ -150,9 +150,9 @@ pub fn build_module_show_doc(
         // Recorded state only, same as the list table — see `status_cell`.
         let (word, role) = cfgd_core::state::module_status_display(&state_rec.status, false);
         rows.push(KvPair::role_valued("Status", word, role));
-        rows.push(KvPair::new("Last applied", &state_rec.installed_at));
-        rows.push(KvPair::new("Packages hash", &state_rec.packages_hash));
-        rows.push(KvPair::new("Files hash", &state_rec.files_hash));
+        rows.push(KvPair::new("Last Applied", &state_rec.installed_at));
+        rows.push(KvPair::new("Packages Hash", &state_rec.packages_hash));
+        rows.push(KvPair::new("Files Hash", &state_rec.files_hash));
     }
 
     let mut doc = Doc::new()

@@ -11043,6 +11043,120 @@ fn build_webhook_payload_accepts_empty_strings() {
 // helpers directly.
 // ===========================================================================
 
+/// Process-global capture of the daemon's log stream, cleared per reader.
+///
+/// A running daemon's lifecycle lines are tracing events — the log IS its
+/// output — and it emits them from tokio worker threads, which the thread-local
+/// [`capture_run_logs`] below does not reach. `set_global_default` may be
+/// called once per process, so the capture is installed once and shared;
+/// [`reset_daemon_log`] clears it and every reader holds
+/// `#[serial_test::serial(daemon_log)]`, so no two of them read each other's
+/// lines.
+static DAEMON_LOG: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+#[derive(Clone, Copy)]
+struct DaemonLogWriter;
+
+impl std::io::Write for DaemonLogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        DAEMON_LOG
+            .lock()
+            .expect("lock")
+            .push_str(&String::from_utf8_lossy(buf));
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for DaemonLogWriter {
+    type Writer = Self;
+    fn make_writer(&self) -> Self::Writer {
+        *self
+    }
+}
+
+/// Install the global capture if it is not already installed, and empty it.
+fn reset_daemon_log() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let subscriber = tracing_subscriber::fmt()
+            // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
+            .with_writer(DaemonLogWriter)
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .finish();
+        // Another test binary component may have claimed the slot; the capture
+        // is best-effort and its readers assert on what they find.
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    });
+    DAEMON_LOG.lock().expect("lock").clear();
+}
+
+/// Everything the daemon has logged since the last [`reset_daemon_log`].
+fn daemon_log() -> String {
+    DAEMON_LOG.lock().expect("lock").clone()
+}
+
+/// Poll the global daemon log until it contains `needle`, or panic once
+/// `timeout` elapses. The readiness observable a `run_daemon_with` test
+/// synchronizes on before driving an action that would otherwise race the
+/// daemon's own setup.
+async fn wait_for_daemon_log(needle: &str, timeout: std::time::Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let snapshot = daemon_log();
+        if snapshot.contains(needle) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out after {timeout:?} waiting for the daemon log to contain \
+             {needle:?}; got: {snapshot}"
+        );
+        // sleep-ok: this loop IS the observable — a bounded deadline poll, not a fixed-duration guess
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+/// Thread-local log capture: only events emitted on THIS thread inside `f`
+/// are seen. Sound because `run_scheduled_backups` is blocking and logs on
+/// the calling thread.
+fn capture_run_logs<F: FnOnce()>(f: F) -> String {
+    #[derive(Clone)]
+    struct LogCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for LogCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("lock").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+        type Writer = LogCapture;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
+        .with_writer(LogCapture(buf.clone()))
+        .with_max_level(tracing::Level::INFO)
+        // Styled field names would put escape sequences between `holder`
+        // and its value, so an assertion on the pair could not match.
+        .with_ansi(false)
+        .finish();
+    tracing::subscriber::with_default(subscriber, f);
+    // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
+    let bytes = buf.lock().expect("lock").clone();
+    String::from_utf8(bytes).expect("utf8 logs")
+}
+
 mod harness {
     use super::*;
     use std::path::Path;
@@ -11130,7 +11244,7 @@ mod harness {
 
     /// Poll the shared printer buffer until it contains `needle`, or panic once
     /// `timeout` elapses. Lets a `run_daemon_with` test synchronize on a daemon
-    /// lifecycle banner (e.g. "Daemon running") that is written from the spawned
+    /// printed line (e.g. "Reloading configuration") that is written from the spawned
     /// daemon task before driving an action that would otherwise race the
     /// daemon's own setup.
     async fn wait_for_buffer_contains(
@@ -11363,6 +11477,64 @@ spec:
 
     // ----- handle_file_change_tick tests -----
 
+    /// A watch event is named the way the file is named in the repository the
+    /// reader edits. The absolute path of a cache checkout names the same file
+    /// in a directory nobody opened.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
+    async fn a_watch_event_names_the_file_relative_to_the_config_dir() {
+        reset_daemon_log();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let path = tmp.path().join("modules/nvim/files/lua/config/options.lua");
+        runner::handle_file_change_tick(
+            &ctx,
+            &mut HashMap::new(),
+            &mut Default::default(),
+            StdDuration::from_millis(500),
+            path,
+        )
+        .await
+        .unwrap();
+
+        let logs = daemon_log();
+        assert!(
+            logs.contains("watch: config changed modules/nvim/files/lua/config/options.lua"),
+            "got: {logs}"
+        );
+    }
+
+    /// The `local` source's clone IS the config directory, so a pull rewrites
+    /// files under the watch and notify reports every one of them. Those events
+    /// describe the pull `sync: pulled` already reported; repeating them turns
+    /// one line into a screenful.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
+    async fn a_watch_event_a_pull_explains_stays_off_the_info_stream() {
+        reset_daemon_log();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let mut echoes = runner::PullEchoes::default();
+        echoes.note_pull(tmp.path());
+        runner::handle_file_change_tick(
+            &ctx,
+            &mut HashMap::new(),
+            &mut echoes,
+            StdDuration::from_millis(500),
+            tmp.path().join("modules/nvim/init.lua"),
+        )
+        .await
+        .unwrap();
+
+        let logs = daemon_log();
+        assert!(
+            !logs.contains("watch: config changed"),
+            "a pull's own rewrite is folded into the pull: {logs}"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn file_change_tick_records_path_in_debounce_map() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -11373,6 +11545,7 @@ spec:
         let res = runner::handle_file_change_tick(
             &ctx,
             &mut last_change,
+            &mut Default::default(),
             StdDuration::from_millis(500),
             path.clone(),
         )
@@ -11391,13 +11564,25 @@ spec:
         // 60s debounce window — large enough that any plausible parallel-test
         // scheduling jitter still keeps both calls inside the window.
         let debounce = StdDuration::from_secs(60);
-        runner::handle_file_change_tick(&ctx, &mut last_change, debounce, path.clone())
-            .await
-            .unwrap();
+        runner::handle_file_change_tick(
+            &ctx,
+            &mut last_change,
+            &mut Default::default(),
+            debounce,
+            path.clone(),
+        )
+        .await
+        .unwrap();
         let first_ts = *last_change.get(&path).unwrap();
-        runner::handle_file_change_tick(&ctx, &mut last_change, debounce, path.clone())
-            .await
-            .unwrap();
+        runner::handle_file_change_tick(
+            &ctx,
+            &mut last_change,
+            &mut Default::default(),
+            debounce,
+            path.clone(),
+        )
+        .await
+        .unwrap();
         let second_ts = *last_change.get(&path).unwrap();
         assert_eq!(
             first_ts, second_ts,
@@ -11418,6 +11603,7 @@ spec:
         let res = runner::handle_file_change_tick(
             &ctx,
             &mut last_change,
+            &mut Default::default(),
             StdDuration::from_millis(0), // disable debounce
             path,
         )
@@ -11442,6 +11628,7 @@ spec:
         runner::handle_file_change_tick(
             &ctx,
             &mut last_change,
+            &mut Default::default(),
             StdDuration::from_millis(0),
             source_path,
         )
@@ -11461,6 +11648,7 @@ spec:
         runner::handle_file_change_tick(
             &ctx,
             &mut last_change,
+            &mut Default::default(),
             StdDuration::from_millis(0),
             managed.clone(),
         )
@@ -11564,7 +11752,9 @@ spec:
         let _g = crate::with_test_home_guard(tmp.path());
         let (ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
         let mut tasks: Vec<SyncTask> = Vec::new();
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
         let st = state.lock().await;
         assert!(st.last_sync.is_none());
     }
@@ -11586,7 +11776,9 @@ spec:
             require_signed_commits: false,
             allow_unsigned: true,
         }];
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
         assert_eq!(tasks[0].last_synced, Some(recent));
     }
 
@@ -11631,7 +11823,9 @@ spec:
             require_signed_commits: false,
             allow_unsigned: true,
         }];
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
         assert!(
             work_dir.join("NEWFILE").exists(),
             "the fixture must really have pulled something"
@@ -12751,7 +12945,9 @@ spec:
             require_signed_commits: false,
             allow_unsigned: true,
         }];
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
         assert!(tasks[0].last_synced.is_some());
         let st = state.lock().await;
         assert!(st.last_sync.is_some());
@@ -12776,7 +12972,9 @@ spec:
             require_signed_commits: false,
             allow_unsigned: true,
         }];
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
         assert!(tasks[0].last_synced.is_some());
     }
 
@@ -12799,7 +12997,9 @@ spec:
             require_signed_commits: false,
             allow_unsigned: true,
         }];
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
         assert!(tasks[0].last_synced.is_some());
     }
 
@@ -12891,7 +13091,9 @@ spec:
         });
 
         let mut tasks = vec![sync_task_with_auto_apply(work, true)];
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
 
         assert!(
             target.exists(),
@@ -12919,7 +13121,9 @@ spec:
         });
 
         let mut tasks = vec![sync_task_with_auto_apply(work, false)];
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
 
         assert!(
             !target.exists(),
@@ -13027,7 +13231,9 @@ spec:
         });
 
         let mut tasks = vec![sync_task_with_auto_apply(work, true)];
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
 
         assert!(
             kept.exists(),
@@ -13096,7 +13302,9 @@ spec:
             require_signed_commits: false,
             allow_unsigned: true,
         }];
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
         assert!(tasks[0].last_synced.is_some(), "last_synced should advance");
         let st = state.lock().await;
         assert!(st.last_sync.is_some(), "state.last_sync should be set");
@@ -14020,7 +14228,7 @@ spec: {}
             webhook_url: None,
         };
         let lines = super::super::format_interval_lines(&parsed, None, 0, None);
-        assert_eq!(lines, vec!["reconcile=300s".to_string()]);
+        assert_eq!(lines, vec!["reconcile every 300s".to_string()]);
     }
 
     #[test]
@@ -14040,8 +14248,8 @@ spec: {}
         assert_eq!(
             lines,
             vec![
-                "reconcile=60s".to_string(),
-                "sync=120s (pull=true, push=false)".to_string(),
+                "reconcile every 60s".to_string(),
+                "sync every 120s (pull only)".to_string(),
             ]
         );
     }
@@ -14067,24 +14275,45 @@ spec: {}
         );
         assert_eq!(
             lines,
-            vec!["reconcile=30s".to_string(), "compliance=900s".to_string()]
+            vec![
+                "reconcile every 30s".to_string(),
+                "compliance every 900s".to_string()
+            ]
         );
     }
 
     // ----- print_startup_banner tests -----
 
+    /// The banner is a log event, not a printed block: it names the health
+    /// endpoint and the cadences on the same stream every later tick writes to.
+    /// The one thing that stays a `Printer` line is the Ctrl+C hint, and a
+    /// capture printer has no interactive stdin, so it must not appear here.
     #[test]
-    fn print_startup_banner_emits_health_intervals_and_run_hint() {
+    fn print_startup_banner_logs_health_and_cadences() {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        super::super::print_startup_banner(
-            &printer,
-            &["reconcile=30s".to_string(), "compliance=900s".to_string()],
-            "/tmp/cfgd-banner-test.sock",
+        let logs = capture_run_logs(|| {
+            super::super::print_startup_banner(
+                &printer,
+                &[
+                    "reconcile every 30s".to_string(),
+                    "compliance every 900s".to_string(),
+                ],
+                "/tmp/cfgd-banner-test.sock",
+            );
+        });
+        assert!(
+            logs.contains("daemon: health endpoint at /tmp/cfgd-banner-test.sock"),
+            "got: {logs}"
+        );
+        assert!(
+            logs.contains("daemon: running — reconcile every 30s, compliance every 900s"),
+            "got: {logs}"
         );
         let out = crate::test_helpers::captured_text(&buf);
-        assert!(out.contains("Health: /tmp/cfgd-banner-test.sock"));
-        assert!(out.contains("Intervals: reconcile=30s, compliance=900s"));
-        assert!(out.contains("Daemon running"));
+        assert!(
+            !out.contains("Ctrl+C"),
+            "the hint names a key nobody can press without a terminal: {out}"
+        );
     }
 
     // ----- run_startup_checkin_blocking tests -----
@@ -14397,7 +14626,9 @@ spec: {}
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
     async fn run_daemon_with_external_triggers_shuts_down_cleanly() {
+        reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
@@ -14418,7 +14649,7 @@ spec: {}
 
         // Wait for the startup banner instead of guessing when the loop has
         // entered its select! arm.
-        wait_for_buffer_contains(&buf, "Daemon running", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log("daemon: running", StdDuration::from_secs(5)).await;
         // Send shutdown
         senders.shutdown_tx.send(()).unwrap();
 
@@ -14433,16 +14664,16 @@ spec: {}
 
         // Banner emitted by print_startup_banner
         let out = crate::test_helpers::captured_text(&buf);
+        let logs = daemon_log();
         assert!(
-            out.contains("Daemon running"),
-            "banner should announce running state, got: {}",
-            out
+            logs.contains("daemon: running"),
+            "the banner should announce the running state, got: {logs}"
         );
         assert!(
-            out.contains("Daemon stopped"),
-            "shutdown should print stopped message, got: {}",
-            out
+            logs.contains("daemon: stopped"),
+            "shutdown should log the stopped state, got: {logs}"
         );
+        let _ = out;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -14533,7 +14764,9 @@ spec: {}
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
     async fn run_daemon_with_processes_sighup_tick_and_reloads_intervals() {
+        reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         // Start with the happy-path config (no daemon spec).
@@ -14554,7 +14787,7 @@ spec: {}
         ));
 
         // Wait until the daemon has finished its pre-loop setup — signalled by
-        // the "Daemon running" banner — before rewriting the config. Setup
+        // the "daemon: running" banner — before rewriting the config. Setup
         // calls `config::load_config(config_path)` (build_pre_loop_setup); on
         // Windows a `std::fs::write` that truncates the same file *while* that
         // read is in flight raises a sharing violation (os error 32), which
@@ -14563,7 +14796,7 @@ spec: {}
         // POSIX tolerates the concurrent read/truncate, so the race only ever
         // bit Windows CI. Sequencing the rewrite after setup removes the race
         // on every platform.
-        wait_for_buffer_contains(&buf, "Daemon running", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log("daemon: running", StdDuration::from_secs(5)).await;
 
         // Rewrite the config to introduce daemon reconcile interval.
         std::fs::write(
@@ -14786,8 +15019,8 @@ spec: {}
         assert_eq!(
             lines,
             vec![
-                "reconcile=60s".to_string(),
-                "sync=180s (pull=false, push=true)".to_string(),
+                "reconcile every 60s".to_string(),
+                "sync every 180s (push only)".to_string(),
             ]
         );
     }
@@ -14814,9 +15047,9 @@ spec: {}
         assert_eq!(
             lines,
             vec![
-                "reconcile=45s".to_string(),
-                "sync=90s (pull=true, push=true)".to_string(),
-                "compliance=600s".to_string(),
+                "reconcile every 45s".to_string(),
+                "sync every 90s (pull and push)".to_string(),
+                "compliance every 600s".to_string(),
             ]
         );
     }
@@ -15015,7 +15248,9 @@ spec: {}
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
     async fn run_daemon_with_production_triggers_progresses_past_setup_then_shutsdown_on_sigterm() {
+        reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
@@ -15048,7 +15283,7 @@ spec: {}
         // buffer means the signal raised below is delivered to the daemon
         // rather than to the default disposition that would kill this test
         // process.
-        wait_for_buffer_contains(&buf, "Daemon running", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log("daemon: running", StdDuration::from_secs(5)).await;
 
         // SIGTERM drives the production wait_for_shutdown task which sends on
         // the shutdown oneshot, exiting the loop cleanly.
@@ -15065,7 +15300,7 @@ spec: {}
 
         let out = crate::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("Daemon stopped"),
+            daemon_log().contains("daemon: stopped"),
             "cleanup path must run, got: {}",
             out
         );
@@ -15256,7 +15491,9 @@ spec: {}
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
     async fn snapshot_clean_reconcile_cycle() {
+        reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
@@ -15283,7 +15520,7 @@ spec: {}
             env!("CARGO_PKG_VERSION"),
         ));
 
-        wait_for_buffer_contains(&buf, "Daemon running", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log("daemon: running", StdDuration::from_secs(5)).await;
         senders.reconcile_tx.send(()).await.unwrap();
         // sleep-ok: a clean reconcile tick prints nothing (see clean_reconcile_cycle.txt) — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(150)).await;
@@ -15305,7 +15542,9 @@ spec: {}
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
     async fn snapshot_drift_event() {
+        reset_daemon_log();
         // A file-change tick walks handle_file_change_tick → drift recording →
         // notifier path. The notifier writes via tracing/stdout, not through the
         // loop's Printer, so this snapshot is shape-identical to the clean cycle.
@@ -15338,7 +15577,7 @@ spec: {}
             env!("CARGO_PKG_VERSION"),
         ));
 
-        wait_for_buffer_contains(&buf, "Daemon running", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log("daemon: running", StdDuration::from_secs(5)).await;
         senders.file_tx.send(config_path).await.unwrap();
         // sleep-ok: a drift-recording file tick prints nothing to the loop's Printer (see drift_event.txt) — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(80)).await;
@@ -18556,9 +18795,9 @@ mod backup_timers {
             webhook_url: None,
         };
         let clean = crate::daemon::format_interval_lines(&parsed, None, 2, None);
-        assert!(clean.iter().any(|l| l == "backups=2 scheduled"));
+        assert!(clean.iter().any(|l| l == "2 scheduled backups"));
 
-        // "backups=2 scheduled" alone is a lie when a source's third one is
+        // "2 scheduled backups" alone is a lie when a source's third one is
         // missing from the set — and the two degraded causes need different
         // remedies, so the banner names which one it hit.
         let sources = crate::daemon::format_interval_lines(
@@ -18570,7 +18809,7 @@ mod backup_timers {
         assert!(
             sources
                 .iter()
-                .any(|l| l == "backups=2 scheduled (source composition unavailable)"),
+                .any(|l| l == "2 scheduled backups (source composition unavailable)"),
             "got: {sources:?}"
         );
 
@@ -18583,7 +18822,7 @@ mod backup_timers {
         assert!(
             profile
                 .iter()
-                .any(|l| l == "backups=0 scheduled (profile unresolved)"),
+                .any(|l| l == "0 scheduled backups (profile unresolved)"),
             "a profile that would not resolve must not be reported as a source \
              problem, got: {profile:?}"
         );
@@ -18597,7 +18836,7 @@ mod backup_timers {
         assert!(
             unreadable_config
                 .iter()
-                .any(|l| l == "backups=0 scheduled (config unreadable)"),
+                .any(|l| l == "0 scheduled backups (config unreadable)"),
             "a top-level config that would not parse must render its own label, \
              not borrow the profile-unresolved or source-composition wording, \
              got: {unreadable_config:?}"
@@ -18783,43 +19022,6 @@ mod backup_timers {
         );
     }
 
-    /// Thread-local log capture: only events emitted on THIS thread inside `f`
-    /// are seen. Sound because `run_scheduled_backups` is blocking and logs on
-    /// the calling thread.
-    fn capture_run_logs<F: FnOnce()>(f: F) -> String {
-        #[derive(Clone)]
-        struct LogCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-        impl std::io::Write for LogCapture {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().expect("lock").extend_from_slice(buf);
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
-            type Writer = LogCapture;
-            fn make_writer(&'a self) -> Self::Writer {
-                self.clone()
-            }
-        }
-
-        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let subscriber = tracing_subscriber::fmt()
-            // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
-            .with_writer(LogCapture(buf.clone()))
-            .with_max_level(tracing::Level::INFO)
-            // Styled field names would put escape sequences between `holder`
-            // and its value, so an assertion on the pair could not match.
-            .with_ansi(false)
-            .finish();
-        tracing::subscriber::with_default(subscriber, f);
-        // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
-        let bytes = buf.lock().expect("lock").clone();
-        String::from_utf8(bytes).expect("utf8 logs")
-    }
-
     /// A unit skipped for a held lock must say so in the journal — the only
     /// view an operator has of a background fire. The reports the run returns
     /// carry the holder per unit; a `latest_backup_run` re-read cannot, because
@@ -18875,7 +19077,7 @@ mod backup_timers {
             "a refused unit must be logged as refused: {logs}"
         );
         assert!(
-            logs.contains("holder="),
+            logs.contains("already running under"),
             "the refusal must name who holds the lock: {logs}"
         );
         assert!(
@@ -19475,4 +19677,231 @@ async fn a_re_pointed_source_origin_re_derives() {
         2,
         "a re-pointed origin must re-compose"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The daemon's log dialect: `HH:MM:SS  INFO <subsystem>: <sentence>`.
+//
+// `output::tests::fences::every_daemon_info_event_names_its_subsystem` holds
+// the SHAPE of every event in the crate. These hold the WORDING of the handful
+// a person actually reads a running daemon by, driven through the real handlers
+// rather than asserted against a format string.
+// ---------------------------------------------------------------------------
+
+mod log_dialect {
+    use super::*;
+    use crate::test_helpers::NoopDaemonHooks as NoopHooks;
+
+    fn min_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        (tmp, config_path, state_dir)
+    }
+
+    async fn run_tick(config_path: &Path, state_dir: &Path, module_filter: Option<&'static str>) {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let sd = state_dir.to_path_buf();
+        let cp = config_path.to_path_buf();
+        crate::spawn_blocking_with_test_home(move || {
+            let printer = test_printer();
+            handle_reconcile(
+                &cp,
+                None,
+                ReconcileCtx {
+                    state: &state,
+                    notifier: &notifier,
+                    notify_on_drift: false,
+                    hooks: &NoopHooks,
+                    state_dir_override: Some(&sd),
+                    explicit_state_dir: true,
+                    printer: &printer,
+                    module_filter,
+                    auto_apply_override: Some(true),
+                    drift_policy_override: Some(config::DriftPolicy::Auto),
+                    scope: crate::Scope::User,
+                    abort: never_abort(),
+                    cache: fresh_tick_cache(),
+                },
+            );
+        })
+        .await
+        .unwrap();
+    }
+
+    /// A tick that ran and found nothing still says so. Four heartbeats and no
+    /// completion is what a reader of the old log got, and it cannot be told
+    /// apart from a tick that hung — so the completion is the announcement and
+    /// the start went to `debug!`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
+    async fn a_tick_with_nothing_to_do_logs_its_completion() {
+        reset_daemon_log();
+        let (tmp, config_path, state_dir) = min_fixture();
+        let _home = crate::with_test_home_guard(tmp.path());
+        run_tick(&config_path, &state_dir, None).await;
+
+        let logs = daemon_log();
+        assert!(
+            logs.contains("reconcile: complete — nothing to do"),
+            "got: {logs}"
+        );
+        assert!(
+            !logs.contains("running reconciliation check"),
+            "the start heartbeat is a debug detail, not an event: {logs}"
+        );
+    }
+
+    /// The counts on the log line are the counts on the rollup, because both
+    /// read `reconciler::outcome_counts` off the same tally. A hand-built
+    /// `succeeded`/`failed` pair counted a skip as a success, which is how the
+    /// two surfaces came to describe one tick differently.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
+    async fn an_applying_tick_logs_the_counts_its_rollup_shows() {
+        reset_daemon_log();
+        let (tmp, config_path, state_dir) = min_fixture();
+        let _home = crate::with_test_home_guard(tmp.path());
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - mymod\n",
+        )
+        .unwrap();
+        let module_dir = tmp.path().join("modules").join("mymod");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(module_dir.join("app.conf"), "from the module\n").unwrap();
+        let target = tmp.path().join("app.conf");
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mymod\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&target)
+            ),
+        )
+        .unwrap();
+
+        run_tick(&config_path, &state_dir, None).await;
+
+        let logs = daemon_log();
+        assert!(
+            logs.contains("reconcile: complete — 1 action succeeded"),
+            "got: {logs}"
+        );
+        assert!(
+            !logs.contains("auto-apply complete"),
+            "the apply's outcome is the tick's completion line, said once: {logs}"
+        );
+    }
+
+    /// A per-module tick names its module: both cadences write to one log, and
+    /// a bare completion cannot say which of them converged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
+    async fn a_per_module_tick_names_the_module_it_converged() {
+        reset_daemon_log();
+        let (tmp, config_path, state_dir) = min_fixture();
+        let _home = crate::with_test_home_guard(tmp.path());
+        run_tick(&config_path, &state_dir, Some("nvim")).await;
+
+        let logs = daemon_log();
+        assert!(
+            logs.contains("reconcile: complete — module nvim: nothing to do"),
+            "got: {logs}"
+        );
+    }
+
+    /// `sync: pulled new changes from remote from=9777c7d to=95f300a` names no
+    /// source, stops mid-thought and then repeats itself in a second grammar.
+    /// The sentence carries the source and both ends of the move.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
+    async fn a_pull_names_the_source_and_both_ends_of_the_move() {
+        reset_daemon_log();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bare_dir = tmp.path().join("bare.git");
+        let work_dir = tmp.path().join("work");
+        let pusher_dir = tmp.path().join("pusher");
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "cfgd-test").unwrap();
+            config.set_str("user.email", "test@cfgd.io").unwrap();
+        }
+        std::fs::write(work_dir.join("README"), "v1\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = repo.signature().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+            let mut remote = repo.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+        let from = repo.head().unwrap().peel_to_commit().unwrap().id();
+
+        let pusher = git2::Repository::clone(bare_dir.to_str().unwrap(), &pusher_dir).unwrap();
+        {
+            let mut config = pusher.config().unwrap();
+            config.set_str("user.name", "cfgd-pusher").unwrap();
+            config.set_str("user.email", "pusher@cfgd.io").unwrap();
+        }
+        std::fs::write(pusher_dir.join("NEWFILE"), "synced\n").unwrap();
+        let to = {
+            let mut index = pusher.index().unwrap();
+            index.add_path(Path::new("NEWFILE")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = pusher.find_tree(tree_id).unwrap();
+            let sig = pusher.signature().unwrap();
+            let parent = pusher.head().unwrap().peel_to_commit().unwrap();
+            let id = pusher
+                .commit(Some("HEAD"), &sig, &sig, "add newfile", &tree, &[&parent])
+                .unwrap();
+            let mut remote = pusher.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+            id
+        };
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        assert!(handle_sync(&work_dir, true, false, "local", &state, false, false).await);
+
+        let expected = format!(
+            "sync: pulled local {} → {}",
+            crate::short_commit(&from.to_string()),
+            crate::short_commit(&to.to_string())
+        );
+        let logs = daemon_log();
+        assert!(logs.contains(&expected), "want {expected:?}, got: {logs}");
+        assert!(
+            !logs.contains("from="),
+            "the operands belong in the sentence, not in a field tail: {logs}"
+        );
+    }
 }

@@ -338,7 +338,7 @@ impl TickCache {
                 HeldFileVerdict::Same => {}
                 HeldFileVerdict::Gone => {
                     tracing::warn!(
-                        "state database moved or was replaced — reopening the daemon's connection"
+                        "daemon: state database moved or was replaced — reopening the connection"
                     );
                     *slot = None;
                 }
@@ -351,7 +351,7 @@ impl TickCache {
                     if let Some(reason) = reason {
                         tracing::warn!(
                             error = %reason,
-                            "cannot inspect the state database file — keeping the open connection"
+                            "daemon: cannot inspect the state database file — keeping the open connection"
                         );
                     }
                 }

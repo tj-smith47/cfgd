@@ -967,7 +967,13 @@ pub fn align_width(phase: &Phase) -> usize {
 /// rendering of what a run's actions came to, so no closing line can claim a
 /// skipped action as a success. Silent about skips when there were none: a
 /// clean run's line does not name outcomes that did not occur.
-fn outcome_counts(tally: &RunTally) -> String {
+///
+/// Public because the daemon's `reconcile: complete — …` log line accounts for
+/// the same run the rollup above it does, and a tick whose log and whose
+/// on-screen rollup disagree about how many actions succeeded is two answers to
+/// one question. Take it over a hand-built `succeeded`/`failed` pair: those
+/// counted a skip as a success, which is the whole reason this exists.
+pub fn outcome_counts(tally: &RunTally) -> String {
     // A run whose every action was skipped says so outright: "0 actions
     // succeeded, 1 skipped" leads with a count of nothing and reads as a
     // shortfall the run does not have.

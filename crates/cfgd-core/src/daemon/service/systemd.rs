@@ -132,7 +132,7 @@ pub(crate) fn install_systemd_service(
         message: format!("write unit file: {}", e),
     })?;
 
-    tracing::info!(path = %unit_path.posix(), "installed systemd service");
+    tracing::info!("daemon: installed systemd service at {}", unit_path.posix());
     Ok(())
 }
 
@@ -382,7 +382,7 @@ pub(crate) fn uninstall_systemd_service(printer: &Printer, scope: crate::Scope) 
         std::fs::remove_file(&unit_path).map_err(|e| DaemonError::ServiceInstallFailed {
             message: format!("remove unit file: {}", e),
         })?;
-        tracing::info!(path = %unit_path.posix(), "removed systemd service");
+        tracing::info!("daemon: removed systemd service at {}", unit_path.posix());
     }
 
     // Reload AFTER removal so systemd drops the now-deleted unit from its view.

@@ -70,7 +70,7 @@ pub use run::{
     ApplyRun, BACKUPS_PHASE_LABEL, ComposedSource, Confirm, HOOKS_PHASE_LABEL, MSG_NOTHING_TO_DO,
     PhaseCoverage, PseudoPhase, RunContext, RunDisposition, RunExecutor, RunTally, RunTitle,
     ScopedGroup, ScopedPhase, align_width, align_width_of, in_scope_tree, nothing_to_do_verdict,
-    pseudo_phase, render_apply_result, render_plan_tree, render_run_rollup,
+    outcome_counts, pseudo_phase, render_apply_result, render_plan_tree, render_run_rollup,
 };
 pub use sidecar::{CFGD_BACKUP_SUFFIX, SidecarOutcome, backup_file, cfgd_backup_path};
 pub use types::{

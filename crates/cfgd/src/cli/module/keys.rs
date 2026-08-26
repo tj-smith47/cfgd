@@ -55,8 +55,8 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
         let priv_path = format!("{}/cosign.key", dir);
         let pub_path = format!("{}/cosign.pub", dir);
         printer.kv_block([
-            ("Private key", priv_path.clone()),
-            ("Public key", pub_path.clone()),
+            ("Private Key", priv_path.clone()),
+            ("Public Key", pub_path.clone()),
         ]);
         printer.hint("Sign with: cfgd module push --sign --key cosign.key ...");
         printer.hint("Verify with: cosign verify --key cosign.pub <artifact>");

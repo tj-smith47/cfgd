@@ -38,7 +38,7 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
 
         if let Some(ref sec) = mods.security {
             doc = doc.section("Module Security", |s| {
-                s.kv("Require signatures", yes_no(Some(sec.require_signatures)))
+                s.kv("Require Signatures", yes_no(Some(sec.require_signatures)))
             });
         }
     }
@@ -49,8 +49,8 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
             if let Some(ref reconcile) = daemon.reconcile {
                 s = s.subsection("Reconcile", |sub| {
                     sub.kv("Interval", &reconcile.interval)
-                        .kv("On change", yes_no(Some(reconcile.on_change)))
-                        .kv("Auto apply", yes_no(Some(reconcile.auto_apply)))
+                        .kv("On Change", yes_no(Some(reconcile.on_change)))
+                        .kv("Auto Apply", yes_no(Some(reconcile.auto_apply)))
                 });
             }
             if let Some(ref sync) = daemon.sync {

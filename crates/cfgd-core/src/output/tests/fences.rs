@@ -119,6 +119,50 @@ fn every_subscriber_writes_through_a_folding_writer() {
     );
 }
 
+/// The marker that exempts one wiring from the fence below.
+const UNSTAMPED_HATCH: &str = "unstamped-log-ok:";
+
+/// A log line with no clock on it cannot answer the question a log exists to
+/// answer.
+///
+/// Both cfgd entry points used to drop the stamp — the justification being that
+/// a one-shot command's warning is read the instant it appears. But the same
+/// subscriber serves `cfgd daemon run >> daemon.log`, whose whole subject is a
+/// cadence: a reconcile every 30s and a sync every 5s, in a file where no
+/// elapsed time was representable and a completed tick could not be told from a
+/// hung one. The two are one wiring, so the stamp is not optional on either;
+/// [`super::super::LocalTimeOfDay`] is the one both take.
+///
+/// The fence is on `.without_time()` rather than on the presence of a timer:
+/// every `tracing_subscriber::fmt` wiring stamps by default, so dropping the
+/// stamp takes a deliberate call, and that call is the whole population. Hatch
+/// with `// unstamped-log-ok: <why>` for a sink whose own envelope already
+/// carries the time.
+#[test]
+fn no_subscriber_drops_its_timestamp() {
+    let mut offenders = Vec::new();
+    for path in workspace_rust_files() {
+        if path.ends_with(Path::new("output/tests/fences.rs")) {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<&str> = body.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if code_half(line).contains("without_time(") && !hatched(&lines, i, UNSTAMPED_HATCH) {
+                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a subscriber that drops its timestamp leaves a log that cannot date its \
+         own events; take output::LocalTimeOfDay (or carry `// {UNSTAMPED_HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// Whether `code` opens a `tracing_subscriber::fmt` subscriber or layer. Lists
 /// every construction spelling `tracing-subscriber`'s public API and this
 /// workspace's own audits have turned up so far — not a claim of exhaustive
@@ -768,4 +812,165 @@ fn the_summary_matcher_finds_the_reads_that_do_exist() {
         "the fallback's own file must contain the reads this fence refuses \
          elsewhere; if it does not, the fence guards nothing"
     );
+}
+
+/// The subsystems a daemon log line may name. Every info-level event on the
+/// daemon's stream opens with one of these, so a reader scanning a journal can
+/// tell at a glance which of the daemon's four concurrent concerns is speaking.
+const DAEMON_SUBSYSTEMS: &[&str] = &["daemon: ", "sync: ", "reconcile: ", "watch: "];
+
+/// The daemon's log IS its output — under systemd or launchd it is the only
+/// surface a running daemon has — so the stream is held to the same dialect a
+/// terminal render is: `HH:MM:SS  INFO <subsystem>: <sentence>`.
+///
+/// Two halves, and the second is the one that keeps being re-broken. A
+/// subsystem prefix makes a journal scannable; `key=value` fields do not belong
+/// on an info line at all. `sync: pulled new changes from remote from=9777c7d
+/// to=95f300a` is a sentence that stops mid-thought and then repeats itself in
+/// a second grammar — the value the reader wants is in the tail, in the
+/// notation, unpunctuated. Fields are a debugging detail, and `debug!` is where
+/// a debugging detail goes; the info line spells its operands into the
+/// sentence.
+///
+/// Scoped to `daemon/`, because that is exactly the directory `audit.sh`
+/// exempts from the workspace-wide `tracing::info!` ban.
+#[test]
+fn every_daemon_info_event_names_its_subsystem() {
+    let mut offenders = Vec::new();
+    let mut seen = 0usize;
+    for path in workspace_rust_files() {
+        if !path.components().any(|c| c.as_os_str() == "daemon")
+            || path.ends_with(Path::new("tests.rs"))
+        {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (line_no, args) in macro_invocations(&body, "tracing::info!(") {
+            seen += 1;
+            let where_ = format!("{}:{}", path.display(), line_no);
+            // tracing puts fields before the format string, so an info call
+            // whose first argument is not the literal is carrying fields.
+            if !args.starts_with('"') {
+                offenders.push(format!("{where_}: fields precede the message: {args}"));
+                continue;
+            }
+            match first_string_literal(&args) {
+                None => offenders.push(format!("{where_}: no message literal: {args}")),
+                Some(message) if !DAEMON_SUBSYSTEMS.iter().any(|p| message.starts_with(p)) => {
+                    offenders.push(format!("{where_}: unprefixed message {message:?}"));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    assert!(seen > 20, "the walk found only {seen} daemon info events");
+    assert!(
+        offenders.is_empty(),
+        "a daemon info line is `<subsystem>: <sentence>` with its operands spelled \
+         into the sentence — one of {DAEMON_SUBSYSTEMS:?}, and no `key = value` \
+         fields (move those to a `debug!` beside it):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every invocation of `name` in `body`, as `(1-based line, argument text)`.
+///
+/// Paren-matched across lines and literal-aware, because rustfmt splits a long
+/// macro call over five lines and a line-scoped read would see the name and its
+/// message as unrelated.
+fn macro_invocations(body: &str, name: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(rel) = body[search_from..].find(name) {
+        let start = search_from + rel + name.len();
+        search_from = start;
+        // The line number is the count of newlines before the call.
+        let line = body[..start].matches('\n').count() + 1;
+        let mut depth = 1usize;
+        let mut arg = String::new();
+        let mut in_str = false;
+        let mut escaped = false;
+        for ch in body[start..].chars() {
+            if in_str {
+                arg.push(ch);
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_str = false;
+                }
+                continue;
+            }
+            match ch {
+                '"' => {
+                    in_str = true;
+                    arg.push(ch);
+                }
+                '(' => {
+                    depth += 1;
+                    arg.push(ch);
+                }
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    arg.push(ch);
+                }
+                _ => arg.push(ch),
+            }
+        }
+        out.push((line, arg.split_whitespace().collect::<Vec<_>>().join(" ")));
+    }
+    out
+}
+
+/// The first double-quoted literal in `args`, unescaped only enough to read its
+/// opening words.
+fn first_string_literal(args: &str) -> Option<String> {
+    let start = args.find('"')? + 1;
+    let mut out = String::new();
+    let mut escaped = false;
+    for ch in args[start..].chars() {
+        if escaped {
+            out.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            return Some(out);
+        } else {
+            out.push(ch);
+        }
+    }
+    None
+}
+
+/// The parser behind the fence above, so it cannot pass by never matching. A
+/// fielded call and a message-first call are the two shapes it has to tell
+/// apart, and a rustfmt-split call is the shape a line-scoped read gets wrong.
+#[test]
+fn the_daemon_log_dialect_matcher_reads_both_call_shapes() {
+    let body = "fn f() {\n    tracing::info!(\n        \"sync: pulled {} {}\",\n        \
+                a,\n        b\n    );\n    tracing::info!(from = %x, \"pulled\");\n}\n";
+    let calls = macro_invocations(body, "tracing::info!(");
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[0].0, 2,
+        "the split call is reported at its opening line"
+    );
+    assert!(calls[0].1.starts_with('"'), "{:?}", calls[0].1);
+    assert_eq!(
+        first_string_literal(&calls[0].1).as_deref(),
+        Some("sync: pulled {} {}")
+    );
+    assert!(
+        !calls[1].1.starts_with('"'),
+        "a fielded call is what the fence refuses: {:?}",
+        calls[1].1
+    );
+    assert_eq!(first_string_literal(&calls[1].1).as_deref(), Some("pulled"));
 }

@@ -599,7 +599,7 @@ distinguishable from its `postApply` work without opening the module:
 ```
 Status: nvim
   Status        Drifted
-  Last applied  2026-08-21T18:58:02Z
+  Last Applied  2026-08-21T18:58:02Z
   Packages      27
   Files         6
   Env           3
@@ -647,7 +647,7 @@ row for the thing it was found on:
 ```
 Status: nvim
   Status        Drifted
-  Last applied  2026-08-21T18:58:02Z
+  Last Applied  2026-08-21T18:58:02Z
 
 Installed Packages
   ✓ neovim  — brew

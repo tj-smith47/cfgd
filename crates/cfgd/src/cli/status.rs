@@ -1021,7 +1021,7 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView) ->
     let (state_word, role) = output.state_display();
     let mut rows = vec![KvPair::role_valued("Status", state_word, role)];
     if let Some(last) = &output.last_applied {
-        rows.push(KvPair::new("Last applied", last));
+        rows.push(KvPair::new("Last Applied", last));
     }
     // Only an isolated run's scope: `recorded_scope_row` answers `Profile` for
     // a profile-wide apply, which belongs to `cfgd status` rather than to one

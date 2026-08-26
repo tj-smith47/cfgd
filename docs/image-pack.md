@@ -30,9 +30,9 @@ $ cfgd image pack ./out registry.example.com/myapp/server:v1.4.0 \
 Pack Image
   Directory  ./out
   Artifact   registry.example.com/myapp/server:v1.4.0
-  Digest     sha256:3a7b9c4d...
-✓ Signed artifact with cosign
-✓ Packed and pushed registry.example.com/myapp/server:v1.4.0
+  ✓ Packed and pushed image
+  Digest  sha256:3a7b9c4d...
+  ✓ Signed artifact with cosign
 ```
 
 ### Structured output (`-o json`)
@@ -46,10 +46,12 @@ $ cfgd image pack ./out registry.example.com/myapp/server:v1.4.0 \
 ```json
 {
   "artifact": "registry.example.com/myapp/server:v1.4.0",
+  "attested": true,
+  "base": null,
   "digest": "sha256:3a7b9c4d...",
+  "locked": null,
   "platform": "linux/amd64",
-  "signed": true,
-  "attested": true
+  "signed": true
 }
 ```
 
@@ -200,9 +202,9 @@ $ cfgd image pack ./out \
 Pack Image
   Directory  ./out
   Artifact   registry.example.com/myapp/server:abc123
-  Digest     sha256:3a7b9c4d...
-  Locked     cfgd-images.lock
-✓ Packed and pushed registry.example.com/myapp/server:abc123
+  ✓ Packed and pushed image
+  Digest  sha256:3a7b9c4d...
+  Locked  cfgd-images.lock
 ```
 
 `--lock` writes (or upserts, matched by `reference`) an entry into `cfgd-images.lock` in the
@@ -225,8 +227,9 @@ whose tag matches a locked entry, at any depth, so bare-Pod `spec.volumes[]` and
 manifest to stdout (pipe it to `kubectl`); `--apply` runs `kubectl apply` directly.
 
 ```bash
-# Print mode (default): stdout is a clean pipe
+# Print mode (default): stdout is a clean pipe, the pin report goes to stderr
 $ kubectl cfgd deploy -f pod.yaml --lock cfgd-images.lock | kubectl apply -f -
+◉ pinned registry.example.com/myapp/server:abc123 → registry.example.com/myapp/server@sha256:3a7b9c4d...
 
 # Apply directly into a namespace
 $ kubectl cfgd deploy -f pod.yaml --apply -n prod

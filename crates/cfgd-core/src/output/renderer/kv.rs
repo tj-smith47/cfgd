@@ -823,8 +823,8 @@ mod tests {
     fn kv_rows_bind_to_their_heading_even_when_a_section_opens_before_the_drain() {
         let (r, sink, buf) = capture();
         r.render_heading(&sink, "Checkin");
-        r.render_kv("Server status", "ok");
-        r.render_kv("Config changed", "false");
+        r.render_kv("Server Status", "ok");
+        r.render_kv("Config Changed", "false");
         r.render_section_open("Drift", /*keep_when_empty=*/ true);
         r.render_status(
             &sink,
@@ -846,8 +846,8 @@ mod tests {
             lines,
             vec![
                 "Checkin",
-                "  Server status   ok",
-                "  Config changed  false",
+                "  Server Status   ok",
+                "  Config Changed  false",
                 "",
                 "Drift",
                 "  ✓ 3 drift items reported",
@@ -869,8 +869,8 @@ mod tests {
     #[test]
     fn a_top_level_kv_block_separates_from_the_section_that_follows_it() {
         let (r, sink, buf) = capture();
-        r.render_kv("Server status", "ok");
-        r.render_kv("Config changed", "false");
+        r.render_kv("Server Status", "ok");
+        r.render_kv("Config Changed", "false");
         r.render_section_open("Drift", /*keep_when_empty=*/ true);
         r.render_status(
             &sink,
@@ -891,8 +891,8 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "Server status   ok",
-                "Config changed  false",
+                "Server Status   ok",
+                "Config Changed  false",
                 "",
                 "Drift",
                 "  ✓ 3 drift items reported",

@@ -56,13 +56,14 @@ The rule: **the command's title IS its section**, opened with `printer.section("
 
 ## Wording rules every closing line and hint obeys
 
-Four conventions, each with a walk-the-population pin that fails on the next member that breaks it. All four live in `crates/cfgd/src/cli/tests.rs` unless noted.
+Five conventions, each with a walk-the-population pin that fails on the next member that breaks it. All five live in `crates/cfgd/src/cli/tests.rs` unless noted.
 
 | Rule | Shape | Pin |
 |---|---|---|
 | A result line is **sentence case, past-tense verb first, count after** | `✓ Accepted 1 item`, `✓ Subscribed`, `✓ Installed daemon service` — never `Daemon service installed`, never Title Case | `every_result_line_is_sentence_case` |
 | A message naming a command **quotes it in backticks** | ``Run `cfgd decide accept <resource>` to answer`` — never `'cfgd …'`; covers hints, errors and clap `///` help, in both crates | `every_command_a_message_names_is_quoted_in_backticks` |
 | The **up-to-date verdict is not a command's to word** | every no-actions verdict settles through `reconciler::nothing_to_do_verdict(pending)`, which answers `Role::Pending` + `Nothing to apply — N decisions pending` whenever something is withheld | `no_command_words_the_up_to_date_verdict_for_itself`, `a_pending_decision_denies_the_up_to_date_verdict_on_every_verdict_surface` |
+| A **rendered label is Title Case**, whichever slot holds it | a kv key, a `KvPair`, a row tuple and a table header all read `Last Sync` / `Drift Count` — never `Reconcile interval` two rows above a Title Case column. Small words stay lowercase off the front (`Signing with`); a label NAMING a thing (a `spec.packages` path, a tool's own name) keeps that spelling under a `// name-row-ok:` marker | `every_rendered_label_is_title_case` |
 | A **count belongs to its section's annotation**, not to a row | `Pending Decisions (1 item)` via `reconciler::pending_decisions_title`, never a `⊙ 1 pending item` line that wears the row glyph and the row indent | `pending_decisions_title`'s own unit tests + the `decide` / `status` goldens |
 
 ## Sanitizing text cfgd did not author

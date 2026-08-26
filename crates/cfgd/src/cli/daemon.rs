@@ -138,7 +138,7 @@ pub fn build_daemon_status_doc(
 
     match status {
         Some(s) => {
-            doc = doc.status(Role::Ok, "Daemon is running");
+            doc = doc.status(Role::Ok, "Daemon running");
             let mut rows = vec![
                 ("PID".to_string(), s.pid.to_string()),
                 ("Uptime".to_string(), format!("{}s", s.uptime_secs)),
@@ -147,21 +147,26 @@ pub fn build_daemon_status_doc(
             // the loop's cadence is whatever it reloaded last, and this command
             // holds no config of its own to answer from.
             if let Some(secs) = s.reconcile_interval_secs {
-                rows.push(("Reconcile interval".to_string(), format!("{secs}s")));
+                rows.push(("Reconcile Interval".to_string(), format!("{secs}s")));
             }
             if let Some(secs) = s.sync_interval_secs {
-                rows.push(("Sync interval".to_string(), format!("{secs}s")));
+                rows.push(("Sync Interval".to_string(), format!("{secs}s")));
             }
-            rows.push(("Drift count".to_string(), s.drift_count.to_string()));
-            doc = doc.kv_block(rows);
+            rows.push(("Drift Count".to_string(), s.drift_count.to_string()));
             // The stored instant stays in the `-o json` payload below; a
             // person reading the dashboard is asking how stale the loop is.
+            //
+            // No `Last Sync` counterpart: the daemon syncs per source and the
+            // Sources table below carries a `Last Sync` column, so a single
+            // top-level row is the most recent of them wearing a name that
+            // reads as all of them.
             if let Some(ref last) = s.last_reconcile {
-                doc = doc.kv("Last reconcile", last_sync_display(Some(last), now));
+                rows.push((
+                    "Last Reconcile".to_string(),
+                    last_sync_display(Some(last), now),
+                ));
             }
-            if let Some(ref last) = s.last_sync {
-                doc = doc.kv("Last sync", last_sync_display(Some(last), now));
-            }
+            doc = doc.kv_block(rows);
 
             if let Some(ref version) = s.update_available {
                 doc = doc.status(
@@ -173,22 +178,28 @@ pub fn build_daemon_status_doc(
                 );
             }
 
-            let mut table = Table::new(["Name", "Status", "Drift", "Last Sync"]);
-            for src in &s.sources {
-                let (status, role) = cfgd_core::state::source_status_display(&src.status);
-                table = table.row_styled([
-                    (src.name.clone(), None),
-                    (status.to_string(), Some(role)),
-                    (src.drift_count.to_string(), None),
-                    (last_sync_display(src.last_sync.as_deref(), now), None),
-                ]);
-            }
-            doc = doc.section(super::source::list::SOURCES_SECTION, |sec| sec.table(table));
+            doc = doc.section_if_nonempty(
+                super::source::list::SOURCES_SECTION,
+                &s.sources,
+                |sec, sources| {
+                    let mut table = Table::new(["Name", "Status", "Drift", "Last Sync"]);
+                    for src in sources {
+                        let (status, role) = cfgd_core::state::source_status_display(&src.status);
+                        table = table.row_styled([
+                            (src.name.clone(), None),
+                            (status.to_string(), Some(role)),
+                            (src.drift_count.to_string(), None),
+                            (last_sync_display(src.last_sync.as_deref(), now), None),
+                        ]);
+                    }
+                    sec.table(table)
+                },
+            );
             doc.with_data(s)
         }
         None => {
             let placeholder = placeholder_status();
-            doc.status(Role::Warn, "Daemon is not running")
+            doc.status(Role::Warn, "Daemon not running")
                 .status(Role::Info, "Start with: cfgd daemon")
                 .status(Role::Info, "Install as service: cfgd daemon install")
                 .with_data(&placeholder)
@@ -462,12 +473,12 @@ mod tests {
             pid: if running { 12345 } else { 0 },
             uptime_secs: if running { 300 } else { 0 },
             last_reconcile: if running {
-                Some("2026-05-22T10:00:00Z".to_string())
+                Some("2026-05-14T10:00:00Z".to_string())
             } else {
                 None
             },
             last_sync: if running {
-                Some("2026-05-22T10:01:00Z".to_string())
+                Some("2026-05-14T10:01:00Z".to_string())
             } else {
                 None
             },
@@ -652,11 +663,11 @@ mod tests {
         printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
         let human = cap.human();
         assert!(
-            human.contains("Reconcile interval") && human.contains("300s"),
+            human.contains("Reconcile Interval") && human.contains("300s"),
             "expected the reconcile interval row, got: {human}"
         );
         assert!(
-            human.contains("Sync interval") && human.contains("900s"),
+            human.contains("Sync Interval") && human.contains("900s"),
             "expected the sync interval row, got: {human}"
         );
     }
@@ -668,7 +679,7 @@ mod tests {
         printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
         let human = cap.human();
         assert!(
-            !human.contains("Reconcile interval") && !human.contains("Sync interval"),
+            !human.contains("Reconcile Interval") && !human.contains("Sync Interval"),
             "an unreported cadence must not be rendered at all, got: {human}"
         );
     }
@@ -1020,7 +1031,7 @@ mod tests {
                 name: "infra".into(),
                 status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
                 drift_count: 0,
-                last_sync: Some("2026-05-22T10:00:00Z".into()),
+                last_sync: Some("2026-05-14T10:00:00Z".into()),
                 last_reconcile: None,
             },
             cfgd_core::daemon::SourceStatus {
@@ -1048,28 +1059,48 @@ mod tests {
     #[test]
     fn build_daemon_status_doc_emits_last_reconcile_when_present() {
         let mut status = make_status(true);
-        status.last_reconcile = Some("2026-05-22T10:00:00Z".into());
+        status.last_reconcile = Some("2026-05-14T10:00:00Z".into());
         let (printer, cap) = Printer::for_test_doc();
         let doc = build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
+        let age = cfgd_core::humanize_age_since("2026-05-14T10:00:00Z", DAEMON_STATUS_NOW)
+            .expect("the fixture stamp precedes the pinned now");
         assert!(
-            human.contains("2026-05-22T10:00:00Z"),
-            "last reconcile timestamp must appear: {human}"
+            human.contains(&format!("Last Reconcile  {age}")),
+            "the last-reconcile row must carry the humanized age {age}: {human}"
         );
     }
 
     #[test]
-    fn build_daemon_status_doc_emits_last_sync_when_present() {
+    fn the_sync_age_is_reported_per_source_and_not_a_second_time_at_the_top() {
         let mut status = make_status(true);
-        status.last_sync = Some("2026-05-22T11:00:00Z".into());
+        status.last_sync = Some("2026-05-14T11:00:00Z".into());
+        status.sources = vec![cfgd_core::daemon::SourceStatus {
+            name: "local".into(),
+            last_sync: Some("2026-05-14T11:00:00Z".into()),
+            last_reconcile: None,
+            drift_count: 0,
+            status: "Active".into(),
+        }];
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW);
-        printer.emit(doc);
+        printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
         let human = cap.human();
+        assert_eq!(
+            human.matches("Last Sync").count(),
+            1,
+            "the Sources table's column is the only sync label: a top-level \
+             row would say the same thing twice: {human}"
+        );
+        let age = cfgd_core::humanize_age_since("2026-05-14T11:00:00Z", DAEMON_STATUS_NOW)
+            .expect("the fixture stamp is parseable");
         assert!(
-            human.contains("2026-05-22T11:00:00Z"),
-            "last sync timestamp must appear: {human}"
+            human.contains(&age),
+            "the Sources table must carry the humanized age {age}: {human}"
+        );
+        assert!(
+            !human.contains("2026-05-14T11:00:00Z"),
+            "no surface renders the raw stamp once its age is computable: {human}"
         );
     }
 

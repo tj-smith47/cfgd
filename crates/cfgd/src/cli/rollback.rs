@@ -56,7 +56,7 @@ pub fn cmd_rollback(
         file_count.to_string(),
     )];
     if non_file_count > 0 {
-        kv_pairs.push(("Non-file actions".to_string(), non_file_count.to_string()));
+        kv_pairs.push(("Non-File Actions".to_string(), non_file_count.to_string()));
     }
     printer.kv_block(kv_pairs);
 

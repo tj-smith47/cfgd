@@ -4644,7 +4644,7 @@ mod keys_with_fake_cosign {
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            output.contains("Private key") && output.contains("Public key"),
+            output.contains("Private Key") && output.contains("Public Key"),
             "success output must mention both key paths: {output}"
         );
     }

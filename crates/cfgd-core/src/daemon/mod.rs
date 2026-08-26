@@ -570,15 +570,15 @@ impl Notifier {
         });
 
         match rx.recv_timeout(DESKTOP_NOTIFY_TIMEOUT) {
-            Ok(Ok(())) => tracing::debug!(title = %title, "desktop notification sent"),
+            Ok(Ok(())) => tracing::debug!(title = %title, "daemon: desktop notification sent"),
             Ok(Err(e)) => {
-                tracing::warn!(error = %e, "desktop notification failed, falling back to stdout");
+                tracing::warn!(error = %e, "daemon: desktop notification failed, falling back to the log");
                 self.notify_stdout(title, message);
             }
             Err(_) => {
                 tracing::warn!(
                     timeout_secs = DESKTOP_NOTIFY_TIMEOUT.as_secs(),
-                    "desktop notification timed out, falling back to stdout"
+                    "daemon: desktop notification timed out, falling back to the log"
                 );
                 self.notify_stdout(title, message);
             }
@@ -586,12 +586,12 @@ impl Notifier {
     }
 
     fn notify_stdout(&self, title: &str, message: &str) {
-        tracing::info!(title = %title, message = %message, "notification");
+        tracing::info!("daemon: {title} — {message}");
     }
 
     fn notify_webhook(&self, title: &str, message: &str) {
         let Some(ref url) = self.webhook_url else {
-            tracing::warn!("webhook notification requested but no webhook-url configured");
+            tracing::warn!("daemon: webhook notification requested but no webhook-url configured");
             return;
         };
 
@@ -606,8 +606,8 @@ impl Notifier {
                 .header("Content-Type", "application/json")
                 .send(body.as_str())
             {
-                Ok(_) => tracing::debug!(url = %url, "webhook notification sent"),
-                Err(e) => tracing::warn!(error = %e, "webhook notification failed"),
+                Ok(_) => tracing::debug!(url = %url, "daemon: webhook notification sent"),
+                Err(e) => tracing::warn!(error = %e, "daemon: webhook notification failed"),
             }
         });
     }
@@ -809,7 +809,7 @@ pub(super) fn build_pre_loop_setup(
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                "backup timers: profile resolution failed — no scheduled backups installed, retrying"
+                "daemon: backup timers — profile resolution failed, no scheduled backups installed, retrying"
             );
             BackupTimers::empty_with_retry(now)
         }
@@ -1036,7 +1036,7 @@ pub(super) async fn run_daemon_with(
         let health_ipc_path = ipc_path.to_string_lossy().to_string();
         Some(tokio::spawn(async move {
             if let Err(e) = run_health_server(&health_ipc_path, health_state).await {
-                tracing::error!(error = %e, "health server error");
+                tracing::error!(error = %e, "daemon: health server error");
             }
         }))
     };
@@ -1227,7 +1227,10 @@ pub(super) async fn run_daemon_with(
     }
     cleanup_ipc_socket(&ipc_path);
 
-    printer.status_simple(Role::Ok, "Daemon stopped");
+    // The bookend to the startup line, and on the same stream: a run whose
+    // start is in the journal and whose end is on a stdout nobody kept is a run
+    // nobody can tell apart from one still going.
+    tracing::info!("daemon: stopped");
     loop_result
 }
 
@@ -1260,7 +1263,7 @@ pub(super) fn init_daemon_state_with_warning(
             None,
         ),
         Err(e) => {
-            tracing::warn!(error = %e, "cannot resolve default state dir; /drift endpoint disabled");
+            tracing::warn!(error = %e, "daemon: cannot resolve default state dir — /drift endpoint disabled");
             let banner = format!("Drift endpoint disabled: cannot resolve default state dir ({e})");
             (DaemonState::new(), Some(banner))
         }
@@ -1298,10 +1301,14 @@ pub(super) fn check_already_running(_ipc_path: &Path, _scope: crate::Scope) -> R
     Ok(())
 }
 
-/// Build the "Intervals: ..." line components for the startup banner. Returns
-/// a vector of `key=value` segments the printer joins with `, `. Sync,
+/// Build the cadence segments the startup line joins with `, `. Sync,
 /// compliance, and backup segments are conditional; reconcile is always
 /// present.
+///
+/// Prose rather than `key=value`, because these land on the daemon's log —
+/// the one stream a running daemon has — and every other line on it is a
+/// sentence. `reconcile=30s` also states the wrong thing: it reads as a
+/// setting's value when what it reports is how often something happens.
 pub(super) fn format_interval_lines(
     parsed: &ParsedDaemonConfig,
     compliance_interval: Option<Duration>,
@@ -1309,45 +1316,55 @@ pub(super) fn format_interval_lines(
     backups_degraded: Option<backup::DegradedReason>,
 ) -> Vec<String> {
     let mut intervals = vec![format!(
-        "reconcile={}s",
+        "reconcile every {}s",
         parsed.reconcile_interval.as_secs()
     )];
     if parsed.auto_pull || parsed.auto_push {
+        let directions = match (parsed.auto_pull, parsed.auto_push) {
+            (true, true) => " (pull and push)",
+            (true, false) => " (pull only)",
+            _ => " (push only)",
+        };
         intervals.push(format!(
-            "sync={}s (pull={}, push={})",
-            parsed.sync_interval.as_secs(),
-            parsed.auto_pull,
-            parsed.auto_push
+            "sync every {}s{directions}",
+            parsed.sync_interval.as_secs()
         ));
     }
     if let Some(interval) = compliance_interval {
-        intervals.push(format!("compliance={}s", interval.as_secs()));
+        intervals.push(format!("compliance every {}s", interval.as_secs()));
     }
     if scheduled_backups > 0 || backups_degraded.is_some() {
         // The degraded note rides the count because the count alone is
         // misleading: it is whatever survived a partial resolution, and an
-        // operator reading "backups=2 scheduled" has no way to tell that a
+        // operator reading "2 scheduled backups" has no way to tell that a
         // source's third one is missing until it fails to happen. The two
         // causes are named apart because they need different remedies.
         let note = backups_degraded.map_or("", backup::DegradedReason::banner_note);
-        intervals.push(format!("backups={scheduled_backups} scheduled{note}"));
+        intervals.push(format!(
+            "{scheduled_backups} scheduled {}{note}",
+            crate::plural_noun(scheduled_backups, "backup")
+        ));
     }
     intervals
 }
 
-/// Emit the three-line startup banner: health endpoint, interval summary,
-/// run hint. Pure-output; testable via `Printer::for_test_at(Verbosity::Normal)`
-/// (Quiet suppresses Ok/Info statuses).
+/// Announce the daemon's startup on the stream it will spend its life writing.
+///
+/// The banner used to be three `Printer` status lines above a log, which made
+/// the first thing a reader saw the only thing on screen that carried no
+/// timestamp and no subsystem — and under systemd, where the `Printer` writes
+/// to a captured stdout nobody follows, it was the only startup evidence and it
+/// landed in a different place from every line after it.
+///
+/// The Ctrl+C hint stays a `Printer` hint, and only where a human could press
+/// it: the key reaches a process through a controlling terminal's line
+/// discipline, which a service manager's child does not have.
 pub(super) fn print_startup_banner(printer: &Printer, intervals: &[String], ipc_path: &str) {
-    printer
-        .status(Role::Ok, "Health")
-        .qualifier(ipc_path.to_string());
-    printer
-        .status(Role::Ok, "Intervals")
-        .qualifier(intervals.join(", "));
-    printer
-        .status(Role::Info, "Daemon running")
-        .detail("press Ctrl+C to stop");
+    tracing::info!("daemon: health endpoint at {ipc_path}");
+    tracing::info!("daemon: running — {}", intervals.join(", "));
+    if printer.can_prompt() {
+        printer.hint("press Ctrl+C to stop");
+    }
 }
 
 /// Synchronous body of the startup server check-in. Resolves the profile,
@@ -1388,7 +1405,7 @@ pub(super) fn run_startup_checkin_blocking(
     let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
         Some(p) => p,
         None => {
-            tracing::error!("no profile configured — skipping reconciliation");
+            tracing::error!("daemon: no profile configured — skipping startup check-in");
             return;
         }
     };
@@ -1396,27 +1413,27 @@ pub(super) fn run_startup_checkin_blocking(
         Ok(resolved) => {
             let changed = try_server_checkin(cfg, &resolved);
             if changed {
-                tracing::info!("server reports config changed at startup");
+                tracing::info!("daemon: server reports config changed at startup");
             }
             // Consume any pending server config at startup so the first
             // reconcile tick picks up the changes.
             match crate::state::load_pending_server_config() {
                 Ok(Some(_pending)) => {
                     tracing::info!(
-                        "startup: found pending server config — first reconcile will apply it"
+                        "daemon: found pending server config — first reconcile will apply it"
                     );
                     if let Err(e) = crate::state::clear_pending_server_config() {
-                        tracing::warn!(error = %e, "startup: failed to clear pending server config");
+                        tracing::warn!(error = %e, "daemon: failed to clear pending server config at startup");
                     }
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    tracing::warn!(error = %e, "startup: failed to load pending server config");
+                    tracing::warn!(error = %e, "daemon: failed to load pending server config at startup");
                 }
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "startup check-in: failed to resolve profile");
+            tracing::warn!(error = %e, "daemon: startup check-in failed to resolve profile");
         }
     }
 }
@@ -1502,7 +1519,7 @@ impl ShutdownSignals {
             match tokio::signal::unix::signal(kind) {
                 Ok(s) => Some(s),
                 Err(e) => {
-                    tracing::warn!(error = %e, signal = name, "failed to register shutdown handler");
+                    tracing::warn!(error = %e, signal = name, "daemon: failed to register shutdown handler");
                     None
                 }
             }
@@ -1553,7 +1570,7 @@ impl ShutdownSignals {
         match tokio::signal::windows::ctrl_c() {
             Ok(c) => Self { ctrl_c: Some(c) },
             Err(e) => {
-                tracing::warn!(error = %e, signal = "CTRL_C", "failed to register shutdown handler");
+                tracing::warn!(error = %e, signal = "CTRL_C", "daemon: failed to register shutdown handler");
                 Self { ctrl_c: None }
             }
         }

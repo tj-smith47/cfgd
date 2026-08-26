@@ -10,9 +10,9 @@ Changes
   ⚠ alias 'll': ls -la → ls -lah
   ✓ alias added: gs=git status
 
-Old commit     <COMMIT_SHA>
-New commit     <COMMIT_SHA>
-New integrity  sha256:<INTEGRITY>
+Old Commit     <COMMIT_SHA>
+New Commit     <COMMIT_SHA>
+New Integrity  sha256:<INTEGRITY>
 
 ◉ Tag 'v1.1.0' is unsigned
 

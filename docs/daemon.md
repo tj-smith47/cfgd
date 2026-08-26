@@ -33,7 +33,7 @@ The daemon runs as a long-lived process that watches for drift and optionally au
 
 The daemon runs as a single tokio async runtime. Shutdown is graceful via SIGTERM/SIGINT (Unix) or the Windows Service control manager stop signal (Windows).
 
-The signal handlers are installed **before** the `Daemon running` banner is printed: a supervisor that starts cfgd and signals it immediately gets the clean shutdown path, not an abrupt kill.
+The signal handlers are installed **before** the `daemon: running` line is logged: a supervisor that starts cfgd and signals it immediately gets the clean shutdown path, not an abrupt kill.
 
 ## Configuration
 
@@ -92,13 +92,12 @@ Only the title differs, and the header gains a `Trigger` row naming what woke th
 ```console
 $ cfgd daemon
 Daemon
-◉ Starting cfgd daemon...
-✓ Health: /run/user/0/cfgd/cfgd.sock
-✓ Intervals: reconcile=5s
-◉ Daemon running — press Ctrl+C to stop
- INFO running reconciliation check
- INFO reconcile: drift detected actions=1
- INFO drift policy is Auto — applying actions actions=1
+◉ Starting cfgd daemon
+14:32:05  INFO daemon: health endpoint at /run/user/0/cfgd/cfgd.sock
+14:32:05  INFO daemon: running — reconcile every 5s
+→ press Ctrl+C to stop
+14:32:10  INFO watch: config changed profiles/driftdemo.yaml
+14:32:10  INFO reconcile: drift detected in 1 resource
 
 Reconcile
   Config   /home/you/.config/cfgd/cfgd.yaml
@@ -112,16 +111,23 @@ Phase: Files
     ✓ update /home/you/.gitconfig
 
 ✓ Reconcile complete — 1 action succeeded (0.1s)
- INFO auto-apply complete succeeded=1 failed=0
+14:32:10  INFO reconcile: complete — 1 action succeeded
 ```
+
+Every line the daemon logs is `HH:MM:SS  INFO <subsystem>: <sentence>` in local time, with
+`daemon:`, `sync:`, `reconcile:` and `watch:` the four subsystems that speak. Operands are
+spelled into the sentence rather than appended as `key=value`; the field form lives on the
+`debug!` event beside each info line, so `-v` still gives a machine-parseable stream. The
+`press Ctrl+C to stop` hint is the one piece of the startup that is not a log line: it is
+printed only when stdout is a terminal, because a service under systemd has no keyboard.
 
 The `tracing` lines around it are unchanged, so existing log consumers keep working; the
 tree is strictly additional. Under `driftPolicy: NotifyOnly` (or `Prompt`, which has no
 terminal to prompt at in daemon context) the same header renders with the *preview* tree
 (what drifted, never what was done) and closes on
 `⚠ Drift detected — N actions; policy is notify-only, nothing applied` instead of a
-completion rollup. Daemon lifecycle lines (the startup banner, SIGHUP reload, shutdown) stay flat
-status lines at column 0: they describe the process, not a run over a plan.
+completion rollup. Daemon lifecycle events (startup, SIGHUP reload, shutdown) are `daemon:` log
+lines rather than parts of the tree: they describe the process, not a run over a plan.
 
 Scheduled `spec.backups[]` fires render the same way, as a `Backup` run over a `Backups`
 group per unit; see [Declarative Backups](backups.md#daemon-scheduling).
@@ -240,10 +246,10 @@ override the path for advanced setups (test harnesses, multi-instance
 isolation). Query with `cfgd daemon status` to get:
 
 - Whether the daemon is running
-- Last reconcile time
+- How long ago the last reconcile ran (`2m ago`; the stored ISO 8601 instant stays in `-o json`)
 - The reconcile and sync intervals the loop is currently on (`reconcileIntervalSecs` / `syncIntervalSecs` in `-o json`), so a SIGHUP reload can be confirmed without reading the log
 - Drift count
-- Per-source sync status (when using multi-source config)
+- Per-source sync status, each with its own `Last Sync` age (when using multi-source config)
 
 ## CLI Commands
 

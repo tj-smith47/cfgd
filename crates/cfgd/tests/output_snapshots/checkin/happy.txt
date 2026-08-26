@@ -1,5 +1,5 @@
 Checkin
-  Server status   ok
-  Config changed  false
+  Server Status   ok
+  Config Changed  false
 
 ◉ No drift to report
