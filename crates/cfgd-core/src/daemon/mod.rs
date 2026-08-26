@@ -29,7 +29,7 @@ use crate::config::{
     self, CfgdConfig, LOCAL_LAYER, MergedProfile, NotifyMethod, OriginType, ResolvedProfile,
 };
 use crate::errors::{DaemonError, Result};
-use crate::output::{Printer, Role};
+use crate::output::Printer;
 use crate::providers::{
     FileAction, PackageAction, PackageContext, PackageManager, ProviderRegistry,
 };

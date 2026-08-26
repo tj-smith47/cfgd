@@ -1,5 +1,6 @@
 use super::super::*;
 use crate::PathDisplayExt;
+use crate::output::Role;
 
 /// Render one `ExecStart` token so systemd passes it to the daemon verbatim.
 ///
