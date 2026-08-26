@@ -58,8 +58,9 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
             ("Private Key", priv_path.clone()),
             ("Public Key", pub_path.clone()),
         ]);
-        printer.hint("Sign with `cfgd module push --sign --key cosign.key ...`");
-        printer.hint("Verify with `cosign verify --key cosign.pub <artifact>`");
+        printer.hint(super::success_next_step(super::Mutation::KeysGenerated {
+            dir,
+        }));
         private_key = Some(priv_path);
         public_key = Some(pub_path);
     }
@@ -299,12 +300,6 @@ pub fn cmd_module_keys_rotate(
         }
     }
 
-    if artifacts.is_empty() {
-        printer.hint(
-            "No artifacts specified — re-sign manually with: `cfgd module push --sign --key cosign.key ...`",
-        );
-    }
-
     let backup_pub_path = if old_pub.exists() || backup_pub.exists() {
         Some(backup_pub.display().to_string())
     } else {
@@ -313,6 +308,10 @@ pub fn cmd_module_keys_rotate(
     printer.emit(
         Doc::new()
             .status(Role::Ok, "Rotated key")
+            .hint(super::success_next_step(super::Mutation::KeysRotated {
+                dir: key_dir,
+                resigned: !artifacts.is_empty(),
+            }))
             .with_data(serde_json::json!({
                 "dir": key_dir,
                 "backupPrivateKey": backup_key.display().to_string(),

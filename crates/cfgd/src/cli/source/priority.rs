@@ -57,8 +57,8 @@ pub fn cmd_source_priority(
                             printer.arrow()
                         ))
                     })
-                    .hint(super::source_success_next_step(
-                        super::SourceMutation::Reprioritized,
+                    .hint(super::success_next_step(
+                        super::Mutation::SourceReprioritized,
                     ))
                     .with_data(serde_json::json!({
                         "name": name,

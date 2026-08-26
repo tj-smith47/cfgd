@@ -242,8 +242,9 @@ spec:
               signature:
                 description: |-
                   The signature verdict as ONE word (`verified` / `unverified` /
-                  `unsigned`), and the only field the `Signature` printer column may be
-                  bound to. `verified` is the same verdict as a raw bool, which reads as
+                  `unsigned` / `unknown`), and the only field the `Signature` printer
+                  column may be bound to. `verified` is the same verdict as a raw bool,
+                  which reads as
                   `true` in a column beside a `kubectl cfgd status` row saying
                   `(verified)` about the same module — one fact, two vocabularies. Absent
                   when no reconcile has written it, so the JSONPath resolves to nothing

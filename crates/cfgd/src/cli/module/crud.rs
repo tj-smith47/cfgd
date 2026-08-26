@@ -259,8 +259,10 @@ pub fn cmd_module_create(
     }
     drop(summary_sec);
 
-    printer.hint("Add to a profile with: `cfgd profile update <profile> --module <name>`");
-    printer.hint("Fine-tune with: `cfgd module edit <name>`");
+    printer.hint(super::success_next_step(super::Mutation::ModuleCreated {
+        name,
+    }));
+    printer.hint(format!("Fine-tune with `cfgd module edit {name}`"));
 
     update_workflow_best_effort(cli, printer);
 
@@ -746,6 +748,7 @@ pub fn cmd_module_update_local(
                     cfgd_core::pluralize(changes as usize, "change")
                 ),
             )
+            .hint(super::success_next_step(super::Mutation::ModuleUpdated))
             .with_data(serde_json::json!({
                 "name": name,
                 "changes": changes,
@@ -811,6 +814,7 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
             Doc::new()
                 // verdict-row-ok: a validation verdict, not an act cfgd performed
                 .status(Role::Ok, format!("Module '{}' is valid", name))
+                .hint(super::success_next_step(super::Mutation::ModuleUpdated))
                 .with_data(serde_json::json!({
                     "name": name,
                     "path": module_yaml.display().to_string(),

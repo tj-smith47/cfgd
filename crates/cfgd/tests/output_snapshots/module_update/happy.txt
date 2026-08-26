@@ -2,3 +2,5 @@ Update module:upd-mod
 ✓ Added package: ripgrep (apt)
 
 ✓ 1 change written
+
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

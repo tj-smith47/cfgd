@@ -247,7 +247,7 @@ The operator checks each `Module`'s artifact against the key its `spec.signature
 | `verified` | cosign checked the artifact against the declared key and accepted it |
 | `unverified` | cosign checked the artifact and rejected it: no signature, or none the key accepts |
 | `unsigned` | the module declares no signature, so there is nothing to check |
-| `unknown` | the check could not run at all: no cosign in the operator image, an unreachable registry, or a module with no artifact to check |
+| `unknown` | the check could not run at all: no cosign in the operator image, an unreachable registry, a module with no artifact to check, or a `Module` the operator has not reconciled yet |
 
 `unknown` is not a verdict about the signature, and the `Verified` condition carries it as `status: Unknown` with the reason on the condition's message:
 

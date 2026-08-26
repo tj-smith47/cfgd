@@ -5,3 +5,5 @@ Rotate Cosign Key Pair
 ✓ Re-signed oci.example.com/m:v1
 
 ✓ Rotated key
+
+→ Verify with `cosign verify --key <DIR>/cosign.pub <artifact>`

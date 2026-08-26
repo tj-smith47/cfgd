@@ -468,9 +468,9 @@ pub fn run_source_update(
     // that changed nothing, or whose failures already hint per source, does
     // not invite an apply of nothing.
     if role == Role::Ok && (updated_count > 0 || knobs_written) {
-        doc = doc.hint(super::source_success_next_step(
-            super::SourceMutation::Updated { trust_changed },
-        ));
+        doc = doc.hint(super::success_next_step(super::Mutation::SourceUpdated {
+            trust_changed,
+        }));
     }
     printer.emit(doc.with_data(&payload));
 

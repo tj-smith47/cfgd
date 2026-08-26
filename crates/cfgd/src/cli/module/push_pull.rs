@@ -80,6 +80,11 @@ pub fn cmd_module_push(
             rt.block_on(apply_module_crd(printer, &module_doc, artifact, signature))?;
             applied_name = Some(module_doc.metadata.name.clone());
         }
+        push_sec.hint(super::success_next_step(super::Mutation::ModulePushed {
+            dir,
+            artifact,
+            applied: applied_name.as_deref(),
+        }));
         (digest, signed, attested)
     };
 
@@ -452,6 +457,9 @@ pub fn cmd_module_pull(
                 file_count = Some(doc.spec.files.len());
             }
         }
+        pull_sec.hint(super::success_next_step(super::Mutation::ModulePulled {
+            name: module_name.as_deref(),
+        }));
     }
 
     printer.emit(Doc::new().with_data(serde_json::json!({

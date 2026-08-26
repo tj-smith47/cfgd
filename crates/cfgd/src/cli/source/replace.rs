@@ -83,9 +83,7 @@ pub fn cmd_source_replace(
     printer.emit(
         Doc::new()
             .status(Role::Ok, format!("Replaced with {}", new_url))
-            .hint(super::source_success_next_step(
-                super::SourceMutation::Replaced,
-            ))
+            .hint(super::success_next_step(super::Mutation::SourceReplaced))
             .with_data(serde_json::json!({
                 "oldName": old_name,
                 "newUrl": new_url,

@@ -3,6 +3,6 @@ Rotate Cosign Key Pair
 ◉ Backed up old public key to <DIR>/cosign.pub.<TIMESTAMP>
 ✓ Generated new key pair
 
-→ No artifacts specified — re-sign manually with: `cfgd module push --sign --key cosign.key ...`
-
 ✓ Rotated key
+
+→ Re-sign each artifact with `cfgd module push <dir> --artifact <ref> --sign --key <DIR>/cosign.key`

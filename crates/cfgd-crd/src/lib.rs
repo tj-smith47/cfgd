@@ -593,9 +593,10 @@ pub const SIGNATURE_UNVERIFIED: &str = "unverified";
 /// different fact from a signature that failed.
 pub const SIGNATURE_UNSIGNED: &str = "unsigned";
 /// A module whose signature could not be checked at all: the verifier is
-/// missing, or the artifact's registry could not be reached. A fact about the
-/// CHECK, not about the signature, and the reason no surface may collapse it
-/// into [`SIGNATURE_UNVERIFIED`].
+/// missing, the artifact's registry could not be reached, or no reconcile has
+/// run yet. A fact about the CHECK, not about the signature, and the reason
+/// no surface may collapse it into [`SIGNATURE_UNVERIFIED`] — nor derive any
+/// other word from the spec and the raw bool, which cannot express it.
 pub const SIGNATURE_UNKNOWN: &str = "unknown";
 
 impl ModuleStatus {
@@ -605,28 +606,6 @@ impl ModuleStatus {
     #[must_use]
     pub fn summarize_platforms(platforms: &[String]) -> Option<String> {
         (!platforms.is_empty()).then(|| platforms.join(", "))
-    }
-
-    /// The ONE derivation of [`ModuleStatus::signature`] — the word every
-    /// surface naming a module's signature verdict prints, so the CRD column
-    /// and `kubectl cfgd status` cannot spell one fact two ways.
-    ///
-    /// `declared` is whether the spec asks for a signature at all: a module
-    /// that never claimed one is `unsigned`, not a module whose signature
-    /// failed. Both collapse to `verified == false` on the wire, which is why
-    /// the bool alone cannot answer this.
-    ///
-    /// The bool pair cannot express [`SIGNATURE_UNKNOWN`] — a check that never
-    /// ran is neither of its two inputs — so a caller holding the outcome of a
-    /// real check names that word directly and this door stays for the callers
-    /// that hold only the two bools.
-    #[must_use]
-    pub fn signature_verdict(verified: bool, declared: bool) -> &'static str {
-        match (verified, declared) {
-            (true, _) => SIGNATURE_VERIFIED,
-            (false, true) => SIGNATURE_UNVERIFIED,
-            (false, false) => SIGNATURE_UNSIGNED,
-        }
     }
 }
 

@@ -94,6 +94,125 @@ use cfgd_core::state::StateStore;
 
 const MSG_RUN_APPLY: &str = "Run `cfgd plan` to preview changes, then `cfgd apply`";
 
+/// What a mutating `source` or `module` verb just did, for
+/// [`success_next_step`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::cli) enum Mutation<'a> {
+    /// `source add` recorded a subscription.
+    SourceSubscribed,
+    /// `source update` fetched, or wrote a subscription knob. `trust_changed`
+    /// is the `requireSignedCommits` knob — the one edit whose effect lands on
+    /// the NEXT FETCH rather than the next apply.
+    SourceUpdated { trust_changed: bool },
+    /// `source remove` took a subscription out of the composition.
+    SourceRemoved,
+    /// `source replace` re-homed a subscription.
+    SourceReplaced,
+    /// `source override` set or rejected one of the source's recommendations.
+    SourceOverridden,
+    /// `source priority` re-ranked a subscription's layer.
+    SourceReprioritized,
+    /// `module create` scaffolded a module no profile lists yet.
+    ModuleCreated { name: &'a str },
+    /// `module update` / `module edit` changed a module the composition may
+    /// already carry.
+    ModuleUpdated,
+    /// `module add` / `module upgrade` locked a remote module in
+    /// `modules.lock`.
+    ModuleLocked,
+    /// `module build` produced an OCI-ready directory nothing has pushed.
+    ModuleBuilt { output: &'a str },
+    /// `module push` (or `module build --artifact`) put `artifact` in a
+    /// registry; `applied` names the Module resource a `--apply` registered.
+    ModulePushed {
+        dir: &'a str,
+        artifact: &'a str,
+        applied: Option<&'a str>,
+    },
+    /// `module pull` extracted a module; `name` is what its manifest said,
+    /// when it had one.
+    ModulePulled { name: Option<&'a str> },
+    /// `module registry add` recorded a registry.
+    RegistryAdded,
+    /// `module keys generate` wrote a cosign key pair into `dir`.
+    KeysGenerated { dir: &'a str },
+    /// `module keys rotate` replaced the pair in `dir`; `resigned` is whether
+    /// it re-signed the artifacts it was given.
+    KeysRotated { dir: &'a str, resigned: bool },
+}
+
+/// The next step a mutating `source` or `module` verb closes on when it
+/// SUCCEEDS — one composer for both families, so a verb cannot drift from its
+/// siblings hint by hint.
+///
+/// `source update --require-signed-commits` ended on `√ Updated 1 source` and
+/// the prompt, on the one command in the take whose effect is on the next
+/// fetch, while every other mutating beat said what to type next; `module
+/// push` ended on `√ Signed artifact with cosign` and the operator hand-typed
+/// the `kubectl apply` that `--apply` performs. A trust edit points at `cfgd
+/// sync`, where the demand is met; every edit to the COMPOSITION points at the
+/// preview and the apply that settle it; a verb that produced an ARTIFACT
+/// somebody else consumes names the consumer.
+pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> String {
+    match mutation {
+        Mutation::SourceUpdated {
+            trust_changed: true,
+        } => "Run `cfgd sync` to fetch under the new policy".to_string(),
+        Mutation::SourceSubscribed
+        | Mutation::SourceUpdated {
+            trust_changed: false,
+        }
+        | Mutation::SourceRemoved
+        | Mutation::SourceReplaced
+        | Mutation::SourceOverridden
+        | Mutation::SourceReprioritized
+        | Mutation::ModuleUpdated
+        | Mutation::ModuleLocked
+        | Mutation::ModulePulled { name: None } => MSG_RUN_APPLY.to_string(),
+        Mutation::ModuleCreated { name } => {
+            format!("Add it to a profile with `cfgd profile update <profile> --module {name}`")
+        }
+        Mutation::ModuleBuilt { output } => {
+            format!("Push it with `cfgd module build {output} --artifact <registry>/<name>:<tag>`")
+        }
+        Mutation::ModulePushed {
+            applied: Some(name),
+            ..
+        } => format!("Check it with `kubectl get module {name}`"),
+        Mutation::ModulePushed {
+            dir,
+            artifact,
+            applied: None,
+        } => format!(
+            "Reference `{artifact}` from a Module resource, or register it with \
+             `cfgd module push {dir} --artifact {artifact} --apply`"
+        ),
+        Mutation::ModulePulled { name: Some(name) } => {
+            format!("Review it with `cfgd module show {name}`, then run `cfgd apply`")
+        }
+        Mutation::RegistryAdded => {
+            "Search for modules with `cfgd module search <query>`".to_string()
+        }
+        Mutation::KeysGenerated { dir } => {
+            format!(
+                "Sign with `cfgd module push <dir> --artifact <ref> --sign --key {dir}/cosign.key`"
+            )
+        }
+        Mutation::KeysRotated {
+            dir,
+            resigned: true,
+        } => {
+            format!("Verify with `cosign verify --key {dir}/cosign.pub <artifact>`")
+        }
+        Mutation::KeysRotated {
+            dir,
+            resigned: false,
+        } => format!(
+            "Re-sign each artifact with `cfgd module push <dir> --artifact <ref> --sign --key {dir}/cosign.key`"
+        ),
+    }
+}
+
 /// The next step a drift report offers once it has FOUND drift, scoped the way
 /// the report was.
 ///

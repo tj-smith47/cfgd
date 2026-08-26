@@ -260,7 +260,7 @@ pub fn cmd_module_add_remote(
                 Role::Ok,
                 format!("Locked remote module '{}' in modules.lock", module_name),
             )
-            .hint(MSG_RUN_APPLY)
+            .hint(super::success_next_step(super::Mutation::ModuleLocked))
             .with_data(serde_json::json!({
                 "name": module_name,
                 "url": url,
@@ -459,7 +459,7 @@ pub fn cmd_module_upgrade(
     printer.emit(
         Doc::new()
             .status(Role::Ok, "Updated in modules.lock")
-            .hint(MSG_RUN_APPLY)
+            .hint(super::success_next_step(super::Mutation::ModuleLocked))
             .with_data(serde_json::json!({
                 "name": name,
                 "oldCommit": old_entry.commit,
@@ -873,7 +873,7 @@ pub fn cmd_module_registry_add(
                 Role::Ok,
                 format!("Added module registry '{}' ({})", registry_name, url),
             )
-            .hint("Search for modules: `cfgd module search <query>`")
+            .hint(super::success_next_step(super::Mutation::RegistryAdded))
             .with_data(serde_json::json!({
                 "name": registry_name,
                 "url": url,

@@ -3,7 +3,7 @@ Create Module: happy-mod
 Created at <CONFIG_DIR>/modules/happy-mod
   Packages  curl
 
-→ Add to a profile with: `cfgd profile update <profile> --module <name>`
-→ Fine-tune with: `cfgd module edit <name>`
+→ Add it to a profile with `cfgd profile update <profile> --module happy-mod`
+→ Fine-tune with `cfgd module edit happy-mod`
 
 ✓ Generated .github/workflows/cfgd-release.yml

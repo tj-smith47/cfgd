@@ -14833,29 +14833,184 @@ fn every_source_verdict_counts_iff_its_verb_takes_many_subjects() {
     );
 }
 
-/// Every mutating `source` verb closes its SUCCESS path on a next step, from
-/// the one composer beside `source_failure_next_step`. `source update` hinted
-/// only on its failure arm and `source remove` never, on the family whose
-/// every edit is settled by a later `sync` or `apply` the reader has to type.
+/// The mutating `module` verbs: the file and the handler each renders its
+/// verdict from, and — for a verb that genuinely ENDS a workflow — why no
+/// command comes next. A `None` reason is a verb whose success path must
+/// close on `success_next_step`.
+fn mutating_module_verbs() -> Vec<(
+    &'static str,
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+)> {
+    vec![
+        ("create", "crud.rs", "cmd_module_create", None),
+        ("update", "crud.rs", "cmd_module_update_local", None),
+        ("edit", "crud.rs", "cmd_module_edit", None),
+        (
+            "delete",
+            "crud.rs",
+            "cmd_module_delete",
+            Some("refuses while any profile lists the module, so nothing is left to apply"),
+        ),
+        ("add", "registry.rs", "cmd_module_add_remote", None),
+        ("upgrade", "registry.rs", "cmd_module_upgrade", None),
+        (
+            "registry add",
+            "registry.rs",
+            "cmd_module_registry_add",
+            None,
+        ),
+        (
+            "registry remove",
+            "registry.rs",
+            "cmd_module_registry_remove",
+            Some(
+                "a registry gone is the end of its workflow; the profiles it strands are warned about inline",
+            ),
+        ),
+        (
+            "registry rename",
+            "registry.rs",
+            "cmd_module_registry_rename",
+            Some("rewrites every profile reference itself, leaving nothing to type"),
+        ),
+        (
+            "export",
+            "export.rs",
+            "cmd_module_export",
+            Some("the next step is a devcontainer.json edit, outside cfgd"),
+        ),
+        ("keys generate", "keys.rs", "cmd_module_keys_generate", None),
+        ("keys rotate", "keys.rs", "cmd_module_keys_rotate", None),
+        ("push", "push_pull.rs", "cmd_module_push", None),
+        ("pull", "push_pull.rs", "cmd_module_pull", None),
+        ("build", "build.rs", "cmd_module_build", None),
+    ]
+}
+
+/// Every mutating `source` and `module` verb closes its SUCCESS path on a next
+/// step, from the ONE composer (`success_next_step`) both families share.
+/// `source update` hinted only on its failure arm and `source remove` never;
+/// `module push`, `pull` and `build` — the three verbs that hand an artifact to
+/// somebody else — closed on nothing while the demo's next beat hand-typed the
+/// `kubectl apply` that `push --apply` performs. A verb that genuinely ends a
+/// workflow is hatched in the walk's own table, with its reason.
 #[test]
-fn every_mutating_source_verb_closes_on_a_next_step() {
+fn every_mutating_verb_closes_on_a_next_step() {
     let mut offenders = Vec::new();
     for (verb, file, _) in mutating_source_verbs() {
         let lines = source_verb_body(file);
-        if !lines
-            .iter()
-            .any(|l| l.contains("source_success_next_step("))
-        {
+        if !lines.iter().any(|l| l.contains("success_next_step(")) {
             offenders.push(format!(
-                "source/{file}: `source {verb}` closes without `source_success_next_step`"
+                "source/{file}: `source {verb}` closes without `success_next_step`"
             ));
         }
     }
+    let module_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/module");
+    let mut judged = 0usize;
+    for (verb, file, handler, terminal) in mutating_module_verbs() {
+        let body = std::fs::read_to_string(module_dir.join(file))
+            .expect("the verb's source file is checked out");
+        let body = production_body(&body);
+        let lines: Vec<&str> = body.lines().collect();
+        let handler_body = fn_body(&lines, handler)
+            .unwrap_or_else(|| panic!("module/{file} declares `{handler}`"));
+        judged += 1;
+        let closes = handler_body.contains("success_next_step(");
+        match (terminal, closes) {
+            (None, false) => offenders.push(format!(
+                "module/{file}: `module {verb}` closes without `success_next_step`"
+            )),
+            (Some(why), true) => offenders.push(format!(
+                "module/{file}: `module {verb}` is hatched as terminal ({why}) yet closes on a next step — drop the hatch"
+            )),
+            _ => {}
+        }
+    }
+    assert_eq!(judged, 15, "the walk no longer reaches the `module` family");
     assert!(
         offenders.is_empty(),
-        "a mutating `source` verb's success path says what to do next:\n{}",
+        "a mutating verb's success path says what to do next:\n{}",
         offenders.join("\n")
     );
+}
+
+/// Every hint `success_next_step` composes names the command that comes next,
+/// in backticks — the same shape `every_closing_hint_names_a_command` holds
+/// literal hints to, which cannot see a text built here. Walks every variant,
+/// so a new one lands under the rule.
+#[test]
+fn every_composed_next_step_names_a_command() {
+    let mutations = [
+        Mutation::SourceSubscribed,
+        Mutation::SourceUpdated {
+            trust_changed: true,
+        },
+        Mutation::SourceUpdated {
+            trust_changed: false,
+        },
+        Mutation::SourceRemoved,
+        Mutation::SourceReplaced,
+        Mutation::SourceOverridden,
+        Mutation::SourceReprioritized,
+        Mutation::ModuleCreated { name: "nvim" },
+        Mutation::ModuleUpdated,
+        Mutation::ModuleLocked,
+        Mutation::ModuleBuilt { output: "./out" },
+        Mutation::ModulePushed {
+            dir: "./tools",
+            artifact: "ghcr.io/acme/tools:v1",
+            applied: None,
+        },
+        Mutation::ModulePushed {
+            dir: "./tools",
+            artifact: "ghcr.io/acme/tools:v1",
+            applied: Some("tools"),
+        },
+        Mutation::ModulePulled { name: None },
+        Mutation::ModulePulled {
+            name: Some("tools"),
+        },
+        Mutation::RegistryAdded,
+        Mutation::KeysGenerated { dir: "./keys" },
+        Mutation::KeysRotated {
+            dir: "./keys",
+            resigned: true,
+        },
+        Mutation::KeysRotated {
+            dir: "./keys",
+            resigned: false,
+        },
+    ];
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
+    )
+    .unwrap();
+    let declared = source
+        .split("pub(in crate::cli) enum Mutation<'a> {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("Mutation is declared in cli/mod.rs")
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            !t.starts_with("///")
+                && !t.is_empty()
+                && t.chars().next().is_some_and(char::is_uppercase)
+        })
+        .count();
+    assert_eq!(
+        declared, 15,
+        "a new Mutation variant is walked here with every shape it can take"
+    );
+    for mutation in mutations {
+        let hint = success_next_step(mutation);
+        assert!(
+            hint.matches('`').count() >= 2,
+            "{mutation:?} closes on a hint naming no command: {hint}"
+        );
+    }
 }
 
 /// Every surface rendering the `Sources` section builds its rows through the
@@ -27096,7 +27251,7 @@ fn str_consts(
 /// population to that shape.
 ///
 /// A hint whose text is built elsewhere (`answer_decisions_hint`,
-/// `source_success_next_step`, an error's remediation lines) is out of class
+/// `success_next_step`, an error's remediation lines) is out of class
 /// here and pinned by its own producer; a constant is followed to its text.
 /// A genuinely command-less instruction carries a `// hint-ok: <why>` marker.
 #[test]
@@ -27133,7 +27288,7 @@ fn every_closing_hint_names_a_command() {
         }
     }
     assert!(
-        checked >= 30,
+        checked >= 25,
         "the walk no longer reaches the hints it exists to hold — it found {checked}"
     );
     assert!(

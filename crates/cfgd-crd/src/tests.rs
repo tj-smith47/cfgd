@@ -450,7 +450,7 @@ fn module_crd_has_printer_columns() {
     assert!(col_names.contains(&"Age"));
 }
 
-/// A printer column resolving to an ARRAY prints the Go rendering of the
+/// Every kind whose status carries `conditionsts the Go rendering of the
 /// slice, so an empty one reads as the literal `[]` where an absent value
 /// leaves the cell blank — `kubectl get` has no way to join one. A column
 /// resolving to a BOOL prints `true`/`false`, a second vocabulary beside the

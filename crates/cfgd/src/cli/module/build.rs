@@ -152,6 +152,18 @@ pub fn cmd_module_build(
                 digest_value = Some(digest);
             }
         }
+        // `output_artifacts[0]` is the module directory the push would take:
+        // the single build's output, or the first platform's for a
+        // multi-platform build whose one index artifact is already pushed.
+        let built = output_artifacts.first().map_or(dir, String::as_str);
+        build_sec.hint(super::success_next_step(match artifact {
+            Some(artifact) => super::Mutation::ModulePushed {
+                dir: built,
+                artifact,
+                applied: None,
+            },
+            None => super::Mutation::ModuleBuilt { output: built },
+        }));
     }
 
     let mut payload = serde_json::Map::new();

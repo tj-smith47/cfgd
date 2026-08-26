@@ -912,6 +912,12 @@ fn current_context_name() -> String {
         .unwrap_or_else(|| "in-cluster".to_string())
 }
 
+/// The JSON pointer of the field the plugin's signature word is read from —
+/// the same `.status.signature` the CRD's `Signature` printer column binds
+/// to, so the two surfaces read one field and cannot disagree about one
+/// Module.
+const MODULE_SIGNATURE_POINTER: &str = "/status/signature";
+
 /// One module row: the facts both the human render and `-o json` answer from.
 struct ModuleRow {
     name: String,
@@ -936,18 +942,23 @@ impl ModuleRow {
                 .unwrap_or(cfgd_core::ABSENT)
                 .to_string(),
             verified,
-            // The controller writes the verdict; a Module it has not reconciled
-            // yet carries none, and the same three-word vocabulary is derived
-            // here rather than spelling a fourth wording for that case.
+            // The controller writes the verdict. Without one, the raw bool can
+            // assert exactly one thing on its own — `true` is a check that
+            // passed (an operator predating the word wrote only the bool) —
+            // and everything else is a check that has not run: `unknown` by
+            // the CRD's own vocabulary, never a word derived from the spec.
+            // Deriving `unverified` from a declared key claimed cosign had
+            // rejected an artifact nothing had looked at.
             signature: module
                 .data
-                .pointer("/status/signature")
+                .pointer(MODULE_SIGNATURE_POINTER)
                 .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| {
-                    let declared = module.data.pointer("/spec/signature").is_some();
-                    cfgd_crd::ModuleStatus::signature_verdict(verified, declared).to_string()
-                }),
+                .unwrap_or(if verified {
+                    cfgd_crd::SIGNATURE_VERIFIED
+                } else {
+                    cfgd_crd::SIGNATURE_UNKNOWN
+                })
+                .to_string(),
         }
     }
 }

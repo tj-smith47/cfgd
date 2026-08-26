@@ -263,9 +263,7 @@ pub(super) fn run_source_remove(
 
     let mut doc = Doc::new().status(Role::Ok, "Removed");
     if closing {
-        doc = doc.hint(super::source_success_next_step(
-            super::SourceMutation::Removed,
-        ));
+        doc = doc.hint(super::success_next_step(super::Mutation::SourceRemoved));
     }
     printer.emit(doc.with_data(serde_json::json!({
         "name": name,

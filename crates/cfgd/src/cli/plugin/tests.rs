@@ -1026,7 +1026,7 @@ mod mock_kube {
         assert_eq!(modules[0]["verified"], true);
         assert_eq!(
             modules[0]["signature"], "verified",
-            "a module the controller has not written a verdict for derives the same three-word vocabulary"
+            "a raw `verified: true` with no word beside it is the one fact the bool asserts alone"
         );
         assert_eq!(modules[1]["name"], "debug-utils");
         assert_eq!(modules[1]["verified"], false);
@@ -1053,12 +1053,13 @@ mod mock_kube {
     }
 
     /// `unknown` — a check that could not run — is the fourth verdict word, and
-    /// the controller is the only thing that can name it: the bool pair
-    /// [`cfgd_crd::ModuleStatus::signature_verdict`] derives from cannot express
-    /// it. The plugin therefore passes a written `status.signature` through
-    /// untouched and derives only when the field is absent. Fails on a surface
-    /// that re-derives over the controller's own word, which would report a
-    /// module whose registry was unreachable as plainly `unsigned`.
+    /// the controller is the only thing that can name it. The plugin passes a
+    /// written `status.signature` through untouched and reads an ABSENT one as
+    /// that same word: a Module no reconcile has written is a check that has
+    /// not run, whatever its spec declares. It had derived `unverified` from
+    /// the spec's declared key and the raw bool, which told the reader cosign
+    /// had rejected an artifact nothing had looked at — permanently, on any
+    /// cluster with no operator running.
     #[tokio::test(flavor = "current_thread")]
     async fn cmd_status_surfaces_the_controllers_unknown_verdict() {
         let client = mock_client(|req| {
@@ -1120,13 +1121,13 @@ mod mock_kube {
         );
         assert_eq!(
             modules[1]["signature"],
-            cfgd_crd::SIGNATURE_UNVERIFIED,
-            "no verdict written yet, but the spec declares a signature"
+            cfgd_crd::SIGNATURE_UNKNOWN,
+            "no verdict written yet: the declared key says nothing about a check that has not run"
         );
         assert_eq!(
             modules[2]["signature"],
-            cfgd_crd::SIGNATURE_UNSIGNED,
-            "no verdict written and nothing declared"
+            cfgd_crd::SIGNATURE_UNKNOWN,
+            "no verdict written and no status at all"
         );
 
         let human = cfgd_core::output::strip_ansi(&cap.human());
@@ -1135,6 +1136,55 @@ mod mock_kube {
             "the row a person reads carries the fourth word:\n{human}"
         );
         crate::cli::test_support::assert_nests_under(&human, "Modules", "unreachable");
+    }
+
+    /// The plugin's signature word and the CRD's `Signature` printer column
+    /// read ONE field, so a Module with no status at all renders the same
+    /// answer on both: the column's JSONPath resolves to nothing, and the
+    /// plugin spells that absence as `unknown`. Fails on a plugin that reads
+    /// the spec — or a `verified: false` — to fill the slot with a verdict.
+    #[test]
+    fn a_status_less_module_reads_unknown_on_the_plugin_and_the_crd_column_alike() {
+        use kube::CustomResourceExt;
+
+        let crd = cfgd_crd::Module::crd();
+        let column = crd.spec.versions[0]
+            .additional_printer_columns
+            .iter()
+            .flatten()
+            .find(|c| c.name == "Signature")
+            .expect("the Module CRD carries a Signature column");
+        assert_eq!(
+            column.json_path.replace('.', "/"),
+            MODULE_SIGNATURE_POINTER,
+            "the plugin reads the field the CRD column binds to"
+        );
+
+        let module: kube::core::DynamicObject = serde_json::from_value(serde_json::json!({
+            "apiVersion": "cfgd.io/v1alpha1",
+            "kind": "Module",
+            "metadata": {"name": "unreconciled"},
+            "spec": {
+                "ociArtifact": "ghcr.io/cfgd/unreconciled:1.0.0",
+                "signature": {"cosign": {"keyless": true}}
+            }
+        }))
+        .expect("a Module with no status deserializes");
+        let row = ModuleRow::from_object(&module);
+        assert_eq!(row.signature, cfgd_crd::SIGNATURE_UNKNOWN);
+        assert!(!row.verified, "the raw bool stays false on the wire");
+
+        let mut declined = module.clone();
+        declined.data["status"] = serde_json::json!({"verified": false});
+        assert_eq!(
+            ModuleRow::from_object(&declined).signature,
+            cfgd_crd::SIGNATURE_UNKNOWN,
+            "a bare `false` cannot say whether cosign rejected, nothing was declared, or nothing ran"
+        );
+        assert!(
+            module.data.pointer(MODULE_SIGNATURE_POINTER).is_none(),
+            "the column's JSONPath resolves to nothing for the same object"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

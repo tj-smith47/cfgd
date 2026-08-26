@@ -341,9 +341,7 @@ pub(super) fn run_source_add(
     // payload below still carries the field.
     let mut doc = Doc::new().status(Role::Ok, "Subscribed");
     if closing {
-        doc = doc.hint(super::source_success_next_step(
-            super::SourceMutation::Subscribed,
-        ));
+        doc = doc.hint(super::success_next_step(super::Mutation::SourceSubscribed));
     }
     let doc = doc.with_data(serde_json::json!({
         "name": source_name,
