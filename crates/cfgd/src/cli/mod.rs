@@ -134,15 +134,20 @@ pub(in crate::cli) enum Mutation<'a> {
     /// re-spelled, and a reference resolved on this side of the network is
     /// never interpolated into an instruction for the other.
     ///
-    /// It names no FILE either. `kubectl apply -f <module>.yaml` substitutes to
-    /// `module.yaml` — this verb's own required input, `kind: Module` with the
-    /// pushed module's `metadata.name`, and on screen two lines above the hint.
-    /// Applying it succeeds and replaces the Module with one carrying no
-    /// `ociArtifact` and no signature, silently undoing the push and the
-    /// signing the rows above just reported. The resource to register does not
-    /// exist yet — that is what `--apply` is for — so the hint names the
-    /// resource, and the qualifier hangs off the MODULE (which points at the
-    /// address) rather than off `Register` (which happens at the API server).
+    /// Nor does it name a file this verb CONSUMES. `kubectl apply -f
+    /// <module>.yaml` substitutes to `module.yaml` — this verb's own required
+    /// input, `kind: Module` with the pushed module's `metadata.name`, and on
+    /// screen two lines above the hint. Applying it succeeds and replaces the
+    /// Module with one carrying no `ociArtifact` and no signature, silently
+    /// undoing the push and the signing the rows above just reported. The
+    /// resource to register is one the reader still has to write — that is
+    /// what `--apply` is for — so the placeholder is
+    /// `<module-resource>.yaml`, which substitutes to a name this verb reads
+    /// nothing from, while `-f` keeps the invocation runnable as printed: bare
+    /// `kubectl apply` exits 1 on `must specify one of -f and -k` without ever
+    /// contacting a cluster. The qualifier hangs off the MODULE (which points
+    /// at the address) rather than off `Register` (which happens at the API
+    /// server).
     ModulePushed { applied: Option<&'a str> },
     /// `module pull` extracted a module; `name` is what its manifest said,
     /// when it had one.
@@ -196,7 +201,7 @@ pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> String {
         } => format!("Check it with `kubectl get module {name}`"),
         Mutation::ModulePushed { applied: None } => {
             "Register it as a Module pointing at the cluster's registry address: \
-             `kubectl apply`, or `--apply` next time"
+             `kubectl apply -f <module-resource>.yaml`, or `--apply` next time"
                 .to_string()
         }
         Mutation::ModulePulled { name: Some(name) } => {

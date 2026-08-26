@@ -15298,6 +15298,34 @@ fn required_input_files(verb: &str) -> &'static [&'static str] {
     }
 }
 
+/// The foreign tools a composed hint may name, each with the argument that
+/// invocation refuses to run without. `kubectl apply` with neither `-f` nor
+/// `-k` exits 1 with `error: must specify one of -f and -k` — it never
+/// contacts a cluster — so a hint printing it bare hands the reader the one
+/// typeable thing in the line and it fails. `None` means the tool is absent
+/// from this table, which the walk fails on: a new foreign command trips by
+/// not being listed rather than by being wrong.
+fn foreign_command_is_complete(command: &str) -> Option<bool> {
+    let mut tokens = command.split_whitespace();
+    let tool = tokens.next()?;
+    let sub = tokens.next().unwrap_or_default();
+    let rest: Vec<&str> = tokens.collect();
+    // A token is a positional unless it is a flag itself, or the value of the
+    // flag before it.
+    let has_positional = rest.iter().enumerate().any(|(i, t)| {
+        !t.starts_with('-')
+            && !rest[..i]
+                .last()
+                .is_some_and(|prev| prev.starts_with('-') && !prev.contains('='))
+    });
+    match (tool, sub) {
+        ("kubectl", "apply") => Some(rest.iter().any(|t| *t == "-f" || *t == "-k")),
+        ("kubectl", "get") => Some(has_positional),
+        ("cosign", "verify") => Some(has_positional),
+        _ => None,
+    }
+}
+
 /// Every hint `success_next_step` composes names the command that comes next,
 /// in backticks — the same shape `every_closing_hint_names_a_command` holds
 /// literal hints to, which cannot see a text built here. Walks every variant,
@@ -15318,6 +15346,15 @@ fn required_input_files(verb: &str) -> &'static [&'static str] {
 /// two lines above the hint. Applying it succeeds and replaces the Module with
 /// one holding no `ociArtifact` and no signature, silently undoing the push and
 /// the signing the rows above just reported.
+///
+/// And every backticked span is COMPLETE as printed, once its placeholders are
+/// substituted: dropping the file left `kubectl apply`, which exits 1 on
+/// `must specify one of -f and -k` without contacting a cluster, three lines
+/// above the operator hand-typing the `-f` the hint had dropped. A span
+/// opening on `cfgd` round-trips through [`Cli::try_parse_from`]; one opening
+/// on a foreign tool is judged by [`foreign_command_is_complete`], whose table
+/// a new foreign command trips by being absent from. A span that is a bare
+/// flag (`--apply`) is named, not claimed typeable on its own.
 #[test]
 fn every_composed_next_step_names_a_command() {
     let mutations: &[(Mutation<'_>, &[&str])] = &[
@@ -15439,6 +15476,28 @@ fn every_composed_next_step_names_a_command() {
                     "{mutation:?} re-spells the verb that just ran with concrete arguments — \
                      a re-run hint is a <placeholder> template or names a different command: {hint}"
                 );
+            }
+            let argv: Vec<&str> = substituted.split_whitespace().collect();
+            match argv.first() {
+                Some(&"cfgd") => {
+                    if let Err(e) = Cli::try_parse_from(argv.iter().copied()) {
+                        panic!(
+                            "{mutation:?} composes `{command}`, which this CLI does not parse — \
+                             a hint hands the reader a runnable invocation: {e}"
+                        );
+                    }
+                }
+                Some(token) if token.starts_with('-') => {}
+                Some(_) => {
+                    assert_eq!(
+                        foreign_command_is_complete(&substituted),
+                        Some(true),
+                        "{mutation:?} composes `{command}`, a foreign invocation either missing \
+                         the argument its tool refuses to run without, or absent from \
+                         `foreign_command_is_complete`'s table: {hint}"
+                    );
+                }
+                None => panic!("{mutation:?} composes an empty backticked span: {hint}"),
             }
         }
     }
