@@ -62,10 +62,11 @@ pub(super) async fn reconcile_module(
     .await;
     let verified = ver.status == "True";
 
-    // The unsigned policy is settled last, because it is about the VERDICT.
-    // Availability answers it earlier for a module that declares no key at
-    // all; this is the other half — a declared key whose artifact did not
-    // actually check out is not a signed module either.
+    // The unsigned policy is settled last, and here alone, because it is about
+    // the VERDICT: availability judges the reference, the verifier judges the
+    // artifact, and only afterwards is there a verdict to hold a module back
+    // over. A module declaring no key and one whose declared key rejected its
+    // artifact are the same failure to this gate.
     let (avail_status, avail_reason, avail_message, avail_event) =
         withhold_unverified(&ctx.stores, &name, ver.verdict)
             .await
@@ -321,16 +322,10 @@ async fn evaluate_module_availability<'a>(
     };
 
     // Collect all trusted registries from ClusterConfigPolicies
-    let mut all_trusted_registries: Vec<String> = Vec::new();
-    let mut any_disallow_unsigned = false;
-
-    for ccp in &ccp_list {
-        let security = &ccp.spec.security;
-        all_trusted_registries.extend(security.trusted_registries.clone());
-        if !security.allow_unsigned {
-            any_disallow_unsigned = true;
-        }
-    }
+    let all_trusted_registries: Vec<&String> = ccp_list
+        .iter()
+        .flat_map(|ccp| ccp.spec.security.trusted_registries.iter())
+        .collect();
 
     // Check trusted registries (only if any are configured)
     if !all_trusted_registries.is_empty() {
@@ -353,31 +348,6 @@ async fn evaluate_module_availability<'a>(
                     format!(
                         "Module {} artifact {} is not from a trusted registry",
                         module_name, oci_ref
-                    ),
-                ),
-            );
-        }
-    }
-
-    // Check unsigned policy
-    if any_disallow_unsigned {
-        let has_cosign_key = spec
-            .signature
-            .as_ref()
-            .and_then(|s| s.cosign.as_ref())
-            .is_some_and(|c| c.keyless || c.public_key.as_ref().is_some_and(|pk| !pk.is_empty()));
-
-        if !has_cosign_key {
-            return (
-                "False",
-                "UnsignedNotAllowed",
-                "Module has no signature but unsigned modules are not allowed",
-                (
-                    EventType::Warning,
-                    "UnsignedNotAllowed",
-                    format!(
-                        "Module {} has no signature but policy requires signing",
-                        module_name
                     ),
                 ),
             );

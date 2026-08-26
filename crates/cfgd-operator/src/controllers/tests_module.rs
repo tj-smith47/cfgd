@@ -364,6 +364,16 @@ async fn status_under_verifier(
     spec: ModuleSpec,
     check: SignatureCheck,
 ) -> serde_json::Value {
+    status_under_policies(name, spec, check, vec![]).await
+}
+
+/// [`status_under_verifier`] with cluster policies in force.
+async fn status_under_policies(
+    name: &str,
+    spec: ModuleSpec,
+    check: SignatureCheck,
+    policies: Vec<ClusterConfigPolicy>,
+) -> serde_json::Value {
     let module = make_module(name, spec);
     let (ctx, _registry, harness) = MockKubeHarness::with_registry_seams(
         vec![
@@ -372,13 +382,38 @@ async fn status_under_verifier(
             expect_event_post("default"),
             expect_event_post("default"),
         ],
-        stores_with_ccps(vec![]),
+        stores_with_ccps(policies),
         ArtifactFactsReader::fixed(Default::default()),
         ArtifactVerifier::fixed(check),
     );
     reconcile_module(Arc::new(module), ctx).await.unwrap();
     harness.finish().await.captured[0].body_json()["status"].clone()
 }
+
+/// A cluster policy that admits only modules with a verified signature.
+fn strict_ccp() -> ClusterConfigPolicy {
+    ClusterConfigPolicy {
+        metadata: kube::api::ObjectMeta {
+            name: Some("strict".to_string()),
+            uid: Some("uid-strict".to_string()),
+            ..Default::default()
+        },
+        spec: ClusterConfigPolicySpec {
+            security: SecurityPolicy {
+                trusted_registries: vec![],
+                allow_unsigned: false,
+            },
+            ..Default::default()
+        },
+        status: None,
+    }
+}
+
+/// The one sentence the withholding gate writes into the Available condition.
+/// Pinned as the literal, because the reason code alone cannot say WHICH gate
+/// produced the verdict.
+const WITHHELD_MESSAGE: &str =
+    "Module signature did not verify but unsigned modules are not allowed";
 
 fn signed_spec() -> ModuleSpec {
     ModuleSpec {
@@ -637,54 +672,58 @@ async fn reconcile_module_with_invalid_oci_reference_records_invalid_reference()
     assert_eq!(available["reason"], "InvalidReference");
 }
 
+/// A module declaring no signature is withheld under `allowUnsigned: false` —
+/// and it is the VERDICT gate that withholds it. A verifier that would accept
+/// anything is installed, so the only thing that can reach `UnsignedNotAllowed`
+/// is the `unsigned` verdict the spec itself produced, carrying the verdict
+/// gate's own sentence.
 #[tokio::test]
 async fn reconcile_module_with_unsigned_disallowed_and_no_signature_records_violation() {
     let spec = ModuleSpec {
         oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
         ..Default::default()
     };
-    let module = make_module("unsigned-mod", spec);
+    let status = status_under_policies(
+        "unsigned-mod",
+        spec,
+        SignatureCheck::Valid,
+        vec![strict_ccp()],
+    )
+    .await;
 
-    let ccp_spec = ClusterConfigPolicySpec {
-        security: SecurityPolicy {
-            trusted_registries: vec![],
-            allow_unsigned: false,
-        },
-        ..Default::default()
-    };
-    let ccp = ClusterConfigPolicy {
-        metadata: kube::api::ObjectMeta {
-            name: Some("strict".to_string()),
-            uid: Some("uid-strict".to_string()),
-            ..Default::default()
-        },
-        spec: ccp_spec,
-        status: None,
-    };
-
-    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
-        vec![
-            ExpectedCall::patch_status(format!("{}/status", module_path("unsigned-mod")))
-                .returning_json(&module),
-            expect_event_post("default"), // Available=False
-            expect_event_post("default"), // Verified
-        ],
-        stores_with_ccps(vec![ccp]),
-    );
-
-    reconcile_module(Arc::new(module), ctx).await.unwrap();
-
-    let report = harness.finish().await;
-    let status_body = report.captured[0].body_json();
-    let available = status_body["status"]["conditions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["type"] == "Available")
-        .unwrap()
-        .clone();
+    assert_eq!(status["signature"], cfgd_crd::SIGNATURE_UNSIGNED);
+    assert_eq!(status["verified"], false);
+    let available = condition(&status, "Available");
     assert_eq!(available["status"], "False");
     assert_eq!(available["reason"], "UnsignedNotAllowed");
+    assert_eq!(
+        available["message"], WITHHELD_MESSAGE,
+        "the verdict gate must be what withheld the module, got {available:?}"
+    );
+}
+
+/// The sibling on the other side of the same gate: a module that DOES declare a
+/// key is withheld just the same when the verifier rejects its artifact. A
+/// declared key is a promise of a signature, not a signature.
+#[tokio::test]
+async fn reconcile_module_with_unsigned_disallowed_and_a_rejected_signature_records_violation() {
+    let status = status_under_policies(
+        "rejected-strict-mod",
+        signed_spec(),
+        SignatureCheck::Rejected("no matching signatures".to_string()),
+        vec![strict_ccp()],
+    )
+    .await;
+
+    assert_eq!(status["signature"], cfgd_crd::SIGNATURE_UNVERIFIED);
+    assert_eq!(status["verified"], false);
+    let verified = condition(&status, "Verified");
+    assert_eq!(verified["status"], "False");
+    assert_eq!(verified["reason"], "SignatureInvalid");
+    let available = condition(&status, "Available");
+    assert_eq!(available["status"], "False");
+    assert_eq!(available["reason"], "UnsignedNotAllowed");
+    assert_eq!(available["message"], WITHHELD_MESSAGE);
 }
 
 #[tokio::test]
@@ -895,22 +934,6 @@ async fn reconcile_module_emits_again_when_the_verdict_changes() {
             .expect("status round-trips"),
     );
 
-    let strict = ClusterConfigPolicy {
-        metadata: kube::api::ObjectMeta {
-            name: Some("strict".to_string()),
-            uid: Some("uid-strict".to_string()),
-            ..Default::default()
-        },
-        spec: ClusterConfigPolicySpec {
-            security: SecurityPolicy {
-                trusted_registries: vec![],
-                allow_unsigned: false,
-            },
-            ..Default::default()
-        },
-        status: None,
-    };
-
     let (ctx, _registry, harness) = MockKubeHarness::with_stores(
         vec![
             ExpectedCall::patch_status(format!("{}/status", module_path("turning-mod")))
@@ -918,7 +941,7 @@ async fn reconcile_module_emits_again_when_the_verdict_changes() {
             expect_event_post("default"),
             expect_event_post("default"),
         ],
-        stores_with_ccps(vec![strict]),
+        stores_with_ccps(vec![strict_ccp()]),
     );
     reconcile_module(Arc::new(module), ctx).await.unwrap();
     let second = harness.finish().await;
