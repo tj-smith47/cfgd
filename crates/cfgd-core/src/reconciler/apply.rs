@@ -531,6 +531,13 @@ pub(super) const ENV_SKIPPED_SUFFIX: &str = ":skipped";
 /// strips one for the persisted id strips the other identically.
 pub(super) const ENV_NO_SESSION_MANAGER_SUFFIX: &str = ":no-session-manager";
 
+/// How many of `results` the plan withheld before the run: the rows carrying
+/// a [`ActionResult::not_attempted`] reason, which every stored total and every
+/// `failed = len - …` subtraction has to leave out.
+fn not_attempted_count(results: &[ActionResult]) -> usize {
+    results.iter().filter(|r| r.not_attempted.is_some()).count()
+}
+
 fn env_result_key(description: &str) -> &str {
     description
         .strip_suffix(ENV_SKIPPED_SUFFIX)
@@ -610,6 +617,7 @@ fn merge_env_result(results: &mut Vec<ActionResult>, description: String, change
         // The same verdict the Env phase's own row settles on: a write that
         // changed nothing is a no-op, whichever late input triggered it.
         skipped: !changed,
+        not_attempted: None,
     });
 }
 
@@ -1295,7 +1303,11 @@ impl<'a> super::Reconciler<'a> {
         if let Some(code) = aborted_code {
             self.record_managed_resources(apply_id, &results, resolved, module_actions)?;
             self.update_module_state(module_actions, Some(apply_id), &results)?;
-            let succeeded = results.iter().filter(|r| r.success && !r.skipped).count();
+            let not_attempted = not_attempted_count(&results);
+            let succeeded = results
+                .iter()
+                .filter(|r| r.success && !r.skipped && r.not_attempted.is_none())
+                .count();
             let skipped = results.iter().filter(|r| r.success && r.skipped).count();
             // `total` is what the run PLANNED, not what it reached: an aborted
             // run's whole point is that those two numbers differ, and a stored
@@ -1304,12 +1316,13 @@ impl<'a> super::Reconciler<'a> {
             // and it is the only place the actions the abort stopped are
             // accounted for — the dispatcher deliberately reports none of them
             // action by action.
-            let not_run = planned_total.saturating_sub(results.len());
+            let not_run = planned_total.saturating_sub(results.len() - not_attempted);
             let summary = crate::state::ApplySummary::Actions {
                 total: planned_total,
                 succeeded,
                 skipped,
-                failed: results.len() - succeeded - skipped,
+                failed: results.len() - not_attempted - succeeded - skipped,
+                not_attempted,
                 not_run: Some(not_run),
                 aborted: true,
             }
@@ -1392,6 +1405,7 @@ impl<'a> super::Reconciler<'a> {
                                 error: Some(e.to_string()),
                                 changed: false,
                                 skipped: false,
+                                not_attempted: None,
                             });
                         }
                     }
@@ -1443,6 +1457,7 @@ impl<'a> super::Reconciler<'a> {
                             // A script reports its own outcome line; the tree
                             // settles no role for it and this record invents none.
                             skipped: false,
+                            not_attempted: None,
                         });
                     }
                     Err(e) => {
@@ -1455,6 +1470,7 @@ impl<'a> super::Reconciler<'a> {
                             error: Some(format!("{}", e)),
                             changed: false,
                             skipped: false,
+                            not_attempted: None,
                         });
                         if !continue_on_err {
                             return Err(e);
@@ -1520,6 +1536,7 @@ impl<'a> super::Reconciler<'a> {
                                 error: None,
                                 changed,
                                 skipped: false,
+                                not_attempted: None,
                             });
                         }
                         Err(e) => {
@@ -1536,6 +1553,7 @@ impl<'a> super::Reconciler<'a> {
                                 error: Some(format!("{}", e)),
                                 changed: false,
                                 skipped: false,
+                                not_attempted: None,
                             });
                             if !continue_on_err {
                                 return Err(e);
@@ -1546,7 +1564,10 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        let total = results.len();
+        // `total` is what the run ATTEMPTED: a pre-skipped action has a result
+        // row (its reason) and no place in the count the header promised.
+        let not_attempted = not_attempted_count(&results);
+        let total = results.len() - not_attempted;
         let failed = results.iter().filter(|r| !r.success).count();
         let status = if failed == 0 {
             ApplyStatus::Success
@@ -1563,6 +1584,7 @@ impl<'a> super::Reconciler<'a> {
             succeeded: total - failed - skipped,
             skipped,
             failed,
+            not_attempted,
             not_run: None,
             aborted: false,
         }
@@ -1833,6 +1855,14 @@ impl<'a> super::Reconciler<'a> {
         };
 
         let changed = success && action_changed;
+        // The ONE predicate the header priced the plan with decides the tally
+        // too: an action the plan already withheld is recorded as not attempted,
+        // never as a skip that ran, or the apply reports one outcome more than
+        // the plan promised.
+        let not_attempted = action
+            .pre_skip_reason()
+            .filter(|_| success)
+            .map(str::to_string);
         results.push(ActionResult {
             phase: ledger.phase_name.as_str().to_string(),
             description: desc.clone(),
@@ -1843,8 +1873,10 @@ impl<'a> super::Reconciler<'a> {
             // outcome, so the tree never decides one for it and this record
             // must not invent one either.
             skipped: success
+                && not_attempted.is_none()
                 && !action_reports_its_own_status(action)
                 && settled_success_role(action, action_changed) == Role::Skipped,
+            not_attempted,
         });
 
         if action_reports_its_own_status(action) {

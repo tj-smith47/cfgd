@@ -2,6 +2,19 @@ use super::*;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
 
 pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow::Result<()> {
+    add_source(cli, printer, args, true)
+}
+
+/// The body of `cfgd source add`. `closing` is whether this add is the whole
+/// command: a `source replace` runs one inside its own report and closes on its
+/// own verdict, so the next-step hint belongs to the caller's last line, not to
+/// a `Subscribed` row mid-screen.
+pub(super) fn add_source(
+    cli: &Cli,
+    printer: &Printer,
+    args: &SourceAddArgs,
+    closing: bool,
+) -> anyhow::Result<()> {
     // Resolve the reference before anything reads the URL, so the inferred name,
     // the clone, and the persisted `spec.sources[].origin` all carry one string.
     // An existing local path stays itself (and is then refused by `load_source`
@@ -326,21 +339,24 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
     // this subscription activates, under its own `profile:<name>` owner, and a
     // headingless key/value pair restating it cannot be read on its own. The
     // payload below still carries the field.
-    let doc = Doc::new()
-        .status(Role::Ok, "Subscribed")
-        .hint(MSG_RUN_APPLY)
-        .with_data(serde_json::json!({
-            "name": source_name,
-            "url": url,
-            "branch": source_spec.origin.branch,
-            "commit": cached.last_commit.clone().unwrap_or_default(),
-            "profile": selected_profile,
-            "priority": resolved_priority,
-            // Additive: the same manifest object `source show` carries, so a
-            // consumer scripting a subscription reads what it subscribed TO
-            // without a second `source show` call.
-            "manifest": super::show::source_manifest_output(manifest),
-        }));
+    let mut doc = Doc::new().status(Role::Ok, "Subscribed");
+    if closing {
+        doc = doc.hint(super::source_success_next_step(
+            super::SourceMutation::Subscribed,
+        ));
+    }
+    let doc = doc.with_data(serde_json::json!({
+        "name": source_name,
+        "url": url,
+        "branch": source_spec.origin.branch,
+        "commit": cached.last_commit.clone().unwrap_or_default(),
+        "profile": selected_profile,
+        "priority": resolved_priority,
+        // Additive: the same manifest object `source show` carries, so a
+        // consumer scripting a subscription reads what it subscribed TO
+        // without a second `source show` call.
+        "manifest": super::show::source_manifest_output(manifest),
+    }));
     printer.emit(doc);
 
     Ok(())

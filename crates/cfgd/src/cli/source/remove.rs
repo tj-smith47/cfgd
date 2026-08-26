@@ -55,6 +55,32 @@ pub fn cmd_source_remove(
     yes: bool,
     ignore_not_found: bool,
 ) -> anyhow::Result<()> {
+    remove_source(
+        cli,
+        printer,
+        name,
+        keep_all,
+        remove_all,
+        yes,
+        ignore_not_found,
+        true,
+    )
+}
+
+/// The body of `cfgd source remove`. `closing` is whether this removal is the
+/// whole command — a `source replace` runs one mid-report and closes on its own
+/// verdict, so only a closing removal carries the next-step hint.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn remove_source(
+    cli: &Cli,
+    printer: &Printer,
+    name: &str,
+    keep_all: bool,
+    remove_all: bool,
+    yes: bool,
+    ignore_not_found: bool,
+    closing: bool,
+) -> anyhow::Result<()> {
     if keep_all && remove_all {
         return Err(crate::cli::cli_error(
             name,
@@ -235,16 +261,18 @@ pub fn cmd_source_remove(
         );
     }
 
-    printer.emit(
-        Doc::new()
-            .status(Role::Ok, "Removed")
-            .with_data(serde_json::json!({
-                "name": name,
-                "managedResources": managed_count,
-                "disposition": disposition,
-                "cancelled": false,
-            })),
-    );
+    let mut doc = Doc::new().status(Role::Ok, "Removed");
+    if closing {
+        doc = doc.hint(super::source_success_next_step(
+            super::SourceMutation::Removed,
+        ));
+    }
+    printer.emit(doc.with_data(serde_json::json!({
+        "name": name,
+        "managedResources": managed_count,
+        "disposition": disposition,
+        "cancelled": false,
+    })));
     Ok(())
 }
 

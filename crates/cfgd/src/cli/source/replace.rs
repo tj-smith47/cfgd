@@ -54,10 +54,10 @@ pub fn cmd_source_replace(
     // Remove old source (keeping resources). Confirmation-free: a re-home
     // purges nothing, so there is no forget-my-edits question to ask, and a
     // replace must not stop mid-way to pose one.
-    cmd_source_remove(cli, printer, old_name, true, false, true, false)?;
+    remove::remove_source(cli, printer, old_name, true, false, true, false, false)?;
 
     // Add new source with same name, carrying over the whole subscription
-    cmd_source_add(
+    add::add_source(
         cli,
         printer,
         &SourceAddArgs {
@@ -75,6 +75,7 @@ pub fn cmd_source_replace(
             allow_scripts: old_subscription.allow_scripts,
             yes: true,
         },
+        false,
     )?;
 
     restore_subscription(&config_path, old_name, &old_subscription)?;
@@ -82,6 +83,9 @@ pub fn cmd_source_replace(
     printer.emit(
         Doc::new()
             .status(Role::Ok, format!("Replaced with {}", new_url))
+            .hint(super::source_success_next_step(
+                super::SourceMutation::Replaced,
+            ))
             .with_data(serde_json::json!({
                 "oldName": old_name,
                 "newUrl": new_url,

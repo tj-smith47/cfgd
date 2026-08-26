@@ -140,6 +140,7 @@ pub fn report_restore(printer: &Printer, outcome: &RestoreOutcome) -> crate::rec
     crate::reconciler::RunTally {
         succeeded: usize::from(outcome.restored),
         skipped: 0,
+        not_attempted: Vec::new(),
         failed: usize::from(!outcome.restored),
         planned_total: RESTORE_ACTION_COUNT,
         status: if outcome.is_clean() {

@@ -270,9 +270,11 @@ acme-corp  https://github.com/acme-corp/dev-config  500       Active  2h ago    
 ```
 
 `Last Sync` is the age of the last successful fetch (`never` before the first one) and
-`Signed` whether that commit carried a verified signature (`-` when nothing is recorded
-yet). `-o json` keeps the exact ISO 8601 instant; `--wide` adds the source's
-self-reported `Version`.
+`Signed` whether that commit carried a verified signature. A column no listed source can
+fill is left off the table rather than padded with `-` (`Commit` and `Signed` before the
+first fetch; `Drift`, which only `cfgd daemon status` holds). `-o json` keeps every field
+and the exact ISO 8601 instant; `--wide` adds the source's self-reported `Version` when a
+manifest names one.
 
 ### What a source provides
 
@@ -412,7 +414,7 @@ Plan
   Profile  default
   Phases   Prerequisites, Packages
 
-Pending Decisions (not included in this plan)
+Pending Decisions (1 item, not included in this plan)
   source:acme-corp
     ◉ Recommended packages.brew.k9s — brew install k9s
 

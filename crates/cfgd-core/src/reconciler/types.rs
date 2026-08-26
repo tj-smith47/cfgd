@@ -1046,6 +1046,12 @@ pub struct ActionResult {
     /// counting a skip as a success is what let `13 actions succeeded` stand
     /// over a tree showing twelve ✓ and one —.
     pub skipped: bool,
+    /// Why this action was never going to run here — the answer
+    /// [`Action::pre_skip_reason`] gave while the plan was read — so the tally
+    /// prices it the way the header did. The row still renders with the same
+    /// reason; the counted rollup names it only in its parenthetical. `None`
+    /// for every action the run attempted, whatever became of it.
+    pub not_attempted: Option<String>,
 }
 
 /// Result of an entire apply operation.
@@ -1096,15 +1102,27 @@ impl ApplyResult {
     pub fn succeeded(&self) -> usize {
         self.action_results
             .iter()
-            .filter(|r| r.success && !r.skipped)
+            .filter(|r| r.success && !r.skipped && r.not_attempted.is_none())
             .count()
     }
 
+    /// Actions that ran and settled a skip. A pre-skipped action is NOT one of
+    /// these either: it never reached its line, and the header priced it out
+    /// through the same predicate that names it in [`Self::not_attempted`].
     pub fn skipped(&self) -> usize {
         self.action_results
             .iter()
-            .filter(|r| r.success && r.skipped)
+            .filter(|r| r.success && r.skipped && r.not_attempted.is_none())
             .count()
+    }
+
+    /// The reason of every action [`Action::pre_skip_reason`] withheld, one
+    /// entry per action, in result order.
+    pub fn not_attempted(&self) -> Vec<String> {
+        self.action_results
+            .iter()
+            .filter_map(|r| r.not_attempted.clone())
+            .collect()
     }
 
     pub fn failed(&self) -> usize {

@@ -334,6 +334,55 @@ fn source_update_happy_human() {
     );
 }
 
+/// A trust edit lands on the NEXT FETCH, so the success line points at `cfgd
+/// sync` rather than at the plan/apply pair every composition edit closes on.
+#[test]
+#[serial]
+fn source_update_trust_knob_hints_the_sync_that_meets_it_human() {
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let (config_dir, state_dir) = source_test_config_setup();
+    let bare_root = tempfile::tempdir().unwrap();
+    let bare = make_bare_source_repo(bare_root.path(), "trust-src", None);
+    let url = cfgd_core::to_file_url(&bare);
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (add_printer, _add_cap) = Printer::for_test_doc();
+    let mut args = source_add_args(url);
+    args.name = Some("trust-src".into());
+    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    drop(add_printer);
+
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_source_update(
+        &cli,
+        &printer,
+        Some("trust-src"),
+        cfgd::cli::source::SubscriptionEdits {
+            require_signed_commits: Some(true),
+            allow_scripts: None,
+        },
+    )
+    .unwrap();
+    drop(printer);
+
+    let stripped = normalize_paths(
+        &strip_ansi(&cap.human()),
+        &bare,
+        bare_root.path(),
+        config_dir.path(),
+        state_dir.path(),
+    );
+    assert!(
+        stripped.contains("Run `cfgd sync` to fetch under the new policy"),
+        "a trust edit closes on the sync that meets it: {stripped}"
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "source_update/trust_knob.txt",
+        &stripped,
+    );
+}
+
 #[test]
 #[serial]
 fn source_update_happy_json() {

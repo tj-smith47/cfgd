@@ -758,7 +758,9 @@ pub fn run_apply(
         status: status.display_str().to_string(),
         apply_id: Some(result.apply_id),
         succeeded: result.succeeded(),
+        skipped: result.skipped(),
         failed: result.failed(),
+        not_attempted: result.not_attempted().len(),
         // `ApplyOutput.source_commits` is a `BTreeMap` so `-o json`/`-o yaml`
         // serialize its keys in a fixed order; `DesiredState.source_commits`
         // stays a `HashMap` internally since nothing else reads its

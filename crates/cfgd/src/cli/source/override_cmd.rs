@@ -42,6 +42,9 @@ pub fn cmd_source_override(
                             OwnerLabel::new("source", source_name).plain()
                         ),
                     )
+                    .hint(super::source_success_next_step(
+                        super::SourceMutation::Overridden,
+                    ))
                     .with_data(serde_json::json!({
                         "sourceName": source_name,
                         "path": path,
@@ -73,6 +76,9 @@ pub fn cmd_source_override(
                             OwnerLabel::new("source", source_name).plain()
                         ),
                     )
+                    .hint(super::source_success_next_step(
+                        super::SourceMutation::Overridden,
+                    ))
                     .with_data(serde_json::json!({
                         "sourceName": source_name,
                         "path": path,

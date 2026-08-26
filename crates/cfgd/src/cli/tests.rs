@@ -14382,6 +14382,118 @@ fn every_single_subject_source_title_uses_the_owner_spelling() {
     );
 }
 
+/// The mutating `source` verbs and the file each renders its verdict from,
+/// with whether the verb's clap definition lets ONE invocation address several
+/// sources (`update` with no name runs over all of them).
+fn mutating_source_verbs() -> Vec<(&'static str, &'static str, bool)> {
+    use clap::CommandFactory;
+    let cli = Cli::command();
+    let source = cli
+        .find_subcommand("source")
+        .expect("the `source` verb family");
+    [
+        ("add", "add.rs"),
+        ("update", "update.rs"),
+        ("remove", "remove.rs"),
+        ("replace", "replace.rs"),
+        ("override", "override_cmd.rs"),
+        ("priority", "priority.rs"),
+    ]
+    .into_iter()
+    .map(|(verb, file)| {
+        let cmd = source
+            .find_subcommand(verb)
+            .unwrap_or_else(|| panic!("`source {verb}` is a subcommand"));
+        // A verb whose subject positional is optional can run without naming
+        // one, which is the only way it addresses more than one source.
+        let multi = cmd.get_positionals().all(|arg| !arg.is_required_set());
+        (verb, file, multi)
+    })
+    .collect()
+}
+
+fn source_verb_body(file: &str) -> Vec<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/cli/source")
+        .join(file);
+    let body = std::fs::read_to_string(&path).expect("the verb's source file is checked out");
+    production_body(&body).lines().map(str::to_string).collect()
+}
+
+/// A `source` verdict carries a count exactly when the verb can address more
+/// than one source, and is bare otherwise. The family had shipped `√
+/// Subscribed`, `√ Updated 1 source` and `√ Removed` — a counted verdict beside
+/// two bare ones, chosen verb by verb. The arity is read from each verb's own
+/// clap definition, so a verb that grows a second subject trips here.
+#[test]
+fn every_source_verdict_counts_iff_its_verb_takes_many_subjects() {
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (verb, file, multi) in mutating_source_verbs() {
+        let lines = source_verb_body(file);
+        let mut counted = false;
+        let mut verdicts = 0usize;
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains("Role::Ok") || line.trim_start().starts_with("//") {
+                continue;
+            }
+            verdicts += 1;
+            // The literal may sit up to two lines below a wrapped `Role::Ok,`.
+            let window = lines[n..(n + 3).min(lines.len())].join("\n");
+            if window.contains("pluralize(") {
+                counted = true;
+                if !multi {
+                    offenders.push(format!(
+                        "source/{file}:{}: `source {verb}` addresses one source; its verdict is bare",
+                        n + 1
+                    ));
+                }
+            }
+        }
+        assert!(
+            verdicts > 0,
+            "`source {verb}` renders no `Role::Ok` verdict"
+        );
+        judged += 1;
+        if multi && !counted {
+            offenders.push(format!(
+                "source/{file}: `source {verb}` can address several sources; its verdict carries the count"
+            ));
+        }
+    }
+    assert_eq!(judged, 6, "the walk no longer reaches the family");
+    assert!(
+        offenders.is_empty(),
+        "a `source` verdict is counted iff the verb takes many subjects:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every mutating `source` verb closes its SUCCESS path on a next step, from
+/// the one composer beside `source_failure_next_step`. `source update` hinted
+/// only on its failure arm and `source remove` never, on the family whose
+/// every edit is settled by a later `sync` or `apply` the reader has to type.
+#[test]
+fn every_mutating_source_verb_closes_on_a_next_step() {
+    let mut offenders = Vec::new();
+    for (verb, file, _) in mutating_source_verbs() {
+        let lines = source_verb_body(file);
+        if !lines
+            .iter()
+            .any(|l| l.contains("source_success_next_step("))
+        {
+            offenders.push(format!(
+                "source/{file}: `source {verb}` closes without `source_success_next_step`"
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a mutating `source` verb's success path says what to do next:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// Every surface rendering the `Sources` section builds its rows through the
 /// ONE table builder. `cfgd source list` and `cfgd daemon status` had shipped
 /// two tables under one section name with disjoint columns, so the same
@@ -23981,7 +24093,7 @@ fn plan_preview_excludes_the_resource_its_pending_block_names() {
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
     assert!(
-        output.contains("Pending Decisions (not included in this plan)"),
+        output.contains("Pending Decisions (1 item, not included in this plan)"),
         "the pending block is the visibility surface and still renders, got:\n{output}"
     );
     assert!(
@@ -24020,11 +24132,11 @@ fn plan_preview_names_the_decision_that_declined_a_resource() {
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
     assert!(
-        output.contains("Declined Decisions (not included in this plan)"),
+        output.contains("Declined Decisions (1 item, not included in this plan)"),
         "a declined decision must account for the resource it removed:\n{output}"
     );
     assert!(
-        !output.contains("Pending Decisions (not included in this plan)"),
+        !output.contains("Pending Decisions (1 item, not included in this plan)"),
         "an answered decision is not awaiting an answer:\n{output}"
     );
     assert!(
@@ -24253,7 +24365,7 @@ fn an_interactively_confirmed_apply_withholds_the_undecided_resource_too() {
          not part of it:\n{output}"
     );
     assert!(
-        output.contains("Pending Decisions (not included in this plan)"),
+        output.contains("Pending Decisions (1 item, not included in this plan)"),
         "the operator confirming must see what the plan is missing:\n{output}"
     );
 }

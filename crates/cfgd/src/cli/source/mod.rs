@@ -106,6 +106,52 @@ pub(in crate::cli) fn source_failure_next_step(
     }
 }
 
+/// What a mutating `source` verb just did, for [`source_success_next_step`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::cli) enum SourceMutation {
+    /// `source add` recorded a subscription.
+    Subscribed,
+    /// `source update` fetched, or wrote a subscription knob. `trust_changed`
+    /// is the `requireSignedCommits` knob — the one edit whose effect lands on
+    /// the NEXT FETCH rather than the next apply.
+    Updated { trust_changed: bool },
+    /// `source remove` took a subscription out of the composition.
+    Removed,
+    /// `source replace` re-homed a subscription.
+    Replaced,
+    /// `source override` set or rejected one of the source's recommendations.
+    Overridden,
+    /// `source priority` re-ranked a subscription's layer.
+    Reprioritized,
+}
+
+/// The next step a mutating `source` verb closes on when it SUCCEEDS — the
+/// success-side twin of [`source_failure_next_step`], one function so the
+/// family cannot drift verb by verb.
+///
+/// `source update --require-signed-commits` ended on `√ Updated 1 source` and
+/// the prompt, on the one command in the take whose effect is on the next
+/// fetch, while every other mutating beat said what to type next. A trust edit
+/// points at `cfgd sync`, which is where the demand is met; every edit to the
+/// COMPOSITION — a subscription added, removed, re-homed, re-ranked or
+/// overridden, or a fetch that landed new content — points at the preview and
+/// the apply that settle it.
+pub(in crate::cli) fn source_success_next_step(mutation: SourceMutation) -> &'static str {
+    match mutation {
+        SourceMutation::Updated {
+            trust_changed: true,
+        } => "Run `cfgd sync` to fetch under the new policy",
+        SourceMutation::Subscribed
+        | SourceMutation::Updated {
+            trust_changed: false,
+        }
+        | SourceMutation::Removed
+        | SourceMutation::Replaced
+        | SourceMutation::Overridden
+        | SourceMutation::Reprioritized => MSG_RUN_APPLY,
+    }
+}
+
 /// Warning emitted when writing `sources.lock` fails after a source mutation.
 /// The lockfile is advisory (it records resolved commit SHAs), so every caller
 /// warns and continues rather than failing the command.

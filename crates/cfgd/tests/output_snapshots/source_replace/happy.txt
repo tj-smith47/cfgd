@@ -26,7 +26,6 @@ Policy
 ✓ No conflicts with current config
 
 ✓ Subscribed
+✓ Replaced with file://<BARE_NEW>
 
 → Run `cfgd plan` to preview changes, then `cfgd apply`
-
-✓ Replaced with file://<BARE_NEW>

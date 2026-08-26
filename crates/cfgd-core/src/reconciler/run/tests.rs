@@ -86,6 +86,7 @@ fn action_result(success: bool) -> ActionResult {
         error: None,
         changed: true,
         skipped: false,
+        not_attempted: None,
     }
 }
 
@@ -159,6 +160,7 @@ fn rollup_lines_covers_every_apply_status() {
         let tally = RunTally {
             succeeded: 2,
             skipped: 0,
+            not_attempted: Vec::new(),
             failed: 1,
             planned_total: 3,
             status: status.clone(),
@@ -182,6 +184,7 @@ fn rollup_lines_covers_every_apply_status() {
     let short = RunTally {
         succeeded: 1,
         skipped: 0,
+        not_attempted: Vec::new(),
         failed: 0,
         planned_total: 4,
         status: ApplyStatus::Success,
@@ -215,6 +218,7 @@ fn a_run_that_attempted_nothing_says_so_instead_of_completing() {
     let nothing = RunTally {
         succeeded: 0,
         skipped: 0,
+        not_attempted: Vec::new(),
         failed: 0,
         planned_total: 3,
         status: ApplyStatus::Success,
@@ -267,6 +271,7 @@ fn a_completed_rollup_names_the_run_it_finished() {
         let tally = RunTally {
             succeeded: 1,
             skipped: 0,
+            not_attempted: Vec::new(),
             failed: 0,
             planned_total: 1,
             status: ApplyStatus::Success,
@@ -284,6 +289,7 @@ fn a_completed_rollup_names_the_run_it_finished() {
     let partial = RunTally {
         succeeded: 1,
         skipped: 0,
+        not_attempted: Vec::new(),
         failed: 1,
         planned_total: 2,
         status: ApplyStatus::Partial,
@@ -326,6 +332,7 @@ fn a_rollup_carrying_failures_does_not_lead_with_a_tick() {
         let tally = RunTally {
             succeeded,
             skipped: 0,
+            not_attempted: Vec::new(),
             failed,
             planned_total: succeeded + failed,
             status: status.clone(),
@@ -354,6 +361,7 @@ fn abort_rollup_keeps_the_lowercase_cli_sentence() {
     let tally = RunTally {
         succeeded: 2,
         skipped: 0,
+        not_attempted: Vec::new(),
         failed: 0,
         planned_total: 5,
         status: ApplyStatus::Aborted,
@@ -381,6 +389,7 @@ fn an_abort_that_killed_an_action_names_the_failure_too() {
     let tally = RunTally {
         succeeded: 2,
         skipped: 0,
+        not_attempted: Vec::new(),
         failed: 1,
         planned_total: 3,
         status: ApplyStatus::Aborted,
@@ -402,6 +411,7 @@ fn rollup_attaches_elapsed_to_the_last_line_emitted() {
         &RunTally {
             succeeded: 1,
             skipped: 0,
+            not_attempted: Vec::new(),
             failed: 1,
             planned_total: 2,
             status: ApplyStatus::Partial,
@@ -435,6 +445,7 @@ fn tally_merge_adds_counts_and_takes_the_worse_status() {
     let mut base = RunTally {
         succeeded: 3,
         skipped: 0,
+        not_attempted: Vec::new(),
         failed: 0,
         planned_total: 3,
         status: ApplyStatus::Success,
@@ -443,6 +454,7 @@ fn tally_merge_adds_counts_and_takes_the_worse_status() {
     base.merge(RunTally {
         succeeded: 1,
         skipped: 0,
+        not_attempted: Vec::new(),
         failed: 1,
         planned_total: 3,
         status: ApplyStatus::Partial,
@@ -457,6 +469,7 @@ fn tally_merge_adds_counts_and_takes_the_worse_status() {
     let mut failed = RunTally {
         succeeded: 0,
         skipped: 0,
+        not_attempted: Vec::new(),
         failed: 2,
         planned_total: 2,
         status: ApplyStatus::Failed,
@@ -465,12 +478,94 @@ fn tally_merge_adds_counts_and_takes_the_worse_status() {
     failed.merge(RunTally {
         succeeded: 1,
         skipped: 0,
+        not_attempted: Vec::new(),
         failed: 0,
         planned_total: 1,
         status: ApplyStatus::Partial,
         aborted: None,
     });
     assert_eq!(failed.status, ApplyStatus::Failed);
+}
+
+/// One predicate prices both ends of a run. `Action::pre_skip_reason` keeps a
+/// withheld action out of `Actions N planned`, so the tally keeps it out of
+/// the counted rollup too: a two-action run closed on `2 actions succeeded, 1
+/// skipped` under a header promising two, because the apply dispatched the
+/// pre-skipped publish and filed its outcome as a skip that ran. The row keeps
+/// its reason; the closing line names the count only in its parenthetical, and
+/// `succeeded + skipped + failed` reconciles against the header with no
+/// shortfall line for an action the run never promised.
+#[test]
+fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
+    let mut result = apply_result(2, 0, ApplyStatus::Success, 3);
+    let mut skipped_that_ran = action_result(true);
+    skipped_that_ran.changed = false;
+    skipped_that_ran.skipped = true;
+    result.action_results.push(skipped_that_ran);
+    result.action_results.push(ActionResult {
+        phase: "prerequisites".to_string(),
+        description: "env:refresh".to_string(),
+        success: true,
+        error: None,
+        changed: false,
+        skipped: false,
+        not_attempted: Some(crate::NO_SESSION_MANAGER.to_string()),
+    });
+
+    let tally = result.tally();
+    assert_eq!(
+        (tally.succeeded, tally.skipped, tally.failed),
+        (2, 1, 0),
+        "a withheld action is neither a success nor a skip that ran"
+    );
+    assert_eq!(
+        tally.succeeded + tally.skipped + tally.failed,
+        tally.planned_total,
+        "the header's count is the counted rollup's count"
+    );
+    assert_eq!(
+        tally.not_attempted,
+        vec![crate::NO_SESSION_MANAGER.to_string()]
+    );
+    assert_eq!(
+        outcome_counts(&tally),
+        "2 actions succeeded, 1 skipped (1 not attempted — no session manager)"
+    );
+
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    render_run_rollup(&tally, RunTitle::Apply, &printer, None);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains(
+            "Apply complete — 2 actions succeeded, 1 skipped (1 not attempted — no session manager)"
+        ),
+        "the verdict prices the withheld action in its parenthetical only: {out:?}"
+    );
+    assert_eq!(
+        out.matches("not attempted").count(),
+        1,
+        "no shortfall line for an action the header never promised: {out:?}"
+    );
+
+    // A second reason is a second clause, not a second count; one reason twice
+    // is one clause over a count of two.
+    tally_with_reasons(&["a", "a", "b"], |counts| {
+        assert_eq!(counts, "2 actions succeeded (3 not attempted — a, b)");
+    });
+}
+
+fn tally_with_reasons(reasons: &[&str], check: impl FnOnce(String)) {
+    let tally = RunTally {
+        succeeded: 2,
+        skipped: 0,
+        not_attempted: reasons.iter().map(|r| r.to_string()).collect(),
+        failed: 0,
+        planned_total: 2,
+        status: ApplyStatus::Success,
+        aborted: None,
+    };
+    check(outcome_counts(&tally));
 }
 
 #[test]

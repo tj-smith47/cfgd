@@ -678,7 +678,10 @@ pub fn build_fleet_status_doc(
     }
 
     doc = doc.section_if_nonempty(
-        cfgd_core::reconciler::pending_decisions_title(output.pending_decisions.len()),
+        cfgd_core::reconciler::pending_decisions_title(
+            output.pending_decisions.len(),
+            cfgd_core::reconciler::DecisionsTitleScope::Listing,
+        ),
         &output.pending_decisions,
         |s, rows| super::build_pending_decisions_table_section(s, rows, decision_contents),
     );
@@ -2543,6 +2546,7 @@ mod tests {
                     succeeded: 21,
                     skipped: 1,
                     failed: 0,
+                    not_attempted: 0,
                     not_run: None,
                     aborted: false,
                 }

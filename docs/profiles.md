@@ -261,6 +261,21 @@ EDITOR=nvim                                # systemd --user units + Wayland GUI
 Each write states what went into that file, and only that file: `~/.cfgd.env` carries env
 vars and aliases, while `environment.d` and the macOS LaunchAgent carry env vars alone.
 
+A host with no session manager to publish to (a container, a Linux box without a systemd
+user manager) still lists the `cfgd:session` row, with the reason in place of a result, and
+prices it outside the run's count at both ends: the header's `Actions` row never promised
+it, and the closing line names it only in its parenthetical:
+
+```console
+  cfgd:session
+    ∅ publish 1 var to the session manager — no session manager
+
+✓ Apply complete — 5 actions succeeded (1 not attempted — no session manager) (0.3s)
+```
+
+`-o json` carries the same split as `succeeded` / `skipped` / `notAttempted`; the stored
+apply summary `cfgd log` reads back does too.
+
 Every generated line names its owner, so a file holding entries from a profile chain,
 several modules and a bootstrapped package manager says where each came from:
 

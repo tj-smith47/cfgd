@@ -255,6 +255,11 @@ pub enum ApplySummary {
         #[serde(default)]
         skipped: usize,
         failed: usize,
+        /// Actions the plan withheld before the run began (a session publish
+        /// with no session manager to reach): outside `total`, which counts
+        /// what the run attempted, and outside `skipped`, which ran.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        not_attempted: usize,
         /// Actions the run planned and never reached, recorded only by the
         /// cooperative-abort close.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -262,6 +267,10 @@ pub enum ApplySummary {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         aborted: bool,
     },
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 impl ApplySummary {
@@ -299,6 +308,7 @@ impl std::fmt::Display for ApplySummary {
                 succeeded,
                 skipped,
                 failed,
+                not_attempted,
                 not_run,
                 aborted,
                 ..
@@ -310,6 +320,9 @@ impl std::fmt::Display for ApplySummary {
                     write!(f, ", {skipped} skipped")?;
                 }
                 write!(f, ", {failed} failed")?;
+                if *not_attempted > 0 {
+                    write!(f, ", {not_attempted} not attempted")?;
+                }
                 if let Some(not_run) = not_run.filter(|n| *n > 0) {
                     write!(f, ", {not_run} not run")?;
                 }
@@ -506,6 +519,7 @@ mod apply_summary_tests {
             succeeded: 22,
             skipped: 0,
             failed: 0,
+            not_attempted: 0,
             not_run: None,
             aborted: false,
         };
@@ -519,6 +533,7 @@ mod apply_summary_tests {
             succeeded: 12,
             skipped: 1,
             failed: 0,
+            not_attempted: 0,
             not_run: None,
             aborted: false,
         };
@@ -532,12 +547,33 @@ mod apply_summary_tests {
             succeeded: 4,
             skipped: 0,
             failed: 1,
+            not_attempted: 0,
             not_run: Some(4),
             aborted: true,
         };
         assert_eq!(
             ApplySummary::prose(&aborted.to_column()),
             "4 succeeded, 1 failed, 4 not run (aborted)"
+        );
+
+        // A withheld action is outside `total` and named after the counts
+        // that reconcile against it; a row with none carries no field for it.
+        let withheld = ApplySummary::Actions {
+            total: 2,
+            succeeded: 2,
+            skipped: 0,
+            failed: 0,
+            not_attempted: 1,
+            not_run: None,
+            aborted: false,
+        };
+        assert_eq!(
+            ApplySummary::prose(&withheld.to_column()),
+            "2 succeeded, 0 failed, 1 not attempted"
+        );
+        assert!(
+            !clean.to_column().contains("notAttempted"),
+            "a clean row does not carry a zero for an outcome that did not occur"
         );
 
         let rollback = ApplySummary::Rollback {

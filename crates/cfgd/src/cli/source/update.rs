@@ -443,6 +443,8 @@ pub fn run_source_update(
         ),
     };
 
+    let trust_changed = knob_changes.contains_key("requireSignedCommits");
+    let knobs_written = !knob_changes.is_empty();
     let mut payload = serde_json::json!({
         "sources": entries,
         "updated": updated_count,
@@ -461,7 +463,16 @@ pub fn run_source_update(
         );
     }
 
-    printer.emit(Doc::new().status(role, summary).with_data(&payload));
+    let mut doc = Doc::new().status(role, summary);
+    // A clean run that changed something closes on what to do about it; a run
+    // that changed nothing, or whose failures already hint per source, does
+    // not invite an apply of nothing.
+    if role == Role::Ok && (updated_count > 0 || knobs_written) {
+        doc = doc.hint(super::source_success_next_step(
+            super::SourceMutation::Updated { trust_changed },
+        ));
+    }
+    printer.emit(doc.with_data(&payload));
 
     Ok(error_count)
 }

@@ -175,7 +175,10 @@ fn decide_pending_single_item_human() {
         "expected the source owner token as the heading, got:\n{human}"
     );
     assert!(
-        human.contains(&cfgd_core::reconciler::pending_decisions_title(1)),
+        human.contains(&cfgd_core::reconciler::pending_decisions_title(
+            1,
+            cfgd_core::reconciler::DecisionsTitleScope::Listing
+        )),
         "the count is the section's own annotation, singular for one, got:\n{human}"
     );
     assert!(

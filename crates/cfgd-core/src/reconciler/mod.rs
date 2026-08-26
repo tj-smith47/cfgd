@@ -56,11 +56,12 @@ pub use packages::stale_tracked_packages;
 pub use patch::{PatchBinding, PatchContext, PatchOutcome, evaluate_patch, patch_failure_detail};
 pub use pending::{
     ActualPackages, AutoAccepted, DECISION_ACTION_INSTALL, DecisionContents, DecisionExclusions,
-    DecisionMint, DecisionScope, DecisionTargets, DeliveredItems, MSG_ANSWER_DECISIONS,
-    MSG_INCLUDE_DECLINED_DECISIONS, SourcePolicyReview, Subscriptions, TIER_LOCKED, TIER_OPTIONAL,
-    TIER_RECOMMENDED, UndecidableBatch, WithheldDecisions, answer_decisions_hint,
-    configured_auto_apply, decision_resource_content, decision_row_annotation, decisions_by_source,
-    declared_decision_fingerprints, declared_decision_paths, hash_resources, local_profile,
+    DecisionMint, DecisionScope, DecisionTargets, DecisionsTitleScope, DeliveredItems,
+    MSG_ANSWER_DECISIONS, MSG_INCLUDE_DECLINED_DECISIONS, SourcePolicyReview, Subscriptions,
+    TIER_LOCKED, TIER_OPTIONAL, TIER_RECOMMENDED, UndecidableBatch, WithheldDecisions,
+    answer_decisions_hint, configured_auto_apply, decision_resource_content,
+    decision_row_annotation, decisions_by_source, declared_decision_fingerprints,
+    declared_decision_paths, declined_decisions_title, hash_resources, local_profile,
     merged_entry_owners, mint_decisions, owns_decision_store, pending_decisions_title,
     review_source_policies, review_source_policy, source_delivered_layers,
     source_delivered_profile, title_cased_tier, undecidable_source_batches, withhold_from_plan,

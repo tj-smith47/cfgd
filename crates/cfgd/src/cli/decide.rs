@@ -360,11 +360,13 @@ pub fn build_decide_list_doc(
             .with_data(payload);
     }
 
-    warn_lines(
-        Doc::new().section(reconciler::pending_decisions_title(decisions.len()), |s| {
-            build_pending_decisions_table_section(s, decisions, contents)
-        }),
-    )
+    warn_lines(Doc::new().section(
+        reconciler::pending_decisions_title(
+            decisions.len(),
+            reconciler::DecisionsTitleScope::Listing,
+        ),
+        |s| build_pending_decisions_table_section(s, decisions, contents),
+    ))
     .hint(reconciler::answer_decisions_hint(decisions.len()))
     .with_data(payload)
 }

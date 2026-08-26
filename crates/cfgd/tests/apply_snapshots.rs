@@ -49,7 +49,9 @@ fn happy_output() -> ApplyOutput {
         status: "success".to_string(),
         apply_id: Some(42),
         succeeded: 3,
+        skipped: 0,
         failed: 0,
+        not_attempted: 0,
         source_commits,
         backups: vec![],
     }

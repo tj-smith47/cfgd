@@ -221,6 +221,7 @@ mod tests {
                 succeeded: 12,
                 skipped: 1,
                 failed: 0,
+                not_attempted: 0,
                 not_run: None,
                 aborted: false,
             }

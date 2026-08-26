@@ -1,0 +1,9 @@
+Update source:trust-src
+◐ Fetching source:trust-src
+  From file://<BARE_ROOT>/trust-src-source
+   * branch            master     -> FETCH_HEAD
+✓ Require Signed Commits — no → yes
+
+✓ Updated 1 source
+
+→ Run `cfgd sync` to fetch under the new policy

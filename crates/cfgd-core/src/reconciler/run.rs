@@ -205,6 +205,15 @@ pub struct RunTally {
     /// contradicts the tree above it.
     pub skipped: usize,
     pub failed: usize,
+    /// Why each action the plan withheld before the run was never attempted —
+    /// the [`Action::pre_skip_reason`] answers, one per action. Never folded
+    /// into `skipped` (which ran and changed nothing) and never priced into
+    /// `planned_total`, so `succeeded + skipped + failed` still reconciles
+    /// against the header; the closing line names the count in its
+    /// parenthetical, with the reason, and nowhere else.
+    ///
+    /// [`Action::pre_skip_reason`]: super::Action::pre_skip_reason
+    pub not_attempted: Vec<String>,
     /// What the run set out to do. The `Actions  N planned` header row and the
     /// `◉ N actions not attempted` shortfall line read the same field.
     pub planned_total: usize,
@@ -218,6 +227,7 @@ impl RunTally {
         Self {
             succeeded: 0,
             skipped: 0,
+            not_attempted: Vec::new(),
             failed: 0,
             planned_total: 0,
             status: ApplyStatus::Success,
@@ -233,6 +243,7 @@ impl RunTally {
         self.succeeded += other.succeeded;
         self.skipped += other.skipped;
         self.failed += other.failed;
+        self.not_attempted.extend(other.not_attempted);
         self.planned_total += other.planned_total;
         if status_severity(&other.status) > status_severity(&self.status) {
             self.status = other.status;
@@ -282,6 +293,7 @@ impl ApplyResult {
         RunTally {
             succeeded: self.succeeded(),
             skipped: self.skipped(),
+            not_attempted: self.not_attempted(),
             failed: self.failed(),
             planned_total: self.planned_total,
             status: self.status.clone(),
@@ -598,7 +610,10 @@ impl<'a> ApplyRun<'a> {
                 super::answer_decisions_hint(withheld.pending.len())
             };
             block(
-                "Pending Decisions (not included in this plan)",
+                &super::pending_decisions_title(
+                    withheld.pending.len(),
+                    super::DecisionsTitleScope::NotInThisPlan,
+                ),
                 &withheld.pending,
                 Role::Info,
                 &hint,
@@ -606,7 +621,10 @@ impl<'a> ApplyRun<'a> {
         }
         if !withheld.rejected.is_empty() {
             block(
-                "Declined Decisions (not included in this plan)",
+                &super::declined_decisions_title(
+                    withheld.rejected.len(),
+                    super::DecisionsTitleScope::NotInThisPlan,
+                ),
                 &withheld.rejected,
                 Role::Skipped,
                 super::MSG_INCLUDE_DECLINED_DECISIONS,
@@ -966,6 +984,7 @@ fn backup_report_tally(report: &crate::backup::BackupRunReport, planned: usize) 
         // A `Busy` skip contributes no item at all, so there is nothing here
         // for a skipped count to hold; the unit surfaces as the shortfall.
         skipped: 0,
+        not_attempted: Vec::new(),
         failed: report.items.len() - succeeded,
         planned_total: planned,
         // A skip is not a partial run of this unit; it is no run of it, so it
@@ -1076,14 +1095,33 @@ pub fn outcome_counts(tally: &RunTally) -> String {
     // A run whose every action was skipped says so outright: "0 actions
     // succeeded, 1 skipped" leads with a count of nothing and reads as a
     // shortfall the run does not have.
-    if tally.succeeded == 0 && tally.skipped > 0 {
-        return format!("{} skipped", pluralize(tally.skipped, "action"));
+    let counts = if tally.succeeded == 0 && tally.skipped > 0 {
+        format!("{} skipped", pluralize(tally.skipped, "action"))
+    } else {
+        let succeeded = format!("{} succeeded", pluralize(tally.succeeded, "action"));
+        match tally.skipped {
+            0 => succeeded,
+            skipped => format!("{succeeded}, {skipped} skipped"),
+        }
+    };
+    // The withheld actions are OUTSIDE the counted rollup — the header never
+    // promised them — so they close the line as a parenthetical with the reason
+    // the row above already gave, never as a third count beside the two that
+    // reconcile against `planned_total`.
+    if tally.not_attempted.is_empty() {
+        return counts;
     }
-    let succeeded = format!("{} succeeded", pluralize(tally.succeeded, "action"));
-    match tally.skipped {
-        0 => succeeded,
-        skipped => format!("{succeeded}, {skipped} skipped"),
+    let mut reasons: Vec<&str> = Vec::new();
+    for reason in &tally.not_attempted {
+        if !reasons.contains(&reason.as_str()) {
+            reasons.push(reason);
+        }
     }
+    format!(
+        "{counts} ({} not attempted — {})",
+        tally.not_attempted.len(),
+        reasons.join(", ")
+    )
 }
 
 fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<String>)> {

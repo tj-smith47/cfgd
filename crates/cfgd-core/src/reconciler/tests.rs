@@ -635,6 +635,7 @@ fn apply_result_counts() {
                 error: None,
                 changed: true,
                 skipped: false,
+                not_attempted: None,
             },
             ActionResult {
                 phase: "files".to_string(),
@@ -643,6 +644,7 @@ fn apply_result_counts() {
                 error: Some("failed".to_string()),
                 changed: false,
                 skipped: false,
+                not_attempted: None,
             },
         ],
         status: ApplyStatus::Partial,
@@ -22284,6 +22286,38 @@ fn refresh_live_session_reports_no_session_manager_when_unavailable() {
     assert!(
         result.action_results[0].success,
         "an absent session manager is not a failure"
+    );
+
+    // The tally reads the same predicate the header did: the publish is not
+    // attempted, not skipped, so the counted rollup and `N actions planned`
+    // are one number and the reason travels with the count.
+    assert_eq!(
+        result.action_results[0].not_attempted.as_deref(),
+        Some(crate::NO_SESSION_MANAGER),
+        "the result carries the plan's own pre-skip reason"
+    );
+    assert!(
+        !result.action_results[0].skipped,
+        "a withheld action did not run, so it is not a skip that ran"
+    );
+    assert_eq!(
+        plan.total_actions(),
+        result.succeeded() + result.skipped() + result.failed(),
+        "the header's count and the counted rollup agree"
+    );
+    assert_eq!(
+        result.not_attempted(),
+        vec![crate::NO_SESSION_MANAGER.to_string()]
+    );
+    let stored = state
+        .get_apply(result.apply_id)
+        .expect("the apply row is readable")
+        .and_then(|row| row.summary)
+        .expect("the apply row carries a summary");
+    assert_eq!(
+        crate::state::ApplySummary::prose(&stored),
+        "0 succeeded, 0 failed, 1 not attempted",
+        "the stored summary prices the withheld action outside its total"
     );
 }
 

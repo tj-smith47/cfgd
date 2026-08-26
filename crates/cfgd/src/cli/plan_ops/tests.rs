@@ -2613,6 +2613,7 @@ fn env_apply_result(descriptions: &[&str]) -> ApplyResult {
                 error: None,
                 changed: !d.ends_with(":skipped"),
                 skipped: d.ends_with(":skipped"),
+                not_attempted: None,
             })
             .collect(),
         status: ApplyStatus::Success,

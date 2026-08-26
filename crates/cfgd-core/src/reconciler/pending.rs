@@ -929,13 +929,43 @@ pub fn answer_decisions_hint(pending: usize) -> String {
 pub const MSG_INCLUDE_DECLINED_DECISIONS: &str =
     "Run `cfgd decide accept <resource>` to include it";
 
+/// Which surface a decisions section is on, and so what its title's
+/// annotation says beside the count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionsTitleScope {
+    /// A listing of the decisions themselves (`cfgd decide`, `cfgd status`).
+    Listing,
+    /// A plan or apply preview, which lists them to say what it left out.
+    NotInThisPlan,
+}
+
 /// The Pending Decisions section title, carrying its own count.
 ///
 /// The count is the section's annotation, never a row: rendered as a status it
 /// wore the decision glyph and the decision indent, so a single withheld item
-/// listed as two `⊙` lines — a tally of the row directly beneath it.
-pub fn pending_decisions_title(count: usize) -> String {
-    format!("Pending Decisions ({})", crate::pluralize(count, "item"))
+/// listed as two `⊙` lines — a tally of the row directly beneath it. The plan's
+/// qualifier joins it in the same parenthetical (`Pending Decisions (1 item,
+/// not included in this plan)`): `cfgd plan` hand-built a title with the
+/// qualifier and no count while `cfgd decide` one screen below rendered the
+/// count and no qualifier, so one section wore two titles in one take.
+pub fn pending_decisions_title(count: usize, scope: DecisionsTitleScope) -> String {
+    decisions_title("Pending Decisions", count, scope)
+}
+
+/// The Declined Decisions section title — the same annotation as its pending
+/// sibling, over the rows already answered `reject`.
+pub fn declined_decisions_title(count: usize, scope: DecisionsTitleScope) -> String {
+    decisions_title("Declined Decisions", count, scope)
+}
+
+fn decisions_title(noun: &str, count: usize, scope: DecisionsTitleScope) -> String {
+    let items = crate::pluralize(count, "item");
+    match scope {
+        DecisionsTitleScope::Listing => format!("{noun} ({items})"),
+        DecisionsTitleScope::NotInThisPlan => {
+            format!("{noun} ({items}, not included in this plan)")
+        }
+    }
 }
 
 /// A decision list grouped by the source that raised each row, alphabetically.
@@ -2157,6 +2187,72 @@ mod outranked_tests {
             contents.decision_row(&decisions[0]).1.as_deref(),
             Some("PAGER=less")
         );
+    }
+
+    /// The two decision-section titles have ONE builder. `cfgd plan` hand-built
+    /// `Pending Decisions (not included in this plan)` while `cfgd decide` one
+    /// screen below rendered `Pending Decisions (1 item)` — the same section,
+    /// the same rows, two annotations in one take. Every production literal in
+    /// both crates is walked; one outside this file fails.
+    #[test]
+    fn every_decisions_section_title_comes_from_the_one_builder() {
+        let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let cli = core.join("../../cfgd/src");
+        let mut offenders = Vec::new();
+        let mut files = Vec::new();
+        for root in [core, cli] {
+            rust_files(&root, &mut files);
+        }
+        assert!(files.len() > 100, "the walk reached {} files", files.len());
+        for path in files {
+            if path.file_name().is_some_and(|n| n == "pending.rs")
+                || path.file_name().is_some_and(|n| n == "tests.rs")
+                || path.components().any(|c| c.as_os_str() == "tests")
+            {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for (n, line) in body.lines().enumerate() {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                if code.contains("\"Pending Decisions") || code.contains("\"Declined Decisions") {
+                    offenders.push(format!("{}:{}: {code}", path.display(), n + 1));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a decisions section title composes through `pending_decisions_title` / \
+             `declined_decisions_title`:\n{}",
+            offenders.join("\n")
+        );
+
+        assert_eq!(
+            pending_decisions_title(1, DecisionsTitleScope::NotInThisPlan),
+            "Pending Decisions (1 item, not included in this plan)"
+        );
+        assert_eq!(
+            declined_decisions_title(2, DecisionsTitleScope::Listing),
+            "Declined Decisions (2 items)"
+        );
+    }
+
+    fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
     }
 
     /// Every kind `decision_resource_content` recognizes is classified by

@@ -1,6 +1,8 @@
 {
   "applyId": 42,
   "failed": 0,
+  "notAttempted": 0,
+  "skipped": 0,
   "sourceCommits": {
     "team-config": "abc1234"
   },

@@ -441,8 +441,10 @@ A [source](sources.md#automatic-apply-decisions) item still awaiting `cfgd decid
 you rejected) is withheld from the plan: it is absent from the phases, from
 `totalActions`, and from what `apply` executes (with `--yes` or with the
 confirmation prompt). Both states are named rather than silently missing: the
-human render lists them under **Pending Decisions (not included in this plan)**
-and **Declined Decisions (not included in this plan)**, and the payload carries
+human render lists them under **Pending Decisions (1 item, not included in this
+plan)** and **Declined Decisions (1 item, not included in this plan)** (the same
+title `cfgd decide` and `cfgd status` render, with the plan's qualifier beside the
+count), and the payload carries
 the same rows as `pendingDecisions` and `rejectedDecisions`, each omitted when
 empty, so a structured consumer can tell "in sync" from "waiting on you" from
 "you said no":
@@ -1578,10 +1580,13 @@ acme-corp  https://github.com/acme-corp/dev-config  500       Active  2h ago    
 
 `Last Sync` is the age of the last successful fetch (`never` when the source has
 not been fetched yet); `Signed` says whether that fetched commit carried a
-verified signature (`-` when nothing has been recorded for the source yet). Both
-read from recorded state rather than from `cfgd.yaml`, which is why they are on
-the default table: they are the two columns that change between one listing and
-the next. `-o json` / `-o yaml` keep the exact ISO 8601 instant in `lastFetched`.
+verified signature. Both read from recorded state rather than from `cfgd.yaml`,
+which is why they are on the default table: they are the columns that change
+between one listing and the next. A column no listed source can fill is left off
+the table rather than padded with `-` (`Commit` and `Signed` before the first
+fetch, `Drift`, which only the daemon's own `cfgd daemon status` holds); the
+`-o json` / `-o yaml` payload keeps every field, with the exact ISO 8601 instant
+in `lastFetched`.
 `--wide` adds a `Version` column carrying the source's self-reported
 `metadata.version`.
 
@@ -1636,6 +1641,10 @@ each file it deployed. Any file whose bytes no longer match that hash is listed
 by path as a warning, and the removal asks for confirmation first (`--yes`
 skips it). See [Source Removal](sources.md#source-removal).
 
+Like every `source` verb that edits the composition (`add`, `replace`,
+`override`, `priority`), a successful removal closes on the step that settles
+it: ``→ Run `cfgd plan` to preview changes, then `cfgd apply` ``.
+
 ### `cfgd source update [name]`
 
 Fetch latest from sources (all or specific). Exits non-zero
@@ -1660,7 +1669,24 @@ cfgd source update acme --no-allow-scripts
 An omitted flag leaves the stored value alone, so a plain `cfgd source update`
 never resets a demand. The edit is written **after** the fetch: it records what
 every future fetch must satisfy, so setting it does not retroactively fail the
-update that set it. The next `cfgd sync` is where an unsigned HEAD is refused.
+update that set it. The next `cfgd sync` is where an unsigned HEAD is refused,
+which is what a successful update that changed the demand points at:
+
+```console
+$ cfgd source update acme --require-signed-commits
+Update source:acme
+  ✓ Require Signed Commits — no → yes
+
+✓ Updated 1 source
+
+→ Run `cfgd sync` to fetch under the new policy
+```
+
+An update that changed the composition instead (new content fetched, or
+`--allow-scripts` / `--no-allow-scripts`) closes on the plan/apply hint the rest
+of the family uses. The verdict carries a count because `update` can run over
+every source at once; the single-subject verbs (`add`, `remove`, `replace`,
+`override`, `priority`) close bare (`✓ Subscribed`, `✓ Removed`).
 
 ### `cfgd source override <source> <action> <path> [value]`
 

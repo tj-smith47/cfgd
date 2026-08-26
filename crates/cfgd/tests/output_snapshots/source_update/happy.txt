@@ -5,3 +5,5 @@ Update source:upd-src
 ✓ Updated
 
 ✓ Updated 1 source
+
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

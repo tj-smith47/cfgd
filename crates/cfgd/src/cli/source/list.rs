@@ -42,52 +42,107 @@ pub fn build_source_list_doc(entries: &[SourceListEntry], wide: bool, now: &str)
 /// they could not read there. `Signed` reports what the last fetch FOUND and
 /// `Requires Signed` what the subscription DEMANDS — a demanding source and a
 /// non-demanding one with signed HEADs rendered identically without both.
+///
+/// A column no row in THIS render can fill is dropped, not padded: `Drift` is
+/// live per-source drift only the daemon holds, so on `source list` every cell
+/// was `-` — seven characters per row answering nothing on the listing that is
+/// the family's rest point. The same rule covers `Version` (`--wide`, absent
+/// until a manifest names one) and `Commit` / `Signed` before the first fetch.
+/// The `-o json` payload keeps every field; a `null` there is a fact.
 pub fn sources_table(entries: &[SourceListEntry], wide: bool, now: &str) -> Table {
-    let mut columns = vec!["Name", "Source", "Priority"];
+    let cell = |value: Option<String>| (value.unwrap_or_else(|| ABSENT.to_string()), None);
+    let mut columns: Vec<(&str, Vec<Cell>)> = vec![
+        (
+            "Name",
+            entries.iter().map(|e| (e.name.clone(), None)).collect(),
+        ),
+        (
+            "Source",
+            entries.iter().map(|e| (e.url.clone(), None)).collect(),
+        ),
+        (
+            "Priority",
+            entries
+                .iter()
+                .map(|e| (e.priority.to_string(), None))
+                .collect(),
+        ),
+    ];
     if wide {
-        columns.push("Version");
+        columns.push((
+            "Version",
+            entries.iter().map(|e| cell(e.version.clone())).collect(),
+        ));
     }
     columns.extend([
-        "Status",
-        "Drift",
-        "Commit",
-        "Last Sync",
-        "Signed",
-        "Requires Signed",
+        (
+            "Status",
+            entries
+                .iter()
+                .map(|e| {
+                    let (status, role) = source_status_display(&e.status);
+                    (status.to_string(), Some(role))
+                })
+                .collect(),
+        ),
+        (
+            "Drift",
+            entries
+                .iter()
+                .map(|e| cell(e.drift_count.map(|n| n.to_string())))
+                .collect(),
+        ),
+        (
+            "Commit",
+            entries
+                .iter()
+                .map(|e| {
+                    cell(
+                        e.last_commit
+                            .as_deref()
+                            .map(|c| cfgd_core::short_commit(c).to_string()),
+                    )
+                })
+                .collect(),
+        ),
+        (
+            "Last Sync",
+            entries
+                .iter()
+                .map(|e| (last_sync_display(e.last_fetched.as_deref(), now), None))
+                .collect(),
+        ),
+        (
+            "Signed",
+            entries
+                .iter()
+                .map(|e| (yes_no(e.signed).to_string(), None))
+                .collect(),
+        ),
+        (
+            "Requires Signed",
+            entries
+                .iter()
+                .map(|e| (yes_no(Some(e.require_signed_commits)).to_string(), None))
+                .collect(),
+        ),
     ]);
+    columns.retain(|(_, cells)| cells.iter().any(|(text, _)| text != ABSENT));
 
-    let mut t = Table::new(columns);
-    for e in entries {
-        let (status, role) = source_status_display(&e.status);
-        let mut row = vec![
-            (e.name.clone(), None),
-            (e.url.clone(), None),
-            (e.priority.to_string(), None),
-        ];
-        if wide {
-            row.push((e.version.clone().unwrap_or_else(|| "-".into()), None));
-        }
-        row.extend([
-            (status.to_string(), Some(role)),
-            (
-                e.drift_count.map_or_else(|| "-".into(), |n| n.to_string()),
-                None,
-            ),
-            (
-                e.last_commit.as_deref().map_or_else(
-                    || "-".to_string(),
-                    |c| cfgd_core::short_commit(c).to_string(),
-                ),
-                None,
-            ),
-            (last_sync_display(e.last_fetched.as_deref(), now), None),
-            (yes_no(e.signed).to_string(), None),
-            (yes_no(Some(e.require_signed_commits)).to_string(), None),
-        ]);
-        t = t.row_styled(row);
+    let mut t = Table::new(columns.iter().map(|(name, _)| *name));
+    for i in 0..entries.len() {
+        t = t.row_styled(columns.iter().map(|(_, cells)| cells[i].clone()));
     }
     t
 }
+
+/// One rendered `Sources` cell: its text and the role that re-styles it.
+type Cell = (String, Option<Role>);
+
+/// The absence token a `Sources` cell renders for a fact nothing recorded — the
+/// same `-` `yes_no(None)` answers, so the column-drop rule above reads one
+/// spelling.
+const ABSENT: &str = "-";
 
 /// The ONE human rendering of a config source's last fetch, shared by every
 /// surface that shows one (`source list`, `source show`, `status`) — the
@@ -167,4 +222,119 @@ pub fn configured_source_entries(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cfgd_core::output::Verbosity;
+
+    fn entry(name: &str) -> SourceListEntry {
+        SourceListEntry {
+            name: name.to_string(),
+            url: format!("https://example.test/{name}.git"),
+            priority: 500,
+            version: None,
+            status: "active".to_string(),
+            last_fetched: None,
+            signed: None,
+            require_signed_commits: false,
+            last_commit: None,
+            drift_count: None,
+        }
+    }
+
+    /// The rendered table as `(headers, cells per row)`, read back off the
+    /// aligned text the way a reader does: a column spans from its header's
+    /// first character to the next header's.
+    fn rendered(table: Table) -> (Vec<String>, Vec<Vec<String>>) {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(Doc::new().table(table));
+        drop(printer);
+        let text = cfgd_core::test_helpers::captured_text(&buf);
+        let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+        let header = lines.next().expect("a header line");
+        let mut starts = Vec::new();
+        let mut in_word = false;
+        let mut gap = 0usize;
+        for (i, ch) in header.char_indices() {
+            if ch == ' ' {
+                gap += 1;
+                in_word = in_word && gap < 2;
+            } else {
+                if !in_word {
+                    starts.push(i);
+                }
+                in_word = true;
+                gap = 0;
+            }
+        }
+        let slice = |line: &str, i: usize| -> String {
+            let end = starts
+                .get(i + 1)
+                .copied()
+                .unwrap_or(line.len())
+                .min(line.len());
+            line.get(starts[i]..end).unwrap_or("").trim().to_string()
+        };
+        let headers: Vec<String> = (0..starts.len()).map(|i| slice(header, i)).collect();
+        let rows: Vec<Vec<String>> = lines
+            .filter(|l| !l.starts_with('─'))
+            .map(|l| (0..starts.len()).map(|i| slice(l, i)).collect())
+            .collect();
+        (headers, rows)
+    }
+
+    /// A column no row in this render can fill is not on the table. `source
+    /// list` had a `Drift` column every one of whose cells was `-`, because
+    /// only the daemon holds per-source drift; the same rule drops `Version`,
+    /// `Commit` and `Signed` before anything has recorded them, and keeps each
+    /// the moment one row has a value.
+    #[test]
+    fn a_column_no_row_can_fill_is_dropped_from_the_listing() {
+        let now = "2026-08-26T12:00:00Z";
+        let (headers, rows) = rendered(sources_table(&[entry("a"), entry("b")], true, now));
+        assert_eq!(
+            headers,
+            vec![
+                "Name",
+                "Source",
+                "Priority",
+                "Status",
+                "Last Sync",
+                "Requires Signed"
+            ],
+            "every all-absent column is gone, and only those"
+        );
+        for (i, header) in headers.iter().enumerate() {
+            assert!(
+                rows.iter().any(|r| r[i] != ABSENT),
+                "column {header} has nothing to say in this render"
+            );
+        }
+
+        let mut filled = entry("a");
+        filled.drift_count = Some(0);
+        filled.version = Some("1.2.0".to_string());
+        filled.last_commit = Some("4b8857cd0f1e2222".to_string());
+        filled.signed = Some(true);
+        let (headers, rows) = rendered(sources_table(&[filled, entry("b")], true, now));
+        assert_eq!(
+            headers,
+            vec![
+                "Name",
+                "Source",
+                "Priority",
+                "Version",
+                "Status",
+                "Drift",
+                "Commit",
+                "Last Sync",
+                "Signed",
+                "Requires Signed",
+            ],
+            "one row with a value keeps the column for every row"
+        );
+        assert_eq!(rows[1][5], ABSENT, "the row with no value still reads `-`");
+    }
 }

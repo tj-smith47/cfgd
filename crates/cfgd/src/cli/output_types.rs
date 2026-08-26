@@ -88,7 +88,13 @@ pub struct ApplyOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apply_id: Option<i64>,
     pub succeeded: usize,
+    /// Actions that ran and changed nothing — the rollup's `N skipped`.
+    pub skipped: usize,
     pub failed: usize,
+    /// Actions the plan withheld before the run (the rollup's `(N not
+    /// attempted — <reason>)`); outside `succeeded`/`skipped`/`failed` and
+    /// outside the plan's `totalActions`, exactly as the human line prices it.
+    pub not_attempted: usize,
     // `BTreeMap`, not `HashMap`: this field serializes into `-o json` /
     // `-o yaml`, and with no `preserve_order` feature on `serde_json` a
     // `HashMap` writes its keys in per-process-random order — byte-unstable
@@ -108,7 +114,9 @@ impl ApplyOutput {
             status: "nothingToDo".to_string(),
             apply_id: None,
             succeeded: 0,
+            skipped: 0,
             failed: 0,
+            not_attempted: 0,
             source_commits: BTreeMap::new(),
             backups: Vec::new(),
         }
@@ -119,7 +127,9 @@ impl ApplyOutput {
             status: "aborted".to_string(),
             apply_id: None,
             succeeded: 0,
+            skipped: 0,
             failed: 0,
+            not_attempted: 0,
             source_commits: BTreeMap::new(),
             backups: Vec::new(),
         }
@@ -1160,7 +1170,9 @@ mod tests {
             status: "partial".to_string(),
             apply_id: Some(7),
             succeeded: 2,
+            skipped: 0,
             failed: 0,
+            not_attempted: 0,
             source_commits: BTreeMap::new(),
             backups: vec![BackupRunOutput {
                 name: "photos".to_string(),
@@ -1184,7 +1196,9 @@ mod tests {
             status: "success".to_string(),
             apply_id: Some(99),
             succeeded: 3,
+            skipped: 0,
             failed: 1,
+            not_attempted: 0,
             source_commits: commits,
             backups: Vec::new(),
         };
@@ -1211,7 +1225,9 @@ mod tests {
             status: "success".to_string(),
             apply_id: Some(1),
             succeeded: 1,
+            skipped: 0,
             failed: 0,
+            not_attempted: 0,
             source_commits: commits,
             backups: Vec::new(),
         };
