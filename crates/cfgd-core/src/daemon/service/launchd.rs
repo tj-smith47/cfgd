@@ -1,5 +1,6 @@
 use super::super::*;
 use crate::PathDisplayExt;
+use crate::output::Role;
 
 /// Generate launchd plist content for the daemon service.
 ///
