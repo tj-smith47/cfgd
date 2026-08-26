@@ -91,11 +91,18 @@ fn packable_dir() -> tempfile::TempDir {
 /// platform out of a captured render, so the golden holds the shape rather
 /// than this run's port — or this runner's os/arch, which the pack row now
 /// reports because nothing passed `--platform`.
-fn normalized(human: &str, registry: &str, dir: &Path) -> String {
-    cfgd_core::normalize_snapshot_durations(&strip_ansi(human))
-        .replace(registry, "<REGISTRY>")
-        .replace(&cfgd_core::to_posix_string(dir), "<DIR>")
-        .replace(&cfgd_core::oci::current_platform(), "<PLATFORM>")
+/// Every host-shaped fact in the capture, folded: the paths through the
+/// workspace's own `normalize_for_snapshot` (which folds separators BEFORE
+/// substituting, so a natively-rendered Windows path still matches its label),
+/// the registry's ephemeral port, the elapsed spans, and the host platform the
+/// pushed manifest declares.
+fn normalized(human: &str, registry: &str, paths: &[(&Path, &str)]) -> String {
+    cfgd_core::normalize_for_snapshot(
+        &cfgd_core::normalize_snapshot_durations(&strip_ansi(human)),
+        paths,
+    )
+    .replace(registry, "<REGISTRY>")
+    .replace(&cfgd_core::oci::current_platform(), "<PLATFORM>")
 }
 
 #[test]
@@ -111,7 +118,7 @@ fn image_pack_human() {
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "image_pack/packed.txt",
-        &normalized(&cap.human(), &registry, dir.path()),
+        &normalized(&cap.human(), &registry, &[(dir.path(), "<DIR>")]),
     );
 }
 
@@ -131,8 +138,11 @@ fn image_pack_with_lock_human() {
     cmd_image_pack(&printer, dir.path(), &artifact, opts).expect("pack must succeed");
     drop(printer);
 
-    let human = normalized(&cap.human(), &registry, dir.path())
-        .replace(&cfgd_core::to_posix_string(lock_dir.path()), "<LOCKDIR>");
+    let human = normalized(
+        &cap.human(),
+        &registry,
+        &[(dir.path(), "<DIR>"), (lock_dir.path(), "<LOCKDIR>")],
+    );
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "image_pack/packed_locked.txt",
@@ -175,7 +185,7 @@ fn image_pack_signed_human() {
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "image_pack/packed_signed.txt",
-        &normalized(&cap.human(), &registry, dir.path()),
+        &normalized(&cap.human(), &registry, &[(dir.path(), "<DIR>")]),
     );
 }
 
