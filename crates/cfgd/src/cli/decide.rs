@@ -296,9 +296,11 @@ pub fn build_decide_bulk_doc(resolution: &str, count: usize, source: Option<&str
             None => format!("{verb} {items}"),
             Some(name) => format!("{verb} {items} from {name}"),
         };
-        doc = doc
-            .status(Role::Ok, msg)
-            .hint("Changes will take effect on next reconcile");
+        // The item moved out of Pending and into (or out of) the plan; the
+        // reader has not seen that plan yet. Nothing here runs a reconcile,
+        // and on a machine without a daemon "the next reconcile" is the one
+        // they start themselves.
+        doc = doc.status(Role::Ok, msg).hint(super::MSG_RUN_APPLY);
     }
     doc.with_data(DecideBulkOutput {
         resolution: resolution.to_string(),
@@ -311,16 +313,21 @@ pub fn build_decide_bulk_doc(resolution: &str, count: usize, source: Option<&str
 pub fn build_decide_single_doc(resolution: &str, resource_path: &str, resolved: bool) -> Doc {
     let mut doc = Doc::new();
     if resolved {
-        let verb = if resolution == "accepted" {
-            "be applied"
+        // One fact, one shape: the detail names the same `cfgd apply` the
+        // hint points at, never a "next reconcile" a daemon-less machine
+        // never runs on its own.
+        let detail = if resolution == "accepted" {
+            "included in the next `cfgd apply`"
         } else {
-            "not be applied"
+            "withheld from the next `cfgd apply`"
         };
-        doc = doc.status_with(
-            Role::Ok,
-            format!("{} {resource_path}", cfgd_core::sentence_case(resolution)),
-            |f| f.detail(format!("will {verb} on next reconcile")),
-        );
+        doc = doc
+            .status_with(
+                Role::Ok,
+                format!("{} {resource_path}", cfgd_core::sentence_case(resolution)),
+                |f| f.detail(detail),
+            )
+            .hint(super::MSG_RUN_APPLY);
     } else {
         doc = doc.status(
             Role::Warn,
@@ -367,6 +374,5 @@ pub fn build_decide_list_doc(
         ),
         |s| build_pending_decisions_table_section(s, decisions, contents),
     ))
-    .hint(reconciler::answer_decisions_hint(decisions.len()))
     .with_data(payload)
 }

@@ -2042,7 +2042,7 @@ fn check_prerequisites_with_test_printer() {
         "should show error when git is missing, got: {output}"
     );
     assert!(
-        output.contains("Install with:"),
+        output.contains("Install with `"),
         "the install hint is the actionable half of the message: {output}"
     );
 }

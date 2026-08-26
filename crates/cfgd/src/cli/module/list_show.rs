@@ -44,9 +44,10 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
     let mut doc = Doc::new().heading("Modules");
 
     if entries.is_empty() {
-        doc = doc
-            .status(Role::Info, "No modules found")
-            .hint(format!("Add modules to {}/modules/", config_dir.posix()));
+        doc = doc.status(Role::Info, "No modules found").hint(format!(
+            "Create one with `cfgd module create <name>`, or add a directory under {}/modules/",
+            config_dir.posix()
+        ));
         return doc.with_data(entries);
     }
 

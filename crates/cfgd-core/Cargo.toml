@@ -153,6 +153,9 @@ openssl = { version = "0.10", features = ["vendored"] }
 [target.'cfg(unix)'.dependencies]
 # Safe wrappers over libc for signals, process control, file locking
 nix = { version = "0.31", features = ["signal", "fs", "process", "user"] }
+# The registry tokio and the CLI's abort handler chain through; the live
+# region's cursor-restore hook has to sit beside them, not replace them.
+signal-hook = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

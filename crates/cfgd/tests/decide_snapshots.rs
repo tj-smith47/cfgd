@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use cfgd::cli::decide::{build_decide_bulk_doc, build_decide_list_doc};
+use cfgd::cli::decide::{build_decide_bulk_doc, build_decide_list_doc, build_decide_single_doc};
 use cfgd_core::output::Printer;
 use cfgd_core::state::PendingDecision;
 
@@ -199,8 +199,9 @@ fn decide_after_accept_human() {
         "bulk accept summary reads as a sentence: past-tense verb, then the count, got:\n{human}"
     );
     assert!(
-        human.contains("next reconcile"),
-        "bulk accept must hint about next reconcile, got:\n{human}"
+        human.contains("Run `cfgd plan` to preview changes, then `cfgd apply`"),
+        "bulk accept closes on the command that moves the machine, never on a \
+         background reconcile a daemon-less host never runs, got:\n{human}"
     );
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "decide/after_accept.txt");
 }
@@ -310,4 +311,36 @@ fn decide_pending_names_the_content_of_each_item() {
         "an unrecoverable item renders its subject alone, never the stored summary: {human}"
     );
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "decide/pending_content.txt");
+}
+
+/// A single-item verdict says the same thing twice — the row's detail and the
+/// closing hint both name the `cfgd apply` that settles the answer — rather
+/// than a detail about "the next reconcile" beside a hint about a command.
+#[test]
+fn decide_after_accept_one_human() {
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_decide_single_doc(
+        "accepted",
+        "packages.brew.k9s",
+        true,
+    ));
+    drop(printer);
+    let human = cap.human();
+    assert!(
+        !human.contains("reconcile"),
+        "no surface of the verdict names a reconcile the reader does not run, got:\n{human}"
+    );
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "decide/after_accept_one.txt");
+}
+
+#[test]
+fn decide_after_reject_one_human() {
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_decide_single_doc(
+        "rejected",
+        "packages.brew.k9s",
+        true,
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "decide/after_reject_one.txt");
 }

@@ -1,5 +1,4 @@
 Pending Decisions (1 item)
   source:solo-source
     ◉ Required file/bashrc
-
-→ Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
+  → Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer

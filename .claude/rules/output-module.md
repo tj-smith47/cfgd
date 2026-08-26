@@ -57,7 +57,7 @@ The rule: **the command's title IS its section**, opened with `printer.section("
 
 ## Wording rules every closing line and hint obeys
 
-Six conventions, each with a walk-the-population pin that fails on the next member that breaks it. All six live in `crates/cfgd/src/cli/tests.rs` unless noted.
+Eight conventions, each with a walk-the-population pin that fails on the next member that breaks it. All eight live in `crates/cfgd/src/cli/tests.rs` unless noted.
 
 | Rule | Shape | Pin |
 |---|---|---|
@@ -67,6 +67,8 @@ Six conventions, each with a walk-the-population pin that fails on the next memb
 | A **rendered label is Title Case**, whichever slot holds it | a kv key, a `KvPair`, a row tuple and a table header all read `Last Sync` / `Drift Count` — never `Reconcile interval` two rows above a Title Case column. Small words stay lowercase off the front (`Signing with`); a label NAMING a thing (a `spec.packages` path, a tool's own name) keeps that spelling under a `// name-row-ok:` marker | `every_rendered_label_is_title_case` |
 | A **`source` verdict is counted iff the verb takes many subjects**, and every mutating `source` verb **closes its success path on a next step** | `✓ Updated 1 source` (the one verb that can run over every source) beside bare `✓ Subscribed` / `✓ Removed`; each followed by `source_success_next_step`'s hint — `cfgd sync` for a trust edit, plan/apply for a composition edit | `every_source_verdict_counts_iff_its_verb_takes_many_subjects`, `every_mutating_source_verb_closes_on_a_next_step` |
 | A **count belongs to its section's annotation**, not to a row | `Pending Decisions (1 item)` via `reconciler::pending_decisions_title`, never a `⊙ 1 pending item` line that wears the row glyph and the row indent | `pending_decisions_title`'s own unit tests + the `decide` / `status` goldens |
+| A **section's instruction closes it from inside** | the answer hint under a Pending / Declined Decisions section is the SECTION's, rendered at its depth straight under its last row (`section.hint(…)` in `ApplyRun::render_withheld`, `s.hint(…)` in `source::helpers::build_pending_decisions_table_section`) — never a `Doc::hint` hung off the document a blank line lower and an indent shallower on one surface and not another. Those two composers are the only emitters of `answer_decisions_hint` / `MSG_INCLUDE_DECLINED_DECISIONS`; a surface listing decisions renders through one of them | `every_decisions_hint_closes_its_section_from_inside` |
+| A **closing hint names the command that comes next**, in backticks | ``Run `cfgd apply` to …`` after `decide accept`, ``Run `kubectl rollout status …` `` after `inject`, ``Change it with `cfgd source priority <name> <n>` `` — never `Changes will take effect on next reconcile`, which names a background loop a daemon-less machine never runs while the reader's next keystroke is the command the tool declined to name. A hint whose text is built elsewhere is pinned by its producer; the walk covers `crates/cfgd/src/cli/`; a genuinely command-less instruction there carries `// hint-ok: <why>` | `every_closing_hint_names_a_command` |
 
 ## Rendering rules every action row obeys
 
@@ -238,3 +240,9 @@ One is the writer, in `output/`; the other is the default filter, which lives wh
 `renderer::LiveBarState` (the live-bar count plus the broken-terminal latch) is held in an `Arc` and carried through `Printer::build_derived`, a derived printer writing the SAME `MultiProgress` and sinks as its parent. A derived renderer counting its own bars starts at zero, answers the routing gate "no bar is live" while the parent's spinner paints, and raw-writes over it — which froze `cfgd sync`'s spinner, every quiet library sink being a derived printer whose `Fail` statuses, `alert()`s and `deprecation()`s survive `Verbosity::Quiet`. **Never mint a fresh `LiveBarState` for a renderer sharing an existing region.**
 
 A claim about a stranded paint is provable on ONE surface only — `Printer::for_test_live_terminal`, the emulated screen (`shared-utils.md`, Test guards).
+
+## The cursor is hidden for the life of the live region
+
+The terminal cursor sat parked in the right margin of every spinner's row, on camera in every demo. `renderer::LiveBarGuard` — the ONE seam every bar (spinner, progress bar, `LiveRow`, `OutputWindow`) passes through — hides it as the count goes 0→1 and shows it as the count returns to 0, through the stderr `Writer` the `LiveBarState` carries (`output/cursor.rs`); a per-bar toggle would flash it back mid-region as the first of two overlapping bars settled. A capture sink records the escape as a `TermLike` move, so `for_test_live_terminal`'s `LiveScreen::moves()` can assert the order; the scrollback capture carries neither escape, which is what keeps every golden a golden.
+
+A process killed mid-spinner would leave the cursor hidden, so the first hide arms a `signal-hook` action on SIGINT/SIGTERM that writes the show sequence and then emulates the default handler — unless a cooperative owner has called `output::claim_termination_signals()` first (`daemon::ShutdownSignals`, `await_shutdown_request`, `apply`'s abort handlers, the MCP listener), in which case the action restores the cursor and leaves the exit to the owner. Windows raises no POSIX signal and gets `console`'s own behaviour. Pins: `the_cursor_hides_on_the_first_bar_and_shows_when_the_last_drops` (`output/renderer/mod.rs`), `a_narrated_wait_hides_the_cursor_before_its_first_paint_and_shows_it_after_its_last` and `the_scrollback_capture_carries_neither_cursor_escape` (`output/spinner.rs`).

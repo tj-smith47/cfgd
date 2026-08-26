@@ -83,6 +83,14 @@ impl LiveScreen {
     pub(crate) fn contents(&self) -> String {
         self.0.contents()
     }
+
+    /// Every write and cursor move the screen took since the last call, in
+    /// order, one per line in the screen model's own debug spelling. The one
+    /// view that sees an escape the screen CONSUMED — a cursor hide/show never
+    /// lands in a cell, so `contents()` is blind to it by construction.
+    pub(crate) fn moves(&self) -> String {
+        self.0.moves_since_last_check()
+    }
 }
 
 /// The printer sink behind [`Printer::for_test_live_terminal`]: permanent lines
@@ -105,6 +113,15 @@ impl Writer for TermSink {
     /// line counted once in the fixture would be two rows on the screen.
     fn wrap_columns(&self) -> Option<usize> {
         Some(usize::from(indicatif::TermLike::width(&self.0)))
+    }
+
+    /// The escape a real terminal would take, written into the screen model
+    /// as bytes so the fixture's move log records it beside the paints it
+    /// brackets. The model consumes it as a mode change, so `contents()` is
+    /// unaffected — exactly the relationship a tty has to it.
+    fn set_cursor_visible(&self, visible: bool) {
+        let seq = if visible { "\x1b[?25h" } else { "\x1b[?25l" };
+        let _ = indicatif::TermLike::write_str(&self.0, seq);
     }
 }
 
@@ -369,6 +386,7 @@ impl Printer {
                 Theme::default().with_colors(false),
                 verbosity,
                 multi.clone(),
+                sink.clone(),
             )),
             output_format: OutputFormat::Table,
             sink_stderr: sink.clone(),

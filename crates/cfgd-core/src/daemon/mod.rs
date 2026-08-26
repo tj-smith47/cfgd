@@ -1525,6 +1525,8 @@ struct ShutdownSignals {
 #[cfg(unix)]
 impl ShutdownSignals {
     fn install() -> Self {
+        // The live region's cursor hook must leave the signal to this loop.
+        crate::output::claim_termination_signals();
         fn register(
             kind: tokio::signal::unix::SignalKind,
             name: &str,

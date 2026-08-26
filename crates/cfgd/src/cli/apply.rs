@@ -810,6 +810,10 @@ fn register_abort_handlers(abort: &cfgd_core::AbortFlag) {
     use signal_hook::consts::{SIGINT, SIGTERM};
     use signal_hook::low_level;
 
+    // The live region's cursor-restore hook chains beside these handlers and
+    // would otherwise emulate the default disposition on the first delivery,
+    // killing the apply the cooperative flag exists to let finish cleanly.
+    cfgd_core::output::claim_termination_signals();
     // 128 + signum, the POSIX shell convention for signal-terminated processes.
     for (sig, code) in [(SIGINT, 130usize), (SIGTERM, 143usize)] {
         let flag = abort.raw();

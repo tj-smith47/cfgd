@@ -923,9 +923,9 @@ pub(super) fn check_prerequisites(printer: &Printer) -> bool {
             .status(Role::Fail, "Git is not installed")
             .detail("cfgd requires git");
         if cfg!(target_os = "macos") {
-            printer.hint("Install with: xcode-select --install");
+            printer.hint("Install with `xcode-select --install`");
         } else {
-            printer.hint("Install with: sudo apt install git (or your package manager)");
+            printer.hint("Install with `sudo apt install git` (or your package manager)");
         }
         return false;
     }

@@ -685,12 +685,6 @@ pub fn build_fleet_status_doc(
         &output.pending_decisions,
         |s, rows| super::build_pending_decisions_table_section(s, rows, decision_contents),
     );
-    if !output.pending_decisions.is_empty() {
-        doc = doc.hint(cfgd_core::reconciler::answer_decisions_hint(
-            output.pending_decisions.len(),
-        ));
-    }
-
     // Rendered beside the pending rows those batches would otherwise be:
     // "why isn't requests installed?" must be answerable from the dashboard,
     // not only from a plan/apply run header.

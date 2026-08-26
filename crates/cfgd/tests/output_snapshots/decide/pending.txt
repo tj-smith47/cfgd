@@ -2,5 +2,4 @@ Pending Decisions (2 items)
   source:team-config
     ◉ Recommended packages.brew.curl
     ◉ Optional env.EDITOR
-
-→ Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer; `cfgd decide accept --all` answers every item
+  → Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer; `cfgd decide accept --all` answers every item

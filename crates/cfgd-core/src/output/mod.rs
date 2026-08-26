@@ -76,6 +76,9 @@ pub use component::{CommandPair, Component, KvPair};
 
 pub mod renderer;
 
+mod cursor;
+pub use cursor::claim_termination_signals;
+
 pub mod printer;
 pub use printer::{ColorChoice, DocCapture, Printer, PromptAnswer};
 

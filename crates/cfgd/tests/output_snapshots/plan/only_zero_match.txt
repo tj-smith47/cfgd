@@ -5,4 +5,4 @@ Plan
 
 ⚠ No actions in scope — the active filter excluded all 1 action planned; the system was not reconciled
 
-→ Actions exist in phase: Files
+→ Actions exist in phase: Files — run `cfgd plan` without the filter to preview them

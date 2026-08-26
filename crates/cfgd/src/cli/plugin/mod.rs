@@ -688,7 +688,11 @@ pub fn cmd_inject(
                     module_names.join(", ")
                 ),
             )
-            .hint("Pods will receive modules on next rollout")
+            // The patch rewrote the pod template, so the controller is
+            // already rolling; name the command that watches it land.
+            .hint(format!(
+                "Run `kubectl rollout status {kind}/{name} -n {namespace}` to watch the pods pick them up"
+            ))
             .with_data(serde_json::json!({
                 "namespace": namespace,
                 "resource": resource,

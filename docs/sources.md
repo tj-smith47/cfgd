@@ -417,6 +417,7 @@ Plan
 Pending Decisions (1 item, not included in this plan)
   source:acme-corp
     ◉ Recommended packages.brew.k9s — brew install k9s
+  → Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
 
 Phase: Prerequisites
   cfgd:managers
@@ -427,20 +428,26 @@ Phase: Packages
     - brew install ripgrep
 
 ◉ 2 actions planned
-→ Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
 
 $ cfgd decide accept packages.brew.k9s
+✓ Accepted 1 item
+
+→ Run `cfgd plan` to preview changes, then `cfgd apply`
 $ cfgd plan            # k9s now plans alongside ripgrep
 ◉ 3 actions planned
 ```
 
-`cfgd decide` is the only way to move an item out of Pending; neither `plan` nor `apply` resolves a decision for you.
+The answer instruction closes the Pending Decisions section itself, at the section's own indent, on every surface that lists one (`plan`, `apply`, `decide`, `status`); a plan's own closing line is the action count. `cfgd decide` is the only way to move an item out of Pending; neither `plan` nor `apply` resolves a decision for you, and an accepted item reaches the machine only through the `cfgd apply` the verdict points at (or the next daemon tick, where one runs).
 
 A plan whose only remaining work is withheld says so instead of reporting success, so "up to date" never covers an item you have not answered:
 
 ```
+Pending Decisions (1 item, not included in this plan)
+  source:acme-corp
+    ◉ Recommended packages.brew.k9s — brew install k9s
+  → Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
+
 ⊙ Nothing to apply — 1 decision pending
-→ Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
 ```
 
 `cfgd apply` closes with the same line.

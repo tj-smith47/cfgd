@@ -1,4 +1,4 @@
 Modules
 ◉ No modules found
 
-→ Add modules to /etc/cfgd/modules/
+→ Create one with `cfgd module create <name>`, or add a directory under /etc/cfgd/modules/

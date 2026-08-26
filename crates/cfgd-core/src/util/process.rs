@@ -721,6 +721,8 @@ pub enum ShutdownRequest {
 /// binaries, and a Windows arm nobody runs would be an unproven code path.
 #[cfg(unix)]
 pub async fn await_shutdown_request() -> std::io::Result<ShutdownRequest> {
+    // The live region's cursor hook must leave the signal to this select.
+    crate::output::claim_termination_signals();
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|e| std::io::Error::other(format!("failed to register SIGTERM handler: {e}")))?;
     tokio::select! {

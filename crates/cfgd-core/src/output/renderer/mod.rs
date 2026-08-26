@@ -289,6 +289,10 @@ pub(crate) struct LiveBarState {
     /// Consecutive routed writes that failed without proving the terminal
     /// dead — see [`LiveBarState::record_route_failure`].
     route_failures: AtomicUsize,
+    /// The sink whose cursor the region hides while any bar is counted live
+    /// and shows again when the last one drops — the stderr the bars repaint.
+    /// `None` for a renderer with no bars, which never has a live region.
+    cursor: Option<std::sync::Arc<dyn Writer>>,
 }
 
 /// Consecutive transient failures that stand in for a dead terminal.
@@ -311,11 +315,12 @@ pub(crate) struct LiveBarState {
 const ROUTE_FAILURES_BEFORE_LATCH: usize = 2;
 
 impl LiveBarState {
-    fn new() -> Self {
+    fn new(cursor: Option<std::sync::Arc<dyn Writer>>) -> Self {
         Self {
             live_bars: AtomicUsize::new(0),
             bars_broken: AtomicBool::new(false),
             route_failures: AtomicUsize::new(0),
+            cursor,
         }
     }
 
@@ -390,7 +395,7 @@ impl Renderer {
             verbosity,
             state: Mutex::new(RenderState::new()),
             bars: None,
-            live: std::sync::Arc::new(LiveBarState::new()),
+            live: std::sync::Arc::new(LiveBarState::new(None)),
             inherit_guards: AtomicUsize::new(0),
         }
     }
@@ -399,13 +404,19 @@ impl Renderer {
     /// draw target, so lines emitted while a bar is live can be routed through
     /// it. `pub(crate)` because that invariant is not something an external
     /// caller can be trusted to hold.
+    ///
+    /// `cursor` is that same sink, handed over so the live region can hide
+    /// and show the cursor of the terminal the bars repaint — a renderer given
+    /// bars but no cursor would draw spinners beside a parked cursor block.
     pub(crate) fn with_bars(
         theme: Theme,
         verbosity: Verbosity,
         bars: indicatif::MultiProgress,
+        cursor: std::sync::Arc<dyn Writer>,
     ) -> Self {
         Self {
             bars: Some(bars),
+            live: std::sync::Arc::new(LiveBarState::new(Some(cursor))),
             ..Self::new(theme, verbosity)
         }
     }
@@ -589,18 +600,34 @@ impl Renderer {
 /// Increments the renderer's live-bar count on construction and decrements it
 /// on drop. Held by the `Spinner` / `ProgressBar` wrapper, so the count tracks
 /// the bar's real lifetime with no paired decrement to forget.
+///
+/// The cursor rides the same count: hidden as the FIRST bar goes up, shown as
+/// the LAST one drops, and never touched by the bars in between. RAII is what
+/// makes it hold across an early `?` and a panic alike — the guard drops on
+/// every exit path the bar's wrapper has, so there is no "show" for a call
+/// site to forget. Ctrl-C is the one exit no drop runs on; `cursor.rs`'s
+/// signal hook covers it.
 pub(crate) struct LiveBarGuard(std::sync::Arc<LiveBarState>);
 
 impl LiveBarGuard {
     pub(crate) fn acquire(renderer: &std::sync::Arc<Renderer>) -> Self {
-        renderer.live.live_bars.fetch_add(1, Relaxed);
-        Self(renderer.live.clone())
+        let live = &renderer.live;
+        if live.live_bars.fetch_add(1, Relaxed) == 0
+            && let Some(cursor) = &live.cursor
+        {
+            cursor.set_cursor_visible(false);
+        }
+        Self(live.clone())
     }
 }
 
 impl Drop for LiveBarGuard {
     fn drop(&mut self) {
-        self.0.live_bars.fetch_sub(1, Relaxed);
+        if self.0.live_bars.fetch_sub(1, Relaxed) == 1
+            && let Some(cursor) = &self.0.cursor
+        {
+            cursor.set_cursor_visible(true);
+        }
     }
 }
 
@@ -860,6 +887,11 @@ pub trait Writer: Send + Sync {
     fn wrap_columns(&self) -> Option<usize> {
         None
     }
+
+    /// Hide or show the cursor of whatever this sink writes to. Only a
+    /// terminal has one; a buffer or a redirected stream keeps the no-op, so a
+    /// capture never carries the escape and `-o json` never sees it.
+    fn set_cursor_visible(&self, _visible: bool) {}
 }
 
 impl Writer for console::Term {
@@ -869,6 +901,14 @@ impl Writer for console::Term {
 
     fn wrap_columns(&self) -> Option<usize> {
         self.size_checked().map(|(_, cols)| cols as usize)
+    }
+
+    fn set_cursor_visible(&self, visible: bool) {
+        if visible {
+            super::cursor::show(self);
+        } else {
+            super::cursor::hide(self);
+        }
     }
 }
 
@@ -1604,16 +1644,17 @@ mod tests {
             let multi = indicatif::MultiProgress::with_draw_target(
                 indicatif::ProgressDrawTarget::term_like(Box::new(term)),
             );
+            let sink_buf = Arc::new(Mutex::new(String::new()));
             let renderer = Arc::new(Renderer::with_bars(
                 Theme::default(),
                 Verbosity::Normal,
                 multi.clone(),
+                Arc::new(StringSink(sink_buf.clone())),
             ));
             // A real bar, added the way `build_spinner` adds one, so the
             // multi has something to redraw around each routed emission.
             let bar = multi.add(indicatif::ProgressBar::new_spinner());
             let live = LiveBarGuard::acquire(&renderer);
-            let sink_buf = Arc::new(Mutex::new(String::new()));
             Self {
                 renderer,
                 sink: StringSink(sink_buf.clone()),
@@ -1765,7 +1806,7 @@ mod tests {
     #[test]
     fn a_transient_refusal_alone_does_not_latch_routing_off() {
         let transient = || std::io::Error::from(std::io::ErrorKind::Interrupted);
-        let live = LiveBarState::new();
+        let live = LiveBarState::new(None);
 
         assert!(!live.record_route_failure(&transient()));
         assert!(!live.broken(), "one refusal is not a dead terminal");
@@ -1792,7 +1833,7 @@ mod tests {
             std::io::ErrorKind::NotConnected,
             std::io::ErrorKind::PermissionDenied,
         ] {
-            let live = LiveBarState::new();
+            let live = LiveBarState::new(None);
             assert!(
                 live.record_route_failure(&std::io::Error::from(kind)),
                 "{kind:?} must latch at once"
@@ -1818,6 +1859,48 @@ mod tests {
             sp._live.is_none(),
             "a hidden bar must not hold a live-bar guard"
         );
+    }
+
+    /// The cursor rides the live-bar count: two overlapping bars hide it once,
+    /// and it comes back only when the LAST of them drops. A per-bar toggle
+    /// would flash the cursor back mid-region as the first bar settled.
+    #[test]
+    fn the_cursor_hides_on_the_first_bar_and_shows_when_the_last_drops() {
+        struct CursorLog(Mutex<Vec<bool>>);
+        impl Writer for CursorLog {
+            fn write_line(&self, _: &str) {}
+            fn set_cursor_visible(&self, visible: bool) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(visible);
+            }
+        }
+        let log = Arc::new(CursorLog(Mutex::new(Vec::new())));
+        let renderer = Arc::new(Renderer::with_bars(
+            Theme::default(),
+            Verbosity::Normal,
+            indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden()),
+            log.clone(),
+        ));
+        let toggles = || log.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+        let first = LiveBarGuard::acquire(&renderer);
+        let second = LiveBarGuard::acquire(&renderer);
+        assert_eq!(toggles(), vec![false], "hidden once, on the first bar");
+        drop(first);
+        assert_eq!(toggles(), vec![false], "still hidden while a bar is live");
+        drop(second);
+        assert_eq!(
+            toggles(),
+            vec![false, true],
+            "shown once, as the last bar drops"
+        );
+
+        // A renderer without bars has no live region and never touches it.
+        let bare = Arc::new(Renderer::new(Theme::default(), Verbosity::Normal));
+        drop(LiveBarGuard::acquire(&bare));
+        assert_eq!(toggles(), vec![false, true]);
     }
 
     #[test]

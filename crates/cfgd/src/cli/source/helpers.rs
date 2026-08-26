@@ -112,7 +112,8 @@ pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
     count
 }
 
-/// Append a per-source breakdown of pending decisions to a [`SectionBuilder`].
+/// Append a per-source breakdown of pending decisions to a [`SectionBuilder`],
+/// closed by the instruction for answering them.
 ///
 /// Grouped by source name (BTreeMap → alphabetical order). Each source becomes
 /// a nested subsection headed by its `source:<name>` owner token, whose first
@@ -123,12 +124,19 @@ pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
 /// The single renderer behind both `cfgd decide`'s listing and `cfgd status`'s
 /// Pending Decisions section: the same rows under two headings would let one
 /// screen's grammar drift from the other's.
+///
+/// The hint is the SECTION's, rendered at its depth and directly under its
+/// last row, which is where `cfgd plan` and `cfgd apply` put theirs
+/// (`ApplyRun::render_withheld`). Both surfaces here used to close the section
+/// and then hang the same sentence off the document — one indent shallower and
+/// a blank line lower than the plan's copy of it — so a reader saw one
+/// instruction in two places depending on which command they asked.
 pub(crate) fn build_pending_decisions_table_section(
     s: SectionBuilder,
     decisions: &[cfgd_core::state::PendingDecision],
     contents: &cfgd_core::reconciler::DecisionContents,
 ) -> SectionBuilder {
-    cfgd_core::reconciler::decisions_by_source(decisions)
+    let s = cfgd_core::reconciler::decisions_by_source(decisions)
         .into_iter()
         .fold(s, |s, (source_name, items)| {
             // The same `source:<name>` token every other source-owned line
@@ -142,7 +150,10 @@ pub(crate) fn build_pending_decisions_table_section(
                     })
                 })
             })
-        })
+        });
+    s.hint(cfgd_core::reconciler::answer_decisions_hint(
+        decisions.len(),
+    ))
 }
 
 pub(crate) fn add_source_to_config(

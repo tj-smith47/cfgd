@@ -72,7 +72,9 @@ pub fn cmd_source_priority(
                 Doc::new()
                     .kv("Source", name)
                     .kv("Priority", source.subscription.priority.to_string())
-                    .hint("Local config priority is 1000")
+                    .hint(format!(
+                        "Change it with `cfgd source priority {name} <priority>` (local config is 1000)"
+                    ))
                     .with_data(serde_json::json!({
                         "name": name,
                         "priority": source.subscription.priority,

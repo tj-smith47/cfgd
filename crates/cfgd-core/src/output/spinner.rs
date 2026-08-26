@@ -1160,3 +1160,76 @@ mod tests {
         }
     }
 }
+
+/// The terminal cursor while a live region draws — see `output/cursor.rs`.
+#[cfg(test)]
+mod cursor_region_tests {
+    use super::super::Printer;
+
+    /// The observed defect: for the whole of every spinner a solid cursor block
+    /// sat in the right margin of the spinner's own row, on camera in every
+    /// demo. The region hides the cursor before its first paint and shows it
+    /// after its last clear, and does so once per region rather than once
+    /// per repaint.
+    #[test]
+    fn a_narrated_wait_hides_the_cursor_before_its_first_paint_and_shows_it_after_its_last() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 120);
+        let _ = screen.moves();
+        let out: Result<(), ()> = printer.narrate("Resolving module:nvim", |sp| {
+            sp.set_message("Resolving module:zsh");
+            Ok(())
+        });
+        assert!(out.is_ok());
+        drop(printer);
+
+        let moves = screen.moves();
+        let hide = moves
+            .find("[?25l")
+            .unwrap_or_else(|| panic!("the region never hid the cursor:\n{moves}"));
+        let show = moves
+            .rfind("[?25h")
+            .unwrap_or_else(|| panic!("the region never showed the cursor again:\n{moves}"));
+        let clear = moves
+            .find("Clear")
+            .unwrap_or_else(|| panic!("the region never cleared its row:\n{moves}"));
+        assert!(
+            hide < clear && clear < show,
+            "hide ({hide}) < the region's clear ({clear}) < show ({show}) must hold:\n{moves}"
+        );
+        assert_eq!(
+            moves.matches("[?25l").count(),
+            1,
+            "one region hides the cursor once:\n{moves}"
+        );
+        assert_eq!(
+            moves.matches("[?25h").count(),
+            1,
+            "one region shows the cursor once:\n{moves}"
+        );
+        assert!(
+            !screen.contents().contains("[?25"),
+            "the escape is consumed by the terminal, never painted:\n{}",
+            screen.contents()
+        );
+    }
+
+    /// The scrollback capture has no terminal to hide a cursor on: a bar goes
+    /// up and comes down exactly as on a tty, and the permanent output carries
+    /// neither escape — which is also what keeps every golden a golden.
+    #[test]
+    fn the_scrollback_capture_carries_neither_cursor_escape() {
+        let (printer, buf) = Printer::for_test_live_scrollback();
+        let out: Result<(), ()> = printer.narrate("Resolving module:nvim", |_| Ok(()));
+        assert!(out.is_ok());
+        // raw-capture-ok: the cursor escapes ARE the subject; captured_text strips them
+        let held = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            !held.contains("[?25l"),
+            "hide escape in the scrollback: {held:?}"
+        );
+        assert!(
+            !held.contains("[?25h"),
+            "show escape in the scrollback: {held:?}"
+        );
+    }
+}

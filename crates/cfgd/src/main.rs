@@ -157,6 +157,9 @@ fn main() -> anyhow::Result<()> {
     let matches = augmented.clone().get_matches_from(&expanded);
 
     if let Some(("mcp", sub)) = matches.subcommand() {
+        // brontes turns SIGINT/SIGTERM into a clean server shutdown; the live
+        // region's cursor hook must not pre-empt it with the default disposition.
+        cfgd_core::output::claim_termination_signals();
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()

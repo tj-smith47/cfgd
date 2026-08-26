@@ -674,7 +674,7 @@ pub(in crate::cli) fn report_no_in_scope_actions(
         ));
     if !scope.phases_with_work.is_empty() {
         printer.hint(format!(
-            "Actions exist in {}: {}",
+            "Actions exist in {}: {} — run `cfgd plan` without the filter to preview them",
             cfgd_core::plural_noun(scope.phases_with_work.len(), "phase"),
             scope.phases_with_work.join(", ")
         ));

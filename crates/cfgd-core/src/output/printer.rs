@@ -222,14 +222,16 @@ impl Printer {
         // whose stderr sink is that MultiProgress's own draw target, which is
         // what makes routing lines through it correct.
         let multi_progress = indicatif::MultiProgress::new();
+        let sink_stderr: Arc<dyn Writer> = Arc::new(Term::stderr());
         Self {
             renderer: Arc::new(Renderer::with_bars(
                 theme,
                 verbosity,
                 multi_progress.clone(),
+                sink_stderr.clone(),
             )),
             output_format,
-            sink_stderr: Arc::new(Term::stderr()),
+            sink_stderr,
             sink_stdout: Arc::new(Term::stdout()),
             multi_progress,
             syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),

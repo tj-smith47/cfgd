@@ -21430,8 +21430,8 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
         "should mention resource name, got: {output}"
     );
     assert!(
-        output.contains("not be applied"),
-        "rejected resource should mention 'not be applied', got: {output}"
+        output.contains("withheld from the next `cfgd apply`"),
+        "a rejected resource names the apply it is withheld from, got: {output}"
     );
 
     let pending = state.pending_decisions().unwrap();
@@ -21477,8 +21477,8 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
         "should mention resource name, got: {output}"
     );
     assert!(
-        output.contains("be applied"),
-        "accepted resource should mention 'be applied', got: {output}"
+        output.contains("included in the next `cfgd apply`"),
+        "an accepted resource names the apply that includes it, got: {output}"
     );
 }
 
@@ -21551,8 +21551,8 @@ fn cmd_decide_accept_all_reports_count() {
         "should report count of 3 items, got: {output}"
     );
     assert!(
-        output.contains("next reconcile"),
-        "should mention next reconcile, got: {output}"
+        output.contains("Run `cfgd plan` to preview changes, then `cfgd apply`"),
+        "should close on the command that applies the answer, got: {output}"
     );
 
     let pending = state.pending_decisions().unwrap();
@@ -21766,7 +21766,9 @@ spec:
     // View mode should display source name and priority value
     h.assert_output_contains("team-src");
     h.assert_output_contains("750");
-    h.assert_output_contains("Local config priority is 1000");
+    h.assert_output_contains(
+        "Change it with `cfgd source priority team-src <priority>` (local config is 1000)",
+    );
 }
 
 #[test]
@@ -26850,5 +26852,292 @@ fn every_attestation_type_this_crate_names_is_one_the_reader_can_produce() {
     assert!(
         checked > 0,
         "no literal attestation type found: the walk stopped seeing its population"
+    );
+}
+
+/// The name of the `fn` whose body holds line `n`, read backwards through the
+/// file. A closure is not a function, so a line inside `let block = |…|` is
+/// attributed to the function that declared the closure.
+fn enclosing_fn_name(lines: &[&str], n: usize) -> Option<String> {
+    lines[..=n].iter().rev().find_map(|line| {
+        let trimmed = line.trim_start();
+        // `fn`, `pub fn`, `pub(crate) fn`, `async fn`: the declaration is
+        // whatever precedes the first `fn ` token on a line that opens with
+        // a visibility or the keyword itself.
+        let at = trimmed.find("fn ")?;
+        let qualifiers = &trimmed[..at];
+        if !(qualifiers.is_empty()
+            || qualifiers.starts_with("pub")
+            || qualifiers.starts_with("async")
+            || qualifiers.starts_with("const"))
+        {
+            return None;
+        }
+        let after = &trimmed[at + "fn ".len()..];
+        let name: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        (!name.is_empty()).then_some(name)
+    })
+}
+
+/// The body of the first `fn <name>` in `lines`, from its signature to the
+/// brace that closes it, or `None` when the file declares no such function.
+fn fn_body(lines: &[&str], name: &str) -> Option<String> {
+    let start = lines.iter().position(|l| {
+        let t = l.trim_start();
+        t.contains(&format!("fn {name}(")) && !t.starts_with("//")
+    })?;
+    let mut depth = 0usize;
+    let mut opened = false;
+    let mut end = start;
+    for (i, line) in lines.iter().enumerate().skip(start) {
+        for c in line.chars() {
+            match c {
+                '{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        end = i;
+        if opened && depth == 0 {
+            break;
+        }
+    }
+    Some(lines[start..=end].join("\n"))
+}
+
+/// The Pending / Declined Decisions section closes on ITS instruction, from
+/// inside: `cfgd plan` rendered the answer hint at the section's own depth and
+/// straight under its last row, while `cfgd decide` and `cfgd status` closed
+/// the section and hung the same sentence off the document — one indent
+/// shallower and a blank line lower, eight lines apart on one screen. The
+/// hint is emitted by exactly two composers, one per rendering path (the run
+/// skeleton's live `SectionGuard`, the Doc surfaces' `SectionBuilder`), and
+/// both address it to the section they are standing in.
+#[test]
+fn every_decisions_hint_closes_its_section_from_inside() {
+    const SYMBOLS: &[&str] = &[
+        "answer_decisions_hint(",
+        "MSG_ANSWER_DECISIONS",
+        "MSG_INCLUDE_DECLINED_DECISIONS",
+    ];
+    const COMPOSERS: &[(&str, &str)] = &[
+        ("reconciler/run.rs", "render_withheld"),
+        (
+            "cli/source/helpers.rs",
+            "build_pending_decisions_table_section",
+        ),
+    ];
+    let walked: Vec<(std::path::PathBuf, String)> = cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+        .collect();
+    let mut offenders = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for (path, body) in &walked {
+        // The definitions and the module that re-exports them.
+        if path.ends_with("reconciler/pending.rs") || path.ends_with("reconciler/mod.rs") {
+            continue;
+        }
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//")
+                || trimmed.starts_with("use ")
+                || !SYMBOLS.iter().any(|s| line.contains(s))
+            {
+                continue;
+            }
+            let Some(func) = enclosing_fn_name(&lines, n) else {
+                offenders.push(format!(
+                    "{}:{}: a decisions hint outside any function",
+                    path.display(),
+                    n + 1
+                ));
+                continue;
+            };
+            match COMPOSERS.iter().find(|(_, f)| *f == func) {
+                Some((file, _)) if path.ends_with(file) => {
+                    seen.insert(func);
+                }
+                _ => offenders.push(format!(
+                    "{}:{}: `{func}` emits the decisions hint; only the section composers \
+                     {:?} may, and a surface listing decisions renders through one of them",
+                    path.display(),
+                    n + 1,
+                    COMPOSERS.iter().map(|(_, f)| *f).collect::<Vec<_>>()
+                )),
+            }
+        }
+    }
+    for (file, func) in COMPOSERS {
+        let (path, body) = walked
+            .iter()
+            .find(|(p, _)| p.ends_with(file))
+            .unwrap_or_else(|| panic!("{file} is walked"));
+        let lines: Vec<&str> = body.lines().collect();
+        let composer = fn_body(&lines, func)
+            .unwrap_or_else(|| panic!("{}: `{func}` is still declared", path.display()));
+        let section_scoped = composer.contains("section.hint(") || composer.contains("s.hint(");
+        let doc_scoped = composer.contains("doc.hint(") || composer.contains("Doc::new().hint(");
+        if !section_scoped || doc_scoped {
+            offenders.push(format!(
+                "{}: `{func}` must address the hint to the section it is standing in \
+                 (`section.hint(` / `s.hint(`), never to the document",
+                path.display()
+            ));
+        }
+        assert!(
+            seen.contains(*func),
+            "{}: `{func}` no longer emits a decisions hint — the walk lost a composer",
+            path.display()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a decisions section closes on its instruction from inside, on every surface:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The call's argument text: from the `(` that follows `at` on line `n` to
+/// the parenthesis that closes it, across as many lines as it spans.
+fn call_argument(lines: &[&str], n: usize, at: usize) -> String {
+    let mut out = String::new();
+    let mut depth = 0i32;
+    let mut started = false;
+    for (i, line) in lines.iter().enumerate().skip(n) {
+        let text = if i == n { &line[at..] } else { line };
+        for c in text.chars() {
+            match c {
+                '(' => {
+                    depth += 1;
+                    if depth == 1 {
+                        started = true;
+                        continue;
+                    }
+                }
+                ')' => {
+                    depth -= 1;
+                    if started && depth == 0 {
+                        return out;
+                    }
+                }
+                _ => {}
+            }
+            if started {
+                out.push(c);
+            }
+        }
+        if started {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// The first `"…"` literal in `text`, unescaped only as far as this walk
+/// reads it (a backtick never needs escaping).
+fn first_string_literal(text: &str) -> Option<String> {
+    let start = text.find('"')?;
+    let rest = &text[start + 1..];
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            }
+            '"' => return Some(out),
+            _ => out.push(c),
+        }
+    }
+    None
+}
+
+/// Every `const NAME: &str = "…"` a walked file declares, so a hint that names
+/// its text through a constant is read as the text.
+fn str_consts(
+    sources: &[(std::path::PathBuf, String)],
+) -> std::collections::BTreeMap<String, String> {
+    let mut consts = std::collections::BTreeMap::new();
+    for (_, body) in sources {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let Some(at) = line.find("const ") else {
+                continue;
+            };
+            let Some((name, _)) = line[at + "const ".len()..].split_once(": &str") else {
+                continue;
+            };
+            let window = lines[n..lines.len().min(n + 4)].join("\n");
+            if let Some(text) = first_string_literal(&window) {
+                consts.insert(name.trim().to_string(), text);
+            }
+        }
+    }
+    consts
+}
+
+/// A closing hint names the command that comes next. `cfgd decide accept`
+/// closed on `Changes will take effect on next reconcile` — the one next step
+/// in the product that named no command, pointing at a background reconcile a
+/// daemon-less machine never runs, while the demo's very next beat typed the
+/// command the tool had declined to name. Every other hint in the take named
+/// its command in backticks; the walk holds the whole `crates/cfgd/src/cli/`
+/// population to that shape.
+///
+/// A hint whose text is built elsewhere (`answer_decisions_hint`,
+/// `source_success_next_step`, an error's remediation lines) is out of class
+/// here and pinned by its own producer; a constant is followed to its text.
+/// A genuinely command-less instruction carries a `// hint-ok: <why>` marker.
+#[test]
+fn every_closing_hint_names_a_command() {
+    let sources = cli_production_sources();
+    let consts = str_consts(&sources);
+    let mut checked = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in &sources {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//")
+                || line.contains("fn hint(")
+                || line.contains("fn next_step(")
+            {
+                continue;
+            }
+            let Some(at) = line.find(".hint(").or_else(|| line.find("next_step(")) else {
+                continue;
+            };
+            let arg = call_argument(&lines, n, at);
+            let text = first_string_literal(&arg).or_else(|| {
+                let ident = arg.trim().rsplit("::").next().unwrap_or_default().trim();
+                consts.get(ident).cloned()
+            });
+            let Some(text) = text else {
+                continue;
+            };
+            checked += 1;
+            if text.matches('`').count() < 2 && !label_hatched(&lines, n, "// hint-ok:") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, text));
+            }
+        }
+    }
+    assert!(
+        checked >= 30,
+        "the walk no longer reaches the hints it exists to hold — it found {checked}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a closing hint names the command the reader runs next, in backticks:\n{}",
+        offenders.join("\n")
     );
 }

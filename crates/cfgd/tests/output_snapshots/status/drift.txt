@@ -20,8 +20,7 @@ Sources
 Pending Decisions (1 item)
   source:team-config
     ◉ Recommended package/curl
-
-→ Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
+  → Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
 
 Modules
   ✓ module:shell-config — 0 packages, 4 files, 0 scripts, Synced

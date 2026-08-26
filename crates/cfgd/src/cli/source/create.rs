@@ -142,7 +142,10 @@ pub fn cmd_source_create(
         );
     }
     doc = doc
-        .hint("Edit the file to configure policy tiers and platform-profiles")
+        .hint(format!(
+            "Edit the manifest to configure policy tiers and platform-profiles, then run `cfgd source validate {}`",
+            cfgd_core::to_posix_string(&source_path)
+        ))
         .with_data(serde_json::json!({
             "name": source_name,
             "path": cfgd_core::to_posix_string(&source_path),
