@@ -86,6 +86,10 @@ fn normalize_duration(raw: &str) -> String {
 /// temp dir. A golden pinning structure, order and labels must not also pin
 /// that; the column itself is a renderer unit test
 /// (`output::renderer::status`), where the subjects are literals.
+///
+/// Its one caller is `cfg(unix)`, so the gate travels with it: unqualified,
+/// the helper is dead code on Windows and `-D warnings` fails the build.
+#[cfg(unix)]
 fn collapse_alignment_padding(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for line in raw.split_inclusive('\n') {
