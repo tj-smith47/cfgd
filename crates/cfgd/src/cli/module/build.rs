@@ -67,7 +67,7 @@ pub fn cmd_module_build(
             output_artifacts.push(output_dir.display().to_string());
 
             if let Some(art) = artifact {
-                let digest =
+                let cfgd_core::oci::PushOutcome { digest, .. } =
                     cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
                         .map_err(|e| {
                             crate::cli::cli_error(

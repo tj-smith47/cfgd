@@ -25,7 +25,7 @@ pub use build::{build_module, detect_container_runtime};
 pub use pack::{PackOptions, PackOutcome, pack_image};
 pub use pull::{ArtifactFacts, SignaturePolicy, artifact_facts, pull_module};
 pub use push::{
-    current_platform, parse_platform_target, push_module, push_module_multiplatform,
+    PushOutcome, current_platform, parse_platform_target, push_module, push_module_multiplatform,
     rust_arch_to_oci,
 };
 pub use sign::{
@@ -211,6 +211,21 @@ impl OciReference {
         };
         format!("{scheme}://{}/v2", self.registry)
     }
+}
+
+/// The detail of the row that settles a push: the two facts the push produced
+/// on its own — the manifest digest the registry now serves, and the platform
+/// it resolved and stamped into that manifest as [`crate::OCI_ANNOTATION_PLATFORM`].
+///
+/// One wording over both producers ([`push_module`] and [`pack_image`]), so the
+/// two artifact-pushing rows cannot spell the same pair of facts two ways. The
+/// platform belongs to the row rather than to a header kv row: a header row
+/// echoes what the CALLER asked for, and is why `--platform` given renders
+/// `Platform` while a defaulted one does not — the resolved value is ground
+/// truth the run produced, and the operator reads it back off the manifest into
+/// a Module's `PLATFORMS` column whether or not a flag named it.
+pub(crate) fn artifact_row_detail(digest: &str, platform: &str) -> String {
+    format!("{digest} ({platform})")
 }
 
 /// Check if a registry is listed in `OCI_INSECURE_REGISTRIES` (comma-separated).

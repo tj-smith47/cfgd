@@ -87,12 +87,15 @@ fn packable_dir() -> tempfile::TempDir {
     dir
 }
 
-/// Fold the ephemeral registry authority and the local directory out of a
-/// captured render, so the golden holds the shape rather than this run's port.
+/// Fold the ephemeral registry authority, the local directory and this host's
+/// platform out of a captured render, so the golden holds the shape rather
+/// than this run's port — or this runner's os/arch, which the pack row now
+/// reports because nothing passed `--platform`.
 fn normalized(human: &str, registry: &str, dir: &Path) -> String {
     cfgd_core::normalize_snapshot_durations(&strip_ansi(human))
         .replace(registry, "<REGISTRY>")
         .replace(&cfgd_core::to_posix_string(dir), "<DIR>")
+        .replace(&cfgd_core::oci::current_platform(), "<PLATFORM>")
 }
 
 #[test]

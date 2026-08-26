@@ -53,19 +53,27 @@ pub fn cmd_module_push(
     // the library call, and `depth_inheritance` is what settles its spinner at
     // the section's depth instead of depth 0.
     let mut applied_name: Option<String> = None;
-    let (digest, signed, attestation_attached) = {
+    let (digest, resolved_platform, signed, attestation_attached) = {
         let push_sec = printer.section("Push Module");
         let _inherit = printer.depth_inheritance();
         push_sec.kv_block(header);
-        let digest = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer))
-            .map_err(|e| {
+        let cfgd_core::oci::PushOutcome {
+            digest,
+            platform: resolved_platform,
+        } = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer)).map_err(
+            |e| {
                 crate::cli::cli_error(
                     artifact,
                     "push_failed",
                     e.to_string(),
-                    serde_json::json!({ "artifact": artifact, "dir": dir, "platform": platform }),
+                    // No `platform`: the key names the platform an artifact
+                    // WAS pushed for, and this branch pushed none. Echoing the
+                    // flag here answers `null` for the defaulted case, which
+                    // reads as "no platform" rather than "no artifact".
+                    serde_json::json!({ "artifact": artifact, "dir": dir }),
                 )
-            })?;
+            },
+        )?;
         let crate::cli::helpers::SignAttestOutcome { signed, attested } =
             crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
 
@@ -82,13 +90,17 @@ pub fn cmd_module_push(
         push_sec.hint(super::success_next_step(super::Mutation::ModulePushed {
             applied: applied_name.as_deref(),
         }));
-        (digest, signed, attested)
+        (digest, resolved_platform, signed, attested)
     };
 
+    // The RESOLVED platform, never the `--platform` flag: this push stamped it
+    // into the manifest, and the operator reads it back into a Module's
+    // `PLATFORMS` column, so a payload key naming the artifact's platform
+    // answering `null` for a defaulted one is a wrong value, not a silence.
     printer.emit(Doc::new().with_data(serde_json::json!({
         "dir": dir,
         "artifact": artifact,
-        "platform": platform,
+        "platform": resolved_platform,
         "digest": digest,
         "signed": signed,
         "attestation": attestation_attached,
@@ -885,6 +897,44 @@ mod tests {
             assert!(
                 output.contains("linux/amd64"),
                 "platform value must appear in human output: {output}"
+            );
+        }
+
+        /// The platform a push RESOLVED is the artifact's whether or not a
+        /// flag named it: the settled row carries it beside the digest, and
+        /// the payload's `platform` key holds it. Filled from the `Option`
+        /// flag, that key answered `null` for an artifact whose manifest — and
+        /// whose Module `PLATFORMS` column, read back off that manifest by the
+        /// operator — said `linux/amd64`.
+        #[test]
+        #[serial]
+        fn push_without_a_platform_flag_reports_the_host_platform_in_both_renders() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_module_yaml(dir.path());
+            let (_server, registry) = mock_push_registry();
+            let artifact = format!("{}/test/mod:v1", registry);
+
+            let (printer, cap) = Printer::for_test_doc();
+            cmd_module_push(
+                &printer,
+                dir.path().to_str().unwrap(),
+                &artifact,
+                super::no_flags(),
+            )
+            .expect("push must succeed");
+            drop(printer);
+
+            let host = cfgd_core::oci::current_platform();
+            let human = cap.human();
+            assert!(
+                human.contains(&host),
+                "the pushed row reports the platform it resolved ({host}): {human}"
+            );
+            let doc = cap.json().expect("success doc must be emitted");
+            assert_eq!(
+                doc["platform"],
+                serde_json::Value::String(host),
+                "the payload carries the resolved platform, never the flag: {doc}"
             );
         }
 

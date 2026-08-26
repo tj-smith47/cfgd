@@ -15203,6 +15203,88 @@ fn every_mutating_verb_closes_on_a_next_step() {
     );
 }
 
+/// The verbs that put an artifact in a registry, each with the payload key
+/// naming the platform it PUSHED for and the `Option` flag that merely
+/// REQUESTS one. The two are never the same value: the flag is what the caller
+/// typed, the key is what the run resolved and stamped into the manifest.
+fn platform_resolving_artifact_verbs() -> Vec<(
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+)> {
+    vec![
+        (
+            "module push",
+            "module/push_pull.rs",
+            "cmd_module_push",
+            "platform",
+            "platform",
+        ),
+        (
+            "module build",
+            "module/build.rs",
+            "cmd_module_build",
+            "targets",
+            "target",
+        ),
+        (
+            "image pack",
+            "image/pack.rs",
+            "cmd_image_pack",
+            "platform",
+            "platform",
+        ),
+    ]
+}
+
+/// A payload key naming a fact the run RESOLVED is never filled from the flag
+/// that asked for it. `module push` emitted `"platform": platform` — the
+/// `Option<&str>` flag — so a push with no `--platform` answered
+/// `"platform": null` about an artifact whose own manifest annotation, and
+/// whose Module `PLATFORMS` column read back off it by the operator, said
+/// `linux/amd64`. A key named for the artifact's platform answering `null`
+/// about a platform that exists is a wrong value, not a silence: the producer
+/// returns what it resolved (`PushOutcome` / `PackOutcome`), and the handler
+/// serializes that.
+#[test]
+fn no_artifact_verb_serializes_its_platform_flag_as_the_platform_it_resolved() {
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut offenders = Vec::new();
+    let mut judged = 0usize;
+    for (verb, file, handler, key, flag) in platform_resolving_artifact_verbs() {
+        let source =
+            std::fs::read_to_string(cli_dir.join(file)).expect("the verb's source is checked out");
+        let source = production_body(&source);
+        let lines: Vec<&str> = source.lines().collect();
+        let body =
+            fn_body(&lines, handler).unwrap_or_else(|| panic!("{file} declares `{handler}`"));
+        judged += 1;
+        let needle = format!("\"{key}\": {flag}");
+        let straight_from_the_flag = body.match_indices(&needle).any(|(at, _)| {
+            body[at + needle.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric() && c != '_')
+        });
+        if straight_from_the_flag {
+            offenders.push(format!(
+                "cli/{file}: `{verb}` serializes `{key}` from the `{flag}` flag — emit what the push resolved"
+            ));
+        }
+    }
+    assert_eq!(
+        judged, 3,
+        "every verb that resolves a platform for an artifact is walked here"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a payload key names what the run resolved, not what the flag asked for:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// Every hint `success_next_step` composes names the command that comes next,
 /// in backticks — the same shape `every_closing_hint_names_a_command` holds
 /// literal hints to, which cannot see a text built here. Walks every variant,

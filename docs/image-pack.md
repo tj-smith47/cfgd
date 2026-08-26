@@ -30,7 +30,7 @@ $ cfgd image pack ./out registry.example.com/myapp/server:v1.4.0 \
 Pack Image
   Directory  ./out
   Artifact   registry.example.com/myapp/server:v1.4.0
-  ✓ Packed and pushed image — sha256:3a7b9c4d...
+  ✓ Packed and pushed image — sha256:3a7b9c4d... (linux/amd64)
   ✓ Signed artifact with cosign
 ```
 
@@ -201,7 +201,7 @@ $ cfgd image pack ./out \
 Pack Image
   Directory  ./out
   Artifact   registry.example.com/myapp/server:abc123
-  ✓ Packed and pushed image — sha256:3a7b9c4d...
+  ✓ Packed and pushed image — sha256:3a7b9c4d... (linux/amd64)
   ✓ Locked digest in cfgd-images.lock
 ```
 

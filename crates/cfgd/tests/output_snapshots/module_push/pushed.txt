@@ -2,5 +2,5 @@ Push Module
   Directory  <DIR>
   Artifact   <REGISTRY>/test/module:v1
   Platform   linux/amd64
-  ✓ Pushed module — sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  ✓ Pushed module — sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (linux/amd64)
   → Register it as a Module at the cluster's registry address: `kubectl apply -f <module>.yaml`, or `--apply` next time
