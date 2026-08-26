@@ -1,7 +1,7 @@
 ✓ Created ephemeral debug container on pod demo/app
 
-Modules      nettools:v1, tracing:v2
-Mount Path   /cfgd-modules/nettools, /cfgd-modules/tracing
-Path Prefix  /cfgd-modules/nettools/bin:/cfgd-modules/tracing/bin
+Modules     nettools:v1, tracing:v2
+Mount Path  /cfgd-modules/nettools, /cfgd-modules/tracing
+PATH Entry  /cfgd-modules/nettools/bin:/cfgd-modules/tracing/bin
 
 → Attach with `kubectl attach -n demo app -c cfgd-debug -it`

@@ -6,7 +6,10 @@ paths: ["crates/cfgd/src/cli/**/*.rs"]
 
 Every `cmd_*` function in `crates/cfgd/src/cli/` must appear in this
 table. The audit greps for `cmd_*` declarations and fails if any are
-missing from the table.
+missing from the table. The third column is a RATIONALE (why the payload
+exists, who reads it), never an inventory of its keys: a key list here is a
+second copy of the `with_data` shape, and it drifted (`debug` listed three
+keys while carrying six). The keys live in the builder and its golden.
 
 | Command                      | has_data_payload? | Why / Why not                                      |
 |------------------------------|-------------------|----------------------------------------------------|
@@ -32,14 +35,14 @@ missing from the table.
 | daemon_service               | no                | internal service registration; no scripting consumer |
 | daemon_status                | yes               | daemon health queried by scripts                   |
 | daemon_uninstall             | no                | one-shot teardown; no scripting consumer           |
-| debug                        | yes               | ephemeral-container facts (pod, modules, image)    |
+| debug                        | yes               | ephemeral-container facts consumed by debug tooling |
 | decide                       | yes               | pending-decision listing + resolution records      |
 | deploy                       | yes               | image-volume pin rewrites consumed by CI           |
 | diff                         | yes               | drift reporting                                    |
 | diff_module                  | yes               | per-module drift reporting                         |
 | doctor                       | no                | dev-tooling                                        |
 | enroll                       | yes               | machine identity exposed to gateway                |
-| exec                         | yes               | the pod and modules the command runs against       |
+| exec                         | yes               | the target a wrapper script ran a command against  |
 | explain                      | no                | dev-tooling                                        |
 | generate                     | yes               | generated module metadata                          |
 | generate_scan_only           | yes               | scan results consumed by scripts                   |
@@ -95,7 +98,7 @@ missing from the table.
 | source_add                   | yes               | add-result records                                 |
 | source_create                | yes               | new source metadata                                |
 | source_edit                  | yes               | post-edit validation verdict (path + valid flag)   |
-| source_list                  | yes               | source inventory, with `lastFetched` (ISO 8601, the human table's `Last Sync` age) + `signed` |
+| source_list                  | yes               | source inventory queried by scripts; instants stay ISO 8601 where the human table ages them |
 | source_override              | yes               | override records                                   |
 | source_priority              | yes               | priority change records                            |
 | source_remove                | yes               | removal records                                    |
@@ -103,7 +106,7 @@ missing from the table.
 | source_show                  | yes               | introspection                                      |
 | source_update                | yes               | update result records                              |
 | source_validate              | yes               | validation result consumed by scripts/CI           |
-| status                       | yes               | drift + last-apply queried by scripts; the kubectl plugin's `cmd_status` shares the name and carries `context`, `namespace`, `modules`, `pods` |
+| status                       | yes               | drift + last-apply queried by scripts; the kubectl plugin's `cmd_status` shares the name and carries the fleet view a script pages |
 | status_module                | yes               | per-module status queried by scripts               |
 | sync                         | yes               | sync result records                                |
 | upgrade                      | yes               | upgrade result records                             |

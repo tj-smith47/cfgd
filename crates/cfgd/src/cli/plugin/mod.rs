@@ -504,7 +504,8 @@ pub fn build_debug_doc(
         .kv_block([
             ("Modules", module_names.join(", ")),
             ("Mount Path", mount_dirs.join(", ")),
-            ("Path Prefix", path_prefix.to_string()),
+            // name-row-ok: PATH is the variable's own spelling; the row names what the container prepends to it
+            ("PATH Entry", path_prefix.to_string()),
         ])
         .hint(format!(
             "Attach with `kubectl attach -n {namespace} {pod} -c cfgd-debug -it`"
@@ -605,7 +606,8 @@ pub fn build_exec_doc(
         .kv_block([
             ("Modules", module_names.join(", ")),
             ("Mount Path", mount_dirs.join(", ")),
-            ("Path Prefix", path_prefix.to_string()),
+            // name-row-ok: PATH is the variable's own spelling; the row names what the container prepends to it
+            ("PATH Entry", path_prefix.to_string()),
         ])
         .with_data(serde_json::json!({
             "namespace": namespace,
