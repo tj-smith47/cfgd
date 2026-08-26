@@ -1839,7 +1839,7 @@ For `backup list <name> --snapshots`: an array of `{ name, created, sizeBytes }`
 where `name` is the snapshot's path relative to the backup's `destination`. A restore's safety
 copy is a sidecar beside the source, so it appears in neither list and is never the unit's
 `lastRunAt`. For `backup restore`:
-a single `{ name, snapshot, restoredTo, restored, clean, sizeBytes, safetyCopy?, error? }`;
+a single `{ name, snapshot, restoredTo, restored, clean, sizeBytes, safetyCopy?, safetyCopyReused?, error? }`;
 when the operator declines at the confirmation prompt,
 `{ name, snapshot, restoredTo, restored: false, declined: true }`. The declined payload omits
 `clean` deliberately: a decline exits `0`, and reporting `clean: false` beside a zero exit would

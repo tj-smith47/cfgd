@@ -549,7 +549,7 @@ Restore: notes-db
 
 backup:notes-db
   ✓ restore /home/me/.local/share/notes/notes.db from notes.db.20260813T061333Z — 8.0 KB
-  → Previous contents saved to /home/me/.local/share/notes/notes.db.cfgd-backup
+  → Previous contents backed up to /home/me/.local/share/notes/notes.db.cfgd-backup
 
 ✓ Restore complete — 1 action succeeded (0.3s wall)
 ```
@@ -627,9 +627,11 @@ staging removed      ← on every path, success or failure
   subject to `retention`, and not a `backup_runs` row. `backup list` never reports it as the unit's
   **Last Run**, and the daemon never re-anchors **Next Run** on it, so restoring a unit does not push
   its schedule out. Its path is reported as `safetyCopy` in `-o json` and as the `→` line in human
-  output. A sidecar already holding exactly the current bytes is reused; a different one is kept and
-  the new copy lands at a stamped `<path>.cfgd-backup-<stamp>` name instead, so an older copy is never
-  overwritten. If the copy cannot be written, the restore is **abandoned**: cfgd will not overwrite
+  output, worded the way an adoption row words the same copy: `Previous contents backed up to
+  <path>`, or `Previous contents already backed up at <path>` when a sidecar already holding exactly
+  the current bytes was reused rather than written (`safetyCopyReused` in `-o json`). A sidecar
+  holding different bytes is kept and the new copy lands at a stamped `<path>.cfgd-backup.<stamp>`
+  name instead, so an older copy is never overwritten. If the copy cannot be written, the restore is **abandoned**: cfgd will not overwrite
   data whose current contents were not captured.
 - **It is skipped on the target, not on the flag.** `--to` pointing back at the source, or at a
   path inside it, overwrites exactly what a plain restore would, so it still takes one. Only a

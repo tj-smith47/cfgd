@@ -4,6 +4,7 @@
   "restored": true,
   "restoredTo": "<SOURCE>",
   "safetyCopy": "<SOURCE>.cfgd-backup",
+  "safetyCopyReused": false,
   "sizeBytes": 12,
   "snapshot": "notes.txt.<TIMESTAMP>"
 }

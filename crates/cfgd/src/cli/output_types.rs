@@ -694,6 +694,11 @@ pub struct BackupRestoreOutput {
     /// `backup list` nor `--snapshots`, and no retention prunes it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safety_copy: Option<String>,
+    /// Whether `safety_copy` already held the source's bytes from an earlier
+    /// displacement and was reused rather than written by this restore.
+    /// Present exactly when `safety_copy` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_copy_reused: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -707,7 +712,11 @@ impl From<&cfgd_core::backup::RestoreOutcome> for BackupRestoreOutput {
             restored: outcome.restored,
             clean: outcome.is_clean(),
             size_bytes: outcome.size_bytes,
-            safety_copy: outcome.safety_copy.clone(),
+            safety_copy: outcome
+                .safety_copy
+                .as_ref()
+                .map(|s| cfgd_core::to_posix_string(&s.path)),
+            safety_copy_reused: outcome.safety_copy.as_ref().map(|s| s.reused),
             error: outcome.error.clone(),
         }
     }

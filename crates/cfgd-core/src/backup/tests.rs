@@ -1814,10 +1814,10 @@ fn restore_to_source_takes_a_safety_copy_first() {
     let outcome = h.restore(&s, None, None).expect("restore");
     let safety = outcome
         .safety_copy
-        .as_deref()
-        .expect("restoring over the live source must capture it first");
+        .expect("restoring over the live source must capture it first")
+        .path;
     assert_eq!(
-        std::fs::read_to_string(Path::new(safety)).expect("safety copy"),
+        std::fs::read_to_string(&safety).expect("safety copy"),
         "live",
         "the safety copy holds what the restore overwrote"
     );
@@ -1851,8 +1851,13 @@ fn restore_records_no_run_and_keeps_its_safety_copy_out_of_the_snapshots() {
     let safety = outcome
         .safety_copy
         .expect("restoring over the live source captures it");
+    assert!(
+        !safety.reused,
+        "the first displacement of these bytes writes the copy"
+    );
+    let safety = safety.path;
     assert_eq!(
-        safety,
+        crate::to_posix_string(&safety),
         crate::to_posix_string(crate::reconciler::cfgd_backup_path(&source, "")),
         "the safety copy lands beside the source as its .cfgd-backup sidecar"
     );
@@ -1887,13 +1892,15 @@ fn a_second_restore_keeps_the_first_safety_copy() {
         .restore(&s, None, None)
         .expect("restore")
         .safety_copy
-        .expect("safety copy");
+        .expect("safety copy")
+        .path;
     std::fs::write(&source, "second live").expect("live edit");
     let second = h
         .restore(&s, None, None)
         .expect("restore")
         .safety_copy
-        .expect("safety copy");
+        .expect("safety copy")
+        .path;
 
     assert_ne!(first, second, "a different original must take a new name");
     assert_eq!(
@@ -1905,6 +1912,60 @@ fn a_second_restore_keeps_the_first_safety_copy() {
         "second live"
     );
     assert_eq!(std::fs::read_to_string(&source).expect("source"), "v1");
+}
+
+/// A restore over bytes an earlier displacement already preserved reuses that
+/// sidecar, and the line reporting the copy says so. `Previous contents saved
+/// to …` had been composed by the restore itself, so a second restore of an
+/// unchanged target claimed a write it never made; the sentence is
+/// `SidecarOutcome::detail`'s, the same one an adoption row carries.
+#[test]
+fn a_restore_over_bytes_already_preserved_reads_already_backed_up_at() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, "v1").expect("source");
+    let s = spec("db", &source);
+    h.run(&s);
+
+    std::fs::write(&source, "live").expect("live edit");
+    let first = h.restore(&s, None, None).expect("restore");
+    let first_copy = first.safety_copy.clone().expect("safety copy");
+    assert!(
+        !first_copy.reused,
+        "the first copy of these bytes is written"
+    );
+
+    std::fs::write(&source, "live").expect("the same live edit again");
+    let second = h.restore(&s, None, None).expect("restore");
+    let second_copy = second.safety_copy.clone().expect("safety copy");
+    assert!(
+        second_copy.reused,
+        "a sidecar already holding these bytes is reused, not rewritten"
+    );
+    assert_eq!(second_copy.path, first_copy.path);
+
+    let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+    report_restore(&printer, &first);
+    report_restore(&printer, &second);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    let hints: Vec<&str> = out
+        .lines()
+        .filter(|l| l.contains("Previous contents"))
+        .collect();
+    assert_eq!(hints.len(), 2, "one hint per restore, got:\n{out}");
+    assert!(
+        hints[0].contains(&format!("Previous contents {}", first_copy.detail()))
+            && hints[0].contains("backed up to"),
+        "the written copy reads as written, got: {}",
+        hints[0]
+    );
+    assert!(
+        hints[1].contains(&format!("Previous contents {}", second_copy.detail()))
+            && hints[1].contains("already backed up at"),
+        "the reused copy must not claim a write, got: {}",
+        hints[1]
+    );
 }
 
 /// A source whose name leaves no room for the `.cfgd-backup` suffix inside the
@@ -2284,7 +2345,7 @@ fn restore_to_the_source_itself_still_takes_a_safety_copy() {
     let outcome = h
         .restore(&s, None, Some(&source))
         .expect("restore to the source");
-    let safety = outcome.safety_copy.expect("safety copy");
+    let safety = outcome.safety_copy.expect("safety copy").path;
     assert_eq!(
         std::fs::read_to_string(&safety).expect("safety payload"),
         "live"
@@ -2306,9 +2367,9 @@ fn restore_to_a_path_inside_the_source_still_takes_a_safety_copy() {
     let outcome = h
         .restore(&s, None, Some(&inside))
         .expect("restore inside the source");
-    let safety = outcome.safety_copy.expect("safety copy");
+    let safety = outcome.safety_copy.expect("safety copy").path;
     assert_eq!(
-        std::fs::read_to_string(PathBuf::from(&safety).join("a.txt")).expect("safety payload"),
+        std::fs::read_to_string(safety.join("a.txt")).expect("safety payload"),
         "live",
         "a target inside the source overwrites the source's own data"
     );
@@ -2535,7 +2596,7 @@ fn restore_replaces_a_directory_sitting_at_a_name_the_snapshot_holds_a_file_at()
 
     // The subtree it displaced is inside the target, so the safety copy
     // holds it — which is what makes the delete recoverable rather than lossy.
-    let safety = PathBuf::from(outcome.safety_copy.expect("safety copy"));
+    let safety = outcome.safety_copy.expect("safety copy").path;
     assert_eq!(
         std::fs::read_to_string(safety.join("a.txt/inner/x")).expect("safety payload"),
         "swapped"

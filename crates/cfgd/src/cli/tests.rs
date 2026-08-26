@@ -15280,6 +15280,94 @@ fn every_composed_next_step_names_a_command() {
     }
 }
 
+/// A sidecar's sentence is `SidecarOutcome::detail`'s on every surface that
+/// displaces a user's file. `backup restore` composed its own (`Previous
+/// contents saved to …`) and dropped the outcome's `reused` bit with it: a
+/// second restore over bytes an earlier copy already held claimed a write it
+/// never made. Walks every production function in both crates that holds a
+/// sidecar and refuses a string literal in it that supplies the copy's verb;
+/// the writer's own module is the one place the verbs are spelled.
+#[test]
+fn every_sidecar_report_is_worded_by_sidecar_outcome_detail() {
+    const HANDLES: &[&str] = &[
+        "SidecarOutcome",
+        "safety_copy",
+        "sidecars",
+        "backup_file(",
+        "cfgd_backup_path(",
+        "CFGD_BACKUP_SUFFIX",
+    ];
+    const VERBS: &[&str] = &[
+        "backed up",
+        "saved to",
+        "copied to",
+        "copied aside",
+        "kept at",
+        "moved to",
+        "stored at",
+        "preserved at",
+    ];
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        if path.ends_with("reconciler/sidecar.rs") {
+            continue;
+        }
+        let lines: Vec<&str> = body.lines().collect();
+        let mut seen = std::collections::HashSet::new();
+        for (n, line) in lines.iter().enumerate() {
+            if !HANDLES.iter().any(|h| line.contains(h)) {
+                continue;
+            }
+            let Some(name) = enclosing_fn_name(&lines, n) else {
+                continue;
+            };
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            // `enclosing_fn_name` reads backwards, so a handle on a struct
+            // field lands on whatever function precedes it; only a body that
+            // holds the handle itself is judged.
+            let Some(fn_text) = fn_body(&lines, &name) else {
+                continue;
+            };
+            if !HANDLES.iter().any(|h| fn_text.contains(h)) {
+                continue;
+            }
+            judged += 1;
+            for l in fn_text.lines() {
+                if l.trim_start().starts_with("//") {
+                    continue;
+                }
+                let spells_a_verb = l
+                    .split('"')
+                    .skip(1)
+                    .step_by(2)
+                    .any(|literal| VERBS.iter().any(|v| literal.contains(v)));
+                if spells_a_verb {
+                    offenders.push(format!(
+                        "{}: `{name}` words a sidecar copy itself — render `SidecarOutcome::detail()`: {}",
+                        path.display(),
+                        l.trim()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        judged >= 4,
+        "the walk must reach the sidecar's holders, judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "one sentence for every sidecar copy:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// Every surface rendering the `Sources` section builds its rows through the
 /// ONE table builder. `cfgd source list` and `cfgd daemon status` had shipped
 /// two tables under one section name with disjoint columns, so the same

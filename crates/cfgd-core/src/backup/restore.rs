@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use crate::errors::{BackupError, CfgdError, Result};
 use crate::output::{Printer, collapse_to_subject_line};
-use crate::reconciler::ScriptPhase;
+use crate::reconciler::{ScriptPhase, SidecarOutcome};
 use crate::state::StateStore;
 
 use super::{BackupOperation, BackupUnit};
@@ -75,10 +75,12 @@ pub struct RestoreOutcome {
     pub restored: bool,
     /// Size recorded for the restored snapshot.
     pub size_bytes: u64,
-    /// Path of the sidecar copy taken of the source's previous contents,
-    /// posix-folded. `None` when the restore was redirected away from the live
-    /// source (the source was never touched) or the source did not exist yet.
-    pub safety_copy: Option<String>,
+    /// The sidecar copy taken of the source's previous contents — where it
+    /// landed (posix-folded) and whether a copy already holding those bytes
+    /// was reused rather than written. `None` when the restore was redirected
+    /// away from the live source (the source was never touched) or the source
+    /// did not exist yet.
+    pub safety_copy: Option<SidecarOutcome>,
     /// Every failure of the restore, joined with `; ` — the same shape
     /// [`crate::state::BackupRunRecord::error`] carries.
     pub error: Option<String>,
@@ -129,8 +131,9 @@ pub fn report_restore(printer: &Printer, outcome: &RestoreOutcome) -> crate::rec
     if let Some(safety) = &outcome.safety_copy {
         // `hint`, not `note`: where the overwritten data went is the one thing
         // an operator needs after a restore they regret, and `note` is
-        // Verbose-only.
-        group.hint(format!("Previous contents saved to {safety}"));
+        // Verbose-only. The sentence's verb is the sidecar's own: a copy that
+        // was reused must not read as one written this time.
+        group.hint(format!("Previous contents {}", safety.detail()));
     }
     crate::reconciler::RunTally {
         succeeded: usize::from(outcome.restored),
@@ -527,7 +530,7 @@ fn report_path(path: &Path) -> String {
 }
 
 /// Copy the source's current contents aside before it is overwritten,
-/// returning the sidecar's posix path.
+/// returning what the sidecar writer did, its path posix-folded.
 ///
 /// The sidecar writer, not the snapshot writer: a restore is cfgd about to
 /// displace data it did not write, which is exactly what the `.cfgd-backup`
@@ -546,7 +549,7 @@ fn report_path(path: &Path) -> String {
 /// The sidecar writer reads a regular file whole to verify the copy's hash.
 /// ponytail: a multi-gigabyte single-file unit is held in memory here;
 /// stream-and-hash it if one ever turns up.
-fn take_safety_copy(unit: &BackupUnit<'_>, target: &Path) -> Result<Option<String>> {
+fn take_safety_copy(unit: &BackupUnit<'_>, target: &Path) -> Result<Option<SidecarOutcome>> {
     if !overwrites_source(unit, target) {
         return Ok(None);
     }
@@ -557,7 +560,10 @@ fn take_safety_copy(unit: &BackupUnit<'_>, target: &Path) -> Result<Option<Strin
             message: collapse_to_subject_line(&e),
         })
     })?;
-    Ok(Some(report_path(&outcome.path)))
+    Ok(Some(SidecarOutcome {
+        path: PathBuf::from(report_path(&outcome.path)),
+        reused: outcome.reused,
+    }))
 }
 
 /// Whether restoring into `target` overwrites data the unit's own source owns.
