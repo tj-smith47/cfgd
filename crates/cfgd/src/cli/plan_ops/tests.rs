@@ -3156,8 +3156,17 @@ fn preferred_env_file_follows_the_running_shell_on_windows() {
     }
 }
 
+/// Neither `MSYSTEM` nor `SHELL` is inherited: they are what
+/// `preferred_env_file` reads, so a run under Git Bash and a run under
+/// PowerShell would assert about two different commands. Unset, the choice is
+/// the platform's alone — a POSIX host sources `~/.cfgd.env`, a Windows host
+/// dot-sources `~/.cfgd-env.ps1` — and which file that is stays pinned by
+/// `preferred_env_file_follows_the_running_shell_on_windows` above.
 #[test]
+#[serial_test::serial]
 fn shell_env_reminder_fires_for_source_line_injection_alone() {
+    let _msystem = cfgd_core::test_helpers::EnvVarGuard::unset("MSYSTEM");
+    let _shell = cfgd_core::test_helpers::EnvVarGuard::unset("SHELL");
     let result = env_apply_result(&[
         "env:write:/home/u/.cfgd.env:skipped",
         "env:inject:/home/u/.bashrc",
@@ -3165,9 +3174,14 @@ fn shell_env_reminder_fires_for_source_line_injection_alone() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     print_caveats(&result, &printer);
 
+    let want = if cfg!(windows) {
+        "Run `. ~/.cfgd-env.ps1`"
+    } else {
+        "Run `source ~/.cfgd.env`"
+    };
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("Run `source ~/.cfgd.env`"),
+        out.contains(want),
         "an rc file that only just learned to source the env file still leaves \
          the running shell stale: {out}"
     );

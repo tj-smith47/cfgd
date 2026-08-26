@@ -16390,7 +16390,10 @@ fn every_run_that_renders_the_rollup_also_renders_the_run_header() {
                 continue;
             }
             let scope = enclosing_fn_block(&lines, n);
-            checked.push(format!("{}:{}", path.display(), n + 1));
+            // The witness check below compares against `/`-spelled module
+            // paths, so the entry is folded: a native render makes the walk
+            // report itself broken on Windows and nowhere else.
+            checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
             if scope.contains(".header(printer)") || scope.contains("// run-header-ok:") {
                 continue;
             }
