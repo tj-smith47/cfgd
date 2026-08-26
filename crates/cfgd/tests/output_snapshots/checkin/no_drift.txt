@@ -1,5 +1,6 @@
 Checkin
-  Server Status   ok
-  Config Changed  false
+
+Gateway
+  ✓ Checked in — server status ok, config unchanged
 
 ◉ No drift to report

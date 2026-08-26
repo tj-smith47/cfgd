@@ -77,7 +77,6 @@ pub fn cmd_module_build(
                                 serde_json::json!({ "artifact": art, "target": targets[0] }),
                             )
                         })?;
-                build_sec.kv("Digest", &digest);
                 if sign {
                     cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
                         crate::cli::cli_error(
@@ -137,7 +136,6 @@ pub fn cmd_module_build(
                                 serde_json::json!({ "artifact": art, "targets": &targets }),
                             )
                         })?;
-                build_sec.kv("Digest", &digest);
                 if sign {
                     cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
                         crate::cli::cli_error(

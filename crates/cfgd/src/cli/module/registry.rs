@@ -402,6 +402,15 @@ pub fn cmd_module_upgrade(
         return Ok(());
     }
 
+    // What is being compared heads the comparison: the two commits are the
+    // run's INPUT facts, so they open the screen as one block rather than
+    // sitting between the diff's rows and the signature verdict under them.
+    printer.kv_block([
+        ("Old Commit", old_entry.commit.as_str()),
+        ("New Commit", new_commit.as_str()),
+        ("New Integrity", new_integrity.as_str()),
+    ]);
+
     // Show diff
     let changes = modules::diff_module_specs(&old_module, &new_module, printer.arrow());
     {
@@ -414,12 +423,6 @@ pub fn cmd_module_upgrade(
             review_entry(&changes_sec, Some(*role), "", change);
         }
     }
-
-    printer.kv_block([
-        ("Old Commit", old_entry.commit.as_str()),
-        ("New Commit", new_commit.as_str()),
-        ("New Integrity", new_integrity.as_str()),
-    ]);
 
     // Check for signature on new ref
     super::enforce_signature_policy(
@@ -537,8 +540,8 @@ fn review_entry(section: &SectionGuard<'_>, role: Option<Role>, prefix: &str, bo
 }
 
 /// Print the module-review summary shown before the user confirms an
-/// `add` or `upgrade`: dependencies, packages, files, environment, aliases,
-/// post-apply script warnings, then commit + integrity. Split out so the
+/// `add` or `upgrade`: commit + integrity, dependencies, packages, files,
+/// environment, aliases, then post-apply script warnings. Split out so the
 /// side-effect-free output shape is testable against a captured Printer buffer
 /// without running the full cmd_module_add_remote orchestration.
 pub(super) fn print_module_review_summary(
@@ -563,6 +566,14 @@ pub(super) fn print_module_review_summary(
     // one answer — a `\x1b[2K` that is visible in the Aliases list and
     // invisible in the Files list tells the operator two different stories
     // about the same module.
+    //
+    // The commit and integrity are the INPUT facts of the review — what is
+    // being approved — so they open the block; cfgd derives both itself, so
+    // neither is a likely carrier, but "every row on this screen escapes" is
+    // a rule an operator can check by looking.
+    mod_sec.kv("Commit", cfgd_core::escape_control_chars(commit));
+    mod_sec.kv("Integrity", cfgd_core::escape_control_chars(integrity));
+
     if !module.spec.depends.is_empty() {
         mod_sec.kv(
             "Dependencies",
@@ -640,13 +651,6 @@ pub(super) fn print_module_review_summary(
             }
         }
     }
-
-    // cfgd derives both of these itself, so neither is a likely carrier — but
-    // "every row on this screen escapes" is a rule an operator can check by
-    // looking, and two rows that quietly fold are two rows that tell a
-    // different story than the ones above them.
-    mod_sec.kv("Commit", cfgd_core::escape_control_chars(commit));
-    mod_sec.kv("Integrity", cfgd_core::escape_control_chars(integrity));
 }
 
 /// Filter a registry-module list by case-insensitive substring match on

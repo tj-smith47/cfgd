@@ -38,9 +38,12 @@ pub fn push_module(
         Ok((digest, _size)) => {
             // The running message names the reference because the wait is the
             // only thing on screen; the settled line does not, because every
-            // caller has already headed the run with the same reference.
+            // caller has already headed the run with the same reference. The
+            // digest is the row's detail: the one fact the push PRODUCED, so
+            // it belongs to the row that produced it rather than to a kv row
+            // wedged between this verdict and the signing verdict after it.
             if let Some(s) = spinner {
-                let _ = s.finish_ok("Pushed module");
+                let _ = s.finish_ok("Pushed module").detail(digest.clone());
             }
             Ok(digest)
         }
@@ -230,7 +233,9 @@ pub fn push_module_multiplatform(
     match &result {
         Ok(index_digest) => {
             if let Some(s) = spinner {
-                let _ = s.finish_ok("Pushed multi-platform module");
+                let _ = s
+                    .finish_ok("Pushed multi-platform module")
+                    .detail(index_digest.clone());
             }
             tracing::debug!(
                 reference = %oci_ref,

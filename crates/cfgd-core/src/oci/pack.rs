@@ -312,13 +312,15 @@ pub fn pack_image(
 
     match pack_image_inner(dir, &oci_ref, auth.as_ref(), &agent, opts) {
         Ok(outcome) => {
-            // The push is half of what this call does and the only half a
-            // reader cannot infer from the digest row under it, so the settled
-            // line names it. Settled without the reference: the caller's header
-            // block names it, and the running message above already carried it
-            // while the wait was the only thing on screen.
+            // The push is half of what this call does, so the settled line
+            // names it, and the digest it produced is that line's detail.
+            // Settled without the reference: the caller's header block names
+            // it, and the running message above already carried it while the
+            // wait was the only thing on screen.
             if let Some(s) = spinner {
-                let _ = s.finish_ok("Packed and pushed image");
+                let _ = s
+                    .finish_ok("Packed and pushed image")
+                    .detail(outcome.digest.clone());
             }
             tracing::debug!(
                 reference = %oci_ref,

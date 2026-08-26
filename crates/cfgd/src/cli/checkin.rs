@@ -127,11 +127,22 @@ pub fn cmd_checkin(
             .checkin(&config_hash, compliance_summary, printer)
             .context("checkin to gateway failed");
         match &result {
-            Ok(_) => {
-                // The VERDICT of the round-trip, not the server's own status
-                // string: that is a fact about the response and is stated
-                // once, by the `Server status` kv row below.
-                gateway_sec.status_simple(Role::Ok, "Checked in");
+            Ok(resp) => {
+                // The VERDICT of the round-trip, with the server's own status
+                // string as its detail: that string is what the round-trip
+                // PRODUCED, stated once, on the row that produced it. The
+                // detail slot folds through `cursor_safe` at the renderer, so
+                // a response cannot repaint the line describing it; the
+                // `-o json` payload below carries it verbatim.
+                gateway_sec.status(Role::Ok, "Checked in").detail(format!(
+                    "server status {}, config {}",
+                    resp.status,
+                    if resp.config_changed {
+                        "changed"
+                    } else {
+                        "unchanged"
+                    }
+                ));
             }
             Err(e) => {
                 gateway_sec
@@ -141,16 +152,6 @@ pub fn cmd_checkin(
         }
         result?
     };
-
-    // The gateway's own string reaches exactly one display slot, this kv
-    // value, folded through `cursor_safe` at the renderer so a response
-    // cannot repaint the line describing it. The `-o json` payload below
-    // carries the response verbatim; the fold is display-only.
-    printer.kv("Server Status", &resp.status);
-    printer.kv(
-        "Config Changed",
-        cfgd_core::yes_no(Some(resp.config_changed)),
-    );
 
     if let Some(ref desired) = resp.desired_config {
         printer.status_simple(Role::Warn, "Server pushed desired config");
@@ -608,12 +609,11 @@ spec:
         let row = plain
             .lines()
             .map(str::trim)
-            .find(|l| l.starts_with("Server Status"))
-            .unwrap_or_else(|| panic!("the kv row must still render: {plain:?}"));
-        assert_eq!(
-            row.trim_start_matches("Server Status").trim(),
-            "ok",
-            "the row's whole value is the status, with the escapes gone: {row:?}"
+            .find(|l| l.contains("Checked in"))
+            .unwrap_or_else(|| panic!("the verdict row must still render: {plain:?}"));
+        assert!(
+            row.ends_with("server status ok, config unchanged"),
+            "the row's detail is the status, with the escapes gone: {row:?}"
         );
     }
 
@@ -791,8 +791,8 @@ spec:
 
         let human = cap.human();
         assert!(
-            human.contains("Server Status"),
-            "should print 'Server status', got: {human}"
+            human.contains("Checked in") && human.contains("server status ok"),
+            "the gateway's answer rides on the Checked in row, got: {human}"
         );
 
         let json = cap.json().expect("should emit structured Doc");

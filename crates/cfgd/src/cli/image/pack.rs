@@ -3,7 +3,7 @@ use std::path::Path;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::oci::{PackOptions, PackOutcome};
-use cfgd_core::output::{Doc, Printer};
+use cfgd_core::output::{Doc, Printer, Role};
 
 /// Options forwarded from the `cfgd image pack` clap args to the handler.
 pub struct ImagePackOptions<'a> {
@@ -107,8 +107,8 @@ pub fn cmd_image_pack(
     }
 
     // ONE section, named for the command, holding everything the run produced:
-    // what is being packed, the pack verdict, the digest, the lockfile write
-    // and the signing verdict. A second section named `Pack` under a `Pack
+    // what is being packed, the pack verdict (carrying the digest as its
+    // detail), the lockfile write and the signing verdict. A second section named `Pack` under a `Pack
     // Image` title spends the word twice on one screen for two different
     // things.
     let (digest, platform_str, signed, attestation_attached) = {
@@ -126,8 +126,6 @@ pub fn cmd_image_pack(
                 serde_json::json!({ "artifact": artifact, "dir": dir.posix().to_string() }),
             )
         })?;
-        pack_sec.kv("Digest", &digest);
-
         if let Some(lock_path) = lock {
             let entry = cfgd_core::config::ImageLockEntry {
                 reference: artifact.to_string(),
@@ -136,7 +134,7 @@ pub fn cmd_image_pack(
                 locked_at: cfgd_core::utc_now_iso8601(),
             };
             crate::cli::image::lockfile::update_image_lock_entry(Path::new(lock_path), entry)?;
-            pack_sec.kv("Locked", lock_path);
+            pack_sec.status_simple(Role::Ok, format!("Locked digest in {lock_path}"));
         }
 
         let crate::cli::helpers::SignAttestOutcome { signed, attested } =

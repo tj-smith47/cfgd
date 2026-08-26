@@ -174,9 +174,6 @@ pub(crate) fn cmd_enroll(
         .request_challenge(&username, printer)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    printer.kv("Challenge ID", &challenge.challenge_id);
-    printer.kv("Expires", &challenge.expires_at);
-
     let signature = match key_type {
         KeyType::Ssh => sign_with_ssh(&challenge.nonce, &key_ref),
         KeyType::Gpg => sign_with_gpg(&challenge.nonce, &key_ref),
@@ -191,13 +188,20 @@ pub(crate) fn cmd_enroll(
             serde_json::json!({
                 "keyType": key_type.as_str(),
                 "keyRef": key_ref,
+                "challengeId": challenge.challenge_id,
                 "message": message,
             }),
             enroll_error_hints("signing_failed"),
         )
     })?;
 
-    printer.status_simple(Role::Ok, "Signed challenge");
+    // The challenge's identity and expiry are what the signing step PRODUCED
+    // a signature over, so they ride on its row rather than sitting as kv rows
+    // between the challenge request's verdict and this one.
+    printer.status(Role::Ok, "Signed challenge").detail(format!(
+        "challenge {}, expires {}",
+        challenge.challenge_id, challenge.expires_at
+    ));
 
     let resp = client
         .submit_verification(
@@ -219,11 +223,16 @@ fn finish_enrollment(
     device_id: &str,
     resp: cfgd_core::server_client::EnrollResponse,
 ) -> anyhow::Result<()> {
-    printer.status_simple(Role::Ok, format!("Enrolled as user '{}'", resp.username));
-    if let Some(ref team) = resp.team {
-        printer.kv("Team", team);
-    }
-    printer.kv("Device", &resp.device_id);
+    // The team and device id are what the enrollment PRODUCED, so they are
+    // this row's detail; as kv rows they split this verdict from the
+    // credential save's.
+    let produced = match resp.team {
+        Some(ref team) => format!("team {team}, device {}", resp.device_id),
+        None => format!("device {}", resp.device_id),
+    };
+    printer
+        .status(Role::Ok, format!("Enrolled as user '{}'", resp.username))
+        .detail(produced);
 
     let credential = build_device_credential(server_url, device_id, &resp);
 

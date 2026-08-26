@@ -13739,6 +13739,143 @@ fn every_action_row_subject_opens_on_a_lowercase_verb() {
     );
 }
 
+/// A command's INPUT facts are one kv block before its action rows; a fact a
+/// step PRODUCES is that step's row detail or a closing kv block after the
+/// last row. A kv row never sits between two result lines: `module push`
+/// printed `✓ Pushed module`, then `Digest  sha256:…`, then `✓ Signed
+/// artifact`, so one command read as verdict, fact, verdict, and `enroll`
+/// split `✓ Enrolled as user` from `✓ Saved credential` with `Team` / `Device`
+/// rows that were the enrollment's own product.
+///
+/// Walked lexically over every function body in `cli/**`: a status call, then
+/// a kv call, then another status call with no new group (a section, a
+/// heading, a `Doc::new()` or an `emit`) opened between them is an offender.
+/// Branches are invisible to the walk, so a kv row one branch prints INSTEAD
+/// of a status (an empty-state row beside a count block) carries a
+/// `// facts-block-ok: <why>` marker. Narration a CALLEE prints — a cfgd-core
+/// spinner, `sign_and_attest`'s verdict — is out of the walk's sight; the
+/// `module_push`, `module_build`, `image_pack`, `enroll` and `checkin`
+/// goldens pin those shapes.
+#[test]
+fn no_kv_row_sits_between_two_result_lines() {
+    const STATUS: &[&str] = &[
+        ".status(",
+        ".status_simple(",
+        ".status_with(",
+        ".finish_ok(",
+        ".finish_warn(",
+        ".finish_fail(",
+        ".action_status(",
+    ];
+    const KV: &[&str] = &[".kv(", ".kv_block(", ".kv_rows("];
+    const GROUP: &[&str] = &[
+        ".section(",
+        ".section_owner(",
+        ".section_owner_or_collapse(",
+        ".section_or_collapse(",
+        ".section_if_nonempty(",
+        ".heading(",
+        ".heading_owner_prefixed(",
+        ".heading_title(",
+        "Doc::new()",
+        ".emit(",
+    ];
+    #[derive(Clone, Copy, PartialEq)]
+    enum Event {
+        Status,
+        Kv,
+        Group,
+    }
+
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        let mut events: Vec<(usize, Event)> = Vec::new();
+        for (tokens, kind) in [
+            (STATUS, Event::Status),
+            (KV, Event::Kv),
+            (GROUP, Event::Group),
+        ] {
+            for token in tokens {
+                for (at, _) in body.match_indices(token) {
+                    // `.status()` with no argument is a child process or an
+                    // HTTP response, not a rendered row.
+                    if body[at + token.len()..].starts_with(')') {
+                        continue;
+                    }
+                    let n = body[..at].matches('\n').count();
+                    if lines[n].trim_start().starts_with("//") {
+                        continue;
+                    }
+                    events.push((at, kind));
+                }
+            }
+        }
+        events.sort_by_key(|(at, _)| *at);
+
+        // Function heads are group boundaries too: one body's closing verdict
+        // must not be read as the status BEFORE the next body's opening block.
+        let mut heads: Vec<usize> = body
+            .match_indices("fn ")
+            .filter(|(at, _)| {
+                *at == 0
+                    || body[..*at].ends_with('\n')
+                    || body[..*at].ends_with(") ")
+                    || body[..*at].ends_with("pub ")
+                    || body[..*at].ends_with("    ")
+            })
+            .map(|(at, _)| at)
+            .collect();
+        heads.sort_unstable();
+
+        let mut next_head = heads.iter().copied().peekable();
+        let mut seen_status = false;
+        let mut pending_kv: Option<usize> = None;
+        for (at, kind) in events {
+            while next_head.peek().is_some_and(|h| *h < at) {
+                next_head.next();
+                seen_status = false;
+                pending_kv = None;
+            }
+            match kind {
+                Event::Group => {
+                    seen_status = false;
+                    pending_kv = None;
+                }
+                Event::Kv => {
+                    if seen_status && pending_kv.is_none() {
+                        pending_kv = Some(at);
+                    }
+                }
+                Event::Status => {
+                    judged += 1;
+                    if let Some(kv_at) = pending_kv.take() {
+                        let n = body[..kv_at].matches('\n').count();
+                        if !label_hatched(&lines, n, "// facts-block-ok:") {
+                            offenders.push(format!("{}:{}", path.display(), n + 1));
+                        }
+                    }
+                    seen_status = true;
+                }
+            }
+        }
+    }
+    offenders.sort();
+    offenders.dedup();
+    assert!(
+        judged >= 100,
+        "the walk no longer reaches the status slots — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a kv row sits between two result lines; make it the producing row's \
+         detail, or move it into the opening or closing block (a row one branch \
+         prints INSTEAD of a status takes `// facts-block-ok: <why>`):\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The string literal `expr` opens with, if it opens with one.
 fn literal_head(expr: &str) -> Option<String> {
     let rest = expr.strip_prefix('"')?;

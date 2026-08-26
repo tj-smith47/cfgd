@@ -1893,14 +1893,22 @@ pub fn git_clone_with_fallback(
 
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(url), None);
-    cmd.args([
-        "clone",
-        "--depth=1",
+    let target_arg = target.display().to_string();
+    let mut args = vec!["clone"];
+    // Depth is a transfer-size guard for remotes, the same split the libgit2
+    // fallback below makes: a local clone has no transfer to bound, and git
+    // says so (`warning: --depth is ignored in local clones`) on a line that
+    // would otherwise stream under the clone row.
+    if !is_local_git_url(url) {
+        args.push("--depth=1");
+    }
+    args.extend([
         "--no-recurse-submodules",
         "--end-of-options",
         url,
-        &target.display().to_string(),
+        target_arg.as_str(),
     ]);
+    cmd.args(args);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 

@@ -45,8 +45,8 @@ pub fn cmd_module_push(
     }
 
     // ONE section, named for the command, holding everything the run produced:
-    // what is being pushed, the push verdict, the digest, the signing verdict
-    // and the CRD apply. A second section named `Push` under a `Push Module`
+    // what is being pushed, the push verdict (carrying the digest as its
+    // detail), the signing verdict and the CRD apply. A second section named `Push` under a `Push Module`
     // title spends the word twice on one screen for two different things.
     // `push_module` keeps its `&Printer` signature (it has non-CLI callers
     // too), so the section is opened and scoped here rather than threaded into
@@ -66,7 +66,6 @@ pub fn cmd_module_push(
                     serde_json::json!({ "artifact": artifact, "dir": dir, "platform": platform }),
                 )
             })?;
-        push_sec.kv("Digest", &digest);
         let crate::cli::helpers::SignAttestOutcome { signed, attested } =
             crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
 

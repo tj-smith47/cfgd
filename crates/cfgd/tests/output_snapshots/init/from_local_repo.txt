@@ -1,5 +1,7 @@
 Initialize cfgd
   ◐ Cloning <SOURCE_DIR>
+    Cloning into '<TARGET_DIR>'...
+    done.
   ✓ Cloned to <TARGET_DIR>
 
 Next Steps

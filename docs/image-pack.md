@@ -30,8 +30,7 @@ $ cfgd image pack ./out registry.example.com/myapp/server:v1.4.0 \
 Pack Image
   Directory  ./out
   Artifact   registry.example.com/myapp/server:v1.4.0
-  ✓ Packed and pushed image
-  Digest  sha256:3a7b9c4d...
+  ✓ Packed and pushed image — sha256:3a7b9c4d...
   ✓ Signed artifact with cosign
 ```
 
@@ -202,9 +201,8 @@ $ cfgd image pack ./out \
 Pack Image
   Directory  ./out
   Artifact   registry.example.com/myapp/server:abc123
-  ✓ Packed and pushed image
-  Digest  sha256:3a7b9c4d...
-  Locked  cfgd-images.lock
+  ✓ Packed and pushed image — sha256:3a7b9c4d...
+  ✓ Locked digest in cfgd-images.lock
 ```
 
 `--lock` writes (or upserts, matched by `reference`) an entry into `cfgd-images.lock` in the

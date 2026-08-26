@@ -173,7 +173,7 @@ pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> String {
             format!("Add it to a profile with `cfgd profile update <profile> --module {name}`")
         }
         Mutation::ModuleBuilt { output } => {
-            format!("Push it with `cfgd module build {output} --artifact <registry>/<name>:<tag>`")
+            format!("Push it with `cfgd module push {output} --artifact <registry>/<name>:<tag>`")
         }
         Mutation::ModulePushed {
             applied: Some(name),

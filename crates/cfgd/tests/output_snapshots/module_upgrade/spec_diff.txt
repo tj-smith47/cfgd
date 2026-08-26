@@ -1,4 +1,7 @@
 Update module:diffmod
+  Old Commit     <COMMIT_SHA>
+  New Commit     <COMMIT_SHA>
+  New Integrity  sha256:<INTEGRITY>
 
 Changes
   ✓ dependency added: vim-config
@@ -9,10 +12,6 @@ Changes
   ✗ env removed: OLD_VAR=legacy
   ⚠ alias 'll': ls -la → ls -lah
   ✓ alias added: gs=git status
-
-Old Commit     <COMMIT_SHA>
-New Commit     <COMMIT_SHA>
-New Integrity  sha256:<INTEGRITY>
 
 ◉ Tag 'v1.1.0' is unsigned
 

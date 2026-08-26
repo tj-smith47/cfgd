@@ -1,6 +1,7 @@
 Checkin
-  Server Status   ok
-  Config Changed  true
+
+Gateway
+  ✓ Checked in — server status ok, config changed
 
 ⚠ Server pushed desired config
 

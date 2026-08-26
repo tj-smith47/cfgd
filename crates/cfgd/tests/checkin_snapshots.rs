@@ -36,8 +36,12 @@ fn happy_output() -> CheckinOutput {
 fn checkin_happy_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.heading("Checkin");
-    printer.kv("Server Status", "ok");
-    printer.kv("Config Changed", "false");
+    {
+        let gateway_sec = printer.section("Gateway");
+        gateway_sec
+            .status(Role::Ok, "Checked in")
+            .detail("server status ok, config unchanged");
+    }
     printer.status_simple(Role::Info, "No drift to report");
     printer.emit(build_checkin_doc(&happy_output()));
     drop(printer);
@@ -74,8 +78,12 @@ fn checkin_happy_json() {
 fn checkin_drift_reported_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.heading("Checkin");
-    printer.kv("Server Status", "ok");
-    printer.kv("Config Changed", "false");
+    {
+        let gateway_sec = printer.section("Gateway");
+        gateway_sec
+            .status(Role::Ok, "Checked in")
+            .detail("server status ok, config unchanged");
+    }
     {
         let drift_sec = printer.section("Drift");
         drift_sec.status_simple(Role::Ok, "3 drift items reported");
@@ -103,8 +111,12 @@ fn checkin_drift_reported_human() {
 fn checkin_no_drift_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.heading("Checkin");
-    printer.kv("Server Status", "ok");
-    printer.kv("Config Changed", "false");
+    {
+        let gateway_sec = printer.section("Gateway");
+        gateway_sec
+            .status(Role::Ok, "Checked in")
+            .detail("server status ok, config unchanged");
+    }
     printer.status_simple(Role::Info, "No drift to report");
     printer.emit(build_checkin_doc(&happy_output()));
     drop(printer);
@@ -119,8 +131,12 @@ fn checkin_no_drift_human() {
 fn checkin_server_pushed_config_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.heading("Checkin");
-    printer.kv("Server Status", "ok");
-    printer.kv("Config Changed", "true");
+    {
+        let gateway_sec = printer.section("Gateway");
+        gateway_sec
+            .status(Role::Ok, "Checked in")
+            .detail("server status ok, config changed");
+    }
     printer.status_simple(Role::Warn, "Server pushed desired config");
     {
         let push_sec = printer.section("Server Config");

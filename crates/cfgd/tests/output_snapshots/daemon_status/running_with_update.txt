@@ -1,5 +1,6 @@
 Daemon Status
 ✓ Daemon running
+⚠ Update available: 9.9.9 — run `cfgd upgrade` to install
 
 PID                 4242
 Uptime              1h
@@ -7,8 +8,6 @@ Reconcile Interval  300s
 Sync Interval       900s
 Drift Count         7
 Last Reconcile      2d ago
-
-⚠ Update available: 9.9.9 — run `cfgd upgrade` to install
 
 Sources
   Name   Source                          Priority  Status  Drift  Commit        Last Sync  Signed  Requires Signed

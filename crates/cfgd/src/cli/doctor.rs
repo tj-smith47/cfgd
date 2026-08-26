@@ -570,6 +570,8 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
                 "Profile".into(),
                 cfg.profile.as_deref().unwrap_or("(none)").into(),
             ));
+            // facts-block-ok: the block closes this arm's section; the rows
+            // below are the match's other arms, not rows after it
             s = s.kv_block(pairs);
             s
         }

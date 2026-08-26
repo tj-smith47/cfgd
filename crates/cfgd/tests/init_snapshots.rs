@@ -127,25 +127,29 @@ fn init_from_a_local_repo_names_the_destination_once() {
         &strip_ansi(&cap.human()),
         &[(&target, "<TARGET_DIR>"), (&source, "<SOURCE_DIR>")],
     );
-    // git's own passthrough (`Cloning into '…'…`, a local-clone warning that
-    // depends on the git version) sits one level under the clone row and is
-    // not cfgd's to word; the golden pins cfgd's rows.
-    let cfgd_rows: String = normalized
+    // A local clone is asked for at full depth: `--depth` on a local path
+    // makes git stream `warning: --depth is ignored in local clones` under
+    // the clone row, a line cfgd cannot word and a reader cannot act on.
+    assert!(
+        !normalized.lines().any(|l| l.contains("warning:")),
+        "a local-path clone must not provoke a git warning:\n{normalized}"
+    );
+    // cfgd's own rows name the destination once, on the clone row; git's
+    // `Cloning into '…'…` passthrough under it is git's line, not a second
+    // cfgd row.
+    let cfgd_rows = normalized
         .lines()
-        .filter(|l| {
-            !(l.starts_with("    ") && l.trim_start().chars().next().is_some_and(|c| c.is_ascii()))
-        })
-        .map(|l| format!("{l}\n"))
-        .collect();
+        .filter(|l| !l.contains("Cloning into"))
+        .filter(|l| l.contains("<TARGET_DIR>"))
+        .count();
     assert_eq!(
-        cfgd_rows.matches("<TARGET_DIR>").count(),
-        1,
-        "the destination is named once, on the clone row:\n{cfgd_rows}"
+        cfgd_rows, 1,
+        "the destination is named once, on the clone row:\n{normalized}"
     );
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "init/from_local_repo.txt",
-        &cfgd_rows
+        &normalized
     );
 }
 

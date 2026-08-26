@@ -1,11 +1,10 @@
 Update module:upmod
+  Old Commit     <COMMIT_SHA>
+  New Commit     <COMMIT_SHA>
+  New Integrity  sha256:<INTEGRITY>
 
 Changes
   ◉ (no spec changes)
-
-Old Commit     <COMMIT_SHA>
-New Commit     <COMMIT_SHA>
-New Integrity  sha256:<INTEGRITY>
 
 ◉ Tag 'v1.1.0' is unsigned
 

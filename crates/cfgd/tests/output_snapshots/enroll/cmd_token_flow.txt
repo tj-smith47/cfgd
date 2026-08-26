@@ -4,10 +4,7 @@ Device ID  <DEVICE_ID>
 Token Enrollment
 ◉ Exchanging bootstrap token for device credential
 ◉ Enrolling device with device gateway
-✓ Enrolled as user 'alice'
-Team    platform
-Device  dev-abc-123
-
+✓ Enrolled as user 'alice' — team platform, device dev-abc-123
 ✓ Saved credential to <CRED_PATH>
 
 Next Steps

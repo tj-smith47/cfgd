@@ -1,0 +1,6 @@
+Push Module
+  Directory  <DIR>
+  Artifact   <REGISTRY>/test/module:v1
+  Platform   linux/amd64
+  ✓ Pushed module — sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  → Reference `<REGISTRY>/test/module:v1` from a Module resource, or register it with `cfgd module push <DIR> --artifact <REGISTRY>/test/module:v1 --apply`

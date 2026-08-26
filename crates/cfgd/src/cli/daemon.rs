@@ -166,6 +166,18 @@ pub fn build_daemon_status_doc(
         Some(s) => {
             // verdict-row-ok: reports the service's state, not something this run did
             doc = doc.status(Role::Ok, "Daemon running");
+            // Beside the running verdict, not under the facts block: two
+            // verdicts about the daemon read as one report when nothing sits
+            // between them.
+            if let Some(ref version) = s.update_available {
+                doc = doc.status(
+                    Role::Warn,
+                    format!(
+                        "Update available: {} — run `cfgd upgrade` to install",
+                        version
+                    ),
+                );
+            }
             let mut rows = vec![
                 ("PID".to_string(), s.pid.to_string()),
                 // A measured duration, not a declared one: the intervals below
@@ -199,16 +211,6 @@ pub fn build_daemon_status_doc(
                 ));
             }
             doc = doc.kv_block(rows);
-
-            if let Some(ref version) = s.update_available {
-                doc = doc.status(
-                    Role::Warn,
-                    format!(
-                        "Update available: {} — run `cfgd upgrade` to install",
-                        version
-                    ),
-                );
-            }
 
             let rows: Vec<SourceListEntry> = s
                 .sources
