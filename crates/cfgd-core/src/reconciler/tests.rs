@@ -25420,8 +25420,15 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
             "the shown line is a line the file actually holds: {shown} in {written}"
         );
     }
+    // `written` is the file the planner wrote for THIS host, so the assertion
+    // is on the line's directory and its TAIL: the assignment syntax and the
+    // separator belong to the dialect (`export PATH="…:$PATH"` on a POSIX
+    // shell, `$env:PATH = "…;$env:PATH"` in PowerShell), and pinning one of
+    // them here asserts which platform ran the test.
     assert!(
-        written.contains("export PATH=\"/opt/homebrew/bin:$PATH\" # manager:brew"),
+        written
+            .lines()
+            .any(|line| line.contains("/opt/homebrew/bin") && line.ends_with("# manager:brew")),
         "the written file carries the manager-named PATH line: {written}"
     );
 }
