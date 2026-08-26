@@ -14219,6 +14219,117 @@ fn every_daemon_log_marker_the_e2e_suites_grep_for_is_a_string_the_daemon_emits(
          finding the suites it exists to police"
     );
 }
+/// Every third-party download a Dockerfile or a CI script performs retries a
+/// transient fault AND verifies what it got. One bare `curl` timing out at exit
+/// 28 failed the E2E infrastructure job and cascaded to every suite behind it,
+/// and the same image installed cosign — the binary its module-signing tests
+/// trust — against no digest at all, while the crossplane install verified
+/// amd64 and waved arm64 through. A download that WRITES A FILE is the unit: a
+/// `curl` polling a service for readiness fetches nothing to verify, and the
+/// gateway suites' API calls are the subject under test rather than a supply
+/// chain. A backslash-continued command is one unit, because that is where the
+/// URL and the digest check both live.
+#[test]
+fn every_third_party_download_in_a_dockerfile_or_ci_script_retries_and_verifies() {
+    fn logical_lines(body: &str) -> Vec<(usize, String)> {
+        let mut out: Vec<(usize, String)> = Vec::new();
+        let mut buf = String::new();
+        let mut start = 0;
+        for (i, line) in body.lines().enumerate() {
+            if buf.is_empty() {
+                start = i + 1;
+            } else {
+                buf.push(' ');
+            }
+            buf.push_str(line.trim());
+            if line.trim_end().ends_with('\\') {
+                buf.pop();
+                continue;
+            }
+            out.push((start, std::mem::take(&mut buf)));
+        }
+        if !buf.is_empty() {
+            out.push((start, buf));
+        }
+        out
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut stack = vec![
+        root.join(".github"),
+        root.join("tests/e2e"),
+        root.join("demo/scripts"),
+        root.clone(),
+    ];
+    let mut top = true;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let named_dockerfile = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("Dockerfile"));
+            if p.is_dir() {
+                // The repository root contributes its `Dockerfile*` only; its
+                // subtrees are enumerated by the three roots above.
+                if !top {
+                    stack.push(p);
+                }
+            } else if !top || named_dockerfile {
+                files.push(p);
+            }
+        }
+        top = false;
+    }
+    files.sort();
+
+    let mut checked = 0usize;
+    for path in files {
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let commands = logical_lines(&body);
+        for (i, (line_no, cmd)) in commands.iter().enumerate() {
+            if cmd.trim_start().starts_with('#')
+                || !(cmd.contains("curl") || cmd.contains("wget"))
+                // A URL held in a variable is still a literal in this file.
+                || !(cmd.contains("https://") || cmd.contains("\"$url\""))
+                || ![" -o ", " -O", "--output", "| tar"]
+                    .iter()
+                    .any(|t| cmd.contains(t))
+            {
+                continue;
+            }
+            checked += 1;
+            let context = commands[i.saturating_sub(8)..(i + 8).min(commands.len())]
+                .iter()
+                .map(|(_, c)| c.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                cmd.contains("--retry"),
+                "{}:{line_no} downloads over the network without `--retry`, so one \
+                 transient fault fails the whole build: {cmd}",
+                path.display()
+            );
+            assert!(
+                context.contains("sha256sum -c") || context.contains("shasum -a 256 -c"),
+                "{}:{line_no} installs a third-party artifact that nothing verifies — \
+                 pin its digest and check it: {cmd}",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        checked >= 8,
+        "the third-party-download population collapsed to {checked} — the walk \
+         stopped finding the fetches it exists to police"
+    );
+}
 
 /// The string literal `expr` opens with, if it opens with one.
 fn literal_head(expr: &str) -> Option<String> {

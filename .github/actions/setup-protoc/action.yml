@@ -51,8 +51,24 @@ runs:
         dest="${RUNNER_TEMP}/protoc"
         mkdir -p "$dest"
 
+        # One pinned digest per asset this action can select, so the zip that
+        # produces every runner's protoc is verified rather than trusted: the
+        # protobuf releases publish no checksums file, which is exactly why the
+        # digest has to live here. An asset with no pinned digest — a version
+        # bumped without recomputing them — is refused rather than trusted.
+        case "$asset" in
+          protoc-25.9-linux-x86_64.zip)  sha="88f2d0c78a1072c4f84c59e9f9785b74849953e882a573188bc2d0518915b03e" ;;
+          protoc-25.9-linux-aarch_64.zip) sha="16dcc7d435b8a117c31470e8dd85d82bdace5e5d485d2b901573854e4330e006" ;;
+          protoc-25.9-osx-x86_64.zip)    sha="387ad924f98fee962285ff3c5d63e1c6c666ea76ba339fb506afa56d74372c60" ;;
+          protoc-25.9-osx-aarch_64.zip)  sha="11e91bb16fc52f5691970a3fb57c6eb26e13065a2eff1eea226b0dcd698ddb6d" ;;
+          protoc-25.9-win64.zip)         sha="5abb0d741dea2d3df034e1cae5bad4fe014fb5fe3b982b55109bf783fded0d83" ;;
+          *) echo "::error::No pinned digest for ${asset}; recompute the table in this action when bumping the version"; exit 1 ;;
+        esac
+
         echo "Downloading $url"
-        curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${asset}" "$url"
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 \
+          -o "${RUNNER_TEMP}/${asset}" "$url"
+        echo "${sha}  ${RUNNER_TEMP}/${asset}" | shasum -a 256 -c -
         unzip -o -q "${RUNNER_TEMP}/${asset}" -d "$dest"
 
         # The protoc zip lays out bin/protoc (bin/protoc.exe on windows).

@@ -45,7 +45,8 @@ runs:
         set -euo pipefail
         dest="${RUNNER_TEMP}/crossplane-bin"
         mkdir -p "$dest"
-        curl -fsSL "https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/linux_amd64/crank" -o "$dest/crossplane"
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 \
+          "https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/linux_amd64/crank" -o "$dest/crossplane"
         echo "${CROSSPLANE_SHA256}  ${dest}/crossplane" | sha256sum -c -
         chmod +x "$dest/crossplane"
         echo "$dest" >> "$GITHUB_PATH"

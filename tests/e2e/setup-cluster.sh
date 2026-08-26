@@ -448,17 +448,25 @@ if [ "$FUNCTION_DECISION" = "build" ]; then
     # rejects `linux / x86_64` as of late May 2026.
     if ! which crossplane &>/dev/null; then
         CROSSPLANE_VERSION="v2.3.2"
-        CROSSPLANE_SHA256_AMD64="42ce17e97dff7ea28b624bf23cde836abb0783d07c5e02fc6de08f67dbd509eb"
+        # One pinned digest per arch this installs on, so no arch reaches the
+        # xpkg steps unverified: an `if amd64` guard left the arm64 binary
+        # checked by nothing at all. An arch with no pinned digest is refused
+        # rather than trusted.
         case "$(uname -m)" in
-            x86_64|amd64) CROSSPLANE_ARCH=amd64 ;;
-            aarch64|arm64) CROSSPLANE_ARCH=arm64 ;;
+            x86_64|amd64)
+                CROSSPLANE_ARCH=amd64
+                CROSSPLANE_SHA256="42ce17e97dff7ea28b624bf23cde836abb0783d07c5e02fc6de08f67dbd509eb"
+                ;;
+            aarch64|arm64)
+                CROSSPLANE_ARCH=arm64
+                CROSSPLANE_SHA256="a03182321957d178f19a3218520112a8967fbc1f88e748097d950660f1ec9a47"
+                ;;
             *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
         esac
-        curl -fsSL -o /usr/local/bin/crossplane \
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 \
+            -o /usr/local/bin/crossplane \
             "https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/linux_${CROSSPLANE_ARCH}/crank"
-        if [ "$CROSSPLANE_ARCH" = "amd64" ]; then
-            echo "${CROSSPLANE_SHA256_AMD64}  /usr/local/bin/crossplane" | sha256sum -c -
-        fi
+        echo "${CROSSPLANE_SHA256}  /usr/local/bin/crossplane" | sha256sum -c -
         chmod +x /usr/local/bin/crossplane
         echo "Installed crossplane:"
         crossplane version
