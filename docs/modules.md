@@ -518,10 +518,15 @@ spec:
 
 ```
 Modules
-  ✓ module:nvim — 3 pkgs, 12 files, installed
-  ✓ module:tmux — 1 pkg, 1 file, installed
-  ⚠ module:git  — 1 pkg, 0 files, outdated
+  ✓ module:nvim — 3 packages, 12 files, 2 scripts, Synced
+  ✓ module:tmux — 1 package, 1 file, 0 scripts, Synced
+  ○ module:git  — 0 packages, 0 files, 0 scripts, NotApplied
 ```
+
+The counts are one slot per module-owned kind the `Managed Resources` table
+below lists (`package`, `file`, `script`), taken from the rows that table
+paints rather than from the module's declaration, so the summary line and the
+rows under it cannot disagree.
 
 Each line is headed by the module's owner token: the same `module:<name>` the
 plan and apply trees head that module's group with.

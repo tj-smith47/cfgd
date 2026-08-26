@@ -51,6 +51,7 @@ const NOW: &str = "2026-05-14T10:05:00Z";
 /// adds — where the files land, which manager installs each package, and the
 /// hooks the module declares.
 fn dev_tools_declared() -> ModuleDeclared {
+    let surfaces = declared_surfaces(18, 12);
     ModuleDeclared {
         file_root: Some("/home/user/.config/nvim".into()),
         package_managers: [
@@ -71,7 +72,8 @@ fn dev_tools_declared() -> ModuleDeclared {
             )
         })
         .collect(),
-        script_summary: declared_surfaces(18, 12).script_summary(),
+        script_summary: surfaces.script_summary(),
+        scripts: surfaces.script_total(),
     }
 }
 
@@ -120,6 +122,7 @@ fn clean_output() -> StatusOutput {
                 name: "base".into(),
                 packages: 5,
                 files: 3,
+                scripts: 0,
                 status: "installed".into(),
                 declared: ModuleDeclared::default(),
             },
@@ -127,6 +130,7 @@ fn clean_output() -> StatusOutput {
                 name: "dev-tools".into(),
                 packages: 18,
                 files: 12,
+                scripts: dev_tools_declared().scripts,
                 status: "installed".into(),
                 declared: dev_tools_declared(),
             },
@@ -210,6 +214,7 @@ fn drift_output() -> StatusOutput {
             name: "shell-config".into(),
             packages: 0,
             files: 4,
+            scripts: 0,
             status: "installed".into(),
             declared: ModuleDeclared::default(),
         }],

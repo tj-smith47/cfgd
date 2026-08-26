@@ -14118,6 +14118,62 @@ fn no_kv_value_hand_builds_the_annotation_slot() {
     );
 }
 
+/// A setter confirms an assignment the way the file it writes spells it.
+///
+/// `✓ Set alias: catn=cat -n` over a generated `alias catn="cat -n"` is one
+/// alias in two spellings, and the unquoted one is ambiguous about where the
+/// value starts: it reads as the alias `cat` with a stray `-n` beside it —
+/// exactly what the user's own `--alias catn='cat -n'` quoting existed to
+/// prevent. `helpers::quoted_assignment` is the one renderer of the
+/// `name="value"` qualifier, quoting through the same `posix_double_quoted`
+/// the env file is written with. The `Removed env` / `Removed alias` halves
+/// take a bare key and are not in this class.
+#[test]
+fn every_assignment_a_setter_confirms_renders_through_the_one_quoter() {
+    const SETTERS: &[&str] = &["\"Set env\"", "\"Set alias\""];
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !SETTERS.iter().any(|verb| line.contains(verb)) {
+                continue;
+            }
+            judged += 1;
+            // The qualifier follows the status call it belongs to; five lines
+            // covers the rustfmt-wrapped form of both spellings.
+            let window = lines[n..(n + 5).min(lines.len())].join("\n");
+            if !window.contains("quoted_assignment(") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        judged >= 4,
+        "the walk no longer reaches the setter confirmations — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a setter's `name=value` qualifier is `helpers::quoted_assignment(name, value)`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The quoting is unconditional, so one shape covers every value: a value with
+/// a space and a value without read the same way, and neither leaves the reader
+/// deciding which rule produced the line in front of them.
+#[test]
+fn a_confirmed_assignment_quotes_its_value_whatever_it_holds() {
+    assert_eq!(
+        super::helpers::quoted_assignment("catn", "cat -n"),
+        r#"catn="cat -n""#
+    );
+    assert_eq!(
+        super::helpers::quoted_assignment("EDITOR", "nvim"),
+        r#"EDITOR="nvim""#
+    );
+}
+
 /// The offset of the first `[` after `from` that opens an array whose first
 /// element is a quoted key — skipping the `&[(&str, &str)]` in a const's own
 /// type, whose bracket comes first and holds no data.

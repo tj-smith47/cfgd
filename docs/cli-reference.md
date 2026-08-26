@@ -672,8 +672,9 @@ Scripts
 
 Packages, files, env and aliases list alphabetically; scripts stay in
 execution order, because that order is the fact. `--show-values` renders the
-same inventories with each declared value (`EDITOR=nvim`) and each script's
-whole body instead of its condensed first line, and implies `-o wide`.
+same inventories with each declared value (`EDITOR="nvim"`, quoted the way the
+generated env file writes it) and each script's whole body instead of its
+condensed first line, and implies `-o wide`.
 
 Without `--scan` nothing has asked a manager and nothing has read a file's
 content, so every package row and every present file reads `not scanned`

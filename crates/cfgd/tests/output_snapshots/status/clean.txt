@@ -12,8 +12,8 @@ Drift
   ✓ No drift recorded — scanned 5m ago
 
 Modules
-  ✓ module:base      — 5 packages, 3 files, Synced
-  ✓ module:dev-tools — 18 packages, 12 files, Synced
+  ✓ module:base      — 5 packages, 3 files, 0 scripts, Synced
+  ✓ module:dev-tools — 18 packages, 12 files, 3 scripts, Synced
 
 Managed Resources
   Type     Owner             Resource                                    Source

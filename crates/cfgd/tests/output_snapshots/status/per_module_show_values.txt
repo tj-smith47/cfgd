@@ -13,10 +13,10 @@ Deployed Files
 
 Shell
   Env
-    ✓ EDITOR=nvim
-    ✓ PAGER=less -R
+    ✓ EDITOR="nvim"
+    ✓ PAGER="less -R"
   Aliases
-    ✓ gs=git status --short
+    ✓ gs="git status --short"
 
 Scripts
   ✓ preApply: set -euo pipefail

@@ -74,12 +74,14 @@
       "files": 3,
       "name": "base",
       "packages": 5,
+      "scripts": 0,
       "status": "installed"
     },
     {
       "files": 12,
       "name": "dev-tools",
       "packages": 18,
+      "scripts": 3,
       "status": "installed"
     }
   ],

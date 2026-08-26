@@ -2,6 +2,21 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Printer, Role};
 
+/// An env var or alias as the `name="value"` cfgd renders it.
+///
+/// The value is quoted unconditionally, through the same
+/// [`cfgd_core::posix_double_quoted`] the generated env file's `export EDITOR="nvim"`
+/// and `alias catn="cat -n"` lines are written with, so the line that confirms
+/// a write and the file it wrote spell one assignment one way. Unquoted, a
+/// value holding a space is a different value to the eye: `catn=cat -n` reads
+/// as the alias `cat` with a stray `-n` beside it, which is exactly the
+/// ambiguity the user's own `--alias catn='cat -n'` quoting existed to remove.
+/// Conditional quoting would trade that for a shape the reader has to decode
+/// before knowing which rule produced it.
+pub(in crate::cli) fn quoted_assignment(name: &str, value: &str) -> String {
+    format!("{name}={}", cfgd_core::posix_double_quoted(value))
+}
+
 /// Write a freshly scaffolded manifest: prepend the editor schema modeline and
 /// write atomically.
 ///

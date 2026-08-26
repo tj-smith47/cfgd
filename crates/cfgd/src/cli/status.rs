@@ -62,6 +62,9 @@ pub struct ModuleStatusEntry {
     /// second count taken off the resolved declaration.
     pub packages: usize,
     pub files: usize,
+    /// How many scripts the module's recorded `script` row stands for — the
+    /// number that row's own cell prints, and 0 for a module with no such row.
+    pub scripts: usize,
     pub status: String,
     /// What resolution can still say about the module's recorded Managed
     /// Resources rows. Display-only — the recorded row is the fact a consumer
@@ -94,10 +97,15 @@ pub struct ModuleDeclared {
     /// `3 preApply, 6 postApply`, from [`cfgd_core::modules::ModuleSurfaces`] —
     /// the same tally, and the same rendering, `cfgd status <module>` reports.
     pub script_summary: Option<String>,
+    /// The total [`Self::script_summary`] breaks down, from the same
+    /// `ModuleSurfaces` — the headline slot's number, so the summary line and
+    /// the row it summarizes cannot count one module's hooks twice.
+    pub scripts: usize,
 }
 
 impl ModuleDeclared {
     fn of(module: &cfgd_core::modules::ResolvedModule) -> Self {
+        let surfaces = cfgd_core::modules::ModuleSurfaces::of_resolved(module);
         Self {
             file_root: common_target_root(&module.files),
             package_managers: module.packages.iter().fold(
@@ -109,8 +117,8 @@ impl ModuleDeclared {
                     map
                 },
             ),
-            script_summary: cfgd_core::modules::ModuleSurfaces::of_resolved(module)
-                .script_summary(),
+            script_summary: surfaces.script_summary(),
+            scripts: surfaces.script_total(),
         }
     }
 }
@@ -691,9 +699,10 @@ pub fn build_fleet_status_doc(
     doc = doc.section_if_nonempty("Modules", &output.modules, |s, mods| {
         mods.iter().fold(s, |s, m| {
             let summary = format!(
-                "{}, {}",
+                "{}, {}, {}",
                 cfgd_core::pluralize(m.packages, "package"),
-                cfgd_core::pluralize(m.files, "file")
+                cfgd_core::pluralize(m.files, "file"),
+                cfgd_core::pluralize(m.scripts, "script")
             );
             // The dashboard reads RECORDED state only, so no row here can
             // claim `Drifted` — this surface's Drift section is what reports
@@ -952,8 +961,20 @@ fn module_files_count(recorded: &str) -> Option<usize> {
     recorded.parse::<usize>().ok()
 }
 
-/// What the Managed Resources table says this host manages for each module, as
-/// `name -> (packages, files)`.
+/// One module's share of the Managed Resources table: a slot per module-owned
+/// kind the Type column spells (`env` is cfgd's own, so it has none here).
+///
+/// A named struct rather than a tuple because the headline reads every slot in
+/// order and a fourth kind reaching the table has to be given one — an unnamed
+/// position is what let the `script` rows fall out of the summary silently.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ModuleTally {
+    pub packages: usize,
+    pub files: usize,
+    pub scripts: usize,
+}
+
+/// What the Managed Resources table says this host manages for each module.
 ///
 /// The Modules headline reports these counts rather than the module's resolved
 /// declaration, because the two answer different questions and the report put
@@ -961,10 +982,14 @@ fn module_files_count(recorded: &str) -> Option<usize> {
 /// the recorded rows say what cfgd HAS put on this one. Only the second is
 /// what the table beneath the headline lists, and a headline that disagrees
 /// with the table under it is a report arguing with itself.
+///
+/// `declared` is what the table's own cells read for the same rows, so the two
+/// renderings of one row cannot name different numbers.
 pub(super) fn recorded_module_tallies(
     items: &[cfgd_core::state::ManagedResource],
-) -> std::collections::BTreeMap<String, (usize, usize)> {
-    let mut tallies: std::collections::BTreeMap<String, (usize, usize)> =
+    declared: &std::collections::BTreeMap<String, ModuleDeclared>,
+) -> std::collections::BTreeMap<String, ModuleTally> {
+    let mut tallies: std::collections::BTreeMap<String, ModuleTally> =
         std::collections::BTreeMap::new();
     for r in items {
         let Some((module, rest)) = module_id_parts(&r.resource_type, &r.resource_id) else {
@@ -973,8 +998,13 @@ pub(super) fn recorded_module_tallies(
         let (surface, detail) = rest.split_once(':').unwrap_or((rest, ""));
         let entry = tallies.entry(module.to_string()).or_default();
         match surface {
-            "packages" => entry.0 += module_package_names(detail).len(),
-            "files" => entry.1 += module_files_count(detail).unwrap_or(0),
+            "packages" => entry.packages += module_package_names(detail).len(),
+            "files" => entry.files += module_files_count(detail).unwrap_or(0),
+            // Every hook a module runs collapses onto one `module:<name>:script`
+            // id, so the recorded row carries no count of its own and the number
+            // is the one its table cell prints — assigned, not accumulated,
+            // because a second such row is the same row.
+            "script" => entry.scripts = declared.get(module).map_or(0, |d| d.scripts),
             _ => {}
         }
     }
@@ -1195,7 +1225,7 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
                 sorted.sort_by(|a, b| a.name.cmp(&b.name));
                 sorted.into_iter().fold(s, |s, ev| {
                     let subject = if show_values {
-                        format!("{}={}", ev.name, ev.value)
+                        super::helpers::quoted_assignment(&ev.name, &ev.value)
                     } else {
                         ev.name.clone()
                     };
@@ -1207,7 +1237,7 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
                 sorted.sort_by(|a, b| a.name.cmp(&b.name));
                 sorted.into_iter().fold(s, |s, alias| {
                     let subject = if show_values {
-                        format!("{}={}", alias.name, alias.command)
+                        super::helpers::quoted_assignment(&alias.name, &alias.command)
                     } else {
                         alias.name.clone()
                     };
@@ -1412,7 +1442,11 @@ pub(super) fn cmd_status(
     }
 
     let state_map = module_state_map(state);
-    let tallies = recorded_module_tallies(&resources);
+    let declared: std::collections::BTreeMap<String, ModuleDeclared> = resolved_modules
+        .iter()
+        .map(|module| (module.name.clone(), ModuleDeclared::of(module)))
+        .collect();
+    let tallies = recorded_module_tallies(&resources, &declared);
     let module_entries: Vec<ModuleStatusEntry> = resolved_modules
         .iter()
         .map(|module| {
@@ -1420,13 +1454,14 @@ pub(super) fn cmd_status(
                 .get(&module.name)
                 .map(|s| s.status.clone())
                 .unwrap_or_else(|| "not applied".into());
-            let (packages, files) = tallies.get(&module.name).copied().unwrap_or_default();
+            let tally = tallies.get(&module.name).copied().unwrap_or_default();
             ModuleStatusEntry {
                 name: module.name.clone(),
-                packages,
-                files,
+                packages: tally.packages,
+                files: tally.files,
+                scripts: tally.scripts,
                 status,
-                declared: ModuleDeclared::of(module),
+                declared: declared.get(&module.name).cloned().unwrap_or_default(),
             }
         })
         .collect();
@@ -1963,6 +1998,7 @@ mod tests {
             name: "nvim".to_string(),
             packages: 3,
             files: 6,
+            scripts: declared.scripts,
             status: "installed".to_string(),
             declared,
         }
@@ -2071,6 +2107,7 @@ mod tests {
             file_root: Some("/home/u/.config/nvim".to_string()),
             package_managers: declared_managers(&[("git", "apt"), ("gcc", "apt")]),
             script_summary: Some("preApply (3 scripts), postApply (6 scripts)".to_string()),
+            scripts: 9,
         };
         let rows = managed_resource_rows(
             &[
@@ -2228,8 +2265,8 @@ mod tests {
     }
 
     /// The module health line's units agree with their own counts: a module
-    /// with one of each reads `1 package, 1 file`, and anything else — including
-    /// zero — keeps the plural.
+    /// with one of each reads `1 package, 1 file, 1 script`, and anything else
+    /// — including zero — keeps the plural.
     #[test]
     fn module_status_line_units_agree_with_their_counts() {
         let output = StatusOutput {
@@ -2242,6 +2279,7 @@ mod tests {
                     name: "tmux".to_string(),
                     packages: 1,
                     files: 1,
+                    scripts: 1,
                     status: "installed".to_string(),
                     declared: ModuleDeclared::default(),
                 },
@@ -2249,6 +2287,7 @@ mod tests {
                     name: "nvim".to_string(),
                     packages: 3,
                     files: 12,
+                    scripts: 7,
                     status: "installed".to_string(),
                     declared: ModuleDeclared::default(),
                 },
@@ -2256,6 +2295,7 @@ mod tests {
                     name: "git".to_string(),
                     packages: 0,
                     files: 0,
+                    scripts: 0,
                     status: "installed".to_string(),
                     declared: ModuleDeclared::default(),
                 },
@@ -2282,15 +2322,15 @@ mod tests {
         let out = cfgd_core::test_helpers::captured_text(&buf);
 
         assert!(
-            out.contains("1 package, 1 file,"),
-            "a single package and file must read singular: {out}"
+            out.contains("1 package, 1 file, 1 script,"),
+            "a single package, file and script must read singular: {out}"
         );
         assert!(
-            out.contains("3 packages, 12 files,"),
+            out.contains("3 packages, 12 files, 7 scripts,"),
             "many must stay plural: {out}"
         );
         assert!(
-            out.contains("0 packages, 0 files,"),
+            out.contains("0 packages, 0 files, 0 scripts,"),
             "zero keeps the plural: {out}"
         );
     }
@@ -2561,29 +2601,40 @@ mod tests {
 
     /// The Modules headline and the Managed Resources table answer the same
     /// question and must give the same number: the headline said `28 packages`
-    /// over a table listing 24.
+    /// over a table listing 24, and later omitted the module's scripts while
+    /// the table two lines below listed seven of them.
     #[test]
     fn the_module_headline_counts_what_the_table_lists() {
         let resources = vec![
             recorded("module", "nvim:packages:ripgrep,fd,bat"),
             recorded("module", "nvim:packages:neovim"),
             recorded("module", "nvim:files:6"),
+            recorded("module", "nvim:script"),
         ];
-        let tallies = recorded_module_tallies(&resources);
-        let (packages, files) = tallies.get("nvim").copied().unwrap_or_default();
+        let declared = ModuleDeclared {
+            script_summary: Some("postApply (7 scripts)".to_string()),
+            scripts: 7,
+            ..ModuleDeclared::default()
+        };
+        let declared_map =
+            std::collections::BTreeMap::from([("nvim".to_string(), declared.clone())]);
+        let tallies = recorded_module_tallies(&resources, &declared_map);
+        let tally = tallies.get("nvim").copied().unwrap_or_default();
 
         let mut output = empty_output();
         output.modules = vec![ModuleStatusEntry {
             name: "nvim".to_string(),
-            packages,
-            files,
+            packages: tally.packages,
+            files: tally.files,
+            scripts: tally.scripts,
             status: "installed".to_string(),
-            declared: ModuleDeclared::default(),
+            declared,
         }];
         output.managed_resources = resources.clone();
         let out = dashboard(&output);
 
-        let listed: usize = managed_resource_rows(&resources, &output.modules)
+        let rows = managed_resource_rows(&resources, &output.modules);
+        let listed: usize = rows
             .iter()
             .filter(|row| row[0] == "package")
             .map(|row| {
@@ -2593,11 +2644,113 @@ mod tests {
                     .map_or(0, |names| names.split(", ").count())
             })
             .sum();
-        assert_eq!(packages, listed, "headline vs table: {out}");
+        assert_eq!(tally.packages, listed, "headline vs table: {out}");
         assert!(
-            out.contains("4 packages, 6 files"),
+            rows.iter()
+                .any(|row| row[0] == "script" && row[2] == "postApply (7 scripts)"),
+            "the table lists the scripts the headline must name: {rows:?}"
+        );
+        assert!(
+            out.contains("4 packages, 6 files, 7 scripts"),
             "the headline reports the recorded tally: {out}"
         );
+    }
+
+    /// Every kind the Managed Resources table can call a module's has a slot in
+    /// the headline three lines above it.
+    ///
+    /// The population is read off `display_type`'s own arms — the fn that folds
+    /// a recorded token onto the Type word — so a kind reaching that column
+    /// cannot skip this walk: the words it FOLDS are exactly the module-owned
+    /// ones (`env` and every cfgd-owned token fall through its `other` arm and
+    /// belong to no module). The headline dropped the `script` rows for as long
+    /// as its tally was an unnamed pair, which is why the slot is proven by
+    /// rendering rather than by counting fields.
+    #[test]
+    fn every_module_owned_kind_the_table_lists_has_a_slot_in_the_headline() {
+        let words = folded_type_column_words();
+        assert!(
+            words.len() >= 3,
+            "the walk no longer reaches `display_type`'s arms: {words:?}"
+        );
+        for word in &words {
+            // The recorded id one row of this surface is stored under, in the
+            // shape `action_resource_info` mints, standing for exactly one thing.
+            let (id, declared) = match word.as_str() {
+                "package" => ("nvim:packages:neovim", ModuleDeclared::default()),
+                "file" => ("nvim:files:1", ModuleDeclared::default()),
+                "script" => (
+                    "nvim:script",
+                    ModuleDeclared {
+                        script_summary: Some("postApply (1 script)".to_string()),
+                        scripts: 1,
+                        ..ModuleDeclared::default()
+                    },
+                ),
+                other => panic!(
+                    "the Type column prints {other:?}, which this walk cannot record — \
+                     give it a recorded id here and a slot in `ModuleTally`"
+                ),
+            };
+            let resources = vec![recorded("module", id)];
+            let declared_map =
+                std::collections::BTreeMap::from([("nvim".to_string(), declared.clone())]);
+            let tally = recorded_module_tallies(&resources, &declared_map)
+                .get("nvim")
+                .copied()
+                .unwrap_or_default();
+
+            let mut output = empty_output();
+            output.modules = vec![ModuleStatusEntry {
+                name: "nvim".to_string(),
+                packages: tally.packages,
+                files: tally.files,
+                scripts: tally.scripts,
+                status: "installed".to_string(),
+                declared,
+            }];
+            output.managed_resources = resources;
+            let out = dashboard(&output);
+            // The headline alone: the table's own cell for this row names the
+            // same count, and an assertion over the whole report would pass on
+            // the row while the line above it stayed silent.
+            let headline = out
+                .split("Managed Resources")
+                .next()
+                .and_then(|head| head.lines().find(|l| l.contains("module:nvim")))
+                .unwrap_or_default();
+            assert!(
+                headline.contains(&format!("1 {word}")),
+                "a module recording only {word} rows renders a headline that never names them: {out}"
+            );
+        }
+    }
+
+    /// The Type words `display_type` FOLDS a recorded token onto — its match
+    /// arms read off this file, so the walk above sees a kind added there.
+    fn folded_type_column_words() -> Vec<String> {
+        let source = include_str!("status.rs");
+        let start = source
+            .find("fn display_type(")
+            .expect("the Type column's mapping fn");
+        let body = &source[start..];
+        let end = body.find("\n}\n").expect("the fn's closing brace");
+        let mut words: Vec<String> = string_literals(&body[..end])
+            .into_iter()
+            .map(|token| display_type(&token))
+            .collect();
+        words.sort();
+        words.dedup();
+        words
+    }
+
+    /// The double-quoted literals in `body`, which carry no escapes here.
+    fn string_literals(body: &str) -> Vec<String> {
+        body.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect()
     }
 
     /// A packages row names the manager that installs it. One row rendered
@@ -2789,7 +2942,9 @@ mod tests {
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("\nShell\n") && out.contains("\n  Env\n") && out.contains("EDITOR=nvim"),
+            out.contains("\nShell\n")
+                && out.contains("\n  Env\n")
+                && out.contains(r#"EDITOR="nvim""#),
             "--show-values must itemize env under Shell and show the declared \
              value: {out}"
         );

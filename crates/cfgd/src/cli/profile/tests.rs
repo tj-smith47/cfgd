@@ -1216,8 +1216,8 @@ fn profile_update_add_env() {
     );
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Set env: NEW_VAR=hello"),
-        "should confirm env was set, got: {output}"
+        output.contains(r#"Set env: NEW_VAR="hello""#),
+        "should confirm env was set, quoted as the generated file writes it, got: {output}"
     );
     assert!(
         output.contains("written"),
@@ -1274,9 +1274,12 @@ fn profile_update_add_alias() {
         "gs alias should be added to profile"
     );
     let output = cfgd_core::test_helpers::captured_text(&buf);
+    // The command holds a space, so an unquoted echo reads as the alias `git`
+    // with a stray `status` beside it — the confirmation spells it the way the
+    // generated `alias gs="git status"` line does.
     assert!(
-        output.contains("Set alias: gs=git status"),
-        "should confirm alias was set, got: {output}"
+        output.contains(r#"Set alias: gs="git status""#),
+        "should confirm alias was set, quoted as the generated file writes it, got: {output}"
     );
     assert!(
         output.contains("written"),

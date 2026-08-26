@@ -621,7 +621,7 @@ pub fn cmd_module_update_local(
         cfgd_core::merge_env(&mut doc.spec.env, std::slice::from_ref(&ev));
         printer
             .status(Role::Ok, "Set env")
-            .qualifier(format!("{}={}", ev.name, ev.value));
+            .qualifier(crate::cli::helpers::quoted_assignment(&ev.name, &ev.value));
         changes += 1;
     }
 
@@ -645,7 +645,10 @@ pub fn cmd_module_update_local(
         cfgd_core::merge_aliases(&mut doc.spec.aliases, std::slice::from_ref(&alias));
         printer
             .status(Role::Ok, "Set alias")
-            .qualifier(format!("{}={}", alias.name, alias.command));
+            .qualifier(crate::cli::helpers::quoted_assignment(
+                &alias.name,
+                &alias.command,
+            ));
         changes += 1;
     }
 
