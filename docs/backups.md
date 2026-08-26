@@ -53,9 +53,11 @@ A failed or unclean unit downgrades the apply's overall status from `success` to
 exits nonzero (code `7`) the same way a failed reconciler action would; see
 [Exit Codes](cli-reference.md#exit-codes).
 
-A backup run is a run like any other: a `Backup` header, a `Backups` phase with one
-`backup:<name>` group per unit, and a rollup. Each unit's group carries one line per `preBackup` /
-`postBackup` hook and one for the snapshot itself, so the rollup's counts are the lines on screen.
+A backup run is a run like any other: a `Backup` header, one `backup:<name>` group per unit, and a
+rollup. The groups sit directly under the header (the run has no other phase to tell them apart
+from; inside `cfgd apply` the same groups render under a `Backups` phase beside `Packages` and
+`Files`). Each unit's group carries one line per `preBackup` / `postBackup` hook and one for the
+snapshot itself, so the rollup's counts are the lines on screen.
 
 ```console
 $ cfgd backup run
@@ -64,17 +66,16 @@ Backup
   Profile  workstation
   Actions  4 planned
 
-Backups
-  backup:notes-db
-    ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
-      0|0|0
-    ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
-    ◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
-      ok
-    ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"             (0.1s)
-    ✓ snapshot notes.db.20260813T061306Z                                                 — 8.0 KB
-  backup:journal
-    ✓ snapshot journal.20260813T061306Z                                                  — 24 B
+backup:notes-db
+  ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
+    0|0|0
+  ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
+  ◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
+    ok
+  ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"             (0.1s)
+  ✓ snapshot notes.db.20260813T061306Z                                                 — 8.0 KB
+backup:journal
+  ✓ snapshot journal.20260813T061306Z                                                  — 24 B
 
 ✓ Backup complete — 4 actions succeeded (0.2s)
 
@@ -433,9 +434,8 @@ Backup
   Profile  workstation
   Actions  3 planned
 
-Backups
-  backup:notes-db
-    — snapshot                           — already running (pid 3349308)
+backup:notes-db
+  — snapshot                           — already running (pid 3349308)
 
 — Backup did not run — 3 actions not attempted (<0.1s)
 $ echo $?
@@ -472,15 +472,14 @@ Backup
   Trigger  schedule
   Actions  3 planned
 
-Backups
-  backup:notes-db
-    ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
-      0|0|0
-    ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
-    ◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
-      ok
-    ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"             (0.1s)
-    ✓ snapshot notes.db.20260813T061559Z                                                 — 8.0 KB
+backup:notes-db
+  ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
+    0|0|0
+  ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
+  ◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
+    ok
+  ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"             (0.1s)
+  ✓ snapshot notes.db.20260813T061559Z                                                 — 8.0 KB
 
 ✓ Backup complete — 3 actions succeeded (0.2s)
 09:05:01  INFO daemon: scheduled backup notes-db completed
@@ -556,7 +555,7 @@ Restore: notes-db
 ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check" (0.1s)
 
 backup:notes-db
-  ✓ Restored from notes.db.20260813T061333Z — 8.0 KB
+  ✓ restore from notes.db.20260813T061333Z — 8.0 KB
   Destination  /home/me/.local/share/notes/notes.db
   → Previous contents saved to /home/me/.local/state/cfgd/backups/notes-db/notes.db.20260813T061347Z
 

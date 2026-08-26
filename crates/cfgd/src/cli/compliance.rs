@@ -492,7 +492,7 @@ pub fn build_compliance_history_doc(entries: &[ComplianceHistoryRow], now: &str)
                 row.violation.to_string(),
             ]);
         }
-        doc = doc.table(table);
+        doc = doc.table(table.without_unfillable_columns());
     }
     doc.with_data(ComplianceHistoryOutput {
         entries: entries.to_vec(),

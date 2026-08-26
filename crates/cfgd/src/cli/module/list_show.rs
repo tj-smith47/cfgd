@@ -88,7 +88,8 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
         t
     };
 
-    doc.table(table).with_data(entries)
+    doc.table(table.without_unfillable_columns())
+        .with_data(entries)
 }
 
 /// Build the not-found error returned to `main.rs::render_cli_error`, the sole

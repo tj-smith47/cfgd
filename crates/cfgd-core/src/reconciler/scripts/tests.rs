@@ -2499,32 +2499,15 @@ fn script_failure_role_follows_non_fatal() {
             "each failure carries a duration: {line}"
         );
     }
+    // Two separately-spawned processes settle on either side of the
+    // tenth-of-a-second floor often enough that comparing the lines verbatim
+    // asserts on the host's scheduler; the ONE normalizer knows the `<0.1s`
+    // floor spelling, which a local scan of digits did not.
     assert_eq!(
-        without_duration(rendered[0].trim_start_matches('\u{2717}')),
-        without_duration(rendered[1].trim_start_matches('\u{26A0}')),
+        crate::normalize_snapshot_durations(rendered[0].trim_start_matches('\u{2717}')),
+        crate::normalize_snapshot_durations(rendered[1].trim_start_matches('\u{26A0}')),
         "only the role differs between a fatal and a non-fatal failure"
     );
-}
-
-/// A status line with its wall-clock `(0.0s)` suffix replaced by a placeholder.
-///
-/// Two separately-spawned processes settle on either side of a tenth-of-a-second
-/// boundary often enough that comparing their rendered lines verbatim asserts on
-/// the host's scheduler rather than on the composition under test.
-fn without_duration(line: &str) -> String {
-    let Some(open) = line.rfind(" (") else {
-        return line.to_string();
-    };
-    let inner = &line[open + 2..];
-    let is_duration = inner.ends_with("s)")
-        && inner[..inner.len() - 2]
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == '.');
-    if is_duration {
-        format!("{} (<duration>)", &line[..open])
-    } else {
-        line.to_string()
-    }
 }
 
 #[test]

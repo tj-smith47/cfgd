@@ -731,7 +731,7 @@ pub fn build_fleet_status_doc(
             for row in managed_resource_rows(items, &output.modules) {
                 t = t.row(row);
             }
-            s.table(t)
+            s.table(t.without_unfillable_columns())
         },
     );
 
@@ -759,7 +759,7 @@ const OWNER_SELF: &str = "cfgd";
 
 /// Stand-in for a resource column with nothing left to say — the same `-` the
 /// Config Sources table renders for a version nobody has fetched.
-const NO_DETAIL: &str = "-";
+const NO_DETAIL: &str = cfgd_core::ABSENT;
 
 /// The Managed Resources rows, as `[Type, Owner, Resource, Source]`.
 ///

@@ -185,7 +185,7 @@ pub fn humanize_age_cell(ts: Option<&str>, now: &str) -> String {
 pub fn humanize_until_cell(ts: Option<&str>, now: &str) -> String {
     match ts {
         Some(ts) => humanize_until(ts, now).unwrap_or_else(|| ts.to_string()),
-        None => "-".to_string(),
+        None => crate::ABSENT.to_string(),
     }
 }
 

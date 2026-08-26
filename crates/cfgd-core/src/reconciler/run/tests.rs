@@ -1270,6 +1270,30 @@ fn pseudo_phase_renders_the_same_phase_heading_treatment_as_a_real_phase() {
     );
 }
 
+/// The run's only phase renders no phase row: the owner group opens at the
+/// run's own depth, exactly where `backup restore` already puts it, so the two
+/// verbs of one command no longer show one owner group at two depths.
+#[test]
+fn sole_phase_renders_its_owner_groups_at_the_run_depth() {
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    {
+        let phase = sole_phase(&printer);
+        let group = phase.owner(&Owner::backup("docs"), 20);
+        group.status_simple(Role::Ok, "snapshot notes.txt");
+    }
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+
+    assert!(
+        !out.contains("Phase:"),
+        "no phase row on a sole phase: {out:?}"
+    );
+    assert!(
+        out.starts_with("backup:docs\n  ✓ snapshot notes.txt\n"),
+        "owner group opens at the run depth: {out:?}"
+    );
+}
+
 /// The raw constants stay bare names, not pre-formatted headings — `PhaseLabel`
 /// is what adds the `Phase: ` prefix at render time (see the test above), so a
 /// constant that baked the prefix in would double it.

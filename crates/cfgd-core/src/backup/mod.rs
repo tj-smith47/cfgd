@@ -343,6 +343,20 @@ fn snapshot_subject(destination: Option<&Path>) -> String {
     }
 }
 
+/// The restore line's subject: `restore from <snapshot name>`.
+///
+/// Sited beside [`snapshot_subject`] because the two rows are the two mutating
+/// verbs of one command settling in one slot, and they already share their
+/// role ([`outcome_role`]) and their detail ([`outcome_detail`]): the subject
+/// was the one slot of the three left per call site, and it shipped as
+/// `Restored from …` under a `snapshot …` twenty lines up. An action row's
+/// subject is a lowercase verb head — `create`, `skip`, `brew install`,
+/// `snapshot` — and the sentence-case, past-tense grammar belongs to the
+/// result line a run CLOSES on, never to the rows its body is made of.
+pub(super) fn restore_subject(snapshot: &str) -> String {
+    format!("restore from {snapshot}")
+}
+
 /// The width the snapshot line will occupy, derived before the run.
 ///
 /// `namePattern`, the unit name and the source's file name all come from the

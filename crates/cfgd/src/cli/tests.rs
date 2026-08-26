@@ -13524,6 +13524,370 @@ fn every_result_line_is_sentence_case() {
     );
 }
 
+/// The inverse of `every_result_line_is_sentence_case`, for the rows a run's
+/// BODY is made of: an action row's subject opens on a lowercase verb —
+/// `create ~/.zshrc`, `brew install jq`, `run preApply script`, `snapshot
+/// notes.md.<stamp>` — because the row names work and the glyph beside it says
+/// how the work went. `backup restore` wrote `Restored from …` into the same
+/// slot `backup run` writes `snapshot …` into, twenty lines apart on one
+/// screen: the sentence-case pin governs the closing line and would have
+/// REWARDED that spelling, so the two grammars split at the one slot no pin
+/// walked.
+///
+/// Every string reaching a subject slot inside `reconciler/` and `backup/`
+/// (`status` / `status_simple` / `action_status` / `set_action_status`) is
+/// judged, following a `let` binding and a producer function up to three
+/// calls deep, so `let subject = restore_subject(..)` is read through to the
+/// literal it renders. A subject composed at runtime (`{owner}: …`) is
+/// unjudgeable and skipped; a subject that opens on a proper noun says so
+/// with a `// name-row-ok:` marker on the call or on the producer's doc.
+#[test]
+fn every_action_row_subject_opens_on_a_lowercase_verb() {
+    const OPENERS: &[&str] = &[
+        ".status(",
+        ".status_simple(",
+        ".action_status(",
+        ".set_action_status(",
+    ];
+    let sources: Vec<(std::path::PathBuf, String)> = core_production_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            let p = path.to_string_lossy().replace('\\', "/");
+            p.contains("/reconciler/") || p.contains("/backup/")
+        })
+        .collect();
+
+    /// The string literals a function body renders, with the callees it
+    /// reaches (up to `depth` calls deep), as `(file, line, literal)`.
+    fn producer_literals(
+        sources: &[(std::path::PathBuf, String)],
+        name: &str,
+        depth: usize,
+        seen: &mut Vec<String>,
+    ) -> Vec<(std::path::PathBuf, usize, String)> {
+        if depth == 0 || seen.iter().any(|s| s == name) {
+            return Vec::new();
+        }
+        seen.push(name.to_string());
+        let mut out = Vec::new();
+        for (path, body) in sources {
+            let Some(at) = body
+                .find(&format!("fn {name}("))
+                .or_else(|| body.find(&format!("fn {name}<")))
+            else {
+                continue;
+            };
+            let Some(open) = body[at..].find('{').map(|i| at + i) else {
+                continue;
+            };
+            let fn_body = brace_span(body, open);
+            let base_line = body[..open].matches('\n').count();
+            for (rel, lit) in string_literals(fn_body) {
+                out.push((
+                    path.clone(),
+                    base_line + fn_body[..rel].matches('\n').count(),
+                    lit,
+                ));
+            }
+            for callee in callee_names(fn_body) {
+                out.extend(producer_literals(sources, &callee, depth - 1, seen));
+            }
+            break;
+        }
+        out
+    }
+
+    /// Resolve the expression in a subject slot to the literals it renders.
+    fn resolve(
+        sources: &[(std::path::PathBuf, String)],
+        path: &std::path::Path,
+        body: &str,
+        at: usize,
+        expr: &str,
+        depth: usize,
+    ) -> Vec<(std::path::PathBuf, usize, String)> {
+        let line = body[..at].matches('\n').count();
+        let mut expr = expr.trim();
+        for wrapper in ["Some(", "&"] {
+            if let Some(inner) = expr.strip_prefix(wrapper) {
+                expr = inner.trim_start();
+            }
+        }
+        if let Some(lit) = literal_head(expr) {
+            return vec![(path.to_path_buf(), line, lit)];
+        }
+        if let Some(inner) = expr.strip_prefix("format!(") {
+            return literal_head(inner.trim_start())
+                .map(|lit| vec![(path.to_path_buf(), line, lit)])
+                .unwrap_or_default();
+        }
+        let ident_len = expr
+            .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+            .unwrap_or(expr.len());
+        let (ident, rest) = expr.split_at(ident_len);
+        let name = ident.rsplit("::").next().unwrap_or(ident);
+        if rest.starts_with('(') {
+            let mut seen = Vec::new();
+            return producer_literals(sources, name, depth, &mut seen);
+        }
+        let plain_use = rest.is_empty()
+            || [".to_string()", ".as_str()", ".clone()"]
+                .iter()
+                .any(|s| rest.starts_with(s));
+        if !plain_use || depth == 0 {
+            return Vec::new();
+        }
+        // The binding, searched back only to the enclosing function's head so
+        // a same-named `let` in an earlier function is not read as this one.
+        let fn_head = body[..at]
+            .rfind("\nfn ")
+            .or_else(|| body[..at].rfind(" fn "))
+            .unwrap_or(0);
+        let pattern = format!("let {name} = ");
+        let Some(bind) = body[fn_head..at].rfind(&pattern).map(|i| fn_head + i) else {
+            return Vec::new();
+        };
+        let rhs_start = bind + pattern.len();
+        let rhs_end = body[rhs_start..]
+            .find(';')
+            .map_or(body.len(), |i| rhs_start + i);
+        resolve(
+            sources,
+            path,
+            body,
+            rhs_start,
+            &body[rhs_start..rhs_end],
+            depth - 1,
+        )
+    }
+
+    let mut judged = Vec::new();
+    let mut offenders = Vec::new();
+    for (path, body) in &sources {
+        let lines: Vec<&str> = body.lines().collect();
+        for opener in OPENERS {
+            for (at, _) in body.match_indices(opener) {
+                let n = body[..at].matches('\n').count();
+                if lines[n].trim_start().starts_with("//") {
+                    continue;
+                }
+                let open = at + opener.len() - 1;
+                let (_, span) = bracketed_span(body, open);
+                let args = top_level_args(&span[1..]);
+                let subject = if *opener == ".set_action_status(" {
+                    span.find("subject:")
+                        .map(|i| {
+                            let rest = &span[i + "subject:".len()..];
+                            top_level_args(rest).into_iter().next().unwrap_or_default()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    args.get(1).cloned().unwrap_or_default()
+                };
+                if subject.is_empty() {
+                    continue;
+                }
+                for (lit_path, lit_line, lit) in resolve(&sources, path, body, at, &subject, 3) {
+                    let Some(first) = lit.chars().next() else {
+                        continue;
+                    };
+                    if !first.is_alphabetic() {
+                        continue;
+                    }
+                    judged.push(lit.clone());
+                    if first.is_lowercase()
+                        || label_hatched(&lines, n, "// name-row-ok:")
+                        || sources.iter().any(|(p, b)| {
+                            p == &lit_path
+                                && label_hatched(
+                                    &b.lines().collect::<Vec<_>>(),
+                                    lit_line,
+                                    "// name-row-ok:",
+                                )
+                        })
+                    {
+                        continue;
+                    }
+                    offenders.push(format!(
+                        "{}:{}: {lit:?} (reached from {}:{})",
+                        lit_path.display(),
+                        lit_line + 1,
+                        path.display(),
+                        n + 1
+                    ));
+                }
+            }
+        }
+    }
+    offenders.sort();
+    offenders.dedup();
+    assert!(
+        judged.len() >= 15,
+        "the walk no longer reaches the subject slots — it judged {judged:?}"
+    );
+    for witness in ["snapshot", "restore from", "create ", "run "] {
+        assert!(
+            judged.iter().any(|l| l.starts_with(witness)),
+            "the walk no longer reaches the producer that renders {witness:?}: {judged:?}"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "an action row's subject opens on a lowercase verb (a subject that opens \
+         on a proper noun takes a `// name-row-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The string literal `expr` opens with, if it opens with one.
+fn literal_head(expr: &str) -> Option<String> {
+    let rest = expr.strip_prefix('"')?;
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            }
+            '"' => return Some(out),
+            _ => out.push(c),
+        }
+    }
+    None
+}
+
+/// Every string literal in `body` as `(byte offset, literal)`, comment lines
+/// excluded. Char literals (`'"'`) are stepped over so they cannot open one.
+fn string_literals(body: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                i = body[i..].find('\n').map_or(bytes.len(), |n| i + n);
+            }
+            b'\'' if bytes.get(i + 2) == Some(&b'\'') => i += 3,
+            b'"' => {
+                let start = i;
+                i += 1;
+                let mut lit = String::new();
+                while i < bytes.len() && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' {
+                        i += 1;
+                    }
+                    lit.push(bytes[i] as char);
+                    i += 1;
+                }
+                out.push((start, lit));
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// The text inside the brace block opened at `open`, braces inside string
+/// literals (`"{}"`) not counted.
+fn brace_span(body: &str, open: usize) -> &str {
+    let bytes = body.as_bytes();
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+            }
+            b'\'' if bytes.get(i + 2) == Some(&b'\'') => i += 2,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &body[open..=i];
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    &body[open..]
+}
+
+/// The free functions `body` calls, by name: an identifier followed by `(`
+/// that is neither a method (`.name(`) nor a macro (`name!(`).
+fn callee_names(body: &str) -> Vec<String> {
+    let bytes = body.as_bytes();
+    let mut out = Vec::new();
+    for (i, _) in body.match_indices('(') {
+        let mut start = i;
+        while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+            start -= 1;
+        }
+        if start == i || start > 0 && bytes[start - 1] == b'.' {
+            continue;
+        }
+        let name = &body[start..i];
+        if name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            && !out.contains(&name.to_string())
+        {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// Split `args` at the commas of its top level, string literals and nested
+/// brackets stepped over.
+fn top_level_args(args: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut current = String::new();
+    let mut chars = args.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                current.push(c);
+                while let Some(d) = chars.next() {
+                    current.push(d);
+                    if d == '\\' {
+                        if let Some(e) = chars.next() {
+                            current.push(e);
+                        }
+                    } else if d == '"' {
+                        break;
+                    }
+                }
+            }
+            '(' | '[' | '{' => {
+                depth += 1;
+                current.push(c);
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth < 0 {
+                    break;
+                }
+                current.push(c);
+            }
+            ',' if depth == 0 => out.push(std::mem::take(&mut current)),
+            _ => current.push(c),
+        }
+    }
+    if !current.trim().is_empty() {
+        out.push(current);
+    }
+    out.into_iter().map(|a| a.trim().to_string()).collect()
+}
+
 /// A failure the reader can act on says how. `cfgd source update` printed
 /// `✗ Update failed` with the git error underneath and nothing about what to do
 /// with it — a signature the reader can accept, a ref they can correct and a
@@ -14551,6 +14915,73 @@ fn both_sources_surfaces_render_through_the_one_table_builder() {
     assert!(
         offenders.is_empty(),
         "one Sources section, one column set:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every table the CLI renders drops a column no row can fill. The rule landed
+/// on `sources_table` alone, and `backup list` — the sibling listing, whose
+/// `Last Run` the sources file name-checks — shipped three columns of `-` one
+/// commit later. So the drop is `Table::without_unfillable_columns`, and every
+/// `Table::new` in the CLI settles through it before the table is emitted: a
+/// column that can be filled costs nothing, and a column that cannot is
+/// dropped the same way on every surface.
+#[test]
+fn every_listing_the_cli_renders_drops_a_column_no_row_can_fill() {
+    let mut tabled = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (at, _) in body.match_indices("Table::new(") {
+            let n = body[..at].matches('\n').count();
+            if lines[n].trim_start().starts_with("//") {
+                continue;
+            }
+            tabled += 1;
+            // The enclosing function: from its `fn` line to the line that
+            // closes its brace block.
+            let head = (0..=n)
+                .rev()
+                .find(|&i| {
+                    let code = lines[i].trim_start();
+                    code.starts_with("fn ") || code.contains(" fn ")
+                })
+                .unwrap_or(0);
+            let mut depth = 0i32;
+            let mut opened = false;
+            let mut end = lines.len() - 1;
+            for (i, line) in lines.iter().enumerate().skip(head) {
+                for c in line.chars() {
+                    match c {
+                        '{' => {
+                            depth += 1;
+                            opened = true;
+                        }
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                if opened && depth <= 0 {
+                    end = i;
+                    break;
+                }
+            }
+            if !lines[head..=end]
+                .iter()
+                .any(|l| l.contains(".without_unfillable_columns()"))
+            {
+                offenders.push(format!("{}:{}", path.display(), n + 1));
+            }
+        }
+    }
+    assert!(
+        tabled >= 10,
+        "the walk no longer reaches the CLI's tables — it found {tabled}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a table settles through `Table::without_unfillable_columns` before it \
+         is emitted, so a column of `-` is dropped on every surface:\n{}",
         offenders.join("\n")
     );
 }

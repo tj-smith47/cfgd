@@ -4,7 +4,7 @@ Restore: docs
   Actions  1 planned
 
 backup:docs
-  ✓ Restored from notes.txt.<TIMESTAMP> — 12 B
+  ✓ restore from notes.txt.<TIMESTAMP> — 12 B
   Destination  <SOURCE>
   → Previous contents saved to <STATE_DIR>/backups/docs/notes.txt.<TIMESTAMP>
 

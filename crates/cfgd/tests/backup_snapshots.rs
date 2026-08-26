@@ -447,15 +447,24 @@ fn backup_list_still_reports_the_inventory_when_the_state_store_cannot_open() {
     );
     // The count comes out of the same store, so it degrades with the history
     // rather than reading zero — which would be a unit whose snapshots are all
-    // gone, the one state that would send someone looking for a bug.
+    // gone, the one state that would send someone looking for a bug. Unknown
+    // for every unit, the column has nothing to say and is dropped rather
+    // than padded.
+    let header = human
+        .lines()
+        .find(|l| l.starts_with("Name"))
+        .unwrap_or_else(|| panic!("no header in:\n{human}"));
+    assert!(
+        !header.contains("Snapshots") && !header.contains("Status"),
+        "a column no row can fill is dropped, not padded: {header}"
+    );
     let row = human
         .lines()
         .find(|l| l.starts_with("docs"))
         .unwrap_or_else(|| panic!("no docs row in:\n{human}"));
-    let cells: Vec<&str> = row.split_whitespace().collect();
-    assert_eq!(
-        cells[4], "-",
-        "an unknown snapshot count renders '-', never 0: {row}"
+    assert!(
+        !row.split_whitespace().any(|cell| cell == "0"),
+        "an unknown snapshot count never reads 0: {row}"
     );
 }
 

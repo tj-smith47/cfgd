@@ -927,7 +927,7 @@ impl ModuleRow {
                 .data
                 .pointer("/spec/ociArtifact")
                 .and_then(serde_json::Value::as_str)
-                .unwrap_or("-")
+                .unwrap_or(cfgd_core::ABSENT)
                 .to_string(),
             verified,
             // The controller writes the verdict; a Module it has not reconciled

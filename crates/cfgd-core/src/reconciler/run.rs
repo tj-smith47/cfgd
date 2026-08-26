@@ -761,7 +761,12 @@ impl<'a> ApplyRun<'a> {
             .collect();
         let width = align_width_of(labels.iter().flatten().map(String::as_str));
 
-        let phase = pseudo_phase(printer, BACKUPS_PHASE_LABEL);
+        // Labelled only beside real phases: a plan-less run IS the backups
+        // phase, and its title already says so.
+        let phase = match self.plan {
+            Some(_) => pseudo_phase(printer, BACKUPS_PHASE_LABEL),
+            None => sole_phase(printer),
+        };
         let mut tally = RunTally::empty();
         let mut reports = Vec::with_capacity(pending.units.len());
         for (unit, planned) in pending.units.iter().zip(&labels) {
@@ -1000,7 +1005,10 @@ fn backup_report_tally(report: &crate::backup::BackupRunReport, planned: usize) 
 /// A pseudo-phase heading held open across execution, so each item's status
 /// lands under its owner.
 pub struct PseudoPhase<'a> {
-    section: SectionGuard<'a>,
+    printer: &'a Printer,
+    /// The `Phase: <name>` section, or `None` for a run this is the ONLY
+    /// phase of — see [`sole_phase`].
+    section: Option<SectionGuard<'a>>,
     /// Work reached from inside a pseudo-phase renders at the phase's depth
     /// rather than tripping the top-level structural assert.
     _inherit: crate::output::renderer::DepthInheritGuard<'a>,
@@ -1014,9 +1022,34 @@ impl PseudoPhase<'_> {
     #[must_use = "the group closes when the SectionGuard is dropped; bind it"]
     pub fn owner(&self, owner: &Owner, width: usize) -> SectionGuard<'_> {
         let label = OwnerLabel::new(owner.kind.as_str(), &owner.name);
-        let group = self.section.section_owner(&label);
+        let group = match &self.section {
+            Some(section) => section.section_owner(&label),
+            None => self.printer.section_owner(&label),
+        };
         group.live_column(width);
         group
+    }
+}
+
+/// The run's ONLY phase, rendered with no phase row at all: its owner groups
+/// sit at the run's own depth, directly under the header.
+///
+/// A phase row earns its place where there are phases to tell apart —
+/// `Backups` among `Packages` and `Files` inside `cfgd apply`. A run whose
+/// whole body is one pseudo-phase named after the command (`cfgd backup run`,
+/// the daemon's scheduled fire) printed `Backup` / `Phase: Backups` /
+/// `backup:notes` down three indents: the same word three times and an extra
+/// level for nothing, while `backup restore` beside it put the identical owner
+/// group one level shallower and lost nothing. [`ApplyRun::render_backups`]
+/// chooses this whenever the run carries no [`Plan`]; a run whose other phases
+/// were merely FILTERED (`--phase files`) keeps its label, because there the
+/// label states the filter.
+#[must_use = "the pseudo-phase closes when the PseudoPhase is dropped; bind it"]
+pub fn sole_phase(printer: &Printer) -> PseudoPhase<'_> {
+    PseudoPhase {
+        printer,
+        section: None,
+        _inherit: printer.depth_inheritance(),
     }
 }
 
@@ -1034,7 +1067,8 @@ impl PseudoPhase<'_> {
 #[must_use = "the pseudo-phase closes when the PseudoPhase is dropped; bind it"]
 pub fn pseudo_phase<'p>(printer: &'p Printer, label: &str) -> PseudoPhase<'p> {
     PseudoPhase {
-        section: printer.section_phase(&PhaseLabel::new(label)),
+        printer,
+        section: Some(printer.section_phase(&PhaseLabel::new(label))),
         _inherit: printer.depth_inheritance(),
     }
 }

@@ -516,9 +516,19 @@ pub fn yes_no(value: Option<bool>) -> &'static str {
     match value {
         Some(true) => "yes",
         Some(false) => "no",
-        None => "-",
+        None => ABSENT,
     }
 }
+
+/// The ONE token a table cell renders for a fact nothing recorded — what
+/// [`yes_no`] answers for `None`, what [`crate::humanize_until_cell`] answers
+/// for an unscheduled instant, and what every listing spells for a slot it
+/// cannot fill. One spelling is what lets
+/// `Table::without_unfillable_columns` judge a column with a single predicate;
+/// a second absence word (`n/a`, an empty cell) would be a column of nothing
+/// the drop rule cannot see. A PAST instant's absence reads `never` through
+/// [`crate::humanize_age_cell`] and is a fact, not an absence.
+pub const ABSENT: &str = "-";
 
 /// The ONE plural rendering in the workspace, because the alternative shipped
 /// for a year: `22 actions succeeded` is a program telling the reader it did

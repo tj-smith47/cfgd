@@ -139,7 +139,7 @@ pub fn build_log_doc(output: &LogOutput, now: &str) -> Doc {
                     // so a legacy row's `unknown` placeholder is refused in
                     // one place rather than in two that can disagree.
                     super::status::derivable_profile(&record.profile)
-                        .unwrap_or("-")
+                        .unwrap_or(cfgd_core::ABSENT)
                         .to_string(),
                     record.status.human_str().to_string(),
                     // The same prose the status dashboard's Summary row reads,
@@ -148,7 +148,7 @@ pub fn build_log_doc(output: &LogOutput, now: &str) -> Doc {
                         .summary
                         .as_deref()
                         .map(cfgd_core::state::ApplySummary::prose)
-                        .unwrap_or_else(|| "-".into()),
+                        .unwrap_or_else(|| cfgd_core::ABSENT.into()),
                 ]
             })
             .collect();
@@ -156,7 +156,7 @@ pub fn build_log_doc(output: &LogOutput, now: &str) -> Doc {
         for row in rows {
             t = t.row(row);
         }
-        doc = doc.table(t);
+        doc = doc.table(t.without_unfillable_columns());
     }
     doc.with_data(output)
 }
@@ -325,13 +325,18 @@ mod tests {
     /// neither a profile nor a module leaves an empty cell marker, never a
     /// placeholder word standing in for a scope nothing has — and a row a
     /// PREVIOUS cfgd wrote holds the literal `unknown` for exactly that case,
-    /// so both spellings of "nothing" are checked here.
+    /// so both spellings of "nothing" are checked here. When NO row named a
+    /// scope the column has nothing to say and is dropped rather than padded.
     #[test]
     fn log_scope_column_renders_a_dash_for_a_run_that_named_nothing() {
         for recorded in ["", "unknown"] {
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             let mut output = in_progress_log();
             output.entries[0].profile = recorded.to_string();
+            let mut scoped = output.entries[0].clone();
+            scoped.id = 2;
+            scoped.profile = "default".to_string();
+            output.entries.push(scoped);
             printer.emit(build_log_doc(&output, NOW));
             drop(printer);
 
@@ -342,9 +347,23 @@ mod tests {
                 "a scope nothing named must not render a placeholder word \
                  (recorded {recorded:?}): {out}"
             );
+            let unnamed = out
+                .lines()
+                .find(|l| l.starts_with("1 "))
+                .unwrap_or_else(|| panic!("no row for apply 1: {out}"));
             assert!(
-                out.contains(" - "),
+                unnamed.contains(" - "),
                 "the cell falls back to the empty marker (recorded {recorded:?}): {out}"
+            );
+
+            let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+            output.entries.pop();
+            printer.emit(build_log_doc(&output, NOW));
+            drop(printer);
+            let out = cfgd_core::test_helpers::captured_text(&buf);
+            assert!(
+                !out.contains("Scope"),
+                "a Scope column no row can fill is dropped (recorded {recorded:?}): {out}"
             );
         }
     }

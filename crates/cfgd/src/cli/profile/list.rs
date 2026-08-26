@@ -18,11 +18,13 @@ pub fn build_profile_list_doc(entries: &[super::ProfileListEntry], wide: bool) -
             t = t.row([
                 e.name.clone(),
                 cfgd_core::yes_no(Some(e.active)).to_string(),
-                e.inherits.clone().unwrap_or_else(|| "-".into()),
+                e.inherits
+                    .clone()
+                    .unwrap_or_else(|| cfgd_core::ABSENT.into()),
                 e.module_count.to_string(),
             ]);
         }
-        doc = doc.table(t);
+        doc = doc.table(t.without_unfillable_columns());
     } else {
         for entry in entries {
             if entry.active {

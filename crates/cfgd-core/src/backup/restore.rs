@@ -114,7 +114,7 @@ impl RestoreOutcome {
 pub fn report_restore(printer: &Printer, outcome: &RestoreOutcome) -> crate::reconciler::RunTally {
     let group = printer.section_owner(&crate::output::OwnerLabel::new("backup", &outcome.name));
     let role = super::outcome_role(outcome.is_clean(), outcome.restored);
-    let subject = format!("Restored from {}", outcome.snapshot);
+    let subject = super::restore_subject(&outcome.snapshot);
     let detail = super::outcome_detail(
         outcome.error.as_deref(),
         Some(crate::format_bytes(outcome.size_bytes)),

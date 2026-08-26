@@ -102,12 +102,17 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
                     _ => (word.to_string(), Some(role)),
                 }
             }
-            None => ("-".to_string(), None),
+            None => (cfgd_core::ABSENT.to_string(), None),
         };
         t = t.row_styled(vec![
             (e.name.clone(), None),
             (e.source.clone(), None),
-            (e.schedule.clone().unwrap_or_else(|| "-".into()), None),
+            (
+                e.schedule
+                    .clone()
+                    .unwrap_or_else(|| cfgd_core::ABSENT.into()),
+                None,
+            ),
             (e.retention.to_string(), None),
             (snapshots_cell(e.snapshots, e.safety_snapshots), None),
             (status, role),
@@ -121,7 +126,10 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
             ),
         ]);
     }
-    doc = doc.table(t);
+    // `Schedule` on a catalog of unscheduled units, `Status` and `Next Run`
+    // before the first run: a column of `-` pushes `Snapshots` and `Last Run`,
+    // the two cells a reader compares across listings, off to the right.
+    doc = doc.table(t.without_unfillable_columns());
     doc.with_data(entries)
 }
 
@@ -137,7 +145,7 @@ fn snapshots_cell(total: Option<usize>, safety: Option<usize>) -> String {
     match (total, safety) {
         (Some(n), Some(s)) if s > 0 => format!("{n} ({s} safety)"),
         (Some(n), _) => n.to_string(),
-        (None, _) => "-".to_string(),
+        (None, _) => cfgd_core::ABSENT.to_string(),
     }
 }
 
@@ -174,7 +182,7 @@ pub fn build_backup_snapshot_list_doc(
             format_bytes(e.size_bytes),
         ]);
     }
-    doc = doc.table(t);
+    doc = doc.table(t.without_unfillable_columns());
     doc.with_data(entries)
 }
 
@@ -689,7 +697,7 @@ mod tests {
     fn restore_row(human: &str) -> String {
         human
             .lines()
-            .find(|l| l.contains("Restored from"))
+            .find(|l| l.contains("restore from"))
             .unwrap_or_else(|| panic!("no restore row in:\n{human}"))
             .to_string()
     }
@@ -700,7 +708,7 @@ mod tests {
         assert!(human.contains("backup:docs"), "{human}");
         let row = restore_row(&human);
         assert!(
-            row.contains("Restored from notes.txt.20260101T000000Z") && row.contains("12 B"),
+            row.contains("restore from notes.txt.20260101T000000Z") && row.contains("12 B"),
             "{row}"
         );
         // The destination is a `Label: value` fact, not a clause hung off the

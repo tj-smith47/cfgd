@@ -133,7 +133,7 @@ pub(super) fn run_source_remove(
             for r in &resources {
                 t = t.row([r.resource_type.clone(), r.resource_id.clone()]);
             }
-            res_sec.table(t);
+            res_sec.table(t.without_unfillable_columns());
         }
 
         let options = vec![

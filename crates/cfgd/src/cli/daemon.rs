@@ -243,7 +243,7 @@ fn daemon_source_row(
         name: src.name.clone(),
         url: declared
             .map(|e| e.url.clone())
-            .unwrap_or_else(|| "-".into()),
+            .unwrap_or_else(|| cfgd_core::ABSENT.into()),
         priority: declared.map_or(0, |e| e.priority),
         version: declared.and_then(|e| e.version.clone()),
         status: src.status.clone(),

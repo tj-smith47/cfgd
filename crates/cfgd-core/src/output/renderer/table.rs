@@ -115,6 +115,56 @@ impl Table {
         self.row_roles.push(roles);
         self
     }
+
+    /// Drop every column no row can fill: one whose every cell is
+    /// [`crate::ABSENT`]. A listing pads to `-` per row for a fact this render
+    /// does not hold — per-source drift only the daemon knows, a schedule no
+    /// unit declares, a status before the first run — and a whole column of
+    /// them is header characters answering nothing, pushing the columns the
+    /// reader came for off to the right. The `-o json` payload keeps every
+    /// field; a `null` there is a fact, a `-` on screen is only padding.
+    ///
+    /// Every table the CLI renders settles through this before it is emitted
+    /// (`every_listing_the_cli_renders_drops_a_column_no_row_can_fill`), so a
+    /// column that CAN be filled costs nothing and a column that cannot is
+    /// dropped the same way on every surface. A table with no rows keeps its
+    /// headers: nothing has been judged.
+    pub fn without_unfillable_columns(mut self) -> Self {
+        if self.rows.is_empty() {
+            return self;
+        }
+        let keep: Vec<bool> = (0..self.headers.len())
+            .map(|i| {
+                self.rows
+                    .iter()
+                    .any(|row| row.get(i).is_some_and(|cell| cell != crate::ABSENT))
+            })
+            .collect();
+        if keep.iter().all(|&k| k) {
+            return self;
+        }
+        self.headers = kept_columns(std::mem::take(&mut self.headers), &keep);
+        self.rows = std::mem::take(&mut self.rows)
+            .into_iter()
+            .map(|row| kept_columns(row, &keep))
+            .collect();
+        self.row_roles = std::mem::take(&mut self.row_roles)
+            .into_iter()
+            .map(|roles| kept_columns(roles, &keep))
+            .collect();
+        self
+    }
+}
+
+/// `cells` with every column whose `keep` flag is false removed; a cell past
+/// the end of `keep` stays, so a ragged row is never truncated by the drop.
+fn kept_columns<T>(cells: Vec<T>, keep: &[bool]) -> Vec<T> {
+    cells
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| keep.get(*i).copied().unwrap_or(true))
+        .map(|(_, c)| c)
+        .collect()
 }
 
 impl Renderer {
@@ -279,6 +329,38 @@ mod tests {
         let t = Table::new(std::iter::empty::<String>());
         r.render_table(&sink, 0, &t);
         assert!(crate::test_helpers::captured_text(&buf).is_empty());
+    }
+
+    /// The drop is judged over the whole column and carried through the
+    /// parallel role vector, so a kept column's styling stays on its own cell.
+    #[test]
+    fn a_column_every_row_leaves_absent_is_dropped_with_its_roles() {
+        let t = Table::new(["Name", "Schedule", "Status", "Age"])
+            .row_styled([
+                ("a".to_string(), None),
+                (crate::ABSENT.to_string(), None),
+                (crate::ABSENT.to_string(), None),
+                ("2h ago".to_string(), Some(Role::Ok)),
+            ])
+            .row_styled([
+                ("b".to_string(), None),
+                (crate::ABSENT.to_string(), None),
+                ("Success".to_string(), Some(Role::Ok)),
+                ("never".to_string(), None),
+            ])
+            .without_unfillable_columns();
+        assert_eq!(t.headers, ["Name", "Status", "Age"]);
+        assert_eq!(t.rows[0], ["a", "-", "2h ago"]);
+        assert_eq!(t.rows[1], ["b", "Success", "never"]);
+        assert_eq!(t.row_roles[0], [None, None, Some(Role::Ok)]);
+        assert_eq!(t.row_roles[1], [None, Some(Role::Ok), None]);
+
+        let empty = Table::new(["Name", "Status"]).without_unfillable_columns();
+        assert_eq!(
+            empty.headers,
+            ["Name", "Status"],
+            "no rows judge nothing, so every header stays"
+        );
     }
 
     #[test]

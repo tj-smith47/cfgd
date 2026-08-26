@@ -2604,22 +2604,56 @@ fn render_backup_run(h: &Harness, specs: &[&BackupSpec]) -> (String, crate::stat
     (human, status)
 }
 
-/// The item lines the `Backups` pseudo-phase emitted: everything between its
-/// heading and the rollup that carries a status icon, group headings excluded.
+/// The item lines the run's backups body emitted: everything between the
+/// header and the rollup that carries a status icon, group headings excluded.
 fn rendered_item_lines(human: &str) -> Vec<String> {
     human
         .lines()
-        .skip_while(|line| line.trim() != "Phase: Backups")
+        // The header ends at the run's first blank line.
+        .skip_while(|line| !line.trim().is_empty())
         .skip(1)
-        // The rollup begins at the first unindented line: every item lives
-        // under an owner group and is indented, and only the phase heading
-        // above (skipped) shares column 0 with the rollup. Terminating on the
-        // word `action` instead read a rollup line that names no count —
-        // the partial run's leading verdict — as an item of the phase.
-        .take_while(|line| line.trim().is_empty() || line.starts_with(char::is_whitespace))
+        // A plan-less run prints no phase row, so its owner groups share
+        // column 0 with the rollup; every item lives under one and is
+        // indented. The rollup is the first unindented line that is not an
+        // owner heading. Terminating on the word `action` instead read a
+        // rollup line that names no count — the partial run's leading
+        // verdict — as an item of the phase.
+        .take_while(|line| {
+            line.trim().is_empty()
+                || line.starts_with(char::is_whitespace)
+                || line.starts_with("backup:")
+        })
         .map(|line| line.trim().to_string())
         .filter(|line| line.starts_with(STATUS_ICONS))
         .collect()
+}
+
+/// A run whose only phase is the backups pseudo-phase prints no phase row:
+/// `Backup` / `Phase: Backups` / `backup:db` was one word three times down
+/// three indents. The owner group sits at the run's own depth, where
+/// `backup restore` already put it.
+#[test]
+fn a_backup_run_prints_no_phase_row_for_its_only_phase() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let s = spec("db", &source);
+    let (human, _) = render_backup_run(&h, &[&s]);
+    assert!(
+        !human
+            .lines()
+            .any(|line| line.trim_start().starts_with("Phase:")),
+        "a plan-less run has no phase to tell apart:\n{human}"
+    );
+    assert!(
+        human.lines().any(|line| line == "backup:db"),
+        "the owner group heads the body at column 0:\n{human}"
+    );
+    assert!(
+        human
+            .lines()
+            .any(|line| line.starts_with("  ✓ snapshot data.db.")),
+        "the snapshot row sits one level under its owner:\n{human}"
+    );
 }
 
 #[test]

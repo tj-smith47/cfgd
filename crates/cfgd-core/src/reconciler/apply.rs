@@ -1394,10 +1394,9 @@ impl<'a> super::Reconciler<'a> {
                             merge_env_result(&mut results, desc, changed);
                         }
                         Err(e) => {
-                            printer.status_simple(
-                                Role::Fail,
-                                format!("Failed to regenerate shell env files: {}", e),
-                            );
+                            printer
+                                .status(Role::Fail, "regenerate shell env files")
+                                .detail(e.to_string());
                             results.push(ActionResult {
                                 phase: PhaseName::Prerequisites.as_str().to_string(),
                                 description: "env:write:regenerate".to_string(),

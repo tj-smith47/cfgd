@@ -16,7 +16,7 @@ pub fn build_alias_list_doc(entries: &[AliasListEntry]) -> Doc {
     for e in entries {
         t = t.row([e.name.clone(), e.command.clone()]);
     }
-    doc = doc.table(t);
+    doc = doc.table(t.without_unfillable_columns());
 
     doc.with_data(entries)
 }

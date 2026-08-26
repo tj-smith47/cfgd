@@ -126,7 +126,7 @@ pub fn build_source_show_doc(
             for r in resources {
                 table = table.row([r.resource_type.clone(), r.resource_id.clone()]);
             }
-            s.table(table)
+            s.table(table.without_unfillable_columns())
         },
     );
 

@@ -756,20 +756,24 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
                 m.name.clone(),
                 m.registry.clone(),
                 m.description.clone().unwrap_or_default(),
-                m.version.clone().unwrap_or_else(|| "-".into()),
+                m.version
+                    .clone()
+                    .unwrap_or_else(|| cfgd_core::ABSENT.into()),
             ]);
         }
-        doc = doc.table(t);
+        doc = doc.table(t.without_unfillable_columns());
     } else {
         let mut t = cfgd_core::output::renderer::Table::new(["Module", "Description", "Latest"]);
         for m in &all_results {
             t = t.row([
                 m.name.clone(),
                 m.description.clone().unwrap_or_default(),
-                m.version.clone().unwrap_or_else(|| "-".into()),
+                m.version
+                    .clone()
+                    .unwrap_or_else(|| cfgd_core::ABSENT.into()),
             ]);
         }
-        doc = doc.table(t);
+        doc = doc.table(t.without_unfillable_columns());
     }
 
     printer.emit(doc.with_data(&all_results));
@@ -1166,7 +1170,7 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
     printer.emit(
         Doc::new()
             .heading("Module Registries")
-            .table(t)
+            .table(t.without_unfillable_columns())
             .with_data(&entries),
     );
 

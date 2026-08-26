@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 use cfgd_core::state::source_status_display;
-use cfgd_core::yes_no;
+use cfgd_core::{ABSENT, yes_no};
 
 /// The section every surface calls a config source's collection — one noun,
 /// singular in `source:<name>` and plural here. `Config Sources` spelled the
@@ -43,12 +43,13 @@ pub fn build_source_list_doc(entries: &[SourceListEntry], wide: bool, now: &str)
 /// `Requires Signed` what the subscription DEMANDS — a demanding source and a
 /// non-demanding one with signed HEADs rendered identically without both.
 ///
-/// A column no row in THIS render can fill is dropped, not padded: `Drift` is
-/// live per-source drift only the daemon holds, so on `source list` every cell
-/// was `-` — seven characters per row answering nothing on the listing that is
-/// the family's rest point. The same rule covers `Version` (`--wide`, absent
-/// until a manifest names one) and `Commit` / `Signed` before the first fetch.
-/// The `-o json` payload keeps every field; a `null` there is a fact.
+/// A column no row in THIS render can fill is dropped, not padded
+/// (`Table::without_unfillable_columns`): `Drift` is live per-source drift
+/// only the daemon holds, so on `source list` every cell was `-` — seven
+/// characters per row answering nothing on the listing that is the family's
+/// rest point. The same rule covers `Version` (`--wide`, absent until a
+/// manifest names one) and `Commit` / `Signed` before the first fetch. The
+/// `-o json` payload keeps every field; a `null` there is a fact.
 pub fn sources_table(entries: &[SourceListEntry], wide: bool, now: &str) -> Table {
     let cell = |value: Option<String>| (value.unwrap_or_else(|| ABSENT.to_string()), None);
     let mut columns: Vec<(&str, Vec<Cell>)> = vec![
@@ -127,22 +128,15 @@ pub fn sources_table(entries: &[SourceListEntry], wide: bool, now: &str) -> Tabl
                 .collect(),
         ),
     ]);
-    columns.retain(|(_, cells)| cells.iter().any(|(text, _)| text != ABSENT));
-
     let mut t = Table::new(columns.iter().map(|(name, _)| *name));
     for i in 0..entries.len() {
         t = t.row_styled(columns.iter().map(|(_, cells)| cells[i].clone()));
     }
-    t
+    t.without_unfillable_columns()
 }
 
 /// One rendered `Sources` cell: its text and the role that re-styles it.
 type Cell = (String, Option<Role>);
-
-/// The absence token a `Sources` cell renders for a fact nothing recorded — the
-/// same `-` `yes_no(None)` answers, so the column-drop rule above reads one
-/// spelling.
-const ABSENT: &str = "-";
 
 /// The ONE human rendering of a config source's last fetch, shared by every
 /// surface that shows one (`source list`, `source show`, `status`) — the

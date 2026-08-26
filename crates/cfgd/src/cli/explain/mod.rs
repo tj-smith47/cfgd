@@ -514,7 +514,7 @@ pub fn build_explain_index_doc() -> Doc {
     }
     Doc::new()
         .heading("Available resource types")
-        .table(table)
+        .table(table.without_unfillable_columns())
         .hint("Run `cfgd explain <resource>` for details")
         .hint("Run `cfgd explain <resource>.<field>` to drill into a field")
         .hint("Run `cfgd explain <resource> --recursive` for all fields expanded")

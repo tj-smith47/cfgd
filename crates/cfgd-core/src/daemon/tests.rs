@@ -18929,15 +18929,27 @@ mod backup_timers {
     /// exactly the grammar — icons, subjects, alignment, group headings.
     fn backups_block(human: &str) -> String {
         let plain = crate::output::strip_ansi(human);
+        // From the first owner heading, dedented to it: `cfgd apply` renders
+        // the group under a `Phase: Backups` row and a plan-less run renders
+        // it at the run's own depth, and the DEPTH is the one thing the
+        // surfaces are allowed to differ on.
+        let indent = plain
+            .lines()
+            .find(|line| line.trim_start().starts_with("backup:"))
+            .map_or(0, |line| line.len() - line.trim_start().len());
         let block: Vec<&str> = plain
             .lines()
-            .skip_while(|line| line.trim() != "Phase: Backups")
+            .skip_while(|line| !line.trim_start().starts_with("backup:"))
             // The rollup opens the run's closing block and names the surface
             // that dispatched it (`Apply complete` / `Backup complete`), which
             // is the one line the group's grammar is deliberately not compared
             // on. Every line of the group itself is an icon + subject; only a
             // rollup counts actions.
             .take_while(|line| !line.contains("action"))
+            .map(|line| {
+                let lead = line.len() - line.trim_start().len();
+                &line[lead.min(indent)..]
+            })
             .map(str::trim_end)
             .collect();
         let mut out = block.join("\n");
@@ -19008,7 +19020,7 @@ mod backup_timers {
             tmp: &Path,
             label: &str,
             run: impl FnOnce(&Path, &StateStore, &Printer),
-        ) -> String {
+        ) -> (String, String) {
             let home = tmp.join(label);
             let state_dir = home.join("state");
             std::fs::create_dir_all(&state_dir).unwrap();
@@ -19017,7 +19029,7 @@ mod backup_timers {
             crate::with_test_home(&home, || run(&state_dir, &store, &printer));
             drop(printer);
             let human = crate::test_helpers::captured_text(&buf);
-            backups_block(&human)
+            (backups_block(&human), human)
         }
 
         let tmp = tempfile::TempDir::new().unwrap();
@@ -19088,6 +19100,9 @@ mod backup_timers {
             );
         });
 
+        let (by_hand, by_hand_raw) = by_hand;
+        let (during_apply, during_apply_raw) = during_apply;
+        let (scheduled, scheduled_raw) = scheduled;
         assert!(
             by_hand.contains("backup:db") && by_hand.contains("snapshot data.db.<STAMP>"),
             "the group must render at all before it can be compared: {by_hand:?}"
@@ -19100,6 +19115,22 @@ mod backup_timers {
             by_hand, scheduled,
             "a scheduled fire renders a different group than `cfgd backup run`"
         );
+        // The phase row is the one line the surfaces differ on, by design: it
+        // sits beside real phases inside `cfgd apply` and restates the title
+        // on a run that has no other phase.
+        assert!(
+            during_apply_raw.contains("Phase: Backups"),
+            "inside an apply the backups phase keeps its row: {during_apply_raw}"
+        );
+        for (label, raw) in [
+            ("backup run", &by_hand_raw),
+            ("scheduled fire", &scheduled_raw),
+        ] {
+            assert!(
+                !raw.contains("Phase:"),
+                "{label} is its own only phase and prints no phase row: {raw}"
+            );
+        }
     }
 
     /// A unit skipped for a held lock must say so in the journal — the only
