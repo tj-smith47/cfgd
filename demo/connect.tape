@@ -1,7 +1,7 @@
 # Whole take plays at 1:1 (make-gif-flat.sh, no ramp) — this tape's claim is
 # that a module can be attached to a pod that is already running, so the
 # before and the after both have to be watchable.
-Output "demo/.out/connect.mp4"
+Output "demo/.out/connect/"
 
 # Records on the HOST against the same throwaway kind cluster k8s.tape uses
 # (`demo/scripts/setup-k8s-demo.sh up`), for the same reason: the beats are
@@ -14,7 +14,10 @@ Set Shell "bash"
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
-Set Height 1000
+# Sized to the tallest scene: the closing hold stacks every beat (52 rows at
+# this pitch), and beat 1's `==>` header has to still be on screen when the
+# loop rests — at 1000 it had scrolled off.
+Set Height 1100
 Set TypingSpeed 50ms
 Set Padding 20
 Set Framerate 50
@@ -88,7 +91,7 @@ Sleep 5s
 # Beat 4: attach it. One command adds an ephemeral container to the pod that is
 # already running, mounts the staged module into it, and puts the module's bin
 # directory on that container's PATH.
-Type "kubectl cfgd debug app --module nettools:v1 --image busybox:1.36 --namespace demo"
+Type "kubectl cfgd debug app --module nettools:v1 --image busybox:1.36"
 Enter
 Wait@60s /demo\$$/
 Sleep 5s
@@ -133,6 +136,6 @@ Enter
 Wait@60s /demo\$$/
 Sleep 5s
 
-# Closing hold — breathing room before the loop snaps back to the opening
-# frame, matching every other per-surface tape's closing beat.
-Sleep 8s
+# Closing hold — the last beat's own hold already covers reading it; this is
+# only the breath before the loop snaps back, the same 2s in every tape.
+Sleep 2s

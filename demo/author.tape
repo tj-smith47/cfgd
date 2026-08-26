@@ -1,7 +1,7 @@
 # Whole take plays at 1:1 (make-gif-flat.sh, no ramp) — this tape's claim is
 # the authoring loop on an ALREADY-CONVERGED machine: discover the schema,
 # change one thing, watch cfgd do exactly that one thing and then nothing.
-Output "demo/.out/author.mp4"
+Output "demo/.out/author/"
 
 Require docker
 
@@ -92,16 +92,17 @@ Enter
 Wait@60s /cfgd\$$/
 Sleep 4s
 
-# Beat 4: preview what the update queued. Only the tap, gum and the env write
-# the alias caused appear — everything nvim-owned is satisfied and elided, so
-# the plan is exactly the delta beat 3 created.
+# Beat 4: preview what the update queued. Beat 3's delta appears with the
+# brew index refresh it needs, and the session publish this box has no
+# manager for is already marked skipped — everything nvim-owned is satisfied
+# and elided, so no action on screen is older than beat 3.
 Type "cfgd plan"
 Enter
 Wait@60s /cfgd\$$/
 Sleep 6s
 
-# Beat 5: converge. The tap is added (and trusted) before the formula that
-# may only exist inside it, then gum installs; nothing nvim-owned re-runs.
+# Beat 5: converge. The tap is added before the formula that may only exist
+# inside it, then gum installs; nothing nvim-owned re-runs.
 # 5m, not 60s: the tap clone and the brew index refresh are network round
 # trips whose worst case is not this box's to control.
 Type "cfgd apply --yes"
@@ -126,7 +127,9 @@ Sleep 3s
 Type "catn ~/.cfgd.env"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 4s
+# The beat the whole authoring loop exists to land: held long enough to find
+# the alias line in the numbered file.
+Sleep 7s
 
 # Beat 7: the idempotency shot — the same apply again, and cfgd says the
 # whole machine is up to date in one line. Nothing re-installs, no module
@@ -136,6 +139,6 @@ Enter
 Wait@60s /cfgd\$$/
 Sleep 5s
 
-# Closing hold — breathing room before the loop snaps back to the opening
-# frame, matching drift.tape's closing beat.
-Sleep 4s
+# Closing hold — the last beat's own hold already covers reading it; this is
+# only the breath before the loop snaps back, the same 2s in every tape.
+Sleep 2s

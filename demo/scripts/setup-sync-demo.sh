@@ -96,6 +96,10 @@ phase_seed() {
     docker run -d --name cfgd-sync-seed -v "$HUB:/srv/git" "$BASE_IMAGE" sleep infinity
     docker exec cfgd-sync-seed git config --global user.name "TJ Smith"
     docker exec cfgd-sync-seed git config --global user.email "tj@jarvispro.io"
+    # git's own commit/push output names the commit at the width cfgd's daemon
+    # log and `short_commit` use, so the reader matches one spelling across
+    # the machine hop instead of a 7-char and a 12-char one.
+    docker exec cfgd-sync-seed git config --global core.abbrev 12
     docker exec cfgd-sync-seed bash -lc \
         'cfgd init --from /srv/git/config.git --apply-module nvim --yes'
     # init normalizes cfgd.yaml in place (origin/patches defaults serialized

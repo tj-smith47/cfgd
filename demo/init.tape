@@ -1,8 +1,11 @@
-# `Output <dir>/` is a no-op on the installed vhs (v0.11.0) — it exits 0 and
-# writes nothing, with the real frames landing in a /tmp scratch dir that vhs
-# deletes on cleanup. The mp4 is therefore the only artifact this tape
-# actually produces, and it is what the GIF ramp reads.
-Output "demo/.out/raw.mp4"
+# A trailing slash and no extension is what makes vhs keep the take as its two
+# lossless PNG sequences (frame-text-NNNNN.png, frame-cursor-NNNNN.png) instead
+# of encoding it; it moves its scratch directory here by renaming it, so the
+# parent has to exist and has to be on the same filesystem as $TMPDIR — see
+# demo/scripts/record.sh, which arranges both. No mp4 is asked for on purpose:
+# h264 is 4:2:0, and the chroma smear on thin coloured glyphs would be baked in
+# before the GIF's palette pass ever ran.
+Output "demo/.out/raw/"
 
 Require docker
 

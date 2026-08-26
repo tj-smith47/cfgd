@@ -671,7 +671,7 @@ tasks:
       - docker build -f demo/Dockerfile -t cfgd-demo:latest .
 
   demo:record:
-    desc: Run demo/init.tape, producing whatever its Output line names (demo/.out/raw.mp4).
+    desc: Run demo/init.tape, producing whatever its Output line names (demo/.out/raw/).
     preconditions:
       # LazyVim's tree, tabline and statusline are Nerd Font glyphs; without the
       # font VHS still exits 0 and records a take full of tofu boxes. The font

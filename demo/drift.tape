@@ -1,6 +1,6 @@
 # Whole take plays at 1:1 (make-gif-flat.sh, no ramp) — this tape's claim is
 # the catch-and-heal loop itself, so nothing in it is worth compressing away.
-Output "demo/.out/drift.mp4"
+Output "demo/.out/drift/"
 
 Require docker
 
@@ -10,7 +10,7 @@ Set Shell "bash"
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
-Set Height 1000
+Set Height 1500
 Set TypingSpeed 50ms
 Set Padding 20
 Set Framerate 50
@@ -71,7 +71,7 @@ Sleep 1s
 # the same distinction `cfgd diff`/`verify` already draw, and the only way
 # this command can claim "no drift" rather than just "nothing recorded yet".
 # The live scan genuinely walks 28 packages plus every deployed file, so it
-# costs real wall time (measured ~13s in the demo container) — every beat
+# costs real wall time (measured ~3s in the demo container) — every beat
 # below waits on the returning prompt rather than guessing a fixed Sleep,
 # because a flat Sleep shorter than that cost queues the NEXT beat's
 # keystrokes into the terminal before this one finishes, garbling the
@@ -119,6 +119,6 @@ Enter
 Wait@60s /cfgd\$$/
 Sleep 4s
 
-# Closing hold — breathing room before the loop snaps back to the opening
-# frame, matching init.tape's closing beat.
-Sleep 8s
+# Closing hold — the last beat's own hold already covers reading it; this is
+# only the breath before the loop snaps back, the same 2s in every tape.
+Sleep 2s

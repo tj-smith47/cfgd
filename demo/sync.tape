@@ -1,9 +1,12 @@
 # Whole take plays at 1:1 (make-gif-flat.sh, no ramp) — this tape's claim is
 # fleet sync: two machines initialized from one git config source, machine A
-# commits a change to the nvim module, and machine B's daemon pulls and
-# reconciles it while nobody touches B. The money shot is B's nvim gutter
-# switching from absolute to relative line numbers on its second open.
-Output "demo/.out/sync.mp4"
+# commits a change to the nvim module, and machine B's daemon pulls it while
+# nobody touches B: the module's files are deployed as symlinks into the
+# clone, so the change is live the moment the pull lands, and the reconcile
+# the pull triggers reports that nothing is left to do. The money shot is
+# B's nvim gutter switching from absolute to relative line numbers on its
+# second open.
+Output "demo/.out/sync/"
 
 Require docker
 
@@ -30,12 +33,14 @@ Enter
 # Gate on machine B's daemon having finished its INITIAL reconcile: the tick
 # loop is serial, the first reconcile on a cold machine blocks it for a
 # minute-plus, and every sync tick queues behind it — a take recorded before
-# it drains reaches beat 8 before the first pull can land. A second
-# "running reconciliation check" line only appears once the first has
-# finished, so two on screen means the loop is draining at its warm cadence.
+# it drains reaches beat 8 before the first pull can land. The daemon logs
+# the completion of every reconcile it runs; the gate waits for the SECOND
+# completion — the first only says the cold reconcile drained, the second
+# says the loop has run a whole warm tick, so beat 2's Uptime reads as a
+# machine that has been sitting there rather than one that just booted.
 Type "docker exec machine-b tail -f /home/tj/daemon.log"
 Enter
-Wait+Screen@240s /(?s)running reconciliation check.*running reconciliation check/
+Wait+Screen@300s /(?s)reconcile: complete.*reconcile: complete/
 Ctrl+C
 Type "clear"
 Enter
@@ -51,8 +56,8 @@ Wait@15s /machine-b:~\$$/
 Sleep 2s
 
 # Beat 2: B's daemon is alive and syncing — running, zero drift, and the
-# `local` source (the machine's own clone of the shared config repo) active
-# with a last-sync timestamp. This is the agent that will do all the work.
+# `local` source (the machine's own clone of the shared config repo) active,
+# last synced moments ago. This is the agent that will do all the work.
 Type "cfgd daemon status"
 Enter
 Wait@30s /machine-b:~\$$/
@@ -65,27 +70,36 @@ Sleep 5s
 Type "nvim +52 ~/.config/nvim/lua/config/options.lua"
 Enter
 Wait+Screen@20s /52 opt\.number = true/
+# The module opens its file tree on start and wraps long lines; neither is
+# what this beat is about (the gutter is), and the tree costs the left
+# quarter of every frame. Both settings are struck off camera so the visible
+# frame is the file at full width, one row per line.
+Hide
+Type ":NvimTreeClose | set nowrap"
+Enter
+Sleep 300ms
+Show
+Wait+Screen@10s /52 opt\.number = true/
 Sleep 5s
 Type ":qa"
 Enter
 Wait@15s /machine-b:~\$$/
-# Long enough to read the returned prompt before the scene cut below wipes it.
-Sleep 3s
 
 # Hidden scene cut: nvim leaves VHS's terminal unable to scroll the primary
 # screen (and can leave a stale scroll region) until a full reset — without
 # this, output later in the take silently stops at the bottom row and the
 # beat-8 log gate can never match. `printf '\033c'` is RIS: unlike `clear`,
-# it also drops any scroll region the nvim session left behind.
+# it also drops any scroll region the nvim session left behind. The next
+# beat's command is typed before the screen comes back, so no visible frame
+# is a bare prompt.
 Hide
 Type "printf '\033c'; clear"
 Enter
 Sleep 300ms
-Show
-Sleep 1s
-
 # Beat 4: leave B untouched and hop onto machine A.
 Type "exit"
+Show
+Sleep 1s
 Enter
 Wait@10s /host\$$/
 Sleep 1s
@@ -98,12 +112,17 @@ Sleep 2s
 # relative line numbers in the nvim module, right beneath the module's own
 # `opt.number = true` in options.lua (inserted there rather than appended:
 # the file ends in an early-returning notification block, so a tail append
-# can be dead code), and read the diff back before it ships.
+# can be dead code), and read the diff back before it ships. The path goes
+# into a variable first so the edit itself fits one terminal row.
 Type "cd .config/cfgd"
 Enter
 Wait@10s /cfgd\$$/
 Sleep 1s
-Type "sed -i '/^opt.number = true/a opt.relativenumber = true' modules/nvim/files/lua/config/options.lua"
+Type "f=modules/nvim/files/lua/config/options.lua"
+Enter
+Wait@10s /cfgd\$$/
+Sleep 500ms
+Type "sed -i '/^opt.number = true/a opt.relativenumber = true -- count from the cursor line' $f"
 Enter
 Wait@10s /cfgd\$$/
 Sleep 1s
@@ -141,27 +160,36 @@ Hide
 Type "printf '\033c'; clear"
 Enter
 Sleep 300ms
-Show
-Sleep 1s
 
 # Beat 8: watch the daemon's log live until the pull lands on camera — it
-# pulls, sees the module file change, and schedules a reconcile. The gate is
-# the pull line itself, so the take can never claim a sync it didn't see.
+# pulls, reconciles because the source changed, and reports that reconcile
+# complete. The gate is the pull line followed by the completion line, so
+# the take can never claim a sync it didn't see through to its outcome.
 Type "tail -f ~/daemon.log"
+Show
+Sleep 1s
 Enter
-Wait+Screen@45s /pulled new changes from remote/
+Wait+Screen@60s /(?s)sync: pulled.*reconcile: complete/
 Sleep 4s
 Ctrl+C
 Wait@10s /machine-b:~\$$/
 Sleep 1s
 
-# Beat 9: A's commit is at the tip of B's clone — nobody ran git here.
-Type "git -C ~/.config/cfgd --no-pager log -1 --format='%h %s'"
+# Beat 9: cfgd's own account of what just happened — the daemon still
+# running, no drift, and the source synced moments ago.
+Type "cfgd daemon status"
+Enter
+Wait@30s /machine-b:~\$$/
+Sleep 4s
+
+# Beat 10: A's commit is at the tip of B's clone — nobody ran git here.
+# `--abbrev=12` so git names the commit the way the daemon log above does.
+Type "git -C ~/.config/cfgd --no-pager log -1 --abbrev=12 --format='%h %s'"
 Enter
 Wait+Screen@10s /relative line numbers/
 Sleep 4s
 
-# Beat 10: AFTER — the same file at the same line, reopened: the inserted
+# Beat 11: AFTER — the same file at the same line, reopened: the inserted
 # option now sits directly beneath `opt.number = true`, and the gutter
 # counts relative to the cursor (the new line reads 1, not 53). The synced
 # module content is live through the deployed symlinks the moment the
@@ -169,19 +197,18 @@ Sleep 4s
 Type "nvim +52 ~/.config/nvim/lua/config/options.lua"
 Enter
 Wait+Screen@20s /1 opt\.relativenumber = true/
-# Whenever upstream plugins have moved past the module's lazy-lock.json,
-# lazy.nvim's update toast slides in ~2s after open and covers the tail of the
-# inserted line for its 5s nvim-notify timeout. Sleep past its whole lifecycle,
-# then re-gate on the full line: while the toast is up, `= true` is covered and
-# the regex cannot match, so the dwell that follows is provably clean.
-Sleep 9s
-Wait+Screen@15s /1 opt\.relativenumber = true/
-Sleep 5s
-Type ":qa"
+# Same off-camera tree close and nowrap as beat 3, so the before and after
+# frames differ in the gutter alone.
+Hide
+Type ":NvimTreeClose | set nowrap"
 Enter
-Wait@15s /machine-b:~\$$/
-Sleep 1s
+Sleep 300ms
+Show
+Wait+Screen@10s /1 opt\.relativenumber = true/
+Sleep 5s
 
-# Closing hold — breathing room before the loop snaps back to the opening
-# frame, matching the set's closing beat.
-Sleep 8s
+# The take ends inside nvim, on the payoff, so the loop rests on the gutter
+# rather than on scrollback. Closing hold — the last beat's own hold already
+# covers reading it; this is only the breath before the loop snaps back, the
+# same 2s in every tape.
+Sleep 2s

@@ -1,7 +1,7 @@
 # Whole take plays at 1:1 (make-gif-flat.sh, no ramp) — this tape's claim is
 # the backup/tamper/restore loop itself, so nothing in it is worth compressing
 # away.
-Output "demo/.out/backup.mp4"
+Output "demo/.out/backup/"
 
 Require docker
 
@@ -11,7 +11,7 @@ Set Shell "bash"
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
-Set Height 1000
+Set Height 960
 Set TypingSpeed 50ms
 Set Padding 20
 Set Framerate 50
@@ -102,13 +102,14 @@ Enter
 Wait@10s /cfgd\$$/
 Sleep 4s
 
-# Beat 6: close the loop on the ledger — the Snapshots column now counts
-# what the run wrote, and Last Run is stamped.
+# Beat 6: close the loop on the ledger — the Snapshots column counts the run's
+# snapshot plus the restore's safety copy, called out separately, and Last Run
+# stays anchored on the run's clock rather than the restore's.
 Type "cfgd backup list"
 Enter
 Wait@10s /cfgd\$$/
 Sleep 4s
 
-# Closing hold — breathing room before the loop snaps back to the opening
-# frame, matching drift.tape/author.tape's closing beat.
-Sleep 8s
+# Closing hold — the last beat's own hold already covers reading it; this is
+# only the breath before the loop snaps back, the same 2s in every tape.
+Sleep 2s

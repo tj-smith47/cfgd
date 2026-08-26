@@ -4,7 +4,7 @@
 # an upstream change, review it, accept it, apply it), then the trust wall
 # (the same source demanding signed commits, refused unsigned and accepted
 # signed).
-Output "demo/.out/source-trust.mp4"
+Output "demo/.out/source-trust/"
 
 Require docker
 
@@ -15,7 +15,10 @@ Set Shell "bash"
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
-Set Height 1000
+# Sized to the tallest scene: beats 11–13 accumulate without a clear (the
+# healed sync, the description, the closing listing are one arc), and at
+# 1000 the sync's own heading had scrolled off before the payoff frame.
+Set Height 1200
 Set TypingSpeed 50ms
 Set Padding 20
 Set Framerate 50
@@ -67,7 +70,7 @@ Wait@10m /cfgd\$$/
 # (`spec.daemon.reconcile.autoApply` — docs/sources.md "Auto-apply policy"),
 # NOT `source add --auto-apply`, which sets the per-source sync flag the
 # daemon reads when deciding whether to apply a refreshed source. With the
-# policy on, every incoming source item is classified (default tier: Notify)
+# policy on, every incoming source item is classified (default tier: Recommended)
 # and queues as a pending decision that `cfgd plan`/`cfgd apply` withhold
 # until answered. Set hidden: policy configuration is machine setup, not this
 # tape's claim.
@@ -82,7 +85,7 @@ Wait@10s /cfgd\$$/
 # Its first commit is deliberately left UNSIGNED — act two's refusal beat
 # needs a real unsigned HEAD to reject, not a staged error. Setup only,
 # never shown.
-Type "mkdir -p ~/team-config/profiles && printf '%s\n' 'apiVersion: cfgd.io/v1alpha1' 'kind: ConfigSource' 'metadata:' '  name: team' '  version: 1.0.0' '  description: Team base config' 'spec:' '  provides:' '    profiles:' '      - team' > ~/team-config/cfgd-source.yaml && printf '%s\n' 'apiVersion: cfgd.io/v1alpha1' 'kind: Profile' 'metadata:' '  name: team' 'spec:' '  modules: []' '  env:' '    - name: EDITOR' '      value: vim' > ~/team-config/profiles/team.yaml && (cd ~/team-config && git init -q && git config user.email team@jarvispro.io && git config user.name 'Team Config' && git add -A && git commit -q -m 'initial team config')"
+Type "mkdir -p ~/team-config/profiles && printf '%s\n' 'apiVersion: cfgd.io/v1alpha1' 'kind: ConfigSource' 'metadata:' '  name: team' '  version: 1.0.0' '  description: Team base config' 'spec:' '  provides:' '    profiles:' '      - team' > ~/team-config/cfgd-source.yaml && printf '%s\n' 'apiVersion: cfgd.io/v1alpha1' 'kind: Profile' 'metadata:' '  name: team' 'spec:' '  modules: []' '  env:' '    - name: PAGER' '      value: less' > ~/team-config/profiles/team.yaml && (cd ~/team-config && git init -q && git config user.email team@jarvispro.io && git config user.name 'Team Config' && git add -A && git commit -q -m 'initial team config')"
 Enter
 Wait@30s /cfgd\$$/
 
@@ -124,11 +127,12 @@ Wait@60s /cfgd\$$/
 Sleep 3s
 
 # Beat 2: subscribe, on camera. `source add` renders the manifest before it
-# asks — the profile the source provides and what that profile declares
-# (EDITOR=vim), and the policy it comes under — so what is being subscribed
-# to is on screen before anything is written. The machine's reconcile policy
+# writes — the profile the source provides and what that profile declares
+# (PAGER=less), and the policy it comes under — so what is being subscribed
+# to is on screen before anything is written; `--yes` skips only the
+# confirmation, never the manifest. The machine's reconcile policy
 # (set in the hidden setup) classifies everything this source delivers at
-# the default Notify tier, so incoming items queue as pending decisions
+# the default Recommended tier, so incoming items queue as pending decisions
 # instead of being silently absorbed.
 Type "cfgd source add file://$HOME/team-config --name team --branch master --profile team --yes"
 Enter
@@ -152,7 +156,7 @@ Wait@60s /cfgd\$$/
 Sleep 5s
 
 # Beat 4: the decision, with its content. Each row names the resource and
-# what accepting it sets (`EDITOR=vim`), under the source that delivers it.
+# what accepting it sets (`PAGER=less`), under the source that delivers it.
 Type "cfgd decide"
 Enter
 Wait@10s /cfgd\$$/
@@ -174,7 +178,7 @@ Sleep 5s
 # profile. `-c commit.gpgsign=false` because the signing demand is act two's
 # story; HEAD must still be unsigned when it flips on.
 Hide
-Type "printf '%s\n' 'apiVersion: cfgd.io/v1alpha1' 'kind: Profile' 'metadata:' '  name: team' 'spec:' '  modules: []' '  env:' '    - name: EDITOR' '      value: vim' '    - name: PAGER' '      value: less' > ~/team-config/profiles/team.yaml && (cd ~/team-config && git -c commit.gpgsign=false commit -qam 'team: default PAGER')"
+Type "printf '%s\n' 'apiVersion: cfgd.io/v1alpha1' 'kind: Profile' 'metadata:' '  name: team' 'spec:' '  modules: []' '  env:' '    - name: PAGER' '      value: less' '    - name: GOPRIVATE' '      value: github.com/jarvispro/*' > ~/team-config/profiles/team.yaml && (cd ~/team-config && git -c commit.gpgsign=false commit -qam 'team: private go modules')"
 Enter
 Wait@10s /cfgd\$$/
 Type "clear"
@@ -190,8 +194,8 @@ Enter
 Wait@30s /cfgd\$$/
 Sleep 4s
 
-# Beat 7: what arrived is a new decision, not a silent change: only PAGER
-# is pending now, because EDITOR was answered in beat 5. Accept and apply
+# Beat 7: what arrived is a new decision, not a silent change: only GOPRIVATE
+# is pending now, because PAGER was answered in beat 5. Accept and apply
 # close the loop the same way.
 Type "cfgd decide"
 Enter
@@ -263,7 +267,7 @@ Wait@10s /cfgd\$$/
 Sleep 4s
 
 # Beat 12: the subscription, described by the tool: its state, the policy it
-# now runs under (`Require Signed Commits  true`), and the profile it
+# now runs under (`Require Signed Commits  yes`), and the profile it
 # provides with what that profile declares — the same render beat 2 showed
 # before subscribing, now from the subscriber's side.
 Type "cfgd source show team"
@@ -280,6 +284,6 @@ Enter
 Wait@10s /cfgd\$$/
 Sleep 4s
 
-# Closing hold — breathing room before the loop snaps back to the opening
-# frame, matching drift.tape/author.tape/backup.tape's closing beat.
-Sleep 8s
+# Closing hold — the last beat's own hold already covers reading it; this is
+# only the breath before the loop snaps back, the same 2s in every tape.
+Sleep 2s

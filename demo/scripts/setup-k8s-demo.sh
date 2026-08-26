@@ -279,6 +279,8 @@ helm_install_attempt() {
         --set "operator.image.repository=cfgd-operator" \
         --set "operator.image.tag=${IMAGE_TAG}" \
         --set operator.image.pullPolicy=Never \
+        --set "operator.extraEnv[0].name=OCI_INSECURE_REGISTRIES" \
+        --set "operator.extraEnv[0].value=${REGISTRY_NAME}:5000" \
         --set csiDriver.enabled=true \
         --set "csiDriver.image.repository=cfgd-csi" \
         --set "csiDriver.image.tag=${IMAGE_TAG}" \
@@ -357,7 +359,7 @@ spec:
 EOF
 }
 
-# The tape types `cfgd module push ./tools`, `kubectl apply -f module-crd.yaml` and
+# The tape types `cfgd module push ./tools`, `kubectl apply -f module-cr.yaml` and
 # `kubectl apply -f pod.yaml` against these. They are written here rather than
 # in the tape so the recording opens on a ready fixture instead of on a wall of
 # heredocs.
@@ -400,13 +402,13 @@ EOF
     # `ociArtifact` names the registry the way the CLUSTER reaches it. The host
     # pushes to the same registry through its published port
     # (localhost:5001), so the two spellings address one registry. The CRD
-    # carries the public half of the demo key: that is what the operator's
-    # verification check reads, and what flips `kubectl cfgd status` from
-    # `unverified` to `verified`.
+    # carries the public half of the demo key: that is the key the operator
+    # runs cosign against, and what flips `kubectl cfgd status` from
+    # `unsigned` to `verified`.
     # Not `module.yaml`: the module directory's own manifest is also
     # `kind: Module`, and two files of one basename and one kind read as one
     # file on camera.
-    cat > "$fixture/module-crd.yaml" <<EOF
+    cat > "$fixture/module-cr.yaml" <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:

@@ -1,7 +1,7 @@
 # Whole take plays at 1:1 (make-gif-flat.sh, no ramp) — this tape's claim is a
 # single chain (module → registry → cluster → pod → update → convergence), and
 # every link in it has to be watchable or the chain is not what was shown.
-Output "demo/.out/k8s.mp4"
+Output "demo/.out/k8s/"
 
 # This is the only tape that records on the HOST rather than inside the demo
 # container: the beats are kubectl against a live cluster, and the kind
@@ -59,7 +59,7 @@ Sleep 1s
 # at head's default 10 lines, and the `==>` headers name each one — so the
 # artifact the next beat pushes, the CRD after it and the file that finally
 # runs inside the pod are all visibly the same two files. The cluster object
-# is `module-crd.yaml`, a different basename on purpose: both files are
+# is `module-cr.yaml`, a different basename on purpose: both files are
 # `kind: Module`, and one name for two schemas reads as one file.
 Type "head tools/module.yaml tools/bin/hello.sh"
 Enter
@@ -81,7 +81,7 @@ Sleep 4s
 # and carries the artifact reference under the name the CLUSTER reaches the
 # registry by, which is why the pushed reference and the one printed here name
 # the same registry through two different addresses.
-Type "kubectl apply -f module-crd.yaml"
+Type "kubectl apply -f module-cr.yaml"
 Enter
 Wait@60s /demo\$$/
 Sleep 2s
@@ -119,7 +119,7 @@ Sleep 4s
 # Beat 5: the payoff, and the line the whole first act exists for — held
 # longer than the plumbing around it. The module's file is inside the pod, at
 # /cfgd-modules/<module>, and it runs.
-Type "kubectl exec demo-pod -- sh /cfgd-modules/tools/bin/hello.sh"
+Type "kubectl exec demo-pod -- /cfgd-modules/tools/bin/hello.sh"
 Enter
 Wait@60s /demo\$$/
 Sleep 6s
@@ -149,18 +149,22 @@ Sleep 4s
 # next admission asks for the new version. The `get` waits for the operator
 # to have looked at the new spec first: status lags spec by one reconcile,
 # and a `VERIFIED` read before that is v1's verdict beside v2's reference.
-Type "sed -i 's/:v1/:v2/' module-crd.yaml pod.yaml && kubectl apply -f module-crd.yaml"
+Type "sed -i 's/:v1/:v2/' module-cr.yaml pod.yaml && kubectl apply -f module-cr.yaml"
 Enter
 Wait@60s /demo\$$/
 Sleep 1s
-Type "kubectl wait --for=jsonpath='{.status.observedGeneration}'=2 module/tools --timeout=120s && kubectl get modules"
+Type "kubectl wait --for=jsonpath='{.status.observedGeneration}'=2 module/tools --timeout=120s"
 Enter
 Wait@3m /demo\$$/
+Sleep 1s
+Type "kubectl get modules"
+Enter
+Wait@30s /demo\$$/
 Sleep 4s
 
 # Beat 9: the drift, on camera. The running pod was admitted against v1 and
 # still serves it — desired state says Taylor, the machine still says TJ.
-Type "kubectl exec demo-pod -- sh /cfgd-modules/tools/bin/hello.sh"
+Type "kubectl exec demo-pod -- /cfgd-modules/tools/bin/hello.sh"
 Enter
 Wait@60s /demo\$$/
 Sleep 6s
@@ -177,7 +181,7 @@ Type "kubectl replace --force -f pod.yaml && kubectl wait --for=condition=Ready 
 Enter
 Wait@5m /demo\$$/
 Sleep 3s
-Type "kubectl exec demo-pod -- sh /cfgd-modules/tools/bin/hello.sh"
+Type "kubectl exec demo-pod -- /cfgd-modules/tools/bin/hello.sh"
 Enter
 Wait@60s /demo\$$/
 Sleep 6s
@@ -193,6 +197,6 @@ Enter
 Wait@60s /demo\$$/
 Sleep 4s
 
-# Closing hold — breathing room before the loop snaps back to the opening
-# frame, matching every other per-surface tape's closing beat.
-Sleep 8s
+# Closing hold — the last beat's own hold already covers reading it; this is
+# only the breath before the loop snaps back, the same 2s in every tape.
+Sleep 2s
