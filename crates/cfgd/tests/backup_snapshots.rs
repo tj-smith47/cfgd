@@ -88,8 +88,11 @@ fn backup_list_populated_human() {
     cmd_backup_list(&cli, &printer, None, false).unwrap();
     drop(printer);
 
-    // Next Run is a real future clock time.
-    let normalized = normalize_iso8601(&cfgd_core::output::strip_ansi(&cap.human()));
+    // Next Run counts down to a real future clock time, so how far away it
+    // reads depends on the hour the suite runs.
+    let normalized = normalize_countdown(&normalize_iso8601(&cfgd_core::output::strip_ansi(
+        &cap.human(),
+    )));
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "backup/list_populated.txt",
@@ -473,7 +476,7 @@ fn build_backup_list_doc_json_matches_serde_roundtrip() {
         safety_snapshots: Some(1),
     }];
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_backup_list_doc(&entries));
+    printer.emit(build_backup_list_doc(&entries, "2026-01-01T02:00:00Z"));
     drop(printer);
 
     let expected = serde_json::to_value(&entries).unwrap();
@@ -719,6 +722,37 @@ fn normalize_iso8601(raw: &str) -> String {
         }
     }
     out
+}
+
+/// Replace every `cfgd_core::humanize_until` countdown (`in 4h`, `due now`)
+/// with the same `<NEXT_RUN>` placeholder [`normalize_iso8601`] uses for the
+/// instant it renders — a daily cron's distance from the suite's start hour is
+/// not a golden's to pin. The backward direction is deliberately NOT folded: a
+/// run the fixture just performed reads `just now` on any host.
+///
+/// Line ends are trimmed as part of the same pass, because the placeholder is
+/// wider than every countdown it stands in for: the table pads a cell to its
+/// column, so `in 4h` and `in 23h` leave different amounts of trailing space
+/// behind one identical placeholder.
+fn normalize_countdown(raw: &str) -> String {
+    let mut out = raw.replace("due now", "<NEXT_RUN>");
+    let mut from = 0;
+    while let Some(offset) = out[from..].find("in ") {
+        let start = from + offset;
+        let rest = &out[start + 3..];
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        if digits == 0 || !matches!(rest[digits..].chars().next(), Some('m' | 'h' | 'd')) {
+            from = start + 3;
+            continue;
+        }
+        out.replace_range(start..start + 3 + digits + 1, "<NEXT_RUN>");
+        from = start + "<NEXT_RUN>".len();
+    }
+    out.lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + if out.ends_with('\n') { "\n" } else { "" }
 }
 
 /// True when `window` opens on an ISO 8601 UTC stamp (`2026-08-02T03:00:00Z`,
@@ -1075,8 +1109,12 @@ fn backup_list_after_a_restore_counts_the_safety_copy_without_calling_it_the_las
         "the count must say how many are safety copies: {row}"
     );
     assert!(
-        row.contains(&last_run_at),
-        "Last Run must still read the run's clock: {row}"
+        !row.contains(&last_run_at),
+        "Last Run reads as an age, never the raw instant the payload carries: {row}"
+    );
+    assert!(
+        row.contains("Success") && row.contains("just now"),
+        "the row carries the run's verdict and how long ago it ran: {row}"
     );
 }
 
@@ -1113,8 +1151,9 @@ fn backup_list_snapshots_names_the_safety_copy_a_restore_took() {
     drop(printer);
     let human = cfgd_core::output::strip_ansi(&cap.human());
     assert!(
-        human.contains("Kind") && human.contains("safety"),
-        "the table must say which snapshot a restore took: {human}"
+        human.contains("Kind") && human.contains("Safety"),
+        "the table must say which snapshot a restore took, in the display word \
+         rather than the stored token: {human}"
     );
 }
 
@@ -1208,7 +1247,10 @@ fn backup_restore_human() {
         &cfgd_core::output::strip_ansi(&cap.human()),
         &[(&source, "<SOURCE>"), (state_dir.path(), "<STATE_DIR>")],
     );
-    let normalized = normalize_backup_timestamp(&normalized);
+    // The restore now closes with the run rollup `backup run` closes with, and
+    // that line wears the run's elapsed time.
+    let normalized =
+        cfgd_core::normalize_snapshot_durations(&normalize_backup_timestamp(&normalized));
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "backup/restore.txt", &normalized,);
 }
 

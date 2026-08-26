@@ -81,7 +81,7 @@ pub fn cmd_source_replace(
 
     printer.emit(
         Doc::new()
-            .status(Role::Ok, format!("replaced with {}", new_url))
+            .status(Role::Ok, format!("Replaced with {}", new_url))
             .with_data(serde_json::json!({
                 "oldName": old_name,
                 "newUrl": new_url,

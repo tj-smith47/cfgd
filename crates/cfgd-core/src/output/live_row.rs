@@ -161,9 +161,11 @@ impl<'p> LiveRow<'p> {
         OutputWindow::borrowed(spinner, subject)
     }
 
-    /// Draw this row as one action line of the phase tree — the subject
-    /// painted `theme.primary`, exactly as
-    /// [`super::SectionGuard::action_status`] paints it.
+    /// Draw this row as one action line of the phase tree — subject and detail
+    /// emphasised through `renderer::action_subject_style` /
+    /// `renderer::action_detail_is_muted`, exactly as
+    /// [`super::SectionGuard::action_status`] paints them, so a row cannot
+    /// settle in one emphasis and commit in another.
     pub(crate) fn set_action_status(&self, status: &RowStatus<'_>, column: usize) {
         if self.bar.is_hidden() {
             return;
@@ -177,9 +179,12 @@ impl<'p> LiveRow<'p> {
                 detail: status.detail,
                 duration: status.duration,
                 target: None,
-                subject_style: theme.primary.clone(),
-                detail_style: (status.detail_muted && status.detail.is_some())
-                    .then(|| theme.muted.clone()),
+                subject_style: super::renderer::action_subject_style(theme, status.role),
+                detail_style: (super::renderer::action_detail_is_muted(
+                    status.role,
+                    status.detail_muted,
+                ) && status.detail.is_some())
+                .then(|| theme.muted.clone()),
             },
             column,
         );

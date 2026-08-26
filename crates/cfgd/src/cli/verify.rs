@@ -151,6 +151,7 @@ pub fn cmd_verify(
         &resolved.merged.aliases,
         &resolved.merged.entry_owners,
         &resolved_modules,
+        &reconciler::recorded_manager_path_dirs(state, &resolved.merged, &resolved_modules),
     );
     for r in &mut results {
         if let Some((expected, actual)) =
@@ -419,10 +420,15 @@ mod tests {
             o.claim("profile:default", &declared_env, &[]);
             o
         };
-        let declared_line =
-            cfgd_core::reconciler::MergedEnvItems::new(&declared_env, &[], &declared_owners, &[])
-                .declared_line("env-var", "EDITOR")
-                .expect("EDITOR renders a declared line");
+        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
+            &declared_env,
+            &[],
+            &declared_owners,
+            &[],
+            &[],
+        )
+        .declared_line("env-var", "EDITOR")
+        .expect("EDITOR renders a declared line");
 
         let state_dir = tmp.path().join("state");
         let mut cli = make_cli(config_path);

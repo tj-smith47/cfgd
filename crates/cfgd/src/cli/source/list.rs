@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 use cfgd_core::state::source_status_display;
-use cfgd_core::{humanize_age_since, yes_no};
+use cfgd_core::yes_no;
 
 /// The section every surface calls a config source's collection — one noun,
 /// singular in `source:<name>` and plural here. `Config Sources` spelled the
@@ -57,19 +57,12 @@ pub fn build_source_list_doc(entries: &[SourceListEntry], wide: bool, now: &str)
 }
 
 /// The ONE human rendering of a config source's last fetch, shared by every
-/// surface that shows one (`source list`, `source show`, `status`).
-///
-/// An ISO 8601 instant answers "when exactly", which is a question a machine
-/// consumer asks — it stays in the `-o json` payload. A person scanning a
-/// listing is asking "how stale is this", so the column carries the age.
-/// A stamp too malformed or too far in the future to subtract falls back to
-/// itself rather than to `never`: it IS a fetch record, just not one whose age
-/// can be stated.
+/// surface that shows one (`source list`, `source show`, `status`) — the
+/// workspace's [`cfgd_core::humanize_age_cell`] under the name this domain
+/// calls it, so `Last Sync` and `backup list`'s `Last Run` cannot disagree
+/// about what a listed instant reads as.
 pub fn last_sync_display(last_fetched: Option<&str>, now: &str) -> String {
-    match last_fetched {
-        Some(ts) => humanize_age_since(ts, now).unwrap_or_else(|| ts.to_string()),
-        None => "never".to_string(),
-    }
+    cfgd_core::humanize_age_cell(last_fetched, now)
 }
 
 /// Doc emitted when no config file is present yet.

@@ -5233,7 +5233,7 @@ fn cmd_apply_dry_run_with_phase_filter() {
         "a filter matching no planned actions must still say so, got: {output}"
     );
     assert!(
-        output.contains("actions exist in phase: Prerequisites"),
+        output.contains("Actions exist in phase: Prerequisites"),
         "the filter warning must point at the phases that do have work, got: {output}"
     );
 }
@@ -13338,7 +13338,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             "expected warning, got:\n{out}"
         );
         assert!(
-            out.contains("actions exist in phase: Files"),
+            out.contains("Actions exist in phase: Files"),
             "expected the phases-with-work hint, got:\n{out}"
         );
     }
@@ -13462,56 +13462,57 @@ fn a_pending_decision_denies_the_up_to_date_verdict_on_every_verdict_surface() {
 /// comparing two transcripts is not asked to decide whether `✓ subscribed`,
 /// `✓ ACCEPTED 1 item` and `✓ Synced` are three different kinds of outcome.
 ///
+/// A hint obeys the same rule and for the same reason: a lowercase hint sitting
+/// under a capitalized result line reads as a wrapped fragment of the line above
+/// rather than as its own statement, which is how `previous contents saved to …`
+/// shipped directly beneath `✓ backup:notes restored …`. Hints are swept in both
+/// crates, `cfgd-core`'s daemon and service surfaces printing into the same
+/// report the binary's do.
+///
 /// A row that NAMES a thing rather than reporting an outcome (`doctor`'s tool
 /// inventory, a `.sops.yaml` row) keeps the name's own spelling and says so
 /// with a `// name-row-ok:` marker on the line or the line above — the same
 /// hatch shape `// native-ok:` and `// spawn-blocking-ok:` use.
 #[test]
 fn every_result_line_is_sentence_case() {
-    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let cli = cli_production_sources();
+    let both: Vec<(std::path::PathBuf, String)> = cli
+        .iter()
+        .cloned()
+        .chain(core_production_sources())
+        .collect();
     let mut offenders = Vec::new();
-    let mut files = walk_rust_files(&cli_dir);
-    files.sort();
-    for path in files {
-        if path.file_name().is_some_and(|n| n == "tests.rs") {
-            continue;
+    // Matched across the whole body, not per line: a marker and the literal it
+    // introduces sit on separate lines in every wrapped call, and a
+    // line-at-a-time scan sees none of them.
+    let mut sweep = |sources: &[(std::path::PathBuf, String)], marker: &str| {
+        for (path, production) in sources {
+            let lines: Vec<&str> = production.lines().collect();
+            for (at, _) in production.match_indices(marker) {
+                let rest = production[at + marker.len()..].trim_start();
+                let rest = rest.strip_prefix("format!(").unwrap_or(rest).trim_start();
+                let Some(literal) = rest.strip_prefix('"').and_then(|r| r.split('"').next()) else {
+                    continue;
+                };
+                if !literal.chars().next().is_some_and(char::is_lowercase) {
+                    continue;
+                }
+                let n = production[..at].matches('\n').count();
+                if lines[n].trim_start().starts_with("//")
+                    || label_hatched(&lines, n, "// name-row-ok:")
+                {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {literal:?}", path.display(), n + 1));
+            }
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = body
-            .split_once("\n#[cfg(test)]")
-            .map(|(head, _)| head)
-            .unwrap_or(&body);
-        let lines: Vec<&str> = production.lines().collect();
-        // Matched across the whole body, not per line: `Role::Ok,` and its
-        // subject sit on separate lines in every wrapped call, and a
-        // line-at-a-time scan sees none of them.
-        for (at, _) in production.match_indices("Role::Ok,") {
-            let rest = production[at + "Role::Ok,".len()..].trim_start();
-            let Some(literal) = rest.strip_prefix('"').and_then(|r| r.split('"').next()) else {
-                continue;
-            };
-            if !literal.chars().next().is_some_and(char::is_lowercase) {
-                continue;
-            }
-            let n = production[..at].matches('\n').count();
-            if lines[n].trim_start().starts_with("//") {
-                continue;
-            }
-            let hatched = lines[n].contains("// name-row-ok:")
-                || n.checked_sub(1)
-                    .is_some_and(|p| lines[p].contains("// name-row-ok:"));
-            if hatched {
-                continue;
-            }
-            offenders.push(format!("{}:{}: {literal:?}", path.display(), n + 1));
-        }
-    }
+    };
+    sweep(&cli, "Role::Ok,");
+    sweep(&both, ".hint(");
     assert!(
         offenders.is_empty(),
-        "a result line opens in sentence case (a row that names a thing takes a \
-         `// name-row-ok:` marker):\n{}",
+        "a result line and a hint open in sentence case (a row that names a \
+         thing takes a `// name-row-ok:` marker):\n{}",
         offenders.join("\n")
     );
 }
@@ -13555,7 +13556,63 @@ fn no_command_words_the_up_to_date_verdict_for_itself() {
     );
 }
 
-/// Every production `.rs` under `src/cli/`, with its `#[cfg(test)]` tail and
+/// A file's production text: every `#[cfg(test)]` item blanked, every other
+/// line left where it is.
+///
+/// Blanking rather than deleting keeps line N of the result line N of the file,
+/// so an offender's reported position is the position a reader opens.
+///
+/// Truncating at the first `#[cfg(test)]` — which is what every sweep below used
+/// to do — blanked whole files instead of test items: a `#[cfg(test)] mod
+/// tests;` DECLARATION near the top left `cli/mod.rs` contributing 0% of itself,
+/// `explain/mod.rs` 5% and `reconciler/apply.rs` 3%, so the sweeps ran over a
+/// tenth of the population they claimed and the `cli/mod.rs` witness below
+/// passed on an empty string.
+fn production_body(body: &str) -> String {
+    let lines: Vec<&str> = body.lines().collect();
+    let mut keep = vec![true; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        if !(trimmed.starts_with("#[cfg(test)]") || trimmed.starts_with("#[cfg(all(test")) {
+            i += 1;
+            continue;
+        }
+        // rustfmt puts the item's closing brace at the attribute's own indent,
+        // which reads an item's extent without counting braces inside the string
+        // literals a test body is full of.
+        let closer = format!("{}}}", &lines[i][..lines[i].len() - trimmed.len()]);
+        let mut end = i;
+        while end < lines.len() && lines[end].trim_start().starts_with('#') {
+            end += 1;
+        }
+        let mut opened = false;
+        while end < lines.len() {
+            opened |= lines[end].contains('{');
+            let last = if opened {
+                lines[end] == closer
+            } else {
+                lines[end].trim_end().ends_with(';')
+            };
+            end += 1;
+            if last {
+                break;
+            }
+        }
+        for slot in keep.iter_mut().take(end).skip(i) {
+            *slot = false;
+        }
+        i = end;
+    }
+    lines
+        .iter()
+        .zip(keep)
+        .map(|(line, keep)| if keep { *line } else { "" })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Every production `.rs` under `src/cli/`, with its `#[cfg(test)]` items and
 /// `tests.rs` itself removed — the population every literal sweep below walks.
 fn cli_production_sources() -> Vec<(std::path::PathBuf, String)> {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
@@ -13564,13 +13621,10 @@ fn cli_production_sources() -> Vec<(std::path::PathBuf, String)> {
     files
         .into_iter()
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
         .filter_map(|path| {
             let body = std::fs::read_to_string(&path).ok()?;
-            let production = body
-                .split_once("\n#[cfg(test)]")
-                .map(|(head, _)| head.to_string())
-                .unwrap_or(body);
-            Some((path, production))
+            Some((path, production_body(&body)))
         })
         .collect()
 }
@@ -13690,17 +13744,31 @@ fn bracketed_span(body: &str, open: usize) -> (usize, &str) {
 /// path, a tool's own name — keeps that thing's spelling and says so with a
 /// `// name-row-ok:` marker, the same hatch `every_result_line_is_sentence_case`
 /// takes.
-#[test]
-fn every_rendered_label_is_title_case() {
-    let mut offenders = Vec::new();
-    let mut seen: Vec<String> = Vec::new();
-    for (path, body) in cli_production_sources() {
-        let lines: Vec<&str> = body.lines().collect();
-        let mut labels: Vec<(usize, String)> = Vec::new();
-        // The single-key composers name their key first; a `.kv_block` /
-        // `.kv_rows` / `Table::new` argument holds a list of them.
-        for (at, _) in body.match_indices(".kv(") {
-            let rest = &body[at + ".kv(".len()..];
+/// Every label in the left column of a rendered fact, as `(byte offset,
+/// literal)` pairs — the ONE gather two pins walk, so a composer added to one
+/// of them cannot be invisible to the other.
+fn rendered_labels(body: &str) -> Vec<(usize, String)> {
+    let mut labels: Vec<(usize, String)> = Vec::new();
+    // The single-key composers name their key first; a `.kv_block` /
+    // `.kv_rows` / `Table::new` argument holds a list of them.
+    for (at, _) in body.match_indices(".kv(") {
+        let rest = &body[at + ".kv(".len()..];
+        if let Some(lit) = rest
+            .trim_start()
+            .strip_prefix('"')
+            .and_then(|r| r.split('"').next())
+        {
+            labels.push((at, lit.to_string()));
+        }
+    }
+    for opener in [
+        "KvPair::new(",
+        "KvPair::annotated(",
+        "KvPair::nested(",
+        "KvPair::role_valued(",
+    ] {
+        for (at, _) in body.match_indices(opener) {
+            let rest = &body[at + opener.len()..];
             if let Some(lit) = rest
                 .trim_start()
                 .strip_prefix('"')
@@ -13709,44 +13777,53 @@ fn every_rendered_label_is_title_case() {
                 labels.push((at, lit.to_string()));
             }
         }
-        for opener in ["KvPair::new(", "KvPair::annotated(", "KvPair::nested("] {
-            for (at, _) in body.match_indices(opener) {
-                let rest = &body[at + opener.len()..];
-                if let Some(lit) = rest
+    }
+    for opener in [".push((", "kv_block(", "kv_rows("] {
+        for (at, _) in body.match_indices(opener) {
+            let open = at + opener.len() - 1;
+            let (_, span) = bracketed_span(body, open);
+            // Only the first literal of each tuple is a label; the value
+            // beside it is prose and keeps its own case.
+            for (rel, _) in span.match_indices('(').chain(span.match_indices('[')) {
+                let after = &span[rel + 1..];
+                if let Some(lit) = after
                     .trim_start()
                     .strip_prefix('"')
                     .and_then(|r| r.split('"').next())
                 {
-                    labels.push((at, lit.to_string()));
+                    labels.push((open + rel, lit.to_string()));
                 }
             }
         }
-        for opener in [".push((", "kv_block(", "kv_rows(", "Table::new("] {
-            for (at, _) in body.match_indices(opener) {
-                let open = at + opener.len() - 1;
-                let (_, span) = bracketed_span(&body, open);
-                // Only the first literal of each tuple is a label; the value
-                // beside it is prose and keeps its own case.
-                for (rel, _) in span.match_indices('(').chain(span.match_indices('[')) {
-                    let after = &span[rel + 1..];
-                    if let Some(lit) = after
-                        .trim_start()
-                        .strip_prefix('"')
-                        .and_then(|r| r.split('"').next())
-                    {
-                        labels.push((open + rel, lit.to_string()));
-                    }
-                }
-                if opener == "Table::new(" {
-                    for (rel, _) in span.match_indices(", \"") {
-                        if let Some(lit) = span[rel + 3..].split('"').next() {
-                            labels.push((open + rel, lit.to_string()));
-                        }
-                    }
-                }
-            }
+    }
+    // Every element of a table's header array is a label, and a wide table
+    // writes them one per line — so the gather is over the literals in the
+    // span, never over `, "` pairs, which stop matching at the first newline.
+    for (at, _) in body.match_indices("Table::new(") {
+        let open = at + "Table::new(".len() - 1;
+        let (_, span) = bracketed_span(body, open);
+        let mut rest = span;
+        let mut base = open;
+        while let Some(q) = rest.find('"') {
+            let Some(lit) = rest[q + 1..].split('"').next() else {
+                break;
+            };
+            labels.push((base + q, lit.to_string()));
+            let consumed = q + 1 + lit.len() + 1;
+            base += consumed;
+            rest = &rest[consumed..];
         }
-        for (at, label) in labels {
+    }
+    labels
+}
+
+#[test]
+fn every_rendered_label_is_title_case() {
+    let mut offenders = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (at, label) in rendered_labels(&body) {
             if label.is_empty() {
                 continue;
             }
@@ -13786,11 +13863,270 @@ fn every_rendered_label_is_title_case() {
     );
 }
 
+/// The label of a rendered fact whose value is a moment in time.
+///
+/// Judged on the LABEL, not on the value's type, because the label is what the
+/// walk below can see and what a reader is promised: `Last Run`, `Next Run`,
+/// `Created`, `Age`, `Timestamp` and every `…At` name a when.
+fn names_a_moment(label: &str) -> bool {
+    matches!(label, "Age" | "Created" | "Time" | "Timestamp")
+        || label.starts_with("Last ")
+        || label.starts_with("Next ")
+        || label.ends_with("At")
+}
+
+/// The helpers a time cell is allowed to be built through — the two directions
+/// of `cfgd-core`'s one age renderer, plus the domain names layered over them.
+const RELATIVE_TIME_HELPERS: &[&str] = &[
+    "humanize_age_cell",
+    "humanize_until_cell",
+    "humanize_age_since",
+    "humanize_until",
+    "last_sync_display",
+    "scan_note",
+];
+
+/// The top-level function containing byte offset `at`, as text.
+///
+/// The unit a time cell is judged in: a cell can be built into a `Vec<String>`
+/// rows away from the `Table::new` naming its column, and an index-matched
+/// walk would simply fail to find it — reporting nothing rather than reporting
+/// a raw instant.
+fn enclosing_fn_body(lines: &[&str], line: usize) -> String {
+    let is_fn_start = |l: &str| {
+        l.starts_with("fn ")
+            || l.starts_with("pub fn ")
+            || (l.starts_with("pub(") && l.contains(" fn "))
+    };
+    let start = (0..=line)
+        .rev()
+        .find(|&i| is_fn_start(lines[i]))
+        .unwrap_or(0);
+    let end = ((start + 1)..lines.len())
+        .find(|&i| lines[i] == "}")
+        .map_or(lines.len(), |i| i + 1);
+    lines[start..end].join("\n")
+}
+
+/// A rendered cell whose column names a moment reads as a RELATIVE time, not as
+/// the stored instant.
+///
+/// `cfgd backup list` printed `2026-08-13T06:13:06Z` under `Last Run` and again
+/// under `Next Run`, and `cfgd backup list --snapshots` printed one under
+/// `Created` beside a `Snapshot` column whose value already IS that stamp — so
+/// the one column a reader scans to learn how stale something is answered a
+/// question (`when exactly`) that the `-o json` payload beside it exists for.
+/// Every human surface now goes through [`cfgd_core::humanize_age_cell`] or its
+/// forward twin, and every payload keeps the ISO 8601 instant.
+///
+/// Judged per FUNCTION rather than per cell on purpose: see
+/// [`enclosing_fn_body`]. A column that genuinely must show the instant — a
+/// forensic dump, a value that is not a clock reading — says so with an
+/// `// instant-ok: <why>` marker, the same hatch shape
+/// `every_rendered_label_is_title_case` takes.
+#[test]
+fn every_time_column_renders_a_relative_time() {
+    let mut offenders = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (at, label) in rendered_labels(&body) {
+            if !names_a_moment(&label) {
+                continue;
+            }
+            seen.push(label.clone());
+            let n = body[..at].matches('\n').count();
+            let scope = enclosing_fn_body(&lines, n);
+            if RELATIVE_TIME_HELPERS.iter().any(|h| scope.contains(h))
+                || label_hatched(&lines, n, "// instant-ok:")
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {label:?}", path.display(), n + 1));
+        }
+    }
+    // One witness per surface family the rule governs — a table column, a kv
+    // row, and the forward direction — so a gather that quietly stopped
+    // matching cannot pass by finding nothing.
+    for witness in ["Last Run", "Next Run", "Created", "Last Applied", "Age"] {
+        assert!(
+            seen.iter().any(|l| l == witness),
+            "the walk no longer reaches the composer that renders {witness:?} \
+             — it found {} time labels",
+            seen.len()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a column naming a moment renders a relative time, never the stored \
+         instant (a column that must show the instant takes an \
+         `// instant-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        names_a_moment("Last Run") && names_a_moment("CreatedAt") && !names_a_moment("Format"),
+        "the label rule itself must separate the names it exists to judge"
+    );
+}
+
+/// Every stored enum whose wire token a human surface could reach has a DISPLAY
+/// counterpart beside it.
+///
+/// `cfgd backup list --snapshots` printed `run` in its `Kind` column — the
+/// database token — one column away from a `Status` cell reading `Success`, so
+/// two stored enums of one command answered with two policies.
+/// [`cfgd_core::state::ApplyStatus`] had had the split since it shipped;
+/// `BackupRunKind` simply never grew the other half.
+///
+/// The population is every enum in `cfgd-core/src/state/types.rs` defining an
+/// `as_str` at any visibility — the stored-state vocabulary; `ApplyStatus`
+/// keeps its own `pub(in crate::state)`, and a token narrow enough that no
+/// surface can reach it today is one `pub` away from being read. A display
+/// counterpart is
+/// either a `display_str` / `human_str` in the same `impl`, or a free
+/// `<snake_case_name>_display` function in the module (the shape a stored token
+/// with no typed value at the call site takes).
+#[test]
+fn every_stored_enum_has_a_display_counterpart() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cfgd-core/src/state/types.rs")
+        .canonicalize()
+        .expect("the workspace sibling crate is checked out beside this one");
+    let body = production_body(&std::fs::read_to_string(&path).expect("read state/types.rs"));
+
+    let mut checked = Vec::new();
+    let mut offenders = Vec::new();
+    for (at, _) in body.match_indices("\nimpl ") {
+        let name = body[at + "\nimpl ".len()..]
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('{')
+            .to_string();
+        // The impl block runs to the next column-zero `}`.
+        let rest = &body[at + 1..];
+        let block = rest.find("\n}").map_or(rest, |end| &rest[..end]);
+        if !block.contains("fn as_str") {
+            continue;
+        }
+        checked.push(name.clone());
+        let free_form = format!("pub fn {}_display", to_snake_case(&name));
+        if block.contains("pub fn display_str")
+            || block.contains("pub fn human_str")
+            || body.contains(&free_form)
+        {
+            continue;
+        }
+        offenders.push(format!(
+            "{name}: no display_str/human_str and no {free_form}"
+        ));
+    }
+    for witness in ["ApplyStatus", "BackupRunStatus", "BackupRunKind"] {
+        assert!(
+            checked.iter().any(|n| n == witness),
+            "the walk no longer reaches {witness} — it checked {checked:?}"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a stored enum's `as_str` is the WIRE token; the word a person reads is \
+         its display counterpart:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// `BackupRunKind` -> `backup_run_kind`, for the free-function display form.
+fn to_snake_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for (i, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The words clap really answers to: every subcommand name and alias at the top
+/// level, and the same over the whole tree.
+///
+/// Read off `Cli::command()` rather than listed here, so a new verb joins the
+/// vocabulary the moment it joins the CLI.
+fn clap_command_words() -> (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+) {
+    use clap::CommandFactory;
+    fn walk(cmd: &clap::Command, all: &mut std::collections::HashSet<String>) {
+        for sub in cmd.get_subcommands() {
+            all.insert(sub.get_name().to_string());
+            all.extend(sub.get_all_aliases().map(str::to_string));
+            walk(sub, all);
+        }
+    }
+    let root = Cli::command();
+    let mut top = std::collections::HashSet::new();
+    for sub in root.get_subcommands() {
+        top.insert(sub.get_name().to_string());
+        top.extend(sub.get_all_aliases().map(str::to_string));
+    }
+    let mut all = top.clone();
+    walk(&root, &mut all);
+    (top, all)
+}
+
+/// The `(start, end)` byte range of each double-quoted string literal on `line`,
+/// stopping at a line comment.
+///
+/// Comment prose is not a rendered surface, so the sweep below judges literals
+/// only: a rustdoc sentence saying "the cfgd source line" is not a reader being
+/// told to run `cfgd source`.
+fn string_literal_spans(line: &str) -> Vec<(usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            break;
+        }
+        if bytes[i] == b'"' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != b'"' {
+                j += if bytes[j] == b'\\' { 2 } else { 1 };
+            }
+            spans.push((i + 1, j.min(bytes.len())));
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    spans
+}
+
 /// A command a message tells the reader to run is quoted in backticks, the one
-/// quoting that survives every surface: a hint, an error, a clap help line and
-/// the docs all render the same token, and the terminal theme paints it. Single
-/// quotes made `run 'cfgd source update'` read as prose in one hint and as a
-/// literal in the next, and a reader copying the quotes gets a shell error.
+/// quoting that survives every surface: a hint, an error detail, a clap help
+/// line and the docs all render the same token, and the terminal theme paints
+/// it. Single quotes made `run 'cfgd source update'` read as prose in one hint
+/// and as a literal in the next, and a reader copying the quotes gets a shell
+/// error; a BARE command is the same defect with no quoting at all, which is how
+/// `cfgd explain <kind>.<field> expands a field marked [+]` shipped one hint
+/// below a hint that backticked both of its commands.
+///
+/// Two halves. The first rejects a single-quoted command anywhere in either
+/// production tree, comments included. The second reads every `cfgd <verb>` a
+/// string LITERAL names — where `<verb>` is a real top-level subcommand and the
+/// token after it is another command word, a flag, a placeholder or nothing, so
+/// prose like "the cfgd config file" is not mistaken for an invocation — and
+/// requires it to sit inside a backtick span.
+///
+/// Two slots are exempt by shape, needing no marker: a literal that IS the
+/// command (a `command_list` key, a next-step list entry) and everything after
+/// an `Examples:` marker in a clap `long_about`. Both are already a code slot,
+/// and a backtick there renders as a literal backtick.
 #[test]
 fn every_command_a_message_names_is_quoted_in_backticks() {
     let walked: Vec<(std::path::PathBuf, String)> = cli_production_sources()
@@ -13799,26 +14135,85 @@ fn every_command_a_message_names_is_quoted_in_backticks() {
         .collect();
     // A walk that found nothing would pass whatever the sources say.
     assert!(
-        walked.iter().any(|(p, _)| p.ends_with("cli/mod.rs"))
-            && walked.iter().any(|(p, _)| p.ends_with("util/strings.rs")),
+        walked
+            .iter()
+            .any(|(p, body)| p.ends_with("cli/mod.rs") && body.contains("long_about")),
+        "the clap definitions must be walked, got {} files",
+        walked.len()
+    );
+    assert!(
+        walked
+            .iter()
+            .any(|(p, body)| p.ends_with("util/strings.rs") && !body.trim().is_empty()),
         "both crates' production trees must be walked, got {} files",
         walked.len()
     );
-    let offenders: Vec<String> = walked
-        .into_iter()
-        .flat_map(|(path, production)| {
-            production
-                .lines()
-                .enumerate()
-                .filter(|(_, line)| line.contains("'cfgd "))
-                .map(|(n, line)| format!("{}:{}: {}", path.display(), n + 1, line.trim()))
-                .collect::<Vec<_>>()
-        })
-        .collect();
+    let (top, all) = clap_command_words();
+    let word = |s: &str| -> String {
+        s.chars()
+            .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+            .collect()
+    };
+    let mut named = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, production) in &walked {
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in production.lines().enumerate() {
+            if line.contains("'cfgd ") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+            let spans = string_literal_spans(line);
+            let examples = line.find("Examples:");
+            for (at, _) in line.match_indices("cfgd ") {
+                let Some(&(start, end)) = spans.iter().find(|(s, e)| *s <= at && at < *e) else {
+                    continue;
+                };
+                let verb_at = at + "cfgd ".len();
+                let verb = word(&line[verb_at..end.max(verb_at)]);
+                if !top.contains(&verb) {
+                    continue;
+                }
+                let rest = &line[verb_at + verb.len()..end.max(verb_at + verb.len())];
+                // `cfgd module: {name}` and "the cfgd source `line`" are prose
+                // that happens to spell a verb; so is any following word clap
+                // does not answer to.
+                if rest.starts_with(':') || rest.starts_with(" `") {
+                    continue;
+                }
+                let after = rest.trim_start_matches(' ');
+                if after.starts_with(|c: char| c.is_ascii_lowercase())
+                    && !all.contains(&word(after))
+                {
+                    continue;
+                }
+                if examples.is_some_and(|ex| at > ex) {
+                    continue;
+                }
+                if at == start
+                    && rest.split_whitespace().all(|t| {
+                        all.contains(t) || t.starts_with(['-', '<', '{']) || t == "..." || t == "|"
+                    })
+                {
+                    continue;
+                }
+                named += 1;
+                if line[..at].matches('`').count() % 2 == 0
+                    && !label_hatched(&lines, n, "// name-row-ok:")
+                {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        named >= 20,
+        "the sweep no longer reaches the messages that name a command — it \
+         found {named}"
+    );
     assert!(
         offenders.is_empty(),
-        "a command a message names is quoted in backticks, never in single \
-         quotes a reader would copy into their shell:\n{}",
+        "a command a message names is quoted in backticks, never bare and never \
+         in single quotes a reader would copy into their shell:\n{}",
         offenders.join("\n")
     );
 }
@@ -13835,13 +14230,10 @@ fn core_production_sources() -> Vec<(std::path::PathBuf, String)> {
     files
         .into_iter()
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
         .filter_map(|path| {
             let body = std::fs::read_to_string(&path).ok()?;
-            let production = body
-                .split_once("\n#[cfg(test)]")
-                .map(|(head, _)| head.to_string())
-                .unwrap_or(body);
-            Some((path, production))
+            Some((path, production_body(&body)))
         })
         .collect()
 }
@@ -18917,7 +19309,7 @@ fn build_doctor_doc_provider_unavailable_emits_info() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("provider 1password: not installed (optional)"),
+        text.contains("Provider 1password: not installed (optional)"),
         "should show unavailable provider as info, got: {text}"
     );
 }
@@ -19288,7 +19680,7 @@ fn build_doctor_doc_provider_available_emits_ok() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("provider bitwarden: available"),
+        text.contains("Provider bitwarden: available"),
         "should show available provider as ok, got: {text}"
     );
 }

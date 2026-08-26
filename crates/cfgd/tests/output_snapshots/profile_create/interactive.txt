@@ -1,6 +1,6 @@
 Create Profile: interactive_prof
 ✓ Created at <CONFIG_DIR>/profiles/interactive_prof/profile.yaml
 
-→ Activate with: cfgd profile switch interactive_prof
+→ Activate with: `cfgd profile switch interactive_prof`
 
 ✓ Generated .github/workflows/cfgd-release.yml

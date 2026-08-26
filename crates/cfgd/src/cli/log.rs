@@ -16,7 +16,10 @@ pub fn cmd_log(
     }
 
     let history = state.history(count)?;
-    printer.emit(build_log_doc(&LogOutput { entries: history }));
+    printer.emit(build_log_doc(
+        &LogOutput { entries: history },
+        &cfgd_core::utc_now_iso8601(),
+    ));
     Ok(())
 }
 
@@ -112,8 +115,9 @@ fn cmd_log_show_output(
 
 /// Build the buffered `Doc` for the apply-history view. Pure function so
 /// snapshot tests can drive the JSON path without standing up a seeded state
-/// DB for every assertion.
-pub fn build_log_doc(output: &LogOutput) -> Doc {
+/// DB for every assertion — `now` is a parameter for the same reason, so a
+/// rendered age pins instead of moving with the clock.
+pub fn build_log_doc(output: &LogOutput, now: &str) -> Doc {
     let mut doc = Doc::new().heading("Apply History");
     if output.entries.is_empty() {
         doc = doc.status(Role::Info, "No applies recorded yet");
@@ -124,7 +128,11 @@ pub fn build_log_doc(output: &LogOutput) -> Doc {
             .map(|record| {
                 vec![
                     record.id.to_string(),
-                    record.timestamp.clone(),
+                    // `Age`, not the stored instant: the `-o json` payload
+                    // carries `timestamp` for a consumer that needs the exact
+                    // moment, and the column a reader scans is answering "how
+                    // long ago". The `ID` beside it is the correlation key.
+                    cfgd_core::humanize_age_cell(Some(&record.timestamp), now),
                     // What the run was scoped to: a profile name, or the
                     // `module:<name>` list an isolated run records instead.
                     // Judged by the same predicate the status dashboard uses,
@@ -144,7 +152,7 @@ pub fn build_log_doc(output: &LogOutput) -> Doc {
                 ]
             })
             .collect();
-        let mut t = Table::new(["ID", "Time", "Scope", "Status", "Summary"]);
+        let mut t = Table::new(["ID", "Age", "Scope", "Status", "Summary"]);
         for row in rows {
             t = t.row(row);
         }
@@ -158,6 +166,10 @@ mod tests {
     use super::*;
     use cfgd_core::output::Verbosity;
     use cfgd_core::state::{ApplyRecord, ApplyStatus};
+
+    /// Two hours after the fixture's recorded apply, so the `Age` column reads
+    /// a fixed `2h ago` instead of moving with the suite's clock.
+    const NOW: &str = "2026-01-02T05:04:05Z";
 
     fn in_progress_log() -> LogOutput {
         LogOutput {
@@ -179,7 +191,7 @@ mod tests {
     #[test]
     fn log_table_status_column_is_the_titlecase_display_word() {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        printer.emit(build_log_doc(&in_progress_log()));
+        printer.emit(build_log_doc(&in_progress_log(), NOW));
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -214,7 +226,7 @@ mod tests {
             }
             .to_column(),
         );
-        printer.emit(build_log_doc(&output));
+        printer.emit(build_log_doc(&output, NOW));
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -233,7 +245,7 @@ mod tests {
     #[test]
     fn log_json_status_is_camelcase_token() {
         let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
-        printer.emit(build_log_doc(&in_progress_log()));
+        printer.emit(build_log_doc(&in_progress_log(), NOW));
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -319,7 +331,7 @@ mod tests {
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             let mut output = in_progress_log();
             output.entries[0].profile = recorded.to_string();
-            printer.emit(build_log_doc(&output));
+            printer.emit(build_log_doc(&output, NOW));
             drop(printer);
 
             let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -343,7 +355,7 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         let mut output = in_progress_log();
         output.entries[0].profile = "module:nvim".to_string();
-        printer.emit(build_log_doc(&output));
+        printer.emit(build_log_doc(&output, NOW));
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);

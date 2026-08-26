@@ -29,4 +29,4 @@ Policy
 
 → Run `cfgd plan` to preview changes, then `cfgd apply`
 
-✓ replaced with file://<BARE_NEW>
+✓ Replaced with file://<BARE_NEW>

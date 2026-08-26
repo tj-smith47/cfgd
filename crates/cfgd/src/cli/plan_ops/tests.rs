@@ -3704,6 +3704,43 @@ fn platform_skip_survives_in_the_plan_payload() {
     );
 }
 
+/// The payload's `total_actions` is the plan's own count, so `cfgd plan`'s
+/// footer, `-o json` and the apply header cannot print three numbers for one
+/// plan. Fails on the next hand-rolled sum over the rendered rows, which prices
+/// in a row [`Action::pre_skip_reason`] has already answered for.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+#[serial_test::serial]
+fn the_payload_total_matches_the_plans_own_count_over_a_pre_skipped_action() {
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
+        cfgd_core::SYSTEMCTL_BIN_ENV,
+        "/no/such/systemctl",
+    );
+
+    let plan = make_plan(vec![(
+        PhaseName::Prerequisites,
+        vec![
+            Action::Env(EnvAction::RefreshLiveSession {
+                vars: vec![("EDITOR".to_string(), "nvim".to_string())],
+            }),
+            pkg_install("brew", vec!["rg"]),
+        ],
+    )]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+
+    assert_eq!(
+        output.total_actions,
+        plan.total_actions(),
+        "the payload prices what the apply will attempt, not what the tree draws"
+    );
+    assert_eq!(output.total_actions, 1);
+    assert_eq!(
+        output.phases.iter().flat_map(|p| phase_actions(p)).count(),
+        2,
+        "the pre-skipped row is still listed — it is only uncounted"
+    );
+}
+
 /// A resolved profile whose one local layer declares `spec` as YAML.
 fn local_resolved(spec_yaml: &str) -> cfgd_core::config::ResolvedProfile {
     use cfgd_core::config::{LOCAL_LAYER, LayerPolicy, ProfileLayer, ProfileSpec, merge_layers};

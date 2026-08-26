@@ -747,22 +747,25 @@ impl BackupRunStatus {
     }
 }
 
-/// The word a person reads for a recorded backup run's outcome — the display
-/// counterpart of [`BackupRunStatus::as_str`], which stays the untouched wire
-/// token. Its arms are matched against `as_str()` rather than against literals
-/// of their own, so the stored spelling and the shown one cannot drift apart.
+/// The word a person reads for a recorded backup run's outcome, with the role
+/// that tints it — the display counterpart of [`BackupRunStatus::as_str`],
+/// which stays the untouched wire token, and the backup analogue of
+/// [`source_status_display`]. Its arms are matched against `as_str()` rather
+/// than against literals of their own, so the stored spelling and the shown one
+/// cannot drift apart.
 ///
 /// A token neither arm recognises is shown VERBATIM rather than renamed:
 /// `BackupRunStatus::from_str` reads one as `Failed` for safety, and a screen
 /// asserting "Failed" about a row cfgd could not interpret would be a claim it
-/// has no basis for.
-pub fn backup_run_status_display(stored: &str) -> &str {
+/// has no basis for. It carries `Role::Pending` for the same reason
+/// `source_status_display`'s unknown arm does: cfgd cannot say.
+pub fn backup_run_status_display(stored: &str) -> (&str, Role) {
     if stored == BackupRunStatus::Success.as_str() {
-        "Success"
+        ("Success", Role::Ok)
     } else if stored == BackupRunStatus::Failed.as_str() {
-        "Failed"
+        ("Failed", Role::Fail)
     } else {
-        stored
+        (stored, Role::Pending)
     }
 }
 
@@ -792,6 +795,21 @@ impl BackupRunKind {
         match self {
             BackupRunKind::Run => "run",
             BackupRunKind::Safety => "safety",
+        }
+    }
+
+    /// The word a person reads in the `Kind` column, the display counterpart of
+    /// [`BackupRunKind::as_str`] — which stays the untouched DB and `-o json`
+    /// token, exactly as [`super::ApplyStatus`] and
+    /// [`super::backup_run_status_display`] split the two.
+    ///
+    /// Without it the human table printed the wire token `run` beside a `Last
+    /// Run` cell that already said `Success`: two stored enums, adjacent
+    /// surfaces of one command, two policies.
+    pub fn display_str(&self) -> &'static str {
+        match self {
+            BackupRunKind::Run => "Run",
+            BackupRunKind::Safety => "Safety",
         }
     }
 

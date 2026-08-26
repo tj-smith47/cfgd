@@ -64,6 +64,7 @@ pub enum RunTitle {
     Apply,
     Reconcile,
     Backup,
+    Restore,
 }
 
 impl RunTitle {
@@ -73,6 +74,7 @@ impl RunTitle {
             RunTitle::Apply => "Apply",
             RunTitle::Reconcile => "Reconcile",
             RunTitle::Backup => "Backup",
+            RunTitle::Restore => "Restore",
         }
     }
 }
@@ -596,6 +598,12 @@ impl<'a> ApplyRun<'a> {
                 None => Ok(RunDisposition::NothingToDo),
             };
         };
+        // Claimed here, where the whole report is visible: the preview below,
+        // the apply tree the executor writes, and the `Backups` pseudo-phase
+        // after it are one page, and each measuring its own part of it puts
+        // the trailing column at a different x position in each.
+        let _column = printer
+            .report_column(report_align_width(plan, self.filter).max(self.backup_align_width()));
         if self.preview_only {
             self.preview(printer);
             return Ok(RunDisposition::Previewed);
@@ -634,10 +642,31 @@ impl<'a> ApplyRun<'a> {
         &self,
         printer: &Printer,
     ) -> Result<(ApplyStatus, Vec<crate::backup::BackupRunReport>)> {
+        // A run with no plan is all pseudo-phase, so its labels ARE the report.
+        let _column = printer.report_column(self.backup_align_width());
         let started = Instant::now();
         let (tally, backups) = self.render_backups(printer)?;
         let status = render_run_rollup(&tally, self.ctx.title, printer, Some(started.elapsed()));
         Ok((status, backups))
+    }
+
+    /// The widest label the `Backups` pseudo-phase will print, `0` for a run
+    /// carrying no units.
+    ///
+    /// Answered before anything renders, because the report's column has to
+    /// cover the phases the plan does not describe: a backup label wider than
+    /// every planned action would otherwise widen its own phase and leave the
+    /// apply tree above it padding to a narrower one.
+    fn backup_align_width(&self) -> usize {
+        let Some(pending) = &self.backups else {
+            return 0;
+        };
+        let labels: Vec<Vec<String>> = pending
+            .units
+            .iter()
+            .map(crate::backup::backup_unit_labels)
+            .collect();
+        align_width_of(labels.iter().flatten().map(String::as_str))
     }
 
     /// The `Backups` pseudo-phase: one owner group per unit, each carrying that
@@ -825,26 +854,37 @@ pub fn in_scope_tree<'p>(
 /// plan reaches it without inventing a [`RunContext`] whose every row would be
 /// empty — a fabricated context is a header waiting to be printed by accident.
 pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Printer) {
+    // Claimed for the whole tree, not per phase: the trailing column is the one
+    // a reader scans down, and a column measured inside each phase moves x
+    // position mid-report. A run that already claimed one — an apply, which saw
+    // its backup labels too — keeps it, so its preview and its tree agree.
+    let width = report_align_width(plan, filter);
+    let _column = printer.report_column(width);
     for (phase, groups) in in_scope_tree(plan, filter, PhaseCoverage::Rendered) {
         let phase_section = printer.section_phase(&phase.name.section_label());
         for (group, actions) in groups {
             let label = OwnerLabel::new(group.owner.kind.as_str(), &group.owner.name);
             let owner_section = phase_section.section_owner(&label);
+            owner_section.live_column(width);
             for action in actions {
                 let subject = action_display_subject(action);
+                // Both settled rows go through `action_status`, the seam the
+                // apply tree settles through, so the two trees paint the same
+                // action identically one beat apart.
+                //
                 // An unknown system key is almost always a typo, so it keeps
                 // its warning role instead of reading as ordinary planned work.
                 if matches!(
                     action,
                     Action::System(SystemAction::Skip { unknown: true, .. })
                 ) {
-                    owner_section.status_simple(Role::Warn, subject.to_string());
+                    drop(owner_section.action_status(Role::Warn, subject.to_string()));
                 } else if let Some(reason) = action.pre_skip_reason() {
                     // Settled here rather than previewed: the host has already
                     // answered, so the plan states the same outcome, with the
                     // same detail, the apply will state.
                     owner_section
-                        .status(Role::Skipped, subject.to_string())
+                        .action_status(Role::Skipped, subject.to_string())
                         .detail(reason);
                 } else if let Some(marker) = &subject.marker {
                     owner_section.bullet_marker(marker.clone(), subject.body.clone());
@@ -939,18 +979,26 @@ pub fn align_width_of<'s>(labels: impl Iterator<Item = &'s str>) -> usize {
     labels.map(measure_width).max().unwrap_or(0)
 }
 
-/// The plan-phase view over [`align_width_of`]: the max over the DISPLAY
-/// SUBJECT of **every** action in the phase, so every owner group in it opens
-/// with the same column.
+/// The plan-wide view over [`align_width_of`]: the max over the DISPLAY
+/// SUBJECT of **every** action any phase of the report will print.
+///
+/// Per REPORT, not per phase. The trailing column is the one thing a reader's
+/// eye scans straight down, and measuring it inside each phase moved it
+/// between `Prerequisites` and `Packages` of the same apply — correct within
+/// each block, a wobble across the page. Both trees call this with the same
+/// plan and the same filter, so a preview and the apply that follows it pad to
+/// one column too.
 ///
 /// The subject, not the raw plan string: a condensed script body or a marker
 /// the execution renders shorter than the payload would pad every trailing
-/// field in the phase against a column nothing reaches.
-pub fn align_width(phase: &Phase) -> usize {
-    let items: Vec<String> = phase
-        .groups()
+/// field against a column nothing reaches. Filtered the way the trees are, and
+/// over [`PhaseCoverage::Rendered`], because a phase that prints no block
+/// cannot widen a column no row of it occupies.
+pub fn report_align_width(plan: &Plan, filter: Option<&PhaseFilter>) -> usize {
+    let items: Vec<String> = in_scope_tree(plan, filter, PhaseCoverage::Rendered)
         .iter()
-        .flat_map(|group| group.actions.iter())
+        .flat_map(|(_, groups)| groups.iter())
+        .flat_map(|(_, actions)| actions.iter())
         .map(|action| action_display_subject(action).to_string())
         .collect();
     align_width_of(items.iter().map(String::as_str))

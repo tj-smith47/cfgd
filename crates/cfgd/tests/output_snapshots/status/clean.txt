@@ -3,7 +3,7 @@ Status
   Profile  default
 
 Last Apply
-  Time     2026-05-14T10:00:00Z
+  Age      5m ago
   Profile  default
   Result   Success
   Summary  12 actions applied

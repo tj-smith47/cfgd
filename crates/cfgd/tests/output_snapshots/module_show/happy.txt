@@ -8,7 +8,7 @@ Module: dev-tools
   Commit         deadbeef1234567890abcdef1234567890abcdef
   Integrity      sha256:cafef00d
   Status         Synced
-  Last Applied   2026-05-14T10:00:00Z
+  Last Applied   2h ago
   Packages Hash  abc123def456
   Files Hash     789ghi012jkl
 

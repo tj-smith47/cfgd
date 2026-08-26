@@ -25,6 +25,10 @@ use cfgd_core::output::Printer;
 use cfgd_core::state::ModuleStateRecord;
 use pretty_assertions::assert_eq;
 
+/// Two hours after the fixture's `installed_at`, so a rendered `Last Applied`
+/// age reads a fixed `2h ago` in the goldens below.
+const NOW: &str = "2026-05-14T12:00:00Z";
+
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
 fn happy_entries() -> Vec<ModuleListEntry> {
@@ -183,6 +187,7 @@ fn module_show_renders_every_declaring_hook_in_execution_order() {
         &[],
         false,
         printer.arrow(),
+        NOW,
     ));
     drop(printer);
     let human = cap.human();
@@ -252,6 +257,7 @@ fn module_show_happy_human() {
         &pkgs,
         false,
         printer.arrow(),
+        NOW,
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_show/happy.txt");
@@ -269,6 +275,7 @@ fn module_show_happy_json() {
         &pkgs,
         false,
         printer.arrow(),
+        NOW,
     ));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();

@@ -123,6 +123,7 @@ pub fn build_module_show_doc(
     packages: &[PackageDisplay],
     show_values: bool,
     arrow: &str,
+    now: &str,
 ) -> Doc {
     // One aligned block: the Status row needs a role-tinted value, which only
     // `kv_rows` can carry, and `kv_rows` does not coalesce with a preceding
@@ -150,7 +151,13 @@ pub fn build_module_show_doc(
         // Recorded state only, same as the list table — see `status_cell`.
         let (word, role) = cfgd_core::state::module_status_display(&state_rec.status, false);
         rows.push(KvPair::role_valued("Status", word, role));
-        rows.push(KvPair::new("Last Applied", &state_rec.installed_at));
+        // The age, not the recorded instant: `-o json`'s `state.installedAt`
+        // carries the exact moment, and the row a person reads answers how
+        // long ago — the same split `cfgd status <module>` makes.
+        rows.push(KvPair::new(
+            "Last Applied",
+            cfgd_core::humanize_age_cell(Some(&state_rec.installed_at), now),
+        ));
         rows.push(KvPair::new("Packages Hash", &state_rec.packages_hash));
         rows.push(KvPair::new("Files Hash", &state_rec.files_hash));
     }
@@ -442,6 +449,7 @@ pub(crate) fn cmd_module_show(
         &packages,
         show_values,
         printer.arrow(),
+        &cfgd_core::utc_now_iso8601(),
     ));
     Ok(())
 }

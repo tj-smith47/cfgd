@@ -1,8 +1,8 @@
 Compliance Summary
-  Timestamp  2026-05-14T10:00:00Z
-  Machine    test-host
-  Profile    default
-  Status     Compliant
+  Age      2h ago
+  Machine  test-host
+  Profile  default
+  Status   Compliant
 
 Compliant  3
 Warning    0

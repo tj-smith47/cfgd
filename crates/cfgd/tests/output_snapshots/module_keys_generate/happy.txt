@@ -2,7 +2,7 @@ Generate Cosign Key Pair
   Private Key  <DIR>/cosign.key
   Public Key   <DIR>/cosign.pub
 
-→ Sign with: cfgd module push --sign --key cosign.key ...
+→ Sign with: `cfgd module push --sign --key cosign.key ...`
 → Verify with: cosign verify --key cosign.pub <artifact>
 
 ✓ Generated cosign key pair

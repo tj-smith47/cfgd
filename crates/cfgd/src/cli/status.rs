@@ -625,7 +625,13 @@ pub fn build_fleet_status_doc(
     match &output.last_apply {
         Some(last) => {
             doc = doc.section("Last Apply", |s| {
-                let mut s = s.kv("Time", &last.timestamp);
+                // `Age`, not the stored instant: `-o json`'s `lastApply.timestamp`
+                // is where an exact moment is read from, and the dashboard row
+                // is answering how stale the machine's last apply is.
+                let mut s = s.kv(
+                    "Age",
+                    cfgd_core::humanize_age_cell(Some(&last.timestamp), now),
+                );
                 if let Some((key, value)) = recorded_scope_row(&last.profile) {
                     s = s.kv(key, value);
                 }
@@ -1014,14 +1020,22 @@ fn display_type(kind: &str) -> String {
 /// Every row's subject is the thing's identity and its detail is what the
 /// machine holds — the same grammar the fleet doc's module rows read in, so
 /// one report never states a fact the other contradicts.
-pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView) -> Doc {
+///
+/// `now` is a parameter, not a clock read, so the `Last Applied` age pins in a
+/// golden.
+pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, now: &str) -> Doc {
     // One aligned block: the Status row needs a role-tinted value, which only
     // `kv_rows` can carry, and `kv_rows` does not coalesce with a preceding
     // `kv` block — so every row of the header is built here.
     let (state_word, role) = output.state_display();
     let mut rows = vec![KvPair::role_valued("Status", state_word, role)];
     if let Some(last) = &output.last_applied {
-        rows.push(KvPair::new("Last Applied", last));
+        // The age, not the recorded instant: `-o json`'s `lastApplied` carries
+        // the exact moment, and the row a person reads answers how long ago.
+        rows.push(KvPair::new(
+            "Last Applied",
+            cfgd_core::humanize_age_cell(Some(last), now),
+        ));
     }
     // Only an isolated run's scope: `recorded_scope_row` answers `Profile` for
     // a profile-wide apply, which belongs to `cfgd status` rather than to one
@@ -1339,6 +1353,11 @@ pub(super) fn cmd_status(
         &resolved.merged.aliases,
         &resolved.merged.entry_owners,
         &resolved_modules,
+        &cfgd_core::reconciler::recorded_manager_path_dirs(
+            state,
+            &resolved.merged,
+            &resolved_modules,
+        ),
     );
 
     // The plan withholds items no run has recorded a row for yet; a dashboard
@@ -1690,6 +1709,11 @@ pub(super) fn cmd_status_module(
             &resolved.merged.aliases,
             &resolved.merged.entry_owners,
             &resolved_modules,
+            &cfgd_core::reconciler::recorded_manager_path_dirs(
+                state,
+                &resolved.merged,
+                &resolved_modules,
+            ),
         );
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
         // One spinner across this module's live scan, narrated per pass.
@@ -1842,7 +1866,11 @@ pub(super) fn cmd_status_module(
         drift,
     };
 
-    printer.emit(build_module_status_doc(&output, view));
+    printer.emit(build_module_status_doc(
+        &output,
+        view,
+        &cfgd_core::utc_now_iso8601(),
+    ));
 
     if exit_code && !output.drift.is_empty() {
         cfgd_core::exit::ExitCode::DriftDetected.exit();
@@ -3119,10 +3147,15 @@ mod tests {
             o.claim("profile:default", &declared_env, &[]);
             o
         };
-        let declared_line =
-            cfgd_core::reconciler::MergedEnvItems::new(&declared_env, &[], &declared_owners, &[])
-                .declared_line("env-var", "EDITOR")
-                .expect("EDITOR renders a declared line");
+        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
+            &declared_env,
+            &[],
+            &declared_owners,
+            &[],
+            &[],
+        )
+        .declared_line("env-var", "EDITOR")
+        .expect("EDITOR renders a declared line");
 
         let state_dir = tmp.path().join("state");
         std::fs::create_dir_all(&state_dir).unwrap();
@@ -3237,10 +3270,15 @@ mod tests {
             o.claim("profile:default", &declared_env, &[]);
             o
         };
-        let declared_line =
-            cfgd_core::reconciler::MergedEnvItems::new(&declared_env, &[], &declared_owners, &[])
-                .declared_line("env-var", "EDITOR")
-                .expect("EDITOR renders a declared line");
+        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
+            &declared_env,
+            &[],
+            &declared_owners,
+            &[],
+            &[],
+        )
+        .declared_line("env-var", "EDITOR")
+        .expect("EDITOR renders a declared line");
         let expected_detail =
             cfgd_core::output::drift_detail(&declared_line, cfgd_core::Absence::Missing.as_str());
 
@@ -3331,10 +3369,15 @@ mod tests {
         };
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-        let declared_line =
-            cfgd_core::reconciler::MergedEnvItems::new(&declared_env, &[], &declared_owners, &[])
-                .declared_line("env-var", "EDITOR")
-                .expect("EDITOR renders a declared line");
+        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
+            &declared_env,
+            &[],
+            &declared_owners,
+            &[],
+            &[],
+        )
+        .declared_line("env-var", "EDITOR")
+        .expect("EDITOR renders a declared line");
         // The machine HOLDS the declared line: whatever the recorded row says,
         // this entry is converged right now.
         std::fs::write(
@@ -4403,11 +4446,16 @@ mod tests {
         }
     }
 
+    /// Two hours after the fixture's `last_applied`, so the rendered age is a
+    /// fixed `2h ago` rather than moving with the suite's clock.
+    const MODULE_STATUS_NOW: &str = "2026-05-14T12:00:00Z";
+
     fn module_status_render(scope: Option<&str>) -> String {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         printer.emit(build_module_status_doc(
             &module_status_with_scope(scope),
             ModuleStatusView::Compact,
+            MODULE_STATUS_NOW,
         ));
         drop(printer);
         cfgd_core::test_helpers::captured_text(&buf)

@@ -259,8 +259,8 @@ pub fn cmd_module_create(
     }
     drop(summary_sec);
 
-    printer.hint("Add to a profile with: cfgd profile update <profile> --module <name>");
-    printer.hint("Fine-tune with: cfgd module edit <name>");
+    printer.hint("Add to a profile with: `cfgd profile update <profile> --module <name>`");
+    printer.hint("Fine-tune with: `cfgd module edit <name>`");
 
     update_workflow_best_effort(cli, printer);
 

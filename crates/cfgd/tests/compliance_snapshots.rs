@@ -18,6 +18,12 @@ use cfgd_core::state::ComplianceHistoryRow;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
+/// Pinned "now" for every compliance render: the `Age` cells are rendered
+/// values, so reading the wall clock here would re-date the goldens on every
+/// run. The summary fixture's stamp is 2h old; the history rows are 2h / 1d /
+/// 2d old.
+const NOW: &str = "2026-05-14T12:00:00Z";
+
 fn fixed_snapshot(checks: Vec<ComplianceCheck>) -> ComplianceSnapshot {
     let summary = compute_summary(&checks);
     ComplianceSnapshot {
@@ -91,7 +97,7 @@ fn empty_snapshot() -> ComplianceSnapshot {
 fn compliance_snapshot_happy_human() {
     let snap = happy_snapshot();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_summary_doc(&snap));
+    printer.emit(build_compliance_summary_doc(&snap, NOW));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_snapshot/happy.txt");
 }
@@ -100,7 +106,7 @@ fn compliance_snapshot_happy_human() {
 fn compliance_snapshot_happy_json() {
     let snap = happy_snapshot();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_summary_doc(&snap));
+    printer.emit(build_compliance_summary_doc(&snap, NOW));
     drop(printer);
     let expected = serde_json::json!({
         "snapshot": serde_json::to_value(&snap).unwrap(),
@@ -118,7 +124,7 @@ fn compliance_snapshot_happy_json() {
 fn compliance_snapshot_violations_human() {
     let snap = violations_snapshot();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_summary_doc(&snap));
+    printer.emit(build_compliance_summary_doc(&snap, NOW));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -130,7 +136,7 @@ fn compliance_snapshot_violations_human() {
 fn compliance_snapshot_empty_human() {
     let snap = empty_snapshot();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_summary_doc(&snap));
+    printer.emit(build_compliance_summary_doc(&snap, NOW));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_snapshot/empty.txt");
 }
@@ -226,7 +232,7 @@ fn populated_entries() -> Vec<ComplianceHistoryRow> {
 fn compliance_history_populated_human() {
     let entries = populated_entries();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_history_doc(&entries));
+    printer.emit(build_compliance_history_doc(&entries, NOW));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_history/populated.txt");
 }
@@ -235,7 +241,7 @@ fn compliance_history_populated_human() {
 fn compliance_history_populated_json() {
     let entries = populated_entries();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_history_doc(&entries));
+    printer.emit(build_compliance_history_doc(&entries, NOW));
     drop(printer);
     let expected = serde_json::json!({
         "entries": serde_json::to_value(&entries).unwrap(),
@@ -262,7 +268,7 @@ fn compliance_history_filtered_human() {
         violation: 0,
     }];
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_history_doc(&entries));
+    printer.emit(build_compliance_history_doc(&entries, NOW));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_history/filtered.txt");
 }
@@ -271,7 +277,7 @@ fn compliance_history_filtered_human() {
 fn compliance_history_empty_human() {
     let entries: Vec<ComplianceHistoryRow> = Vec::new();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_history_doc(&entries));
+    printer.emit(build_compliance_history_doc(&entries, NOW));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_history/empty.txt");
 }

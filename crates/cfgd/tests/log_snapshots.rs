@@ -31,6 +31,10 @@ use common::{log_history_setup, log_show_output_no_journal_setup, log_show_outpu
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
+/// Any fixed instant: the only payload this drives holds no entries, so no age
+/// is rendered from it.
+const NOW: &str = "2026-01-02T05:04:05Z";
+
 /// Empty history — `cmd_log` emits the "No applies recorded yet" status.
 #[test]
 fn log_empty_human() {
@@ -59,7 +63,7 @@ fn log_empty_json() {
         entries: Vec::new(),
     };
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_log_doc(&output));
+    printer.emit(build_log_doc(&output, NOW));
     drop(printer);
 
     let expected = serde_json::to_value(&output).unwrap();

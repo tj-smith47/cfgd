@@ -122,11 +122,64 @@ pub fn humanize_age_since(ts: &str, now: &str) -> Option<String> {
     })
 }
 
+/// The forward counterpart of [`humanize_age_since`]: how long until `ts`,
+/// as `"in 5m"` / `"in 3h"` / `"in 2d"`, or `"due now"` inside the last minute.
+///
+/// `None` when `ts` or `now` fails to parse, or when `ts` is already PAST —
+/// "in -2h" is not a thing a schedule column may say, and a caller holding an
+/// overdue instant reaches for `humanize_age_since` to word it as an age.
+/// Shares [`age_since_secs`] with its backward twin, so the two cannot disagree
+/// about where an hour ends.
+pub fn humanize_until(ts: &str, now: &str) -> Option<String> {
+    let secs = -age_since_secs(ts, now)?;
+    if secs < 0 {
+        return None;
+    }
+    Some(if secs < 60 {
+        "due now".to_string()
+    } else if secs < 3600 {
+        format!("in {}m", secs / 60)
+    } else if secs < 86400 {
+        format!("in {}h", secs / 3600)
+    } else {
+        format!("in {}d", secs / 86400)
+    })
+}
+
+/// A human listing column reporting a RECORDED PAST instant: its age, or
+/// `never` when there is no record.
+///
+/// An ISO 8601 instant answers "when exactly", which is a question a machine
+/// consumer asks — it stays in the `-o json` payload. A person scanning a
+/// listing is asking "how stale is this". A stamp too malformed or too far in
+/// the future to subtract falls back to ITSELF rather than to `never`: it IS a
+/// record, just not one whose age can be stated.
+pub fn humanize_age_cell(ts: Option<&str>, now: &str) -> String {
+    match ts {
+        Some(ts) => humanize_age_since(ts, now).unwrap_or_else(|| ts.to_string()),
+        None => "never".to_string(),
+    }
+}
+
+/// The forward twin of [`humanize_age_cell`], for a column reporting a FUTURE
+/// instant: how long until it, or `-` when nothing is scheduled.
+///
+/// `-` rather than `never`: a unit with no next occurrence has not failed to do
+/// anything, so the cell says "not known", the one thing `-` means everywhere
+/// else in a cfgd table. An instant already past falls back to itself, the same
+/// way an unsubtractable stamp does.
+pub fn humanize_until_cell(ts: Option<&str>, now: &str) -> String {
+    match ts {
+        Some(ts) => humanize_until(ts, now).unwrap_or_else(|| ts.to_string()),
+        None => "-".to_string(),
+    }
+}
+
 /// The signed seconds between `ts` and `now` (positive when `ts` is in the
 /// past), or `None` when either fails to parse as RFC 3339. The shared
-/// primitive behind `humanize_age_since`'s rendering and `is_stale_since`'s
-/// threshold check, so the two can never disagree about what "the age of
-/// `ts`" means.
+/// primitive behind `humanize_age_since`'s rendering, `humanize_until`'s and
+/// `is_stale_since`'s threshold check, so the three can never disagree about
+/// what "the age of `ts`" means.
 fn age_since_secs(ts: &str, now: &str) -> Option<i64> {
     let then = chrono::DateTime::parse_from_rfc3339(ts)
         .ok()?
@@ -206,6 +259,51 @@ mod tests {
         let now = "2026-05-12T14:30:25Z";
         assert_eq!(humanize_age_since("not-a-timestamp", now), None);
         assert_eq!(humanize_age_since("2026-05-12T14:31:00Z", now), None);
+    }
+
+    #[test]
+    fn humanize_until_buckets_forward_and_refuses_the_past() {
+        let now = "2026-05-12T14:30:25Z";
+        assert_eq!(
+            humanize_until("2026-05-12T14:31:00Z", now),
+            Some("due now".to_string())
+        );
+        assert_eq!(
+            humanize_until("2026-05-12T14:35:25Z", now),
+            Some("in 5m".to_string())
+        );
+        assert_eq!(
+            humanize_until("2026-05-12T17:30:25Z", now),
+            Some("in 3h".to_string())
+        );
+        assert_eq!(
+            humanize_until("2026-05-14T14:30:25Z", now),
+            Some("in 2d".to_string())
+        );
+        assert_eq!(humanize_until("2026-05-12T14:25:25Z", now), None);
+        assert_eq!(humanize_until("not-a-timestamp", now), None);
+    }
+
+    /// The two directions share one primitive, so an instant one of them buckets
+    /// at `Nh` is the same instant the other buckets at `Nh` — a forward twin
+    /// with its own arithmetic drifted at exactly the boundaries nobody tests.
+    #[test]
+    fn the_two_directions_agree_on_every_bucket_boundary() {
+        let now = "2026-05-12T14:30:25Z";
+        for (secs, ago, until) in [
+            (59_i64, "just now", "due now"),
+            (60, "1m ago", "in 1m"),
+            (3_599, "59m ago", "in 59m"),
+            (3_600, "1h ago", "in 1h"),
+            (86_399, "23h ago", "in 23h"),
+            (86_400, "1d ago", "in 1d"),
+        ] {
+            let base = chrono::DateTime::parse_from_rfc3339(now).expect("now parses");
+            let past = (base - chrono::Duration::seconds(secs)).to_rfc3339();
+            let future = (base + chrono::Duration::seconds(secs)).to_rfc3339();
+            assert_eq!(humanize_age_since(&past, now).as_deref(), Some(ago));
+            assert_eq!(humanize_until(&future, now).as_deref(), Some(until));
+        }
     }
 
     #[test]

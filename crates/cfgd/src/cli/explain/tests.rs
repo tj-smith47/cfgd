@@ -748,7 +748,7 @@ fn explain_points_every_kind_at_its_docs_page() {
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("docs        docs/spec/module.md#fields"),
+        output.contains("Docs        docs/spec/module.md#fields"),
         "expected the docs row beneath location, got: {output}"
     );
 

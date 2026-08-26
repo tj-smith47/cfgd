@@ -1,6 +1,6 @@
 Create Profile: newprof
 ✓ Created at <CONFIG_DIR>/profiles/newprof/profile.yaml
 
-→ Activate with: cfgd profile switch newprof
+→ Activate with: `cfgd profile switch newprof`
 
 ✓ Generated .github/workflows/cfgd-release.yml

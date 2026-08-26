@@ -13,7 +13,6 @@ use super::format::{
     parse_package_description, parse_resource_from_description,
 };
 use super::restore::action_target_path;
-use super::run::align_width;
 use super::scripts::{
     MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, ScriptSubject, build_module_script_env,
     build_script_env, effective_continue_on_error, execute_script, script_default_workdir,
@@ -58,6 +57,20 @@ impl ActionOutcome {
             detail: None,
             detail_muted: false,
             duration: Some(duration),
+            notes: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+
+    /// The outcome `settle_action` records for an action that did nothing: the
+    /// role its own text implies, and a detail it derived rather than observed.
+    pub(super) fn for_test_settled(subject: &str, role: Role, detail: &str) -> Self {
+        Self {
+            subject: subject.to_string(),
+            role,
+            detail: Some(detail.to_string()),
+            detail_muted: true,
+            duration: None,
             notes: Vec::new(),
             body: Vec::new(),
         }
@@ -245,7 +258,7 @@ pub(super) fn emit_action_line(
 ) {
     {
         let mut builder = section.action_status(outcome.role, &outcome.subject);
-        if outcome.detail_muted {
+        if crate::output::renderer::action_detail_is_muted(outcome.role, outcome.detail_muted) {
             builder = builder.detail_muted_opt(outcome.detail.as_deref());
         } else {
             builder = builder.detail_opt(outcome.detail.as_deref());
@@ -821,6 +834,15 @@ impl<'a> super::Reconciler<'a> {
         // windows, script windows and every status they collapse into.
         let _inherit = printer.depth_inheritance();
 
+        // One column for the tree, measured over every action any phase of it
+        // will print. A width taken inside the loop moves the trailing column
+        // between one phase and the next, which reads as a wobble down a page
+        // whose whole point is that the column can be scanned. The run
+        // skeleton claims a report-wide column over this and its
+        // pseudo-phases; this is the value when a caller drives the reconciler
+        // without one.
+        let width = super::run::report_align_width(plan, phase_filter);
+
         'phases: for phase in &plan.phases {
             // Plan positions of the actions in this phase that survive
             // `phase_filter`, in `Phase::actions()` order. `action_index` is
@@ -873,7 +895,6 @@ impl<'a> super::Reconciler<'a> {
                     )
                 })
                 .collect();
-            let width = align_width(phase);
             let ledger = PhaseLedger {
                 phase_name: phase.name.clone(),
                 subjects: &subjects,

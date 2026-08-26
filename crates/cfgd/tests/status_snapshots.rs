@@ -145,7 +145,10 @@ fn drift_output() -> StatusOutput {
     StatusOutput {
         last_apply: Some(ApplyRecord {
             id: 2,
-            timestamp: "2026-05-14T11:30:00Z".into(),
+            // Before `NOW`, or the rendered `Age` has no age to render: an
+            // apply dated after the moment it is being read at is not a state
+            // this machine can be in.
+            timestamp: "2026-05-14T09:30:00Z".into(),
             profile: "default".into(),
             plan_hash: "cafebabe".into(),
             status: ApplyStatus::Success,
@@ -519,7 +522,7 @@ fn status_drift_json() {
 
 fn emit_module(output: &ModuleStatus, view: ModuleStatusView, golden: &str) {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_module_status_doc(output, view));
+    printer.emit(build_module_status_doc(output, view, NOW));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), golden);
 }
@@ -584,7 +587,11 @@ fn status_per_module_show_values_human() {
 fn status_per_module_scanned_json() {
     let output = per_module_scanned_output();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_module_status_doc(&output, ModuleStatusView::Compact));
+    printer.emit(build_module_status_doc(
+        &output,
+        ModuleStatusView::Compact,
+        NOW,
+    ));
     drop(printer);
     // The payload is the struct's own serialization plus the two derived
     // fields, so the expectation is built that way: `state` is pinned to the
@@ -611,6 +618,7 @@ fn status_per_module_scripts_row_breaks_down_per_hook() {
     printer.emit(build_module_status_doc(
         &per_module_output(),
         ModuleStatusView::Compact,
+        NOW,
     ));
     drop(printer);
     let human = cap.human();
@@ -642,7 +650,11 @@ fn status_per_module_scripts_row_breaks_down_per_hook() {
 fn status_per_module_json_carries_script_counts() {
     let output = per_module_output();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_module_status_doc(&output, ModuleStatusView::Compact));
+    printer.emit(build_module_status_doc(
+        &output,
+        ModuleStatusView::Compact,
+        NOW,
+    ));
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(

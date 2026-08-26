@@ -128,9 +128,28 @@ pub(crate) fn compose_status(theme: &Theme, f: &StatusFields<'_>) -> (String, Ve
 /// single-line live-paint clamp, which never wraps) and the split
 /// composition below (read by the wrapped multi-line commit path) can never
 /// render different bytes for the same duration.
+///
+/// Every duration slot on screen composes here — an action row's suffix, a
+/// spinner's settled line, the run rollup's total — so the floor below is the
+/// one place any of them can acquire it.
 fn duration_trailer(theme: &Theme, d: Duration) -> String {
+    theme.muted.apply_to(duration_text(d)).to_string()
+}
+
+/// ` (12.1s)`, and ` (<0.1s)` for anything the one-decimal form would round to
+/// zero.
+///
+/// "Took zero seconds" is the one thing the column can say that is certainly
+/// false, and it says it beside real measurements — a reader comparing rows
+/// reads it as a missing measurement rather than a fast one. The floor keeps
+/// the slot true at every magnitude: below the display resolution the column
+/// reports the resolution, not the value.
+fn duration_text(d: Duration) -> String {
     let secs = d.as_secs_f64();
-    theme.muted.apply_to(format!(" ({:.1}s)", secs)).to_string()
+    if secs < 0.05 {
+        return " (<0.1s)".to_string();
+    }
+    format!(" ({secs:.1}s)")
 }
 
 /// Same composition as [`compose_status`], with the duration trailer held out
@@ -769,6 +788,66 @@ mod tests {
             console::measure_text_width(last),
             118,
             "the duration right-aligns to the shared duration column: {last:?}"
+        );
+    }
+
+    /// The duration column always says something true. `{:.1}` renders any
+    /// sub-tick measurement as a literal zero, and "took zero seconds" beside
+    /// `(1.6s)` and `(10.6s)` reads as a missing measurement rather than a fast
+    /// action — so everything under the display resolution reports the
+    /// resolution instead.
+    #[test]
+    fn a_sub_tick_duration_renders_the_floor_and_never_a_zero() {
+        for millis in [0, 1, 20, 49] {
+            let text = duration_text(Duration::from_millis(millis));
+            assert_eq!(text, " (<0.1s)", "{millis}ms must render the floor");
+        }
+        // The first measurement the one-decimal form can state truthfully is
+        // the first one above the floor, so the two meet with no gap.
+        assert_eq!(duration_text(Duration::from_millis(50)), " (0.1s)");
+        assert_eq!(duration_text(Duration::from_millis(1600)), " (1.6s)");
+        assert_eq!(duration_text(Duration::from_secs(64)), " (64.0s)");
+    }
+
+    /// Every duration slot on screen — an action row, a settled spinner, the
+    /// run rollup — composes through `duration_trailer`, so the floor cannot
+    /// hold on one of them and not the others.
+    #[test]
+    fn every_duration_slot_composes_through_the_one_trailer() {
+        let theme = Theme::default();
+        let d = Duration::from_millis(3);
+        let (line, _) = compose_status(
+            &theme,
+            &StatusFields {
+                role: Role::Ok,
+                subject: "wrote /home/tj/.cfgd.env",
+                detail: None,
+                duration: Some(d),
+                target: None,
+                subject_style: None,
+                detail_style: None,
+            },
+        );
+        assert!(
+            strip_ansi(&line).ends_with(" (<0.1s)"),
+            "the composed line takes the floor: {line:?}"
+        );
+        let (_, trailer, _) = compose_status_split(
+            &theme,
+            &StatusFields {
+                role: Role::Ok,
+                subject: "wrote /home/tj/.cfgd.env",
+                detail: None,
+                duration: Some(d),
+                target: None,
+                subject_style: None,
+                detail_style: None,
+            },
+        );
+        assert_eq!(
+            trailer.map(|t| strip_ansi(&t).to_string()),
+            Some(" (<0.1s)".to_string()),
+            "the wrapped-commit path takes the same bytes"
         );
     }
 }

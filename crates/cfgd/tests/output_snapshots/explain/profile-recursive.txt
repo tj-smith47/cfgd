@@ -3,8 +3,8 @@ Explain: Profile
 
 apiVersion  cfgd.io/v1alpha1
 kind        Profile
-location    profiles/<name>/profile.yaml
-docs        docs/spec/profile.md#fields
+Location    profiles/<name>/profile.yaml
+Docs        docs/spec/profile.md#fields
 
 Fields (under spec)
   aliases   <[]ShellAlias>

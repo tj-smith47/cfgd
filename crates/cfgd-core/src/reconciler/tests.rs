@@ -2350,6 +2350,43 @@ fn conflict_detection_no_overlap_ok() {
     );
 }
 
+/// The bash/PowerShell `PATH` fold for a fixture whose declared value uses the
+/// POSIX separator, so a generator under test renders the one line production
+/// writes rather than a shape no file holds.
+fn posix_path_fold(env: &[crate::config::EnvVar]) -> Option<super::FoldedPath> {
+    super::primary_folded_path(
+        env,
+        &[],
+        &Default::default(),
+        &crate::expand_tilde(std::path::Path::new("~")),
+        super::EnvPlatform::Linux,
+    )
+}
+
+/// The same for a fixture whose declared value uses the Windows separator.
+fn windows_path_fold(env: &[crate::config::EnvVar]) -> Option<super::FoldedPath> {
+    super::primary_folded_path(
+        env,
+        &[],
+        &Default::default(),
+        &crate::expand_tilde(std::path::Path::new("~")),
+        super::EnvPlatform::Windows,
+    )
+}
+
+/// The same for fish, whose entries are quoted so hard that no reference in
+/// them expands.
+fn fish_path_fold(env: &[crate::config::EnvVar]) -> Option<super::FoldedPath> {
+    super::fold_path_line(
+        env,
+        &[],
+        &Default::default(),
+        &crate::expand_tilde(std::path::Path::new("~")),
+        super::EnvPlatform::Linux,
+        None,
+    )
+}
+
 #[test]
 fn generate_env_file_quoted_and_unquoted() {
     let env = vec![
@@ -2362,7 +2399,12 @@ fn generate_env_file_quoted_and_unquoted() {
             value: "/usr/local/bin:$PATH".into(),
         },
     ];
-    let content = super::generate_env_file_content(&env, &[], &[], &Default::default());
+    let content = super::generate_env_file_content(
+        &env,
+        &[],
+        posix_path_fold(&env).as_ref(),
+        &Default::default(),
+    );
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("export EDITOR=\"nvim\""));
     // PATH contains $, so double-quoted to allow expansion
@@ -2381,10 +2423,16 @@ fn generate_fish_env_splits_path() {
             value: "/usr/local/bin:/home/user/.cargo/bin:$PATH".into(),
         },
     ];
-    let content = super::generate_fish_env_content(&env, &[], &[], &Default::default());
+    let content = super::generate_fish_env_content(
+        &env,
+        &[],
+        fish_path_fold(&env).as_ref(),
+        &Default::default(),
+    );
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("set -gx EDITOR 'nvim'"));
-    assert!(content.contains("set -gx PATH '/usr/local/bin' '/home/user/.cargo/bin' '$PATH'"));
+    // A bare `$PATH` splices fish's own list; a quoted one would be a literal.
+    assert!(content.contains("set -gx PATH '/usr/local/bin' '/home/user/.cargo/bin' $PATH"));
 }
 
 // A leading (or `:`-prefixed) `~` in an env value is expanded to the absolute
@@ -2406,15 +2454,30 @@ fn generate_env_files_expand_leading_tilde() {
                 value: "~/bin:/usr/bin".into(),
             },
         ];
-        let bash = super::generate_env_file_content(&env, &[], &[], &Default::default());
+        let bash = super::generate_env_file_content(
+            &env,
+            &[],
+            posix_path_fold(&env).as_ref(),
+            &Default::default(),
+        );
         assert!(bash.contains(&format!("export CLIFT_DIR=\"{h}/.local/share/clift\"")));
         assert!(bash.contains(&format!("export PATH=\"{h}/bin:/usr/bin\"")));
 
-        let fish = super::generate_fish_env_content(&env, &[], &[], &Default::default());
+        let fish = super::generate_fish_env_content(
+            &env,
+            &[],
+            fish_path_fold(&env).as_ref(),
+            &Default::default(),
+        );
         assert!(fish.contains(&format!("set -gx CLIFT_DIR '{h}/.local/share/clift'")));
         assert!(fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")));
 
-        let ps = super::generate_powershell_env_content(&env, &[], &[], &Default::default());
+        let ps = super::generate_powershell_env_content(
+            &env,
+            &[],
+            posix_path_fold(&env).as_ref(),
+            &Default::default(),
+        );
         assert!(ps.contains(&format!("$env:CLIFT_DIR = '{h}/.local/share/clift'")));
     });
 }
@@ -2441,7 +2504,12 @@ fn generate_fish_path_keeps_colon_containing_home_intact() {
             name: "PATH".into(),
             value: "~/bin:/usr/bin".into(),
         }];
-        let fish = super::generate_fish_env_content(&env, &[], &[], &Default::default());
+        let fish = super::generate_fish_env_content(
+            &env,
+            &[],
+            fish_path_fold(&env).as_ref(),
+            &Default::default(),
+        );
         assert!(
             fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")),
             "drive/colon-containing home must stay one PATH part, got: {fish}"
@@ -2525,7 +2593,7 @@ fn plan_env_generates_file_matching_expected() {
     // Write the expected content to a temp file to simulate "already applied"
     let dir = tempfile::tempdir().unwrap();
     let env_path = dir.path().join(".cfgd.env");
-    let expected = super::generate_env_file_content(&env, &[], &[], &Default::default());
+    let expected = super::generate_env_file_content(&env, &[], None, &Default::default());
     std::fs::write(&env_path, &expected).unwrap();
 
     // plan_env checks the real ~/.cfgd.env path, not our temp file,
@@ -2565,7 +2633,7 @@ fn generate_env_file_with_aliases() {
             command: "ls -la".into(),
         },
     ];
-    let content = super::generate_env_file_content(&env, &aliases, &[], &Default::default());
+    let content = super::generate_env_file_content(&env, &aliases, None, &Default::default());
     assert!(content.contains("export EDITOR=\"nvim\""));
     assert!(content.contains("alias vim=\"nvim\""));
     assert!(content.contains("alias ll=\"ls -la\""));
@@ -2581,7 +2649,7 @@ fn generate_fish_env_with_aliases() {
         name: "vim".into(),
         command: "nvim".into(),
     }];
-    let content = super::generate_fish_env_content(&env, &aliases, &[], &Default::default());
+    let content = super::generate_fish_env_content(&env, &aliases, None, &Default::default());
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     assert!(content.contains("abbr -a vim 'nvim'"));
 }
@@ -2675,7 +2743,7 @@ fn generate_env_file_alias_escapes_quotes() {
         name: "greet".into(),
         command: "echo \"hello world\"".into(),
     }];
-    let content = super::generate_env_file_content(&[], &aliases, &[], &Default::default());
+    let content = super::generate_env_file_content(&[], &aliases, None, &Default::default());
     assert!(content.contains("alias greet=\"echo \\\"hello world\\\"\""));
 }
 
@@ -2943,7 +3011,12 @@ fn generate_powershell_env_basic() {
             value: r"C:\Users\user\.cargo\bin;$env:PATH".into(),
         },
     ];
-    let content = super::generate_powershell_env_content(&env, &[], &[], &Default::default());
+    let content = super::generate_powershell_env_content(
+        &env,
+        &[],
+        windows_path_fold(&env).as_ref(),
+        &Default::default(),
+    );
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("$env:EDITOR = 'code'"));
     // PATH references $env: so double-quoted to allow expansion
@@ -2962,7 +3035,7 @@ fn generate_powershell_env_with_aliases() {
             command: "Get-ChildItem -Force".into(),
         },
     ];
-    let content = super::generate_powershell_env_content(&[], &aliases, &[], &Default::default());
+    let content = super::generate_powershell_env_content(&[], &aliases, None, &Default::default());
     assert!(content.contains("Set-Alias -Name g -Value 'git'"));
     assert!(content.contains("function ll {"));
     assert!(content.contains("Get-ChildItem -Force @args"));
@@ -2974,14 +3047,14 @@ fn generate_powershell_env_escapes_quotes() {
         name: "GREETING".into(),
         value: r#"say "hello""#.into(),
     }];
-    let content = super::generate_powershell_env_content(&env, &[], &[], &Default::default());
+    let content = super::generate_powershell_env_content(&env, &[], None, &Default::default());
     // No $env: reference, so single-quoted (PS single quotes don't need escaping except ')
     assert!(content.contains("$env:GREETING = 'say \"hello\"'"));
 }
 
 #[test]
 fn generate_powershell_env_empty() {
-    let content = super::generate_powershell_env_content(&[], &[], &[], &Default::default());
+    let content = super::generate_powershell_env_content(&[], &[], None, &Default::default());
     assert!(content.starts_with("# managed by cfgd"));
     // Only header + trailing newline
     assert_eq!(content.lines().count(), 1);
@@ -3629,7 +3702,7 @@ fn apply_env_write_env_file_to_tempdir() {
             value: "/home/user/.cargo".into(),
         },
     ];
-    let content = super::generate_env_file_content(&env, &[], &[], &Default::default());
+    let content = super::generate_env_file_content(&env, &[], None, &Default::default());
 
     let action = EnvAction::WriteEnvFile {
         path: env_path.clone(),
@@ -3660,7 +3733,7 @@ fn apply_env_write_skips_when_content_matches() {
         name: "EDITOR".into(),
         value: "nvim".into(),
     }];
-    let content = super::generate_env_file_content(&env, &[], &[], &Default::default());
+    let content = super::generate_env_file_content(&env, &[], None, &Default::default());
 
     // Pre-write identical content
     std::fs::write(&env_path, &content).unwrap();
@@ -4497,7 +4570,7 @@ fn apply_env_write_with_aliases_produces_correct_file() {
         name: "ll".into(),
         command: "ls -la".into(),
     }];
-    let content = super::generate_env_file_content(&env, &aliases, &[], &Default::default());
+    let content = super::generate_env_file_content(&env, &aliases, None, &Default::default());
 
     let action = EnvAction::WriteEnvFile {
         path: env_path.clone(),
@@ -7361,7 +7434,7 @@ fn generate_powershell_env_escapes_single_quotes() {
         name: "MSG".into(),
         value: "it's a test".into(),
     }];
-    let content = super::generate_powershell_env_content(&env, &[], &[], &Default::default());
+    let content = super::generate_powershell_env_content(&env, &[], None, &Default::default());
     // Single quotes in values are doubled in PS
     assert!(content.contains("$env:MSG = 'it''s a test'"));
 }
@@ -7372,7 +7445,7 @@ fn generate_fish_env_escapes_single_quotes() {
         name: "MSG".into(),
         value: "it's a test".into(),
     }];
-    let content = super::generate_fish_env_content(&env, &[], &[], &Default::default());
+    let content = super::generate_fish_env_content(&env, &[], None, &Default::default());
     assert!(content.contains("set -gx MSG 'it\\'s a test'"));
 }
 
@@ -10744,7 +10817,7 @@ fn generate_fish_env_content_basic() {
         name: "g".into(),
         command: "git".into(),
     }];
-    let content = super::generate_fish_env_content(&env, &aliases, &[], &Default::default());
+    let content = super::generate_fish_env_content(&env, &aliases, None, &Default::default());
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     assert!(content.contains("set -gx CARGO_HOME '/home/user/.cargo'"));
@@ -10757,7 +10830,7 @@ fn generate_powershell_env_content_with_env_ref() {
         name: "MY_PATH".into(),
         value: r"C:\tools;$env:PATH".into(),
     }];
-    let content = super::generate_powershell_env_content(&env, &[], &[], &Default::default());
+    let content = super::generate_powershell_env_content(&env, &[], None, &Default::default());
     // Contains $env: so should be double-quoted
     assert!(
         content.contains(r#"$env:MY_PATH = "C:\tools;$env:PATH""#),
@@ -10773,7 +10846,7 @@ fn generate_powershell_env_function_alias() {
         name: "ll".into(),
         command: "Get-ChildItem -Force".into(),
     }];
-    let content = super::generate_powershell_env_content(&[], &aliases, &[], &Default::default());
+    let content = super::generate_powershell_env_content(&[], &aliases, None, &Default::default());
     assert!(content.contains("function ll {"));
     assert!(content.contains("Get-ChildItem -Force @args"));
 }
@@ -10785,9 +10858,14 @@ fn generate_fish_env_path_splitting() {
         name: "PATH".into(),
         value: "/usr/bin:/usr/local/bin:$PATH".into(),
     }];
-    let content = super::generate_fish_env_content(&env, &[], &[], &Default::default());
+    let content = super::generate_fish_env_content(
+        &env,
+        &[],
+        fish_path_fold(&env).as_ref(),
+        &Default::default(),
+    );
     assert!(
-        content.contains("set -gx PATH '/usr/bin' '/usr/local/bin' '$PATH'"),
+        content.contains("set -gx PATH '/usr/bin' '/usr/local/bin' $PATH"),
         "content: {}",
         content
     );
@@ -11684,18 +11762,20 @@ fn a_drifted_env_row_shows_the_line_the_file_holds_against_the_declared_one() {
     }];
     // Both lines come from production's own renderer rather than a POSIX
     // literal, so the fixture holds whatever dialect this platform writes.
-    let edited_line = super::verify::MergedEnvItems::new(&edited, &[], &Default::default(), &[])
-        .declared_line("env-var", "EDITOR")
-        .expect("the edited var renders a line");
+    let edited_line =
+        super::verify::MergedEnvItems::new(&edited, &[], &Default::default(), &[], &[])
+            .declared_line("env-var", "EDITOR")
+            .expect("the edited var renders a line");
     let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
     std::fs::write(path, format!("{ENV_FILE_HEADER}\n{edited_line}\n")).unwrap();
 
-    let (want, have) = super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[])
-        .display_values("env-var", "EDITOR")
-        .expect("a declared env var recomputes both operands");
+    let (want, have) =
+        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
+            .display_values("env-var", "EDITOR")
+            .expect("a declared env var recomputes both operands");
     assert_eq!(
         want,
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[])
+        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
             .declared_line("env-var", "EDITOR")
             .unwrap(),
         "want is the line the declaration renders as"
@@ -11723,7 +11803,7 @@ fn one_merged_env_view_answers_every_row_of_a_report() {
         name: "ll".to_string(),
         command: "ls -lah".to_string(),
     }];
-    let view = super::verify::MergedEnvItems::new(&env, &aliases, &Default::default(), &[]);
+    let view = super::verify::MergedEnvItems::new(&env, &aliases, &Default::default(), &[], &[]);
 
     let editor = view
         .declared_line("env-var", "EDITOR")
@@ -11758,19 +11838,20 @@ fn an_env_item_the_file_does_not_hold_reads_as_the_shared_absence_word() {
     let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
     std::fs::write(path, format!("{ENV_FILE_HEADER}\n")).unwrap();
 
-    let (_, have) = super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[])
-        .display_values("env-var", "EDITOR")
-        .expect("a declared env var recomputes both operands");
+    let (_, have) =
+        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
+            .display_values("env-var", "EDITOR")
+            .expect("a declared env var recomputes both operands");
     assert_eq!(have, crate::Absence::Missing.as_str());
 
     assert!(
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[])
+        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
             .display_values("file", "~/.zshrc")
             .is_none(),
         "a kind with no managed env line recomputes nothing"
     );
     assert!(
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[])
+        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
             .display_values("env-var", "PAGER")
             .is_none(),
         "an item no longer declared recomputes nothing"
@@ -11804,8 +11885,9 @@ fn an_unreadable_managed_env_file_recomputes_nothing_rather_than_claiming_absenc
     std::fs::write(&path, format!("{ENV_FILE_HEADER}\n")).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-    let recomputed = super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[])
-        .display_values("env-var", "EDITOR");
+    let recomputed =
+        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
+            .display_values("env-var", "EDITOR");
 
     // Restore before asserting so a failure does not leave the tempdir
     // undeletable.
@@ -21947,8 +22029,14 @@ fn the_managers_label_is_on_screen_while_its_lanes_run() {
     );
 }
 
+/// The two details a run settles that must NOT render muted: a withheld row's
+/// reason, which is the only new information on a line whose subject says the
+/// work did not happen, and an error, which the reader has to act on.
+///
+/// `crate::output::renderer::action_detail_is_muted` is the rule both read;
+/// this is the run-level proof that a real apply reaches it.
 #[test]
-fn metadata_detail_is_muted_and_error_detail_is_not() {
+fn a_withheld_reason_and_an_error_detail_both_render_bright() {
     /// Whether the detail beginning at `needle` is preceded by styling — the
     /// separator-to-text window carries an escape only when a detail style was
     /// supplied.
@@ -22002,8 +22090,8 @@ fn metadata_detail_is_muted_and_error_detail_is_not() {
     let raw = cap.human();
 
     assert!(
-        detail_is_styled(&raw, "unchanged"),
-        "a metadata detail is muted"
+        !detail_is_styled(&raw, "unchanged"),
+        "a withheld row's reason carries the line, so it renders bright"
     );
     assert!(
         !detail_is_styled(&raw, "package error"),
@@ -24948,7 +25036,12 @@ fn every_generated_env_line_names_the_owner_that_declared_it() {
         ManagerPathDir::new("brew", "/home/linuxbrew/.linuxbrew/sbin"),
         ManagerPathDir::new("cargo", "/home/u/.cargo/bin"),
     ];
-    let content = super::generate_env_file_content(&env, &aliases, &path_dirs, &origins);
+    let content = super::generate_env_file_content(
+        &env,
+        &aliases,
+        Some(&FoldedPath::derived(&path_dirs)),
+        &origins,
+    );
 
     assert!(
         content.contains("export EDITOR=\"nvim\" # module:nvim"),
@@ -24983,11 +25076,21 @@ fn every_generated_env_line_names_the_owner_that_declared_it() {
         ("bash/zsh", content),
         (
             "fish",
-            super::generate_fish_env_content(&env, &aliases, &path_dirs, &origins),
+            super::generate_fish_env_content(
+                &env,
+                &aliases,
+                Some(&FoldedPath::derived(&path_dirs)),
+                &origins,
+            ),
         ),
         (
             "powershell",
-            super::env_files::generate_powershell_env_content(&env, &aliases, &path_dirs, &origins),
+            super::env_files::generate_powershell_env_content(
+                &env,
+                &aliases,
+                Some(&FoldedPath::derived(&path_dirs)),
+                &origins,
+            ),
         ),
     ] {
         let body: Vec<&str> = content
@@ -25106,9 +25209,10 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
     // difference that is not the difference.
     let written = std::fs::read_to_string(&primary).unwrap();
     for (id, owner) in [("EDITOR", "# module:nvim"), ("PAGER", "# profile:base")] {
-        let shown = super::verify::MergedEnvItems::new(&profile_env, &[], &layer_owners, &modules)
-            .declared_line("env-var", id)
-            .expect("a declared var renders its declared line");
+        let shown =
+            super::verify::MergedEnvItems::new(&profile_env, &[], &layer_owners, &modules, &[])
+                .declared_line("env-var", id)
+                .expect("a declared var renders its declared line");
         assert!(
             shown.contains(owner),
             "the shown line carries the provenance comment verify matched on: {shown}"

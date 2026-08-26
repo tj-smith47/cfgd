@@ -80,7 +80,7 @@ pub fn cmd_profile_delete(
             name,
             "active_profile",
             format!(
-                "Cannot delete '{}' — it is the active profile. Switch first with: cfgd profile switch <other>",
+                "Cannot delete '{}' — it is the active profile. Switch first with: `cfgd profile switch <other>`",
                 name
             ),
             serde_json::json!({}),

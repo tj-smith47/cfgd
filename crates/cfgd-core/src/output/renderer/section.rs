@@ -129,12 +129,36 @@ impl Renderer {
     }
 
     /// Mark the innermost open section live: its statuses render as they
-    /// arrive, padded to `width`.
+    /// arrive, padded to `width` — or to the report's own column when one has
+    /// been claimed, so a report's action rows share one column across every
+    /// phase rather than one per phase.
     pub(crate) fn render_section_live_column(&self, width: usize) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let width = s.report_column.unwrap_or(width);
         if let Some(top) = s.section_stack.last_mut() {
             top.live_column = Some(width);
         }
+    }
+
+    /// Claim the report-wide alignment column, answering whether this call is
+    /// the one that claimed it.
+    ///
+    /// The OUTERMOST claim wins: an apply claims a column measured over its
+    /// plan AND its backup labels, and the preview nested inside it — which
+    /// can see only the plan — must not narrow what the run already settled.
+    pub(crate) fn claim_report_column(&self, width: usize) -> bool {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if s.report_column.is_some() {
+            return false;
+        }
+        s.report_column = Some(width);
+        true
+    }
+
+    /// Release a claim made by [`Renderer::claim_report_column`].
+    pub(crate) fn release_report_column(&self) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.report_column = None;
     }
 
     /// Set the empty_state placeholder for the topmost open section.

@@ -1,5 +1,5 @@
 Backups
-Name    Source                  Schedule   Retention  Snapshots  Last Run  Next Run            
-───────────────────────────────────────────────────────────────────────────────────────────────
-docs    /var/lib/app/notes.txt  -          3          0          never     -                   
-weekly  /var/lib/app/notes.txt  0 3 * * *  3          0          never     <NEXT_RUN>
+Name    Source                  Schedule   Retention  Snapshots  Status  Last Run  Next Run
+───────────────────────────────────────────────────────────────────────────────────────────
+docs    /var/lib/app/notes.txt  -          3          0          -       never     -
+weekly  /var/lib/app/notes.txt  0 3 * * *  3          0          -       never     <NEXT_RUN>

@@ -288,32 +288,36 @@ impl EnvOrigins {
         comment(self.0.env.get(name).map(String::as_str))
     }
 
+    /// The owner token of an env var, unwrapped — for the one line whose
+    /// comment names TWO producers and so cannot be composed from a rendered
+    /// comment.
+    fn env_owner(&self, name: &str) -> Option<&str> {
+        self.0.env.get(name).map(String::as_str)
+    }
+
     /// The same for an alias line.
     pub(super) fn alias_comment(&self, name: &str) -> String {
         comment(self.0.aliases.get(name).map(String::as_str))
     }
 }
 
-/// The trailing comment cfgd's own bootstrapped-PATH line carries: the managers
-/// whose directories it publishes, in dir order and deduped
-/// (` # manager:brew,cargo`). One comment for the whole line, because the line
-/// is one `export`; empty when nothing named a manager.
+/// The manager half of the PATH line's owner comment: the managers whose
+/// directories the line publishes, in dir order and deduped
+/// (`manager:brew,cargo`). One token for the whole line, because the line is
+/// one assignment; `None` when nothing named a manager.
 ///
 /// This vocabulary is deliberately WIDER than [`super::OwnerKind`]'s: the name
 /// half is a comma list, which no `Owner` name may hold, so reading it back
 /// through `OwnerKind::from_token("manager")` stays `None` on purpose rather
 /// than minting an owner that names two things at once.
-pub(super) fn path_dirs_comment(dirs: &[ManagerPathDir]) -> String {
+fn path_dirs_manager_token(dirs: &[ManagerPathDir]) -> Option<String> {
     let mut managers: Vec<&str> = Vec::new();
     for dir in dirs {
         if !dir.manager.is_empty() && !managers.contains(&dir.manager.as_str()) {
             managers.push(&dir.manager);
         }
     }
-    if managers.is_empty() {
-        return String::new();
-    }
-    comment(Some(&format!("manager:{}", managers.join(","))))
+    (!managers.is_empty()).then(|| format!("manager:{}", managers.join(",")))
 }
 
 /// Render an owner token as a trailing shell comment.
@@ -324,14 +328,15 @@ pub(super) fn path_dirs_comment(dirs: &[ManagerPathDir]) -> String {
 /// rather than escaped: a `\n` would end the assignment and stand the
 /// remainder up as further shell, and there is nothing a comment is worth
 /// risking that for. `,` is in the alphabet because the PATH line's comment
-/// names every manager that contributed to it, and a `,` cannot end a shell
-/// line.
+/// names every manager that contributed to it, and ` ` because that same line
+/// is the one assignment with TWO producers to name (`manager:brew,npm
+/// module:nvim`) — neither character can end a shell line.
 fn comment(owner: Option<&str>) -> String {
     match owner {
         Some(owner)
-            if owner
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_' | '.' | ',')) =>
+            if owner.chars().all(|c| {
+                c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_' | '.' | ',' | ' ')
+            }) =>
         {
             format!(" # {owner}")
         }
@@ -377,10 +382,9 @@ impl ManagerPathDir {
         }
     }
 
-    /// A directory no manager claims. The sentinel render behind
-    /// `super::env_files::path_dirs_line_prefix` takes this: the prefix is
-    /// the text BEFORE the trailing comment, so naming a manager there would
-    /// put a comment in the very string that has to match a real line's head.
+    /// A directory no manager claims — a fold over it carries no owner
+    /// comment, which is what a caller asserting on the ASSIGNMENT rather than
+    /// on its provenance wants.
     pub fn unowned(dir: impl Into<String>) -> Self {
         Self {
             manager: String::new(),
@@ -458,6 +462,206 @@ fn home_spelled(dir: &str, home: &str, token: &str) -> String {
     }
 }
 
+/// One entry of the ONE `PATH` assignment a generated file carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum PathPart {
+    /// A directory, already spelled the way this file spells the home
+    /// directory, and not yet quoted — quoting is the dialect's.
+    Dir(String),
+    /// The `PATH` the shell already had, spliced in where the declaration put
+    /// it. Rendered as each dialect's own spelling of that reference, never as
+    /// the literal characters a declaration happened to use.
+    Inherited,
+}
+
+/// The single `PATH` assignment a generated file carries, whichever of its two
+/// producers contributed to it.
+///
+/// One variable, one assignment: cfgd's bootstrapped-manager directories and a
+/// declared `spec.env` `PATH` used to render as two `export PATH=` lines in one
+/// file, so the file assigned one variable twice and every count over it had to
+/// choose between naming lines and naming variables — the write said `4 vars`
+/// one row above a session publish saying `3`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FoldedPath {
+    parts: Vec<PathPart>,
+    /// The trailing owner comment, naming BOTH producers when both contributed
+    /// (` # manager:brew,npm module:nvim`).
+    pub(super) comment: String,
+}
+
+impl FoldedPath {
+    /// A fold of literal directories and nothing else — no inherited PATH and
+    /// no owner comment. The sentinel render behind
+    /// `super::env_files::path_dirs_line_prefix`, whose whole job is the text
+    /// BEFORE the value.
+    pub(super) fn literal(dirs: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            parts: dirs.into_iter().map(PathPart::Dir).collect(),
+            comment: String::new(),
+        }
+    }
+
+    /// A fold of derived directories ahead of the inherited `PATH` and nothing
+    /// else — the shape the line takes when no layer declares `PATH` at all.
+    pub(super) fn derived(dirs: &[ManagerPathDir]) -> Self {
+        let mut parts: Vec<PathPart> = dirs.iter().map(|d| PathPart::Dir(d.dir.clone())).collect();
+        parts.push(PathPart::Inherited);
+        Self {
+            parts,
+            comment: comment(path_dirs_manager_token(dirs).as_deref()),
+        }
+    }
+
+    /// The assignment's value, rendered in one dialect: `quote` is that
+    /// dialect's complete quoting of a single directory, `inherited` its
+    /// spelling of the ambient `PATH`, and `separator` what joins entries.
+    ///
+    /// The fold decides WHICH entries and in what order; a dialect decides only
+    /// how they are written, which is why this is a renderer rather than a
+    /// string the fold hands out.
+    pub(super) fn value(
+        &self,
+        quote: impl Fn(&str) -> String,
+        inherited: &str,
+        separator: &str,
+    ) -> String {
+        self.parts
+            .iter()
+            .map(|part| match part {
+                PathPart::Dir(dir) => quote(dir),
+                PathPart::Inherited => inherited.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(separator)
+    }
+}
+
+/// Whether a declared `PATH` segment references the PATH the shell already has,
+/// in any dialect's spelling. A declaration is authored once and rendered into
+/// every dialect, so `$PATH` in a value that ends up in a PowerShell file has
+/// to become `$env:PATH` there rather than a literal nobody set.
+fn is_inherited_path_ref(segment: &str) -> bool {
+    matches!(
+        segment.trim().to_ascii_uppercase().as_str(),
+        "$PATH" | "${PATH}" | "$ENV:PATH" | "%PATH%"
+    )
+}
+
+/// The ONE derivation of a generated file's `PATH` line, over both producers.
+///
+/// Declared entries come first, in declared order, because they are the user's
+/// stated precedence; the surviving derived directories are spliced in where
+/// the declaration reaches for the ambient `PATH`, so cfgd's own bookkeeping
+/// stays ahead of whatever the shell already had — the ordering the two
+/// separate lines used to produce. A declaration naming no ambient `PATH` at
+/// all is taken at its word and the derived directories follow its entries.
+///
+/// `home_token` is the file's spelling of the home directory, applied to every
+/// entry on the line whatever produced it: a fish file single-quotes, which
+/// suppresses `$HOME`, so a declared `$HOME/.cargo/bin` beside a literal
+/// derived directory would be one broken entry on an otherwise working line.
+///
+/// `None` when neither producer has anything to say.
+pub(super) fn fold_path_line(
+    env: &[EnvVar],
+    path_dirs: &[ManagerPathDir],
+    origins: &EnvOrigins,
+    home: &Path,
+    platform: EnvPlatform,
+    home_token: Option<&str>,
+) -> Option<FoldedPath> {
+    let derived = effective_path_dirs(path_dirs, env, home, platform, home_token);
+    let declared = env
+        .iter()
+        .rfind(|e| e.name == "PATH" && crate::validate_env_var_name(&e.name).is_ok());
+    if derived.is_empty() && declared.is_none() {
+        return None;
+    }
+
+    let home_str = crate::to_posix_string(home);
+    let home_str = home_str.trim_end_matches('/');
+    let spell = |dir: &str| {
+        let expanded = crate::expand_env_value_tilde(dir);
+        match home_token {
+            // A DECLARED entry keeps the spelling it was written with: this
+            // line is the only place the user's own text appears, and a
+            // dialect that interpolates resolves it either way.
+            Some(_) => expanded,
+            // No token means the dialect cannot expand a reference at all, so
+            // the literal path is the only spelling that resolves there — a
+            // declared `$HOME/...` beside a literal derived directory would
+            // otherwise be the one dead entry on a working line.
+            None => home_spelled_literal(&expanded, home_str),
+        }
+    };
+
+    let Some(declared) = declared else {
+        return Some(FoldedPath::derived(&derived));
+    };
+
+    let mut parts = Vec::new();
+    let mut spliced = false;
+    for segment in declared.value.split(path_separator(platform)) {
+        if segment.is_empty() {
+            continue;
+        }
+        if is_inherited_path_ref(segment) {
+            parts.extend(derived.iter().map(|d| PathPart::Dir(d.dir.clone())));
+            spliced = true;
+            parts.push(PathPart::Inherited);
+        } else {
+            parts.push(PathPart::Dir(spell(segment)));
+        }
+    }
+    if !spliced {
+        parts.extend(derived.iter().map(|d| PathPart::Dir(d.dir.clone())));
+    }
+
+    let token = [
+        path_dirs_manager_token(&derived),
+        origins.env_owner("PATH").map(str::to_string),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ");
+    Some(FoldedPath {
+        parts,
+        comment: comment((!token.is_empty()).then_some(token.as_str())),
+    })
+}
+
+/// The primary managed file's PATH fold — the spelling BOTH platform target
+/// builders use for it, named once so the write and the per-entry comparison
+/// that reads it back cannot disagree about what that file's PATH line says.
+pub(super) fn primary_folded_path(
+    env: &[EnvVar],
+    path_dirs: &[ManagerPathDir],
+    origins: &EnvOrigins,
+    home: &Path,
+    platform: EnvPlatform,
+) -> Option<FoldedPath> {
+    fold_path_line(env, path_dirs, origins, home, platform, Some(HOME_TOKEN))
+}
+
+/// The inverse of [`home_spelled`]: `dir` with a leading `$HOME` / `${HOME}`
+/// replaced by the literal home directory, for the dialect that quotes each
+/// entry so hard that a reference never expands.
+fn home_spelled_literal(dir: &str, home: &str) -> String {
+    if home.is_empty() {
+        return dir.to_string();
+    }
+    for token in ["${HOME}", "$HOME"] {
+        if let Some(rest) = dir.strip_prefix(token)
+            && (rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\'))
+        {
+            return format!("{home}{rest}");
+        }
+    }
+    dir.to_string()
+}
+
 /// The primary managed env file for `platform` — the first `ManagedFile`
 /// [`env_targets`] pushes, and the only one the per-item checks read. Named
 /// once here because a display surface reads that file back to show what a
@@ -486,11 +690,11 @@ fn unix_targets(
     } = content;
     // Interactive (all scopes): the cfgd-owned env file + a source line in the
     // user's interactive rc, plus fish when it's in use.
-    let posix_dirs = effective_path_dirs(path_dirs, env, home, platform, Some(HOME_TOKEN));
+    let posix_path = primary_folded_path(env, path_dirs, origins, home, platform);
     out.push(EnvTarget::ManagedFile {
         path: primary_env_file_path(home, platform),
-        content: generate_env_file_content(env, aliases, &posix_dirs, origins),
-        rendered: RenderedCounts::of(env, aliases, !posix_dirs.is_empty()),
+        content: generate_env_file_content(env, aliases, posix_path.as_ref(), origins),
+        rendered: RenderedCounts::of(env, aliases, posix_path.is_some()),
     });
     let interactive_rc = if probe.shell.contains("zsh") {
         home.join(".zshrc")
@@ -502,11 +706,11 @@ fn unix_targets(
         line: UNIX_SOURCE_LINE.to_string(),
     });
     if probe.fish_present {
-        let fish_dirs = effective_path_dirs(path_dirs, env, home, platform, None);
+        let fish_path = fold_path_line(env, path_dirs, origins, home, platform, None);
         out.push(EnvTarget::ManagedFile {
             path: home.join(".config/fish/conf.d/cfgd-env.fish"),
-            content: generate_fish_env_content(env, aliases, &fish_dirs, origins),
-            rendered: RenderedCounts::of(env, aliases, !fish_dirs.is_empty()),
+            content: generate_fish_env_content(env, aliases, fish_path.as_ref(), origins),
+            rendered: RenderedCounts::of(env, aliases, fish_path.is_some()),
         });
     }
 
@@ -586,11 +790,11 @@ fn windows_targets(
         origins,
     } = content;
     // PowerShell env file + dot-source into both profile locations.
-    let ps_dirs = effective_path_dirs(path_dirs, env, home, EnvPlatform::Windows, Some(HOME_TOKEN));
+    let ps_path = primary_folded_path(env, path_dirs, origins, home, EnvPlatform::Windows);
     out.push(EnvTarget::ManagedFile {
         path: primary_env_file_path(home, EnvPlatform::Windows),
-        content: generate_powershell_env_content(env, aliases, &ps_dirs, origins),
-        rendered: RenderedCounts::of(env, aliases, !ps_dirs.is_empty()),
+        content: generate_powershell_env_content(env, aliases, ps_path.as_ref(), origins),
+        rendered: RenderedCounts::of(env, aliases, ps_path.is_some()),
     });
     for dir in ["Documents/PowerShell", "Documents/WindowsPowerShell"] {
         out.push(EnvTarget::SourceLine {
@@ -602,8 +806,8 @@ fn windows_targets(
     if probe.git_bash_present {
         out.push(EnvTarget::ManagedFile {
             path: home.join(".cfgd.env"),
-            content: generate_env_file_content(env, aliases, &ps_dirs, origins),
-            rendered: RenderedCounts::of(env, aliases, !ps_dirs.is_empty()),
+            content: generate_env_file_content(env, aliases, ps_path.as_ref(), origins),
+            rendered: RenderedCounts::of(env, aliases, ps_path.is_some()),
         });
         out.push(EnvTarget::SourceLine {
             rc_path: home.join(".bashrc"),
@@ -625,16 +829,18 @@ impl RenderedCounts {
     /// applies before emitting a line, so the count describes the file rather
     /// than the declaration list it was derived from.
     ///
-    /// `path_line` is cfgd's own bootstrapped-PATH export, which is a written
-    /// line like any other — a count that omitted it named 3 vars over a file
-    /// holding four `export`s.
+    /// `path_line` says the file carries the folded `PATH` assignment, which is
+    /// a written line like any other — a count that omitted it named 3 vars
+    /// over a file holding four `export`s. It is counted ONCE however many
+    /// producers fed it: a declared `PATH` is not a second line, it is part of
+    /// that one.
     fn of(env: &[EnvVar], aliases: &[ShellAlias], path_line: bool) -> Self {
+        let declared = env
+            .iter()
+            .filter(|e| crate::validate_env_var_name(&e.name).is_ok());
+        let declares_path = declared.clone().any(|e| e.name == "PATH");
         Self {
-            vars: usize::from(path_line)
-                + env
-                    .iter()
-                    .filter(|e| crate::validate_env_var_name(&e.name).is_ok())
-                    .count(),
+            vars: usize::from(path_line && !declares_path) + declared.count(),
             aliases: aliases
                 .iter()
                 .filter(|a| crate::validate_alias_name(&a.name).is_ok())
@@ -798,18 +1004,21 @@ mod tests {
         )
     }
 
-    /// bash/zsh: the surviving entries spell home `$HOME` — the same spelling
-    /// the declared line uses — and the entry the declaration already
-    /// publishes is gone. The count is the number of `export` lines written.
+    /// bash/zsh: ONE `export PATH=`, the declared entry first and the surviving
+    /// derived directories spliced in ahead of the inherited PATH. The entry the
+    /// declaration already publishes is gone, the derived entries spell home
+    /// `$HOME` — the same spelling the declaration uses — and the count is the
+    /// number of `export` lines written.
     #[test]
-    fn bash_path_line_drops_a_declared_dir_and_spells_home_once() {
+    fn bash_path_line_folds_both_producers_into_one_export() {
         let home = Path::new("/home/tj");
         let targets = unix_targets_for(home);
         let (content, rendered) = managed_file(&targets, ".cfgd.env");
         let line = path_line(content, "export PATH=");
         assert_eq!(
             line,
-            "export PATH=\"/opt/brewroot/bin:$HOME/.npm-global/bin:$PATH\" # manager:brew,npm",
+            "export PATH=\"$HOME/.cargo/bin:/opt/brewroot/bin:$HOME/.npm-global/bin:$PATH\" \
+             # manager:brew,npm",
             "in:\n{content}"
         );
         assert!(
@@ -818,20 +1027,23 @@ mod tests {
         );
         let exports = content.lines().filter(|l| l.starts_with("export ")).count();
         assert_eq!(rendered.vars, exports, "in:\n{content}");
-        assert_eq!(rendered.vars, 3);
+        assert_eq!(rendered.vars, 2);
     }
 
     /// fish single-quotes each entry, which suppresses `$HOME`, so its one
-    /// spelling is the literal path. The declared entry drops out the same way.
+    /// spelling is the literal path — for the DECLARED entries on the folded
+    /// line too, or the line would carry one dead entry. The inherited PATH
+    /// stays a bare `$PATH`, which is what splices fish's own list.
     #[test]
-    fn fish_path_line_drops_a_declared_dir_and_keeps_a_literal_home() {
+    fn fish_path_line_folds_both_producers_and_keeps_a_literal_home() {
         let home = Path::new("/home/tj");
         let targets = unix_targets_for(home);
         let (content, rendered) = managed_file(&targets, "cfgd-env.fish");
         let line = path_line(content, "set -gx PATH '");
         assert_eq!(
             line,
-            "set -gx PATH '/opt/brewroot/bin' '/home/tj/.npm-global/bin' $PATH # manager:brew,npm",
+            "set -gx PATH '/home/tj/.cargo/bin' '/opt/brewroot/bin' \
+             '/home/tj/.npm-global/bin' $PATH # manager:brew,npm",
             "in:\n{content}"
         );
         assert!(!line.contains("$HOME"), "fish cannot expand it: {line}");
@@ -843,9 +1055,11 @@ mod tests {
     }
 
     /// PowerShell interpolates `$HOME` inside double quotes, so it takes the
-    /// token spelling; `;` is the separator a declared value is split on.
+    /// token spelling; `;` is the separator a declared value is split on, and
+    /// the declaration's `$PATH` is rendered as PowerShell's own spelling of
+    /// the reference rather than as a variable nobody set.
     #[test]
-    fn powershell_path_line_drops_a_declared_dir_and_spells_home_once() {
+    fn powershell_path_line_folds_both_producers_into_one_assignment() {
         let home = Path::new("C:/Users/tj");
         let env = vec![
             ev("PATH", "$HOME/.cargo/bin;$PATH"),
@@ -864,7 +1078,8 @@ mod tests {
         let line = path_line(content, "$env:PATH = ");
         assert_eq!(
             line,
-            "$env:PATH = \"/opt/brewroot/bin;$HOME/.npm-global/bin;$env:PATH\" # manager:brew,npm",
+            "$env:PATH = \"$HOME/.cargo/bin;/opt/brewroot/bin;$HOME/.npm-global/bin;$env:PATH\" \
+             # manager:brew,npm",
             "in:\n{content}"
         );
         assert!(
@@ -911,5 +1126,133 @@ mod tests {
             "no derived PATH line here:\n{content}"
         );
         assert_eq!(rendered.vars, 2, "in:\n{content}");
+    }
+
+    /// The one line with two producers names them both, in one comment, in the
+    /// two-token shape `without_owner_comment` folds back off.
+    #[test]
+    fn a_folded_path_line_names_both_its_producers() {
+        let home = Path::new("/home/tj");
+        let env = vec![ev("PATH", "$HOME/.cargo/bin:$PATH")];
+        let dirs = dirs("/home/tj");
+        let origins = {
+            let mut owners = crate::config::EntryOwners::default();
+            owners.claim("module:nvim", &env, &[]);
+            EnvOrigins::from_owners(&owners)
+        };
+        let targets = env_targets(
+            EnvContent::new(&env, &[], &dirs, &origins),
+            EnvScope::All,
+            home,
+            &probe(),
+            EnvPlatform::Linux,
+        );
+        let (content, _) = managed_file(&targets, ".cfgd.env");
+        let line = path_line(content, "export PATH=");
+        assert!(
+            line.ends_with(" # manager:brew,npm module:nvim"),
+            "one comment naming both producers: {line}"
+        );
+        assert_eq!(
+            without_owner_comment(line),
+            "export PATH=\"$HOME/.cargo/bin:/opt/brewroot/bin:$HOME/.npm-global/bin:$PATH\"",
+            "the two-token comment folds back off whole: {line}"
+        );
+    }
+
+    /// Every generated file assigns each variable ONCE, whatever fed it.
+    ///
+    /// A file holding two `export PATH=` lines assigns one variable twice, and
+    /// every count over it then has to choose between naming written lines and
+    /// naming variables — which is how `write ~/.cfgd.env — 4 vars` came to sit
+    /// one row above `publish 3 vars to the session manager`, both counting the
+    /// same file. The walk is over every dialect `env_targets` can produce on
+    /// every platform, so a sixth generator cannot quietly reintroduce the
+    /// split.
+    #[test]
+    fn no_generated_env_file_assigns_one_variable_twice() {
+        let cases = [
+            (EnvPlatform::Linux, Path::new("/home/tj")),
+            (EnvPlatform::MacOs, Path::new("/Users/tj")),
+            (EnvPlatform::FreeBsd, Path::new("/home/tj")),
+            (EnvPlatform::Windows, Path::new("C:/Users/tj")),
+        ];
+        let mut files_seen = 0;
+        for (platform, home) in cases {
+            let separator = path_separator(platform);
+            let env = vec![
+                ev("PATH", &format!("$HOME/.cargo/bin{separator}$PATH")),
+                ev("EDITOR", "nvim"),
+            ];
+            let dirs = dirs(&crate::to_posix_string(home));
+            let origins = EnvOrigins::default();
+            for target in env_targets(
+                EnvContent::new(&env, &[], &dirs, &origins),
+                EnvScope::All,
+                home,
+                &probe(),
+                platform,
+            ) {
+                let EnvTarget::ManagedFile { path, content, .. } = target else {
+                    continue;
+                };
+                files_seen += 1;
+                let mut assigned: Vec<&str> = Vec::new();
+                for line in content.lines() {
+                    let Some(name) = assigned_variable(line) else {
+                        continue;
+                    };
+                    assert!(
+                        !assigned.contains(&name),
+                        "{} assigns {name} twice:\n{content}",
+                        path.display()
+                    );
+                    assigned.push(name);
+                }
+            }
+        }
+        assert!(
+            files_seen >= 6,
+            "the walk no longer reaches every dialect — it read {files_seen} files"
+        );
+    }
+
+    /// The variable an assignment line names, in any dialect this crate
+    /// generates. `None` for a line that assigns nothing (the header, a blank,
+    /// an `alias`/`abbr`/`Set-Alias`, a plist element).
+    fn assigned_variable(line: &str) -> Option<&str> {
+        for prefix in ["export ", "set -gx "] {
+            if let Some(rest) = line.strip_prefix(prefix) {
+                return rest.split(['=', ' ']).next();
+            }
+        }
+        if let Some(rest) = line.strip_prefix("$env:") {
+            return rest.split([' ', '=']).next();
+        }
+        // `environment.d` is bare `KEY=VALUE`; a plist line starts with `<`.
+        let (name, _) = line.split_once('=')?;
+        (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            .then_some(name)
+    }
+
+    /// The write's own count and what the session publish says are one number
+    /// for a file both producers fed: the row above and the row below are
+    /// counting the same variables.
+    #[test]
+    fn the_written_var_count_matches_the_session_publish() {
+        let home = Path::new("/home/tj");
+        let targets = unix_targets_for(home);
+        let (_, rendered) = managed_file(&targets, ".cfgd.env");
+        let published = targets
+            .iter()
+            .find_map(|t| match t {
+                EnvTarget::LiveSession { vars } => Some(vars.len()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("a scope of All publishes to the session manager"));
+        assert_eq!(
+            rendered.vars, published,
+            "the file's variables and the session publish's are one count"
+        );
     }
 }

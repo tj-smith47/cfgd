@@ -22,7 +22,9 @@ pub mod section;
 pub mod status;
 pub mod table;
 pub(crate) mod wrap;
-pub(crate) use glyphs::{finalize_subject, role_glyph};
+pub(crate) use glyphs::{
+    action_detail_is_muted, action_subject_style, finalize_subject, role_glyph,
+};
 pub use status::StatusFields;
 pub use table::Table;
 
@@ -120,6 +122,12 @@ pub(crate) struct RenderState {
     /// Whether the most recent top-level emission came from inside a `Doc`.
     /// Compared against the current side of the seam in `open_top_group`.
     last_top_in_doc: bool,
+    /// The alignment column the WHOLE report shares, claimed once by whoever
+    /// can see all of it. A section declaring a live column takes this in
+    /// preference to its own, so every action row of a run — the preview's, the
+    /// apply tree's, and the pseudo-phases' beside them — pads to one column
+    /// instead of one per phase.
+    pub(crate) report_column: Option<usize>,
 }
 
 impl RenderState {
@@ -145,6 +153,7 @@ impl RenderState {
             last_top_group: None,
             doc_depth: 0,
             last_top_in_doc: false,
+            report_column: None,
         }
     }
 
@@ -808,6 +817,36 @@ impl DepthInheritGuard<'_> {
 impl Drop for DepthInheritGuard<'_> {
     fn drop(&mut self) {
         self.renderer.inherit_guards.fetch_sub(1, Relaxed);
+    }
+}
+
+/// The report-wide alignment column, held for as long as the report renders.
+///
+/// Acquired through [`super::Printer::report_column`]. A guard that found a
+/// column already claimed carries nothing and releases nothing at drop, so the
+/// outermost claim — the one made by whoever could see the whole report —
+/// survives every nested surface that measures only its own part of it.
+pub struct ReportColumnGuard<'p> {
+    renderer: Option<std::sync::Arc<Renderer>>,
+    _phantom: std::marker::PhantomData<&'p ()>,
+}
+
+impl ReportColumnGuard<'_> {
+    pub(crate) fn acquire(renderer: &std::sync::Arc<Renderer>, width: usize) -> Self {
+        Self {
+            renderer: renderer
+                .claim_report_column(width)
+                .then(|| renderer.clone()),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for ReportColumnGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(renderer) = &self.renderer {
+            renderer.release_report_column();
+        }
     }
 }
 

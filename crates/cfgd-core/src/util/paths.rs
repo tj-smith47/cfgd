@@ -1229,6 +1229,10 @@ pub fn normalize_cfgd_version<'a>(s: &'a str, cfgd_version: &str) -> std::borrow
 /// The renderer formats durations as `{:.1}s`, so the span is always digits,
 /// one dot, exactly one digit, `s`, `)`. Anything else in parentheses — a
 /// package version, an exit code, a byte size — is left alone.
+///
+/// ` (<0.1s)` — the renderer's below-the-resolution floor — is the same slot
+/// and normalizes to the same placeholder: whether a given action lands under
+/// the floor is a property of the host, not of the render being pinned.
 pub fn normalize_snapshot_durations(raw: &str) -> String {
     let chars: Vec<char> = raw.chars().collect();
     let mut out = String::with_capacity(raw.len());
@@ -1248,16 +1252,20 @@ pub fn normalize_snapshot_durations(raw: &str) -> String {
     out
 }
 
-/// Length in chars of a ` (N.Ns)` suffix opening at `window`, if there is one.
+/// Length in chars of a ` (N.Ns)` or ` (<0.1s)` suffix opening at `window`, if
+/// there is one.
 fn duration_span(window: &[char]) -> Option<usize> {
     if window.len() < 7 || window[0] != ' ' || window[1] != '(' {
         return None;
     }
-    let mut i = 2;
+    // The floor spelling differs from a measurement only by its leading `<`,
+    // and the digits behind it parse exactly as any other duration's do.
+    let mut i = if window.get(2) == Some(&'<') { 3 } else { 2 };
+    let digits_at = i;
     while window.get(i).is_some_and(char::is_ascii_digit) {
         i += 1;
     }
-    if i == 2 {
+    if i == digits_at {
         return None;
     }
     if window.get(i) != Some(&'.') || !window.get(i + 1).is_some_and(char::is_ascii_digit) {

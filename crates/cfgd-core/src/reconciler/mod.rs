@@ -69,8 +69,8 @@ pub use restore::{RestoreOutcome, restore_file_from_backup};
 pub use run::{
     ApplyRun, BACKUPS_PHASE_LABEL, ComposedSource, Confirm, HOOKS_PHASE_LABEL, MSG_NOTHING_TO_DO,
     PhaseCoverage, PseudoPhase, RunContext, RunDisposition, RunExecutor, RunTally, RunTitle,
-    ScopedGroup, ScopedPhase, align_width, align_width_of, in_scope_tree, nothing_to_do_verdict,
-    outcome_counts, pseudo_phase, render_apply_result, render_plan_tree, render_run_rollup,
+    ScopedGroup, ScopedPhase, align_width_of, in_scope_tree, nothing_to_do_verdict, outcome_counts,
+    pseudo_phase, render_apply_result, render_plan_tree, render_run_rollup, report_align_width,
 };
 pub use sidecar::{CFGD_BACKUP_SUFFIX, SidecarOutcome, backup_file, cfgd_backup_path};
 pub use types::{

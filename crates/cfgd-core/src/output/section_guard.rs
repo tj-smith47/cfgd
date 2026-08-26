@@ -191,13 +191,17 @@ impl<'p> SectionGuard<'p> {
     /// and the only caller of `StatusFields::subject_style`. A preset with no
     /// palette foreground of its own answers `None` and the subject keeps its
     /// role style, which is byte-identical to `status`.
+    ///
+    /// A role that WITHHOLDS the work answers `None` too, whatever the preset:
+    /// see `renderer::action_subject_style`, the one emphasis mapping the plan
+    /// tree and the apply tree share.
     pub fn action_status(
         &self,
         role: Role,
         subject: impl Into<String>,
     ) -> super::status_builder::StatusBuilder<'_> {
-        self.status(role, subject)
-            .with_subject_style(self.renderer.theme.primary.clone())
+        let style = super::renderer::action_subject_style(&self.renderer.theme, role);
+        self.status(role, subject).with_subject_style(style)
     }
 
     /// Write this section's header now rather than at its first child.

@@ -297,6 +297,8 @@ pub fn env_verify_results(
     // to write, so the first `ManagedFile` this loop sees is the one file
     // whose dialect `verify_env_items` is built to read.
     let mut primary_checked = false;
+    let fold =
+        super::env_engine::primary_folded_path(&merged, path_dirs, &origins, &home, platform);
     for target in env_targets(
         EnvContent::new(&merged, &merged_aliases, path_dirs, &origins),
         scope,
@@ -314,6 +316,7 @@ pub fn env_verify_results(
                         &merged_aliases,
                         &origins,
                         platform,
+                        fold.as_ref(),
                         &mut results,
                     );
                 }
@@ -360,6 +363,7 @@ fn verify_env_items(
     aliases: &[crate::config::ShellAlias],
     origins: &EnvOrigins,
     platform: EnvPlatform,
+    fold: Option<&super::env_engine::FoldedPath>,
     results: &mut Vec<VerifyResult>,
 ) {
     let Ok(actual) = std::fs::read_to_string(path) else {
@@ -368,7 +372,7 @@ fn verify_env_items(
     let actual_lines: std::collections::HashSet<&str> = actual.lines().collect();
 
     for ev in env {
-        let Some(line) = super::env_files::primary_env_var_line(ev, platform, origins) else {
+        let Some(line) = super::env_files::primary_env_var_line(ev, platform, origins, fold) else {
             continue;
         };
         // Line-anchored, not a substring search: `actual.contains(&line)` would
@@ -425,22 +429,38 @@ pub struct MergedEnvItems {
     env: Vec<crate::config::EnvVar>,
     aliases: Vec<crate::config::ShellAlias>,
     origins: EnvOrigins,
+    path: Option<super::env_engine::FoldedPath>,
 }
 
 impl MergedEnvItems {
     /// Merge `env`/`aliases` (the profile's own) with every module's, exactly
     /// as the write and the verify pass do.
+    ///
+    /// `path_dirs` is the second producer of the file's one `PATH` line — the
+    /// recorded bootstrapped-manager directories, the same slice
+    /// `env_verify_results` is given. Without it a `PATH` row would be shown a
+    /// line assembled from half the producers, which is not a line the file
+    /// holds.
     pub fn new(
         env: &[crate::config::EnvVar],
         aliases: &[crate::config::ShellAlias],
         layer_owners: &crate::config::EntryOwners,
         modules: &[ResolvedModule],
+        path_dirs: &[ManagerPathDir],
     ) -> Self {
         let (env, aliases, origins) = merge_module_env_aliases(env, aliases, layer_owners, modules);
+        let path = super::env_engine::primary_folded_path(
+            &env,
+            path_dirs,
+            &origins,
+            &expand_tilde(std::path::Path::new("~")),
+            EnvPlatform::current(),
+        );
         Self {
             env,
             aliases,
             origins,
+            path,
         }
     }
 
@@ -464,7 +484,14 @@ impl MergedEnvItems {
                 .env
                 .iter()
                 .find(|e| e.name == resource_id)
-                .and_then(|e| super::env_files::primary_env_var_line(e, platform, &self.origins)),
+                .and_then(|e| {
+                    super::env_files::primary_env_var_line(
+                        e,
+                        platform,
+                        &self.origins,
+                        self.path.as_ref(),
+                    )
+                }),
             "alias" => self
                 .aliases
                 .iter()

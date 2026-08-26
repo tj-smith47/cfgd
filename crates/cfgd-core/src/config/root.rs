@@ -75,7 +75,8 @@ impl CfgdConfig {
             .filter(|p| !p.is_empty())
             .ok_or_else(|| {
                 crate::errors::CfgdError::Config(crate::errors::ConfigError::Invalid {
-                    message: "no profile configured — run: cfgd profile create <name>".to_string(),
+                    message: "no profile configured — run: `cfgd profile create <name>`"
+                        .to_string(),
                 })
             })
     }

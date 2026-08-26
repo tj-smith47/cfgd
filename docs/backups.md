@@ -86,10 +86,10 @@ $ cfgd backup run missing-name
 $ cfgd backup list
 Backups
 
-Name      Source                         Schedule   Retention  Snapshots  Last Run                        Next Run
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-notes-db  ~/.local/share/notes/notes.db  -          7          1          success @ 2026-08-13T06:13:06Z  -
-journal   ~/Documents/journal            0 3 * * *  3          1          success @ 2026-08-13T06:13:06Z  2026-08-14T03:00:00Z
+Name      Source                         Schedule   Retention  Snapshots  Status   Last Run  Next Run
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+notes-db  ~/.local/share/notes/notes.db  -          7          1          Success  4h ago    -
+journal   ~/Documents/journal            0 3 * * *  3          1          Success  4h ago    in 11h
 
 $ cfgd --output json backup run notes-db
 [
@@ -120,8 +120,13 @@ parsing output.
 many snapshots it currently holds (`snapshots` in `-o json`), its last recorded run, and when the
 daemon's timer will next fire it (`nextRunAt` in `-o json`). Every backup command honors the global
 `-o`/`--output` flag for `json`/`yaml`/`jsonpath`/`template` consumers. The Snapshots column reads
-`-` when the state store could not be opened, the same degradation the Last Run column
-takes: an unknown count is not a count of zero.
+`-` when the state store could not be opened, the same degradation the Status and Last Run
+columns take: an unknown count is not a count of zero.
+
+`Status` and `Last Run` are two columns, the way `source list` splits them: the verdict is
+tinted by what it says, and the age beside it answers how stale the unit is. `Next Run`
+counts forward the same way (`in 11h`, `due now`). All three read as relative time on
+purpose — `-o json` keeps the exact instants in `lastRunAt` and `nextRunAt`.
 
 The count includes the safety snapshots [`cfgd backup restore`](#restoring) takes, because they
 occupy the destination and count against `retention` like any other. When there is at least one,
@@ -138,11 +143,11 @@ ones [`cfgd backup restore`](#restoring) can put back:
 $ cfgd backup list notes-db --snapshots
 Snapshots: notes-db
 
-Snapshot                   Kind    Created               Size
-─────────────────────────────────────────────────────────────
-notes.db.20260813T061322Z  safety  2026-08-13T06:13:22Z  8.0 KB
-notes.db.20260813T061321Z  run     2026-08-13T06:13:21Z  8.0 KB
-notes.db.20260813T061306Z  run     2026-08-13T06:13:06Z  8.0 KB
+Snapshot                   Kind    Created  Size
+────────────────────────────────────────────────
+notes.db.20260813T061322Z  Safety  4h ago   8.0 KB
+notes.db.20260813T061321Z  Run     4h ago   8.0 KB
+notes.db.20260813T061306Z  Run     4h ago   8.0 KB
 
 $ cfgd --output json backup list notes-db --snapshots
 [
@@ -157,10 +162,12 @@ $ cfgd --output json backup list notes-db --snapshots
 
 `name` is the snapshot's path **relative to the backup's `destination`**, so a nested
 `namePattern` lists `daily/notes.db.20260813T061322Z`: the exact string `restore --at` accepts.
-`created` is the ISO 8601 UTC time the run that wrote it finished, on the same scale as
-`backup list`'s Last Run column. `Kind` is `run` for a backup of the unit and `safety` for the copy
+`Created` is the age of the run that wrote it, on the same scale as `backup list`'s Last Run
+column; `-o json`'s `created` keeps the ISO 8601 UTC instant. `Kind` reads `Run` for a backup of
+the unit and `Safety` for the copy
 [`cfgd backup restore`](#restoring) took of what it was about to overwrite; both restore, and both
-count against retention, but only a `run` is the unit's Last Run. The `Size` column uses the same `1.2 MB` / `4.0 KB` / `12 B`
+count against retention, but only a `Run` is the unit's Last Run (`-o json`'s `kind` carries the
+stored `run` / `safety` token). The `Size` column uses the same `1.2 MB` / `4.0 KB` / `12 B`
 scale `cfgd upgrade` prints; `-o json` reports raw bytes in `sizeBytes` and leaves formatting
 to you.
 
@@ -288,11 +295,11 @@ second) take **distinct** names: cfgd appends `-1`, `-2`, and so on until the pa
 $ cfgd backup list journal --snapshots
 Snapshots: journal
 
-Snapshot                    Created               Size
-──────────────────────────────────────────────────────
-journal.20260813T061710Z-1  2026-08-13T06:17:10Z  24 B
-journal.20260813T061710Z    2026-08-13T06:17:10Z  24 B
-journal.20260813T061547Z    2026-08-13T06:15:47Z  24 B
+Snapshot                    Created  Size
+─────────────────────────────────────────
+journal.20260813T061710Z-1  4h ago   24 B
+journal.20260813T061710Z    4h ago   24 B
+journal.20260813T061547Z    4h ago   24 B
 ```
 
 Nothing is overwritten: each recorded run owns exactly one payload, and both count against
@@ -430,7 +437,7 @@ Backups
   backup:notes-db
     — snapshot                           — already running (pid 3349308)
 
-— Backup did not run — 3 actions not attempted (0.0s)
+— Backup did not run — 3 actions not attempted (<0.1s)
 $ echo $?
 1
 ```
@@ -545,9 +552,13 @@ Restore: notes-db
 ◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
   ok
 ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check" (0.1s)
-✓ backup:notes-db restored from notes.db.20260813T061333Z — into /home/me/.local/share/notes/notes.db
 
-→ previous contents saved to /home/me/.local/state/cfgd/backups/notes-db/notes.db.20260813T061347Z
+backup:notes-db
+  ✓ Restored from notes.db.20260813T061333Z — 8.0 KB
+  Destination  /home/me/.local/share/notes/notes.db
+  → Previous contents saved to /home/me/.local/state/cfgd/backups/notes-db/notes.db.20260813T061347Z
+
+✓ Restore complete — 1 action succeeded (0.3s)
 ```
 
 ```bash

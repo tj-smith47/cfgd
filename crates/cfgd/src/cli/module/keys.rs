@@ -58,7 +58,7 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
             ("Private Key", priv_path.clone()),
             ("Public Key", pub_path.clone()),
         ]);
-        printer.hint("Sign with: cfgd module push --sign --key cosign.key ...");
+        printer.hint("Sign with: `cfgd module push --sign --key cosign.key ...`");
         printer.hint("Verify with: cosign verify --key cosign.pub <artifact>");
         private_key = Some(priv_path);
         public_key = Some(pub_path);
@@ -117,7 +117,7 @@ pub fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
     if entries.is_empty() {
         doc = doc
             .status(Role::Info, "No signing keys found")
-            .hint("Generate with: cfgd module keys generate");
+            .hint("Generate with: `cfgd module keys generate`");
     } else {
         let pairs: Vec<(String, String)> = entries
             .iter()
@@ -157,7 +157,7 @@ pub fn cmd_module_keys_rotate(
             key_dir,
             "key_not_found",
             format!(
-                "No existing cosign.key found in {} — generate one first with: cfgd module keys generate",
+                "No existing cosign.key found in {} — generate one first with: `cfgd module keys generate`",
                 key_dir
             ),
             serde_json::json!({ "dir": key_dir }),
@@ -301,7 +301,7 @@ pub fn cmd_module_keys_rotate(
 
     if artifacts.is_empty() {
         printer.hint(
-            "No artifacts specified — re-sign manually with: cfgd module push --sign --key cosign.key ...",
+            "No artifacts specified — re-sign manually with: `cfgd module push --sign --key cosign.key ...`",
         );
     }
 

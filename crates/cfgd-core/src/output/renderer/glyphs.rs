@@ -100,6 +100,39 @@ pub(crate) fn role_glyph(theme: &Theme, role: Role) -> (Option<&str>, ThemedStyl
     }
 }
 
+/// Whether a role says the work on this action row is not going to happen.
+///
+/// The ONE emphasis mapping every action row reads, and the reason it is a
+/// mapping rather than a per-surface choice: the plan tree and the apply tree
+/// draw the SAME pre-skipped action one beat apart, and painting it each way
+/// makes a reader flipping between them read a change that did not happen.
+///
+/// On a withholding row the subject is the thing that will not happen and the
+/// detail is the REASON — the only new information on the line — so the
+/// subject keeps its dim role style and the reason renders bright. Every other
+/// role reverses it: the subject is what happened, and the trailing detail is
+/// metadata.
+fn role_withholds_action(role: Role) -> bool {
+    matches!(role, Role::Pending | Role::Skipped)
+}
+
+/// The style an action row's SUBJECT takes, per [`role_withholds_action`].
+/// `None` leaves the subject on its role style, which is what a withholding
+/// row wants and what a plain `status` would have rendered anyway.
+pub(crate) fn action_subject_style(theme: &Theme, role: Role) -> Option<ThemedStyle> {
+    (!role_withholds_action(role))
+        .then(|| theme.primary.clone())
+        .flatten()
+}
+
+/// Whether an action row's trailing detail renders muted. `muted` is what the
+/// CALLER asked for — a fact about the detail, an `unchanged` aside being
+/// metadata where an error is not — and a withholding row overrides it,
+/// because there the detail carries the row.
+pub(crate) fn action_detail_is_muted(role: Role, muted: bool) -> bool {
+    muted && !role_withholds_action(role)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +290,70 @@ mod tests {
         let t = Theme::default();
         assert!(role_glyph(&t, Role::Accent).0.is_none());
         assert!(role_glyph(&t, Role::Secondary).0.is_none());
+    }
+
+    /// The whole `Role` population, walked so a role added later has to state
+    /// which side of the withholding split it lands on.
+    const EVERY_ROLE: [Role; 9] = [
+        Role::Ok,
+        Role::Warn,
+        Role::Fail,
+        Role::Pending,
+        Role::Running,
+        Role::Skipped,
+        Role::Info,
+        Role::Accent,
+        Role::Secondary,
+    ];
+
+    /// Exactly two roles withhold the work, and both halves of the emphasis
+    /// follow from that one answer — so no surface can dim a subject while
+    /// another brightens it for the same role.
+    #[test]
+    fn every_role_takes_one_emphasis_on_both_halves_of_an_action_row() {
+        // A preset that HAS a palette foreground: `Theme::default` answers
+        // `None` for every role, which would pass the subject half vacuously.
+        let t = Theme::from_preset("dracula");
+        for role in EVERY_ROLE {
+            // Exhaustive by construction: a new `Role` fails to compile here
+            // until it declares whether it withholds the work.
+            let withholds = match role {
+                Role::Pending | Role::Skipped => true,
+                Role::Ok
+                | Role::Warn
+                | Role::Fail
+                | Role::Running
+                | Role::Info
+                | Role::Accent
+                | Role::Secondary => false,
+            };
+            assert_eq!(
+                action_subject_style(&t, role).is_none(),
+                withholds,
+                "{role:?} paints its action subject against its withholding answer"
+            );
+            assert_eq!(
+                action_detail_is_muted(role, true),
+                !withholds,
+                "{role:?} mutes a metadata detail against its withholding answer"
+            );
+            assert!(
+                !action_detail_is_muted(role, false),
+                "{role:?} must not mute a detail the caller asked to render plain"
+            );
+        }
+    }
+
+    /// Anti-vacuity: the walk above proves nothing unless the split has a
+    /// member on each side, and unless `theme.primary` is a style at all —
+    /// a palette answering `None` would make every role's subject "dim".
+    #[test]
+    fn the_withholding_split_has_a_member_on_each_side() {
+        let t = Theme::from_preset("dracula");
+        assert!(action_subject_style(&t, Role::Ok).is_some());
+        assert!(action_subject_style(&t, Role::Skipped).is_none());
+        assert!(action_subject_style(&t, Role::Pending).is_none());
+        assert!(EVERY_ROLE.iter().any(|r| role_withholds_action(*r)));
+        assert!(EVERY_ROLE.iter().any(|r| !role_withholds_action(*r)));
     }
 }

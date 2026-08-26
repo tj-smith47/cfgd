@@ -86,6 +86,68 @@ impl RestoreOutcome {
     }
 }
 
+/// Report a completed restore in the shape [`super::run_backup_group`] reports
+/// a completed backup: an owner section headed `backup:<name>`, one status row
+/// for the restore itself, and the facts that qualify it as rows of their own.
+///
+/// `backup run` and `backup restore` are the two mutating verbs of one command,
+/// and the restore used to settle as a bare title plus a single status line —
+/// no owner, no verdict — so the same operator reading the same command's two
+/// halves had to learn two layouts. Returns the [`RunTally`] the caller closes
+/// with, so the verdict counts the line that was actually printed.
+///
+/// The role split is [`super::report_backup_record`]'s, because the two
+/// outcomes are the same three: a clean restore is Ok, a restore whose overlay
+/// landed but whose hooks failed is Warn (the data is back, something still
+/// needs attention), and a restore that did not happen is Fail. `Partial` on
+/// the tally for the middle case likewise matches what a dirty backup run
+/// rolls up to.
+pub fn report_restore(printer: &Printer, outcome: &RestoreOutcome) -> crate::reconciler::RunTally {
+    let group = printer.section_owner(&crate::output::OwnerLabel::new("backup", &outcome.name));
+    let role = if outcome.is_clean() {
+        crate::output::Role::Ok
+    } else if outcome.restored {
+        crate::output::Role::Warn
+    } else {
+        crate::output::Role::Fail
+    };
+    let size = crate::format_bytes(outcome.size_bytes);
+    // The error leads and the size joins it, the same order
+    // `report_backup_record` puts them in: the failure is what the reader must
+    // act on, and the size is the evidence the payload itself was intact.
+    let detail = match &outcome.error {
+        Some(e) => format!("{} ({size})", collapse_to_subject_line(e)),
+        None => size,
+    };
+    group
+        .status(role, format!("Restored from {}", outcome.snapshot))
+        .detail(detail);
+    // A row, not a clause after the detail dash: where the bytes went is a
+    // `Label: value` fact, and a detail slot already carrying a size or an
+    // error cannot also carry it without two em-dashes at two semantic levels.
+    group.kv("Destination", &outcome.restored_to);
+    if let Some(safety) = &outcome.safety_snapshot {
+        // `hint`, not `note`: where the overwritten data went is the one thing
+        // an operator needs after a restore they regret, and `note` is
+        // Verbose-only.
+        group.hint(format!("Previous contents saved to {safety}"));
+    }
+    crate::reconciler::RunTally {
+        succeeded: usize::from(outcome.restored),
+        skipped: 0,
+        failed: usize::from(!outcome.restored),
+        planned_total: 1,
+        status: if outcome.is_clean() {
+            crate::state::ApplyStatus::Success
+        } else if outcome.restored {
+            crate::state::ApplyStatus::Partial
+        } else {
+            crate::state::ApplyStatus::Failed
+        },
+        aborted: None,
+    }
+}
+
 /// Where a restore will write.
 ///
 /// Two paths rather than one because they can differ, and a caller needs both:

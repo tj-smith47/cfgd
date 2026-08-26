@@ -492,6 +492,13 @@ pub(in crate::cli) enum DecisionWrites<'a> {
 /// draws. It is taken at [`reconciler::PhaseCoverage::Complete`]: a structured
 /// consumer diffing plans across hosts is exactly who needs to see the
 /// `Modules` phase of platform-gated skips that the tree folds into its header.
+///
+/// `total_actions` prices what the apply will actually attempt: an action
+/// [`reconciler::Action::pre_skip_reason`] answers for is still LISTED — the row
+/// says why it cannot run — and is not counted, the same filter
+/// [`reconciler::Plan::total_actions`] and the apply header's own count apply. A
+/// sum over the rendered rows counted it, so the plan's footer promised one more
+/// action than the apply performed.
 pub(in crate::cli) fn build_plan_output(
     plan: &reconciler::Plan,
     context_name: &str,
@@ -500,36 +507,37 @@ pub(in crate::cli) fn build_plan_output(
     withheld: &reconciler::WithheldDecisions,
     sources: &[reconciler::ComposedSource],
 ) -> PlanOutput {
-    let phases: Vec<PlanPhaseOutput> =
-        reconciler::in_scope_tree(plan, phase_filter, reconciler::PhaseCoverage::Complete)
-            .into_iter()
-            .map(|(phase_item, groups)| PlanPhaseOutput {
-                phase: phase_item.name.display_name().to_string(),
-                groups: groups
-                    .into_iter()
-                    .map(|(group, actions)| {
-                        PlanGroupOutput::new(
-                            group.owner.clone(),
-                            actions
-                                .into_iter()
-                                .map(|action| PlanActionOutput {
-                                    description: reconciler::format_plan_item(action),
-                                    action_type: action_type_str(action).to_string(),
-                                    targets: action_targets(action),
-                                    origin: action_origin(action),
-                                    manager: manager_action_output(action),
-                                })
-                                .collect(),
-                        )
-                    })
-                    .collect(),
-            })
-            .collect();
-    let total_actions = phases
+    let tree = reconciler::in_scope_tree(plan, phase_filter, reconciler::PhaseCoverage::Complete);
+    let total_actions = tree
         .iter()
-        .flat_map(|p| p.groups.iter())
-        .map(|g| g.actions().len())
-        .sum();
+        .flat_map(|(_, groups)| groups.iter())
+        .flat_map(|(_, actions)| actions.iter())
+        .filter(|action| action.pre_skip_reason().is_none())
+        .count();
+    let phases: Vec<PlanPhaseOutput> = tree
+        .into_iter()
+        .map(|(phase_item, groups)| PlanPhaseOutput {
+            phase: phase_item.name.display_name().to_string(),
+            groups: groups
+                .into_iter()
+                .map(|(group, actions)| {
+                    PlanGroupOutput::new(
+                        group.owner.clone(),
+                        actions
+                            .into_iter()
+                            .map(|action| PlanActionOutput {
+                                description: reconciler::format_plan_item(action),
+                                action_type: action_type_str(action).to_string(),
+                                targets: action_targets(action),
+                                origin: action_origin(action),
+                                manager: manager_action_output(action),
+                            })
+                            .collect(),
+                    )
+                })
+                .collect(),
+        })
+        .collect();
     PlanOutput {
         context: context_name.to_string(),
         phases,
@@ -665,7 +673,7 @@ pub(in crate::cli) fn report_no_in_scope_actions(
         ));
     if !scope.phases_with_work.is_empty() {
         printer.hint(format!(
-            "actions exist in {}: {}",
+            "Actions exist in {}: {}",
             cfgd_core::plural_noun(scope.phases_with_work.len(), "phase"),
             scope.phases_with_work.join(", ")
         ));

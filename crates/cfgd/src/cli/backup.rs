@@ -5,7 +5,7 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::backup::{BackupUnit, SnapshotInfo};
 use cfgd_core::format_bytes;
-use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, TitleLabel, renderer::Table};
+use cfgd_core::output::{Doc, Printer, Role, TitleLabel, renderer::Table};
 use cfgd_core::state::BackupRunRecord;
 
 fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
@@ -60,8 +60,15 @@ fn unit_context<'a>(
 }
 
 /// Build the `cfgd backup list` Doc from a populated entries vector. Pure; the
-/// caller assembles the entries from config + the state store.
-pub fn build_backup_list_doc(entries: &[BackupListEntry]) -> Doc {
+/// caller assembles the entries from config + the state store and passes `now`,
+/// so a render pins in a test rather than reading a clock inside the builder.
+///
+/// `Status` and `Last Run` are two cells, the way `source list` splits them: one
+/// cell holding a status word AND a timestamp can be tinted by neither, and the
+/// instant it carried answered "when exactly" — the question the `-o json`
+/// payload's `lastRunAt` is for — on the one column a reader scans to learn how
+/// stale the unit is.
+pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
     let mut doc = Doc::new().heading("Backups");
 
     if entries.is_empty() {
@@ -77,29 +84,41 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry]) -> Doc {
         "Schedule",
         "Retention",
         "Snapshots",
+        "Status",
         "Last Run",
         "Next Run",
     ]);
     for e in entries {
         // TitleCased here and nowhere else: `last_run_status` stays the stored
-        // token every `-o json` reader matches on. No role tint — the cell mixes
-        // a status word with a timestamp, so tinting it would paint the time too.
-        let shown = cfgd_core::state::backup_run_status_display;
-        let last_run = match (&e.last_run_status, &e.last_run_at) {
-            (Some(status), Some(at)) if e.last_run_clean == Some(false) => {
-                format!("{} (dirty) @ {at}", shown(status))
+        // token every `-o json` reader matches on.
+        let (status, role) = match &e.last_run_status {
+            Some(stored) => {
+                let (word, role) = cfgd_core::state::backup_run_status_display(stored);
+                // A run that wrote its snapshot and then failed a hook is
+                // neither of the stored tokens: the data is there, something
+                // still needs attention.
+                match e.last_run_clean {
+                    Some(false) => (format!("{word} (dirty)"), Some(Role::Warn)),
+                    _ => (word.to_string(), Some(role)),
+                }
             }
-            (Some(status), Some(at)) => format!("{} @ {at}", shown(status)),
-            _ => "never".to_string(),
+            None => ("-".to_string(), None),
         };
-        t = t.row([
-            e.name.clone(),
-            e.source.clone(),
-            e.schedule.clone().unwrap_or_else(|| "-".into()),
-            e.retention.to_string(),
-            snapshots_cell(e.snapshots, e.safety_snapshots),
-            last_run,
-            e.next_run_at.clone().unwrap_or_else(|| "-".into()),
+        t = t.row_styled(vec![
+            (e.name.clone(), None),
+            (e.source.clone(), None),
+            (e.schedule.clone().unwrap_or_else(|| "-".into()), None),
+            (e.retention.to_string(), None),
+            (snapshots_cell(e.snapshots, e.safety_snapshots), None),
+            (status, role),
+            (
+                cfgd_core::humanize_age_cell(e.last_run_at.as_deref(), now),
+                None,
+            ),
+            (
+                cfgd_core::humanize_until_cell(e.next_run_at.as_deref(), now),
+                None,
+            ),
         ]);
     }
     doc = doc.table(t);
@@ -126,10 +145,19 @@ fn snapshots_cell(total: Option<usize>, safety: Option<usize>) -> String {
 /// assembles the entries from the unit's recorded runs.
 ///
 /// Columns and payload keys are the snapshot analogue of
-/// [`build_backup_list_doc`]: `Created` is the ISO 8601 UTC stamp
-/// `BackupListEntry::last_run_at` uses, and `Size` goes through the CLI's one
-/// byte renderer so it reads the same as `cfgd upgrade`'s asset size.
-pub fn build_backup_snapshot_list_doc(name: &str, entries: &[BackupSnapshotEntry]) -> Doc {
+/// [`build_backup_list_doc`]: `Created` carries the age, `Kind` the display
+/// word, and `Size` goes through the CLI's one byte renderer so it reads the
+/// same as `cfgd upgrade`'s asset size. The payload keeps the ISO 8601 stamp and
+/// the wire token.
+///
+/// `Created` earns its column only as an age: a snapshot's NAME is its stamp
+/// (`BACKUP_TIMESTAMP_FORMAT`), so the instant restated the row's own first cell
+/// one column later.
+pub fn build_backup_snapshot_list_doc(
+    name: &str,
+    entries: &[BackupSnapshotEntry],
+    now: &str,
+) -> Doc {
     let mut doc = Doc::new().heading_title("Snapshots", name);
 
     if entries.is_empty() {
@@ -141,8 +169,8 @@ pub fn build_backup_snapshot_list_doc(name: &str, entries: &[BackupSnapshotEntry
     for e in entries {
         t = t.row([
             e.name.clone(),
-            e.kind.clone(),
-            e.created.clone(),
+            e.kind.display_str().to_string(),
+            cfgd_core::humanize_age_cell(Some(&e.created), now),
             format_bytes(e.size_bytes),
         ]);
     }
@@ -221,7 +249,7 @@ pub fn cmd_backup_list(
     };
 
     if selected.is_empty() {
-        printer.emit(build_backup_list_doc(&[]));
+        printer.emit(build_backup_list_doc(&[], &cfgd_core::utc_now_iso8601()));
         return Ok(());
     }
 
@@ -284,7 +312,10 @@ pub fn cmd_backup_list(
         })
         .collect();
 
-    printer.emit(build_backup_list_doc(&entries));
+    printer.emit(build_backup_list_doc(
+        &entries,
+        &cfgd_core::utc_now_iso8601(),
+    ));
     Ok(())
 }
 
@@ -306,8 +337,11 @@ fn list_unit_snapshots(
         .map(BackupSnapshotEntry::from)
         .collect();
 
-    ctx.printer()
-        .emit(build_backup_snapshot_list_doc(&spec.name, &entries));
+    ctx.printer().emit(build_backup_snapshot_list_doc(
+        &spec.name,
+        &entries,
+        &cfgd_core::utc_now_iso8601(),
+    ));
     Ok(())
 }
 
@@ -421,61 +455,22 @@ pub fn run_backup_restore(
         return Ok(None);
     }
 
+    let started = std::time::Instant::now();
     let outcome = cfgd_core::backup::restore_backup(&unit, state, printer, selected, args.to)?;
 
-    let (role, subject, detail) = restore_status_parts(&outcome);
-    printer.status(role, subject).detail(detail);
-    // `hint`, not `note`: where the overwritten data went is the one thing an
-    // operator needs after a restore they regret, and `note` is Verbose-only.
-    if let Some(safety) = &outcome.safety_snapshot {
-        printer.hint(format!("previous contents saved to {safety}"));
-    }
+    // The same skeleton `backup run` settles through — owner group, then the
+    // run's own verdict — so the command's two mutating verbs read as one
+    // command rather than two.
+    let tally = cfgd_core::backup::report_restore(printer, &outcome);
+    cfgd_core::reconciler::render_run_rollup(
+        &tally,
+        cfgd_core::reconciler::RunTitle::Restore,
+        printer,
+        Some(started.elapsed()),
+    );
 
     printer.emit(Doc::new().with_data(BackupRestoreOutput::from(&outcome)));
     Ok(Some(outcome))
-}
-
-/// Compose the restore's status line: role, subject, detail.
-///
-/// Split out from the caller so BOTH arms are reachable without staging a real
-/// restore failure: only a successful restore is easy to drive, so the error
-/// arm's glue had been rewritten repeatedly with no golden able to go red.
-fn restore_status_parts(outcome: &cfgd_core::backup::RestoreOutcome) -> (Role, String, String) {
-    // The same three-way split `backup run` renders: a clean restore is Ok, a
-    // completed restore whose hooks failed is Warn (the data is back, but
-    // something needs attention), and a restore that did not happen is Fail.
-    let role = if outcome.is_clean() {
-        Role::Ok
-    } else if outcome.restored {
-        Role::Warn
-    } else {
-        Role::Fail
-    };
-    let subject = format!(
-        "{} restored from {}",
-        OwnerLabel::new("backup", &outcome.name).plain(),
-        outcome.snapshot
-    );
-    // `outcome.restored_to`, not the requested target: a symlinked source is
-    // followed, and the operator needs to be told where the bytes actually went.
-    // `.detail(...)`, not `.qualifier(...)`: "into <path>" is a prepositional
-    // phrase describing the restore, not a `Label: value` pair the snapshot
-    // name has a field called "into" — `.qualifier` would misread it as one.
-    let into_detail = format!("into {}", outcome.restored_to);
-    let detail = match &outcome.error {
-        // ": ", not " — ": the renderer's own subject/detail glue is already
-        // " — " (applied once, ahead of this whole string), so reusing it here
-        // inside the detail would render two identical em-dashes at different
-        // semantic levels with no way to tell which one is the renderer's. No
-        // composer exists for a detail with two parts; the two are joined as a
-        // single sentence instead.
-        Some(e) => format!(
-            "{into_detail}: {}",
-            cfgd_core::output::collapse_to_subject_line(e)
-        ),
-        None => into_detail,
-    };
-    (role, subject, detail)
 }
 
 /// Ask before overwriting live data.
@@ -661,30 +656,72 @@ mod tests {
         }
     }
 
+    /// Drive the real renderer: only a successful restore is easy to stage from
+    /// a fixture, so the two trouble arms are reached here rather than through a
+    /// golden that could never go red for them.
+    fn rendered(outcome: &RestoreOutcome) -> (String, cfgd_core::reconciler::RunTally) {
+        let (printer, cap) = Printer::for_test_doc();
+        let tally = cfgd_core::backup::report_restore(&printer, outcome);
+        drop(printer);
+        (cfgd_core::output::strip_ansi(&cap.human()), tally)
+    }
+
+    /// The one line naming the restore itself, out of the group's rows.
+    fn restore_row(human: &str) -> String {
+        human
+            .lines()
+            .find(|l| l.contains("Restored from"))
+            .unwrap_or_else(|| panic!("no restore row in:\n{human}"))
+            .to_string()
+    }
+
     #[test]
-    fn restore_detail_joins_the_failure_to_the_destination_without_a_second_em_dash() {
-        let (role, subject, detail) = restore_status_parts(&outcome(Some("hook exited 1"), true));
-        assert_eq!(role, Role::Warn);
+    fn a_restore_settles_under_its_owner_with_the_destination_on_a_row_of_its_own() {
+        let (human, tally) = rendered(&outcome(None, true));
+        assert!(human.contains("backup:docs"), "{human}");
+        let row = restore_row(&human);
         assert!(
-            subject.starts_with("backup:docs restored from"),
-            "{subject}"
+            row.contains("Restored from notes.txt.20260101T000000Z") && row.contains("12 B"),
+            "{row}"
         );
-        assert_eq!(detail, "into /home/u/notes.txt: hook exited 1");
+        // The destination is a `Label: value` fact, not a clause hung off the
+        // detail dash the size already occupies.
+        assert!(
+            !row.contains("/home/u/notes.txt"),
+            "the destination belongs on its own row: {row}"
+        );
+        assert!(
+            human.contains("Destination") && human.contains("/home/u/notes.txt"),
+            "{human}"
+        );
+        assert_eq!(tally.status, cfgd_core::state::ApplyStatus::Success);
+        assert_eq!(
+            (tally.succeeded, tally.failed, tally.planned_total),
+            (1, 0, 1)
+        );
+    }
+
+    #[test]
+    fn a_restore_whose_hooks_failed_leads_with_the_failure_and_keeps_the_size() {
+        let (human, tally) = rendered(&outcome(Some("hook exited 1"), true));
+        let row = restore_row(&human);
+        assert!(
+            row.contains("hook exited 1") && row.contains("(12 B)"),
+            "{row}"
+        );
         // The renderer supplies the one " — " between subject and detail; a
         // second one inside the detail would read as the same separator twice.
-        assert!(!detail.contains(" — "), "{detail}");
+        assert_eq!(row.matches(" — ").count(), 1, "{row}");
+        // Warn, not Fail: the data is back, and something still needs attention
+        // — the same split a dirty `backup run` settles through.
+        assert_eq!(tally.status, cfgd_core::state::ApplyStatus::Partial);
+        assert_eq!(tally.succeeded, 1);
     }
 
     #[test]
-    fn restore_detail_is_the_destination_alone_when_nothing_failed() {
-        let (role, _subject, detail) = restore_status_parts(&outcome(None, true));
-        assert_eq!(role, Role::Ok);
-        assert_eq!(detail, "into /home/u/notes.txt");
-    }
-
-    #[test]
-    fn a_restore_that_did_not_happen_reports_fail() {
-        let (role, _subject, _detail) = restore_status_parts(&outcome(Some("target busy"), false));
-        assert_eq!(role, Role::Fail);
+    fn a_restore_that_did_not_happen_fails_the_run() {
+        let (_human, tally) = rendered(&outcome(Some("target busy"), false));
+        assert_eq!(tally.status, cfgd_core::state::ApplyStatus::Failed);
+        assert_eq!((tally.succeeded, tally.failed), (0, 1));
     }
 }

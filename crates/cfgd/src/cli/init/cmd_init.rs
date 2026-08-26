@@ -417,7 +417,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                             cfgd_core::output::collapse_to_subject_line(&e),
                         ),
                     );
-                    printer.hint("Install later with: cfgd daemon install");
+                    printer.hint("Install later with: `cfgd daemon install`");
                 }
             }
         }
@@ -427,7 +427,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 Role::Warn,
                 "Daemon service installation is not supported on this platform",
             );
-            printer.hint("Run the daemon directly with: cfgd daemon");
+            printer.hint("Run the daemon directly with: `cfgd daemon`");
         }
     }
 
@@ -688,7 +688,7 @@ pub(super) fn apply_plan(
 pub(super) fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Result<String> {
     if !profiles_dir.is_dir() {
         anyhow::bail!(
-            "No profiles directory found — create a profile first with: cfgd profile create <name>"
+            "No profiles directory found — create a profile first with: `cfgd profile create <name>`"
         );
     }
 
@@ -698,7 +698,7 @@ pub(super) fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Re
 
     if names.is_empty() {
         anyhow::bail!(
-            "No profiles found — create a profile first with: cfgd profile create <name>"
+            "No profiles found — create a profile first with: `cfgd profile create <name>`"
         );
     }
 

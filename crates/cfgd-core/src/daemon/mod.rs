@@ -962,6 +962,7 @@ pub(super) async fn run_daemon_with(
     cfgd_version: &str,
 ) -> Result<()> {
     printer.heading("Daemon");
+    // name-row-ok: names the process this run IS, not a command to run
     printer.status_simple(Role::Info, "Starting cfgd daemon");
 
     let ipc_path = overrides
@@ -1363,7 +1364,7 @@ pub(super) fn print_startup_banner(printer: &Printer, intervals: &[String], ipc_
     tracing::info!("daemon: health endpoint at {ipc_path}");
     tracing::info!("daemon: running — {}", intervals.join(", "));
     if printer.can_prompt() {
-        printer.hint("press Ctrl+C to stop");
+        printer.hint("Press Ctrl+C to stop");
     }
 }
 

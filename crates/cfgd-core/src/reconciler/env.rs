@@ -168,6 +168,12 @@ pub(super) struct PrimaryEnvWrite {
     /// per-entry lines this comparison re-renders are the lines that content
     /// actually holds.
     origins: super::env_engine::EnvOrigins,
+    /// The same folded `PATH` assignment that content was rendered with. A
+    /// declared `PATH` does not render a line of its own — it is one producer
+    /// of the file's single `PATH` line — so re-rendering it without the fold
+    /// would look for a line no file has ever held, and a module whose only
+    /// change is its `PATH` entry would never be seen to have moved.
+    path: Option<super::env_engine::FoldedPath>,
 }
 
 impl PrimaryEnvWrite {
@@ -207,7 +213,12 @@ impl PrimaryEnvWrite {
         let desired: HashSet<&str> = self.desired.lines().map(without_owner_comment).collect();
         env.iter()
             .filter_map(|ev| {
-                super::env_files::primary_env_var_line(ev, self.platform, &self.origins)
+                super::env_files::primary_env_var_line(
+                    ev,
+                    self.platform,
+                    &self.origins,
+                    self.path.as_ref(),
+                )
             })
             .chain(aliases.iter().filter_map(|a| {
                 super::env_files::primary_alias_line(a, self.platform, &self.origins)
@@ -390,6 +401,9 @@ impl<'a> super::Reconciler<'a> {
                                 platform,
                                 unclaimed_deletion,
                                 origins: origins.clone(),
+                                path: super::env_engine::primary_folded_path(
+                                    &merged, path_dirs, &origins, home, platform,
+                                ),
                             });
                         }
                     }
@@ -600,7 +614,7 @@ impl<'a> super::Reconciler<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::env_engine::EnvOrigins;
+    use super::super::env_engine::{EnvOrigins, FoldedPath};
     use super::*;
     use crate::config::{EnvVar, ShellAlias};
 
@@ -639,14 +653,14 @@ mod tests {
                     super::super::env_files::generate_powershell_env_content(
                         std::slice::from_ref(&foo),
                         std::slice::from_ref(&catn),
-                        &dirs,
+                        Some(&FoldedPath::derived(&dirs)),
                         origins,
                     )
                 } else {
                     super::super::env_files::generate_env_file_content(
                         std::slice::from_ref(&foo),
                         std::slice::from_ref(&catn),
-                        &dirs,
+                        Some(&FoldedPath::derived(&dirs)),
                         origins,
                     )
                 }
@@ -694,14 +708,14 @@ mod tests {
                     super::super::env_files::generate_powershell_env_content(
                         std::slice::from_ref(&foo),
                         std::slice::from_ref(&catn),
-                        &dirs,
+                        Some(&FoldedPath::derived(&dirs)),
                         origins,
                     )
                 } else {
                     super::super::env_files::generate_env_file_content(
                         std::slice::from_ref(&foo),
                         std::slice::from_ref(&catn),
-                        &dirs,
+                        Some(&FoldedPath::derived(&dirs)),
                         origins,
                     )
                 }
@@ -712,6 +726,7 @@ mod tests {
                 platform,
                 unclaimed_deletion: false,
                 origins: owners.clone(),
+                path: Some(FoldedPath::derived(&dirs)),
             };
             assert!(
                 !write.module_env_moved(std::slice::from_ref(&foo), std::slice::from_ref(&catn)),
@@ -721,10 +736,11 @@ mod tests {
     }
 
     fn ps(env: &[EnvVar], aliases: &[ShellAlias], path_dirs: &[ManagerPathDir]) -> String {
+        let fold = (!path_dirs.is_empty()).then(|| FoldedPath::derived(path_dirs));
         super::super::env_files::generate_powershell_env_content(
             env,
             aliases,
-            path_dirs,
+            fold.as_ref(),
             &Default::default(),
         )
     }

@@ -754,6 +754,7 @@ mod tests {
             std::slice::from_ref(&hand_edited),
             &Default::default(),
             &[],
+            &[],
         )
         .declared_line("alias", "ll")
         .expect("alias renders a declared line");

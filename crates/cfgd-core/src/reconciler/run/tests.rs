@@ -484,36 +484,62 @@ fn apply_result_tally_reads_the_reconcilers_planned_total() {
 
 // --- alignment ---
 
-/// The column is per PHASE, not per owner group: one long subject in the first
-/// group moves the second group's column too.
+/// The column is per REPORT, not per phase and not per owner group: one long
+/// subject in the FIRST phase moves the column the second phase pads to.
 #[test]
-fn align_width_is_phase_wide() {
-    let wide = phase(
-        PhaseName::Packages,
-        vec![
-            install("apt", &["a-very-long-package-name-indeed"]),
-            module_install("nvim", "brew", "neovim"),
-        ],
-    );
-    let narrow = phase(
-        PhaseName::Packages,
-        vec![
-            install("apt", &["sl"]),
-            module_install("nvim", "brew", "neovim"),
-        ],
-    );
+fn report_align_width_spans_every_phase() {
+    let wide = plan_of(vec![
+        phase(
+            PhaseName::Prerequisites,
+            vec![install("apt", &["a-very-long-package-name-indeed"])],
+        ),
+        phase(
+            PhaseName::Packages,
+            vec![module_install("nvim", "brew", "neovim")],
+        ),
+    ]);
+    let narrow = plan_of(vec![
+        phase(PhaseName::Prerequisites, vec![install("apt", &["sl"])]),
+        phase(
+            PhaseName::Packages,
+            vec![module_install("nvim", "brew", "neovim")],
+        ),
+    ]);
 
-    let wide_width = align_width(&wide);
-    let narrow_width = align_width(&narrow);
+    let wide_width = report_align_width(&wide, None);
+    let narrow_width = report_align_width(&narrow, None);
     assert!(
         wide_width > narrow_width,
-        "the long subject in group A must widen the phase column: {wide_width} vs {narrow_width}"
+        "the long subject in the first phase must widen the report column: \
+         {wide_width} vs {narrow_width}"
     );
-    // And the widened column is the long subject's own width, so group B pads
-    // out to a column group B alone would never have produced.
+    // And the widened column is the long subject's own width, so the SECOND
+    // phase pads out to a column its own actions would never have produced.
     assert_eq!(
         wide_width,
         crate::output::measure_width("apt install a-very-long-package-name-indeed")
+    );
+}
+
+/// A phase the filter empties prints no row, so it cannot widen the column the
+/// rows that DO print pad to.
+#[test]
+fn report_align_width_ignores_a_filtered_out_phase() {
+    let plan = plan_of(vec![
+        phase(
+            PhaseName::Prerequisites,
+            vec![install("apt", &["a-very-long-package-name-indeed"])],
+        ),
+        phase(PhaseName::Files, vec![create("dotfile")]),
+    ]);
+    let filter = PhaseFilter::Phase(PhaseName::Files);
+    assert_eq!(
+        report_align_width(&plan, Some(&filter)),
+        report_align_width(
+            &plan_of(vec![phase(PhaseName::Files, vec![create("dotfile")])]),
+            None
+        ),
+        "an excluded phase's widest action must not pad the phase that renders"
     );
 }
 
@@ -810,7 +836,7 @@ fn preview_bullet_matches_the_execution_subject_for_a_sourced_script() {
         "preview bullet must be the execution subject verbatim: {out:?}"
     );
     assert_eq!(
-        align_width(&plan.phases[0]),
+        report_align_width(&plan, None),
         measure_width(&executed),
         "the alignment column must measure the subject the execution renders"
     );
@@ -850,7 +876,7 @@ fn preview_bullet_matches_the_execution_subject_for_a_condensed_script() {
         "preview bullet must be the condensed execution subject verbatim: {out:?}"
     );
     assert_eq!(
-        align_width(&plan.phases[0]),
+        report_align_width(&plan, None),
         measure_width(&executed),
         "the alignment column must measure the condensed subject"
     );
@@ -894,6 +920,65 @@ fn preview_bullet_styles_a_scripts_marker() {
     assert!(
         plain.contains("run postApply script: echo hello"),
         "the stripped text must match the execution subject: {plain:?}"
+    );
+}
+
+/// One styling for a withheld action row, whichever tree draws it.
+///
+/// The plan lists an action the host has already refused and the apply settles
+/// the same one a beat later; when the plan dimmed the subject and brightened
+/// the reason while the apply did the reverse, a viewer flipping between the
+/// two frames read a change that never happened. Both settle through
+/// `SectionGuard::action_status` now, so the bytes match.
+#[test]
+#[serial_test::serial]
+fn both_trees_paint_a_withheld_row_with_the_same_bytes() {
+    use crate::output::{Role, Theme};
+
+    let subject = "publish 3 vars to the session manager";
+    let reason = crate::NO_SESSION_MANAGER;
+    let theme = Theme::from_preset("dracula").with_colors(true);
+
+    let line = |render: &dyn Fn(&Printer)| -> String {
+        let (printer, buf) = Printer::for_test_with_theme_colored(theme.clone(), Verbosity::Normal);
+        render(&printer);
+        drop(printer);
+        // raw-capture-ok: the claim IS that the two renders carry the same escapes — captured_text would strip exactly what is being compared
+        buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    };
+
+    // The plan tree's arm, reached the way `render_plan_tree` reaches it.
+    let planned = line(&|printer| {
+        let section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let owner = section.section_owner(&OwnerLabel::new("cfgd", "env"));
+        owner.action_status(Role::Skipped, subject).detail(reason);
+    });
+    // The apply tree's arm: the outcome `settle_action` records for the same
+    // action, through the writer that commits every settled line.
+    let settled = line(&|printer| {
+        let section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let owner = section.section_owner(&OwnerLabel::new("cfgd", "env"));
+        super::super::apply::emit_action_line(
+            printer,
+            &owner,
+            &super::super::apply::ActionOutcome::for_test_settled(subject, Role::Skipped, reason),
+        );
+    });
+
+    assert_eq!(
+        planned, settled,
+        "the plan tree and the apply tree must paint a withheld row identically"
+    );
+    // Anti-vacuity: the row really is styled, and the emphasis really is
+    // subject-dim / reason-bright rather than two unstyled strings matching.
+    let muted_subject = theme.muted.apply_to(subject).to_string();
+    assert!(
+        planned.contains(&muted_subject),
+        "a withheld subject keeps its dim role style: {planned:?}"
+    );
+    assert!(
+        !planned.contains(&theme.muted.apply_to(reason).to_string()),
+        "a withheld row's reason is the information on it, and renders bright: {planned:?}"
     );
 }
 

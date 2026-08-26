@@ -3,8 +3,8 @@ Explain: Module
 
 apiVersion  cfgd.io/v1alpha1
 kind        Module
-location    modules/<name>/module.yaml
-docs        docs/spec/module.md#fields
+Location    modules/<name>/module.yaml
+Docs        docs/spec/module.md#fields
 
 Fields (under spec)
   aliases    <[]ShellAlias> [+]         — Shell aliases this module contributes.
@@ -16,4 +16,4 @@ Fields (under spec)
   scripts    <ScriptSpec> [+]           — Lifecycle scripts (`preApply`, `postApply`, …) this module runs.
   system     <object>                   — System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.
 
-→ cfgd explain module.<field> expands a field marked [+]
+→ `cfgd explain module.<field>` expands a field marked [+]

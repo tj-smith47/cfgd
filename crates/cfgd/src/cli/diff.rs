@@ -254,6 +254,7 @@ pub fn cmd_diff(
                 &resolved.merged.aliases,
                 &resolved.merged.entry_owners,
                 &resolved_modules,
+                &path_dirs,
             );
             for r in results {
                 drift = true;
@@ -644,6 +645,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     &full_resolved.merged.aliases,
                     &full_resolved.merged.entry_owners,
                     &resolved_modules,
+                    &path_dirs,
                 );
                 for module in modules_by_name(&resolved_modules) {
                     let owns: std::collections::HashSet<&str> = module
@@ -1117,6 +1119,7 @@ mod tests {
             std::slice::from_ref(&hand_edited),
             &Default::default(),
             &[],
+            &[],
         )
         .declared_line("alias", "ll")
         .expect("alias renders a declared line");
@@ -1162,6 +1165,7 @@ mod tests {
             &[],
             std::slice::from_ref(&declared),
             &declared_owners,
+            &[],
             &[],
         )
         .declared_line("alias", "ll")

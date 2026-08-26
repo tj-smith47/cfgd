@@ -524,12 +524,17 @@ pub use crate::output::strip_ansi;
 /// subject out to the duration column, so leaving that run behind writes the
 /// column's width into the golden as trailing whitespace on some lines and
 /// not others.
+///
+/// ` (<0.1s)` — the renderer's below-the-resolution floor — is the same marker
+/// and strips the same way: whether an action lands under the floor is exactly
+/// the runtime variance this exists to remove.
 pub fn strip_spinner_duration(s: String) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s.as_str();
     while let Some(idx) = rest.find(" (") {
         out.push_str(&rest[..idx]);
-        let after = &rest[idx + 2..];
+        let raw_after = &rest[idx + 2..];
+        let after = raw_after.strip_prefix('<').unwrap_or(raw_after);
         let digit_end = after
             .find(|c: char| !c.is_ascii_digit())
             .unwrap_or(after.len());
@@ -550,7 +555,7 @@ pub fn strip_spinner_duration(s: String) -> String {
             }
         }
         out.push_str(" (");
-        rest = after;
+        rest = raw_after;
     }
     out.push_str(rest);
     out

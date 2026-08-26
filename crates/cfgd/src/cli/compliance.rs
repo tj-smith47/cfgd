@@ -138,7 +138,10 @@ fn append_constraint_violation_checks(
 pub(super) fn cmd_compliance_snapshot(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let ctx = RunContext::new(cli, printer);
     let (_cfg, snapshot) = collect_and_store_compliance_snapshot(&ctx)?;
-    printer.emit(build_compliance_summary_doc(&snapshot));
+    printer.emit(build_compliance_summary_doc(
+        &snapshot,
+        &cfgd_core::utc_now_iso8601(),
+    ));
     Ok(())
 }
 
@@ -177,7 +180,10 @@ pub(super) fn cmd_compliance_history(
         .transpose()?;
 
     let entries = state.compliance_history(since_ts.as_deref(), 100)?;
-    printer.emit(build_compliance_history_doc(&entries));
+    printer.emit(build_compliance_history_doc(
+        &entries,
+        &cfgd_core::utc_now_iso8601(),
+    ));
     Ok(())
 }
 
@@ -361,11 +367,19 @@ pub fn build_compliance_diff_doc(
 }
 
 /// Pure builder: compliance snapshot summary Doc.
-pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot) -> Doc {
+///
+/// `now` is a parameter, not a clock read, so the `Age` row pins in a golden.
+pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str) -> Doc {
     let overall = overall_status(&snapshot.summary);
 
     let mut doc = Doc::new().heading("Compliance Summary").kv_block([
-        ("Timestamp", snapshot.timestamp.clone()),
+        // `Age`, not the stored instant: `-o json` carries `timestamp` for a
+        // consumer that needs the exact moment, and a person reading the
+        // summary is asking how fresh it is.
+        (
+            "Age",
+            cfgd_core::humanize_age_cell(Some(&snapshot.timestamp), now),
+        ),
         ("Machine", snapshot.machine.hostname.clone()),
         ("Profile", snapshot.profile.clone()),
         ("Status", overall.to_string()),
@@ -457,16 +471,18 @@ pub fn build_compliance_export_doc(
 }
 
 /// Pure builder: compliance history Doc (table or empty-state).
-pub fn build_compliance_history_doc(entries: &[ComplianceHistoryRow]) -> Doc {
+pub fn build_compliance_history_doc(entries: &[ComplianceHistoryRow], now: &str) -> Doc {
     let mut doc = Doc::new().heading("Compliance History");
     if entries.is_empty() {
         doc = doc.status(Role::Info, "No compliance snapshots recorded yet");
     } else {
-        let mut table = Table::new(["ID", "Timestamp", "Compliant", "Warning", "Violation"]);
+        // `Age`, not `Timestamp`: the `ID` column beside it is the correlation
+        // key `compliance diff` takes, and the payload keeps the instant.
+        let mut table = Table::new(["ID", "Age", "Compliant", "Warning", "Violation"]);
         for row in entries {
             table = table.row([
                 row.id.to_string(),
-                row.timestamp.clone(),
+                cfgd_core::humanize_age_cell(Some(&row.timestamp), now),
                 row.compliant.to_string(),
                 row.warning.to_string(),
                 row.violation.to_string(),
@@ -497,6 +513,10 @@ mod tests {
         ComplianceCheck, ComplianceSnapshot, ComplianceStatus, ComplianceSummary, MachineInfo,
     };
     use cfgd_core::output::OutputFormat;
+
+    /// A day after every fixture snapshot's stamp, so a rendered `Age` reads a
+    /// fixed `1d ago` rather than moving with the suite's clock.
+    const NOW: &str = "2026-05-13T00:00:00Z";
 
     fn sample_snapshot(checks: Vec<ComplianceCheck>) -> ComplianceSnapshot {
         let summary = cfgd_core::compliance::compute_summary(&checks);
@@ -560,7 +580,7 @@ mod tests {
             check("package", "ripgrep", ComplianceStatus::Compliant),
         ]);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_compliance_summary_doc(&snapshot));
+        printer.emit(build_compliance_summary_doc(&snapshot, NOW));
         drop(printer);
 
         let output = cap.human();
@@ -585,7 +605,7 @@ mod tests {
             check("system", "sysctl.x", ComplianceStatus::Warning),
         ]);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_compliance_summary_doc(&snapshot));
+        printer.emit(build_compliance_summary_doc(&snapshot, NOW));
         drop(printer);
 
         let output = cap.human();
@@ -607,7 +627,7 @@ mod tests {
             check("package", "ripgrep", ComplianceStatus::Violation),
         ]);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_compliance_summary_doc(&snapshot));
+        printer.emit(build_compliance_summary_doc(&snapshot, NOW));
         drop(printer);
 
         let output = cap.human();
@@ -625,7 +645,7 @@ mod tests {
     fn build_compliance_summary_doc_empty_checks() {
         let snapshot = sample_snapshot(vec![]);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_compliance_summary_doc(&snapshot));
+        printer.emit(build_compliance_summary_doc(&snapshot, NOW));
         drop(printer);
 
         let output = cap.human();
@@ -862,9 +882,11 @@ mod tests {
             output.contains("Compliance History"),
             "should print history heading, got: {output}"
         );
+        // The column reads as an age, not as the stored instant — the stamp
+        // itself stays in `-o json`.
         assert!(
-            output.contains("2026-05-12T00:00:00Z"),
-            "should include seeded timestamp, got: {output}"
+            output.contains(" ago") && !output.contains("2026-05-12T00:00:00Z"),
+            "should age the seeded timestamp, got: {output}"
         );
     }
 

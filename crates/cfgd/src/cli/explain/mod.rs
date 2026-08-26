@@ -414,7 +414,7 @@ fn is_expandable(f: &FieldNode) -> bool {
 /// already expanded every field — never earns it.
 fn expandable_hint(base: &str, fields: &[&FieldNode], recursive: bool) -> Option<String> {
     (!recursive && fields.iter().any(|f| is_expandable(f)))
-        .then(|| format!("cfgd explain {base}.<field> expands a field marked [+]"))
+        .then(|| format!("`cfgd explain {base}.<field>` expands a field marked [+]"))
 }
 
 fn field_row(f: &FieldNode, name_width: usize) -> CommandPair {
@@ -530,10 +530,12 @@ pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc
         .heading_title("Explain", schema.name.clone())
         .paragraph(schema.description.clone())
         .kv_block([
+            // name-row-ok: a KRM field name, spelled as the YAML spells it
             ("apiVersion", schema.api_version.as_str()),
+            // name-row-ok: a KRM field name, spelled as the YAML spells it
             ("kind", schema.kind.as_str()),
-            ("location", schema.location.as_str()),
-            ("docs", schema.docs.as_str()),
+            ("Location", schema.location.as_str()),
+            ("Docs", schema.docs.as_str()),
         ])
         .section("Fields (under spec)", |s| {
             append_fields(s, &fields, recursive)

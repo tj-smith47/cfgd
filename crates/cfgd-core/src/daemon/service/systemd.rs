@@ -232,7 +232,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
                     )
                     .detail(super::INSTALLED_NOT_STARTED);
                 printer.hint(
-                    "Enable lingering so the user service can run without an active login: loginctl enable-linger $USER, then re-run cfgd daemon install",
+                    "Enable lingering so the user service can run without an active login: loginctl enable-linger $USER, then re-run `cfgd daemon install`",
                 );
                 return Ok(false);
             }

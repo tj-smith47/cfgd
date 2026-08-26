@@ -76,6 +76,29 @@ fn normalize_duration(raw: &str) -> String {
     cfgd_core::normalize_snapshot_durations(raw).replace('\\', "/")
 }
 
+/// Collapse the alignment padding ahead of an action row's trailing column.
+///
+/// The report's column is measured on the REAL subjects, and a subject holding
+/// a host temp path is substituted for a short placeholder only afterwards —
+/// so the padding left beside the other rows encodes the length of THIS host's
+/// temp dir. A golden pinning structure, order and labels must not also pin
+/// that; the column itself is a renderer unit test
+/// (`output::renderer::status`), where the subjects are literals.
+fn collapse_alignment_padding(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for line in raw.split_inclusive('\n') {
+        let mut folded = line.to_string();
+        for marker in ['(', '\u{2014}'] {
+            let pair = format!("  {marker}");
+            while let Some(idx) = folded.find(&pair) {
+                folded.remove(idx);
+            }
+        }
+        out.push_str(&folded);
+    }
+    out
+}
+
 #[test]
 fn apply_happy_human() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
@@ -277,7 +300,7 @@ fn apply_phase_tree_human() {
 
     let normalized =
         normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
-    let stripped = normalize_duration(&strip_ansi(&normalized));
+    let stripped = collapse_alignment_padding(&normalize_duration(&strip_ansi(&normalized)));
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "apply/phase_tree.txt", &stripped);
 }
 

@@ -25,7 +25,7 @@ fn upgraded_doc(
     data: impl IntoIterator<Item = (&'static str, serde_json::Value)>,
 ) -> Doc {
     let mut doc = Doc::new()
-        .status(Role::Ok, format!("cfgd upgraded to {version}"))
+        .status(Role::Ok, format!("Upgraded to {version}"))
         .kv("Installed to", installed_path);
     if daemon_terminated {
         doc = doc.kv("Daemon", "terminated to pick up the new binary");
@@ -98,7 +98,7 @@ pub fn cmd_upgrade(
         } else {
             printer.emit(
                 Doc::new()
-                    .status(Role::Ok, format!("cfgd {} is up to date", check.current))
+                    .status(Role::Ok, format!("Up to date at {}", check.current))
                     .with_data(serde_json::json!({
                         "currentVersion": check.current.to_string(),
                         "latestVersion": check.latest.to_string(),
@@ -127,10 +127,7 @@ pub fn cmd_upgrade(
     if !check.update_available {
         printer.emit(
             Doc::new()
-                .status(
-                    Role::Ok,
-                    format!("cfgd {} is already the latest version", check.current),
-                )
+                .status(Role::Ok, format!("Up to date at {}", check.current))
                 .with_data(serde_json::json!({
                     "currentVersion": check.current.to_string(),
                     "targetVersion": check.current.to_string(),
@@ -484,7 +481,7 @@ mod tests {
     fn the_success_doc_is_minted_in_exactly_one_place() {
         let source = include_str!("upgrade.rs");
         // Split so this test's own literals are not what it counts.
-        let sentence = format!("cfgd upgraded {}", "to {version}");
+        let sentence = format!("Upgraded {}", "to {version}");
         assert_eq!(
             source.matches(sentence.as_str()).count(),
             1,

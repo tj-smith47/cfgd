@@ -632,7 +632,12 @@ pub struct BackupSnapshotEntry {
     /// `run` for a backup of the unit, `safety` for the copy a restore took of
     /// what it was about to overwrite. Both restore; only a `run` is the unit's
     /// last run.
-    pub kind: String,
+    ///
+    /// Typed rather than a pre-stringified token so the human table can reach
+    /// [`cfgd_core::state::BackupRunKind::display_str`] while this payload keeps
+    /// the wire spelling: the enum's `Serialize` and its `as_str` are the same
+    /// string by construction.
+    pub kind: cfgd_core::state::BackupRunKind,
     /// ISO 8601 UTC time the run that wrote the snapshot finished, on the same
     /// scale as `BackupListEntry::last_run_at`.
     pub created: String,
@@ -643,7 +648,7 @@ impl From<&cfgd_core::backup::SnapshotInfo> for BackupSnapshotEntry {
     fn from(info: &cfgd_core::backup::SnapshotInfo) -> Self {
         Self {
             name: info.name.clone(),
-            kind: info.kind.as_str().to_string(),
+            kind: info.kind,
             created: info.created.clone(),
             size_bytes: info.size_bytes,
         }

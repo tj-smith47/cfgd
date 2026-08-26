@@ -3,9 +3,9 @@ Apply
   Profile  dev
 
 Files
-  ✓ Wrote /etc/hosts   (0.0s)
+  ✓ Wrote /etc/hosts   (<0.1s)
   ⚠ Skipped /tmp/foo   — permission denied
-  ✓ Symlinked ~/.zshrc (0.0s)
+  ✓ Symlinked ~/.zshrc (<0.1s)
 
 Packages
   ✓ Installed nodejs@20 (4.1s)

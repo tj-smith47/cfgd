@@ -278,6 +278,16 @@ overrides names the child, not the base it came from. A subscribed source's entr
 the source (`# source:acme`), and the bootstrapped `PATH` line names every manager whose
 directories it carries (`# manager:brew,cargo`).
 
+A file carries exactly **one** `PATH` line, whoever produced it. Declaring `PATH` in
+`spec.env` does not add a second: the declaration and the bootstrapped directories fold
+into one assignment whose comment names both producers, with cfgd's directories spliced
+in where the declaration reaches for the ambient `PATH`.
+
+```bash
+# module:nvim declares PATH: "$HOME/.cargo/bin:$PATH"; brew and npm were bootstrapped
+export PATH="$HOME/.cargo/bin:/opt/brewroot/bin:$HOME/.npm-global/bin:$PATH" # manager:brew,npm module:nvim
+```
+
 `environment.d` and the macOS LaunchAgent have no trailing-comment grammar, so their lines
 carry no owner.
 

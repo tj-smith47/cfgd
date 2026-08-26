@@ -1,6 +1,6 @@
 Status: dev-tools
   Status        Synced
-  Last Applied  2026-05-14T10:00:00Z
+  Last Applied  5m ago
   Packages      2
   Files         12
   Env           2

@@ -566,6 +566,22 @@ impl Printer {
         super::renderer::DepthInheritGuard::acquire(&self.renderer)
     }
 
+    /// Declare the alignment column every action row of THIS report pads to,
+    /// for as long as the guard lives.
+    ///
+    /// The trailing column — an elapsed time, a detail, a target — is the one
+    /// a reader's eye scans straight down, so it belongs to the report, not to
+    /// whichever phase happens to be drawing. A section that declares a live
+    /// column takes this in preference to its own.
+    ///
+    /// Claimed by whoever can see the whole report: an apply run measures its
+    /// plan AND the backup labels it will print after it, and the preview
+    /// nested inside that run leaves the wider claim alone.
+    #[must_use = "the column is released when the guard drops; bind it"]
+    pub fn report_column(&self, width: usize) -> super::renderer::ReportColumnGuard<'_> {
+        super::renderer::ReportColumnGuard::acquire(&self.renderer, width)
+    }
+
     /// Status with no extra fields. For detail/duration/target, use the builder
     /// returned by the binding helper `status` (see status_builder.rs).
     ///
@@ -602,7 +618,7 @@ impl Printer {
         role: Role,
         subject: impl Into<String>,
     ) -> super::status_builder::StatusBuilder<'_> {
-        let style = self.renderer.theme.primary.clone();
+        let style = super::renderer::action_subject_style(&self.renderer.theme, role);
         self.status(role, subject).with_subject_style(style)
     }
 

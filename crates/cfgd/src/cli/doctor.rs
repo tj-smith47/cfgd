@@ -643,11 +643,11 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
 
     for provider in &secrets.providers {
         s = if provider.available {
-            s.status_with(Role::Ok, format!("provider {}", provider.name), |f| {
+            s.status_with(Role::Ok, format!("Provider {}", provider.name), |f| {
                 f.qualifier("available")
             })
         } else {
-            s.status_with(Role::Info, format!("provider {}", provider.name), |f| {
+            s.status_with(Role::Info, format!("Provider {}", provider.name), |f| {
                 f.qualifier(format!("{} (optional)", cfgd_core::Absence::NotInstalled))
             })
         };

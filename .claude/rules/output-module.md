@@ -66,6 +66,18 @@ Five conventions, each with a walk-the-population pin that fails on the next mem
 | A **rendered label is Title Case**, whichever slot holds it | a kv key, a `KvPair`, a row tuple and a table header all read `Last Sync` / `Drift Count` — never `Reconcile interval` two rows above a Title Case column. Small words stay lowercase off the front (`Signing with`); a label NAMING a thing (a `spec.packages` path, a tool's own name) keeps that spelling under a `// name-row-ok:` marker | `every_rendered_label_is_title_case` |
 | A **count belongs to its section's annotation**, not to a row | `Pending Decisions (1 item)` via `reconciler::pending_decisions_title`, never a `⊙ 1 pending item` line that wears the row glyph and the row indent | `pending_decisions_title`'s own unit tests + the `decide` / `status` goldens |
 
+## Rendering rules every action row obeys
+
+Three conventions about the SHAPE of a settled row, each with a walk-the-population pin in `crates/cfgd-core/src/`. A row is painted by one of three surfaces (`Printer::action_status`, `SectionGuard::action_status`, `LiveRow::set_action_status`) and settled by two trees (`render_plan_tree`, `Reconciler::settle_action` → `emit_action_line`), so every rule here is enforced at the ONE seam all five read, never at a call site.
+
+| Rule | Shape | Pin |
+|---|---|---|
+| A **withheld row holds its subject back and lets the reason speak** | `Pending` / `Skipped` render the subject muted and the detail bright; every other role does the reverse. Both halves answer from `renderer::{action_subject_style, action_detail_is_muted}`, so the plan tree and the apply tree paint the same bytes for the same row | `every_role_takes_one_emphasis_on_both_halves_of_an_action_row`, `the_withholding_split_has_a_member_on_each_side` (`output/renderer/glyphs.rs`), `both_trees_paint_a_withheld_row_with_the_same_bytes` (`reconciler/run/tests.rs`) |
+| **One alignment column per report**, not per phase | the elapsed/detail column is measured once over every action the run will print and claimed through `Printer::report_column`, so it never moves x position between phases — including the pseudo-phases (`Backups`, `cfgd:env`) a `Plan` does not carry | `report_align_width_spans_every_phase`, `report_align_width_ignores_a_filtered_out_phase` (`reconciler/run/tests.rs`) |
+| A **duration slot never renders a zero** | anything the one-decimal form would round to `0.0` renders ` (<0.1s)` — a sub-tick action DID run, and `(0.0s)` says it took no time. One composer (`renderer::status::duration_text`) feeds the action suffix, the spinner finish and the rollup total alike | `a_sub_tick_duration_renders_the_floor_and_never_a_zero`, `every_duration_slot_composes_through_the_one_trailer` (`output/renderer/status.rs`) |
+
+Both snapshot normalizers know the floor's spelling (`util/paths.rs::duration_span`, `output/test_capture.rs::strip_spinner_duration`), so a golden stays host-stable across it.
+
 ## Sanitizing text cfgd did not author
 
 `cursor_safe` (`output/mod.rs`) is the ONE renderer FOLD, and it covers every slot above that carries caller text. **A call site echoing a gateway field, a remote source's description or a tool's captured stderr through one of those slots does NOT sanitize it by hand.**

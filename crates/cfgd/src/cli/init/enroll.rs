@@ -41,7 +41,7 @@ pub struct EnrollOutput {
 fn enroll_error_hint(kind: &str) -> Option<&'static str> {
     match kind {
         "method_mismatch" => Some(
-            "This server uses bootstrap token enrollment. Re-run with: cfgd enroll --server-url <url> --token <token>",
+            "This server uses bootstrap token enrollment. Re-run with: `cfgd enroll --server-url <url> --token <token>`",
         ),
         "no_key" => Some(
             "Provide --ssh-key <path> or --gpg-key <id>. Checked: SSH agent, ~/.ssh/id_ed25519, ~/.ssh/id_rsa, ~/.ssh/id_ecdsa",
@@ -128,7 +128,7 @@ pub(crate) fn cmd_enroll(
         return Err(build_enroll_error(
             server_url,
             "method_mismatch",
-            "This server uses bootstrap token enrollment. Run: cfgd enroll --server-url <url> --token <token>",
+            "This server uses bootstrap token enrollment. Run: `cfgd enroll --server-url <url> --token <token>`",
             serde_json::json!({
                 "serverUrl": server_url,
                 "serverMethod": info.method,

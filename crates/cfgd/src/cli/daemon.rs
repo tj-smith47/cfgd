@@ -200,8 +200,8 @@ pub fn build_daemon_status_doc(
         None => {
             let placeholder = placeholder_status();
             doc.status(Role::Warn, "Daemon not running")
-                .status(Role::Info, "Start with: cfgd daemon")
-                .status(Role::Info, "Install as service: cfgd daemon install")
+                .status(Role::Info, "Start with: `cfgd daemon`")
+                .status(Role::Info, "Install as service: `cfgd daemon install`")
                 .with_data(&placeholder)
         }
     }

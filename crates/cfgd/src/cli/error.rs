@@ -234,7 +234,7 @@ pub fn render_cli_error(
     let code = exit_code_for_anyhow(err);
     // The hint goes to the same stream (stderr) as the error above.
     if code == cfgd_core::exit::ExitCode::NoConfig {
-        printer.hint("run `cfgd init` to create a config, or pass --config <path>");
+        printer.hint("Run `cfgd init` to create a config, or pass --config <path>");
     }
     code
 }
