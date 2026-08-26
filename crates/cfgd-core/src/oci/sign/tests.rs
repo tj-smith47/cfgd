@@ -975,3 +975,133 @@ fn every_type_flag_this_module_spells_is_a_name_the_fold_can_produce() {
         "no literal --type argument found: the walk stopped seeing its population"
     );
 }
+
+use crate::test_helpers::CosignTestShim;
+
+// --- Plain-HTTP registries: cosign has to be told what cfgd already knows ---
+
+#[test]
+#[serial_test::serial]
+fn a_registry_cfgd_reads_over_http_is_named_to_cosign_as_insecure() {
+    let _env = EnvVarGuard::set("OCI_INSECURE_REGISTRIES", "kind-registry:5000");
+    let mut cmd = std::process::Command::new("echo");
+    apply_registry_scheme(&mut cmd, "kind-registry:5000/demo/tools:v1");
+    let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap_or("")).collect();
+    assert_eq!(args, vec!["--allow-insecure-registry"]);
+}
+
+#[test]
+#[serial_test::serial]
+fn a_tls_registry_is_not_downgraded_for_cosign() {
+    let _env = EnvVarGuard::unset("OCI_INSECURE_REGISTRIES");
+    let mut cmd = std::process::Command::new("echo");
+    apply_registry_scheme(&mut cmd, "ghcr.io/acme/tools:v1");
+    assert_eq!(cmd.get_args().count(), 0);
+}
+
+/// Every cosign subcommand cfgd spells resolves the artifact in its registry,
+/// so each one asks the same question about the scheme. A new one that forgets
+/// works against every TLS registry and fails only where the CSI driver and
+/// the operator are already configured to reach plain HTTP.
+#[test]
+fn every_cosign_subcommand_this_module_spells_declares_the_registry_scheme() {
+    let source = include_str!("mod.rs");
+    let mut checked = 0;
+    for chunk in source.split("let mut cmd = crate::cosign_cmd();").skip(1) {
+        // Each factory call opens a function body; the scheme has to be
+        // declared before that body's `cmd.output()` runs the process.
+        let body = chunk.split("cmd.output()").next().unwrap_or_default();
+        let subcommand = body
+            .split_once(".arg(\"")
+            .map(|(_, rest)| rest.split('"').next().unwrap_or_default())
+            .unwrap_or_default();
+        assert!(
+            body.contains("apply_registry_scheme(&mut cmd"),
+            "cosign {subcommand} reaches a registry but never declares its scheme"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "no cosign command found: the walk stopped seeing its population"
+    );
+}
+
+// --- check_signature: a failed check is not a failed signature ---
+
+#[test]
+#[serial_test::serial]
+fn a_cosign_rejection_is_a_verdict_about_the_signature() {
+    let _guard = CosignTestShim::builder()
+        .with_exit(1)
+        .with_stderr("Error: no matching signatures")
+        .install();
+    let check = check_signature(
+        "ghcr.io/myorg/mod:v1",
+        &VerifyOptions {
+            key: Some("/keys/cosign.pub"),
+            identity: None,
+            issuer: None,
+        },
+    );
+    assert!(
+        matches!(check, SignatureCheck::Rejected(_)),
+        "cosign looked at the artifact and said no, got {check:?}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_registry_cosign_could_not_reach_is_not_a_verdict() {
+    let _guard = CosignTestShim::builder()
+        .with_exit(1)
+        .with_stderr("Error: GET https://registry.internal/v2/: dial tcp: no such host")
+        .install();
+    let check = check_signature(
+        "ghcr.io/myorg/mod:v1",
+        &VerifyOptions {
+            key: Some("/keys/cosign.pub"),
+            identity: None,
+            issuer: None,
+        },
+    );
+    assert!(
+        matches!(check, SignatureCheck::Undetermined(_)),
+        "an unreachable registry says nothing about the signature, got {check:?}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_missing_cosign_is_not_a_verdict() {
+    let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
+    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _path = EnvVarGuard::set("PATH", "");
+    let check = check_signature(
+        "ghcr.io/myorg/mod:v1",
+        &VerifyOptions {
+            key: Some("/keys/cosign.pub"),
+            identity: None,
+            issuer: None,
+        },
+    );
+    assert!(
+        matches!(check, SignatureCheck::Undetermined(_)),
+        "no verifier means nothing was learned, got {check:?}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_cosign_that_accepts_the_artifact_is_valid() {
+    let _guard = CosignTestShim::install();
+    let check = check_signature(
+        "ghcr.io/myorg/mod:v1",
+        &VerifyOptions {
+            key: Some("/keys/cosign.pub"),
+            identity: None,
+            issuer: None,
+        },
+    );
+    assert_eq!(check, SignatureCheck::Valid);
+}

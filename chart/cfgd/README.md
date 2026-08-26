@@ -56,6 +56,30 @@ helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd -n cfgd-system --create-n
 See [values.yaml](values.yaml) for the full set (images, resources, probes,
 tolerations, security contexts).
 
+### Registry settings
+
+Three components read module artifacts from a registry — the operator (each
+Module's platforms, attestations and cosign signature), the CSI driver (the
+layers it mounts) and the agent (the modules it pulls) — and each takes its
+registry configuration through its own `extraEnv`. Give the same settings to
+every component you enable:
+
+```yaml
+operator:
+  extraEnv:
+    - name: OCI_INSECURE_REGISTRIES
+      value: "registry.internal:5000"
+csiDriver:
+  extraEnv:
+    - name: OCI_INSECURE_REGISTRIES
+      value: "registry.internal:5000"
+```
+
+`OCI_INSECURE_REGISTRIES` is a comma-separated list of registries reached over
+plain HTTP; loopback addresses are always treated that way and need no entry.
+An operator that cannot reach a Module's registry leaves the `PLATFORMS` column
+blank and reports the signature as `unknown`.
+
 Agent pods run privileged by design: host config management requires root
 access. They do not use the shared `podSecurityContext` /
 `containerSecurityContext` values.

@@ -27,8 +27,11 @@ use serde::Serialize;
 use tokio::task::JoinHandle;
 use tower_test::mock;
 
-use crate::controllers::{ArtifactFactsReader, ControllerContext, ControllerStores};
+use crate::controllers::{
+    ArtifactFactsReader, ArtifactVerifier, ControllerContext, ControllerStores, RegistryBackoff,
+};
 use crate::metrics::Metrics;
+use cfgd_core::oci::SignatureCheck;
 
 /// Build a populated, ready [`Store`] from a fixed set of objects.
 ///
@@ -86,8 +89,12 @@ pub(crate) fn empty_stores() -> ControllerStores {
 /// with `.returning_*` / `.with_status` / `.expecting_query`.
 pub(crate) struct ExpectedCall {
     method: Method,
-    /// Exact match on the URI path component (no query string, no scheme).
+    /// Exact match on the URI path component (no query string, no scheme),
+    /// unless `path_is_prefix` says the tail is the client's to mint.
     path: String,
+    /// Match `path` as a PREFIX. For a request whose last segment the client
+    /// derives rather than the caller naming it.
+    path_is_prefix: bool,
     /// Optional substring that must appear in the URI's query string.
     /// Useful for `fieldManager=cfgd-operator/status` assertions without
     /// pinning the full encoded query.
@@ -131,10 +138,19 @@ impl ExpectedCall {
         Self {
             method,
             path: path.into(),
+            path_is_prefix: false,
             query_contains: None,
             response_status: StatusCode::OK,
             response_body: b"{}".to_vec(),
         }
+    }
+
+    /// Match the path by PREFIX instead of exactly, for a request whose final
+    /// segment the client mints — kube's recorder names a repeated event
+    /// `<object>.<hash of the event>`, which no fixture can spell.
+    pub fn with_path_prefix(mut self) -> Self {
+        self.path_is_prefix = true;
+        self
     }
 
     /// Pin a substring that must appear in the request's query string.
@@ -252,6 +268,23 @@ pub(crate) fn expect_event_post(namespace: &str) -> ExpectedCall {
     }))
 }
 
+/// The PATCH kube's recorder sends for an event it has ALREADY published in
+/// this process: a repeat is a series increment on the existing object, not a
+/// second event, so a second reconcile publishing the same event is a PATCH to
+/// `.../events/<object>.<hash>` rather than another POST. The name carries a
+/// hash of the event's own content, so the path matches by prefix.
+pub(crate) fn expect_event_series_patch(namespace: &str) -> ExpectedCall {
+    ExpectedCall::patch(format!(
+        "/apis/events.k8s.io/v1/namespaces/{namespace}/events/"
+    ))
+    .with_path_prefix()
+    .returning_json(&serde_json::json!({
+        "apiVersion": "events.k8s.io/v1",
+        "kind": "Event",
+        "metadata": { "name": "test-event", "namespace": namespace },
+    }))
+}
+
 /// What the driver task hands back: the expected calls it matched, plus any
 /// request that arrived after the queue was exhausted.
 struct DriverOutcome {
@@ -300,6 +333,28 @@ impl MockKubeHarness {
         stores: ControllerStores,
         artifact_facts: ArtifactFactsReader,
     ) -> (Arc<ControllerContext>, Registry, Self) {
+        Self::with_registry_seams(
+            expected,
+            stores,
+            artifact_facts,
+            // Nothing was checked, which is what a test that installs no
+            // verifier has actually established. A test asserting a signature
+            // verdict names the verifier it means.
+            ArtifactVerifier::fixed(SignatureCheck::Undetermined(
+                "no verifier installed in this test".to_string(),
+            )),
+        )
+    }
+
+    /// Same as [`MockKubeHarness::with_facts`], but with the signature
+    /// verifier the Module controller consults as well. The two registry seams
+    /// are the whole surface a reconcile can reach the outside world through.
+    pub fn with_registry_seams(
+        expected: Vec<ExpectedCall>,
+        stores: ControllerStores,
+        artifact_facts: ArtifactFactsReader,
+        artifact_verifier: ArtifactVerifier,
+    ) -> (Arc<ControllerContext>, Registry, Self) {
         let (mock_service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
         let (stop, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -328,15 +383,26 @@ impl MockKubeHarness {
                     actual_method,
                     actual_path,
                 );
-                assert_eq!(
-                    actual_path,
-                    expected_call.path,
-                    "path mismatch on call #{}: expected {} but got {} (method {})",
-                    captured.len() + 1,
-                    expected_call.path,
-                    actual_path,
-                    actual_method,
-                );
+                if expected_call.path_is_prefix {
+                    assert!(
+                        actual_path.starts_with(&expected_call.path),
+                        "path mismatch on call #{}: expected a path under {} but got {} (method {})",
+                        captured.len() + 1,
+                        expected_call.path,
+                        actual_path,
+                        actual_method,
+                    );
+                } else {
+                    assert_eq!(
+                        actual_path,
+                        expected_call.path,
+                        "path mismatch on call #{}: expected {} but got {} (method {})",
+                        captured.len() + 1,
+                        expected_call.path,
+                        actual_path,
+                        actual_method,
+                    );
+                }
                 if let Some(fragment) = &expected_call.query_contains {
                     assert!(
                         actual_query.contains(fragment),
@@ -420,6 +486,8 @@ impl MockKubeHarness {
             metrics,
             stores,
             artifact_facts,
+            artifact_verifier,
+            registry_backoff: RegistryBackoff::default(),
         });
 
         (ctx, registry, Self { driver, stop })

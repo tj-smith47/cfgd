@@ -238,17 +238,26 @@ A `ConfigPolicy` or `ClusterConfigPolicy` can add modules the pod never asked fo
 Two settings matter in production:
 
 - `CFGD_CSI_ALLOWED_REGISTRIES` on the CSI driver restricts which registries a pod's `ociRef` may pull from. Unset means any registry is accepted, which the driver warns about at startup.
-- `spec.security` on a `ClusterConfigPolicy` gates which modules may be admitted at all. `trustedRegistries` is a list of registry prefixes (a trailing `*` or `/` widens the match), and `allowUnsigned` decides whether a `Module` may carry an `ociArtifact` with no cosign signature. Both default to the strict answer: `allowUnsigned` is `false`, so creating any `ClusterConfigPolicy` at all starts rejecting unsigned modules. A cluster with no `ClusterConfigPolicy` enforces neither. See [OCI Artifact Signing](modules.md#oci-artifact-signing-cosign).
+- `spec.security` on a `ClusterConfigPolicy` gates which modules may be admitted at all. `trustedRegistries` is a list of registry prefixes (a trailing `*` or `/` widens the match), and `allowUnsigned` decides whether a `Module` may carry an `ociArtifact` whose signature does not verify. Both default to the strict answer: `allowUnsigned` is `false`, so creating any `ClusterConfigPolicy` at all starts rejecting every module whose `SIGNATURE` is not `verified` — including one whose signature could not be checked, since a check that never ran is not evidence of a signature. A cluster with no `ClusterConfigPolicy` enforces neither. See [OCI Artifact Signing](modules.md#oci-artifact-signing-cosign).
 
-`kubectl get modules` reports each module's signature verdict in its `SIGNATURE` column, as one of three words:
+The operator checks each `Module`'s artifact against the key its `spec.signature.cosign` block declares, by running `cosign verify` against the artifact's own registry. `kubectl get modules` reports what that check concluded in the `SIGNATURE` column, as one of four words:
 
 | Verdict | Meaning |
 |---|---|
-| `verified` | the module declares a signature and it checked out |
-| `unverified` | the module declares a signature that did not check out |
-| `unsigned` | the module declares no signature |
+| `verified` | cosign checked the artifact against the declared key and accepted it |
+| `unverified` | cosign checked the artifact and rejected it: no signature, or none the key accepts |
+| `unsigned` | the module declares no signature, so there is nothing to check |
+| `unknown` | the check could not run at all: no cosign in the operator image, an unreachable registry, or a module with no artifact to check |
 
-`kubectl cfgd status` names the context and namespace it read, lists the registered modules with the same three-word verdict, and lists the pods in that namespace whose `cfgd.io/modules` annotation asks for modules:
+`unknown` is not a verdict about the signature, and the `Verified` condition carries it as `status: Unknown` with the reason on the condition's message:
+
+```sh
+kubectl get module tools -o jsonpath='{.status.conditions[?(@.type=="Verified")].message}'
+```
+
+The operator reaches the registry itself, so it needs the same registry configuration as the CSI driver: set `operator.extraEnv` (see the [chart README](../chart/cfgd/README.md#registry-settings)) with `OCI_INSECURE_REGISTRIES` for a registry served over plain HTTP. Without it the signature reads `unknown` and the `PLATFORMS` column stays blank.
+
+`kubectl cfgd status` names the context and namespace it read, lists the registered modules with the same verdict vocabulary, and lists the pods in that namespace whose `cfgd.io/modules` annotation asks for modules:
 
 ```
 Status

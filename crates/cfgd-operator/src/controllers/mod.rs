@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::Namespace;
@@ -16,12 +16,12 @@ use kube::{Client, ResourceExt};
 use tracing::{debug, info, warn};
 
 use crate::crds::{
-    ClusterConfigPolicy, Condition, ConfigPolicy, DriftAlert, DriftSeverity, LabelSelector,
-    MAX_NON_COMPLIANT_MACHINES, MachineConfig, Module, SelectorOperator,
+    ClusterConfigPolicy, Condition, ConfigPolicy, CosignSignature, DriftAlert, DriftSeverity,
+    LabelSelector, MAX_NON_COMPLIANT_MACHINES, MachineConfig, Module, SelectorOperator,
 };
 use crate::errors::OperatorError;
 use crate::metrics::{Metrics, ReconcileLabels};
-use cfgd_core::oci::ArtifactFacts;
+use cfgd_core::oci::{ArtifactFacts, SignatureCheck};
 
 #[cfg(test)]
 use crate::crds::{
@@ -136,6 +136,132 @@ pub struct ControllerContext {
     pub metrics: Metrics,
     pub stores: ControllerStores,
     pub artifact_facts: ArtifactFactsReader,
+    pub artifact_verifier: ArtifactVerifier,
+    pub registry_backoff: RegistryBackoff,
+}
+
+/// How long a failed registry visit is remembered before another is attempted.
+///
+/// Equal to the Module controller's requeue period, so a module whose registry
+/// is unreachable costs one visit per requeue instead of one per reconcile: a
+/// status patch, an event, or any other watch event on the object triggers a
+/// reconcile, and a swallowed failure leaves nothing recorded for the next one
+/// to short-circuit on.
+const REGISTRY_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// The registry visits that failed recently, so the next reconcile inside
+/// [`REGISTRY_RETRY_AFTER`] answers from the failure instead of repeating it.
+///
+/// Keyed by what was attempted AND against what, because reading an artifact's
+/// manifests and verifying its signature are two visits that can fail
+/// independently. In-memory by design: it holds no verdict, only the fact that
+/// a visit has already been paid for, so an operator restart simply retries.
+#[derive(Clone, Default)]
+pub struct RegistryBackoff(Arc<parking_lot::Mutex<BTreeMap<String, Instant>>>);
+
+impl RegistryBackoff {
+    /// Whether `key`'s last failure is still recent enough to answer for.
+    fn cooling(&self, key: &str, now: Instant) -> bool {
+        self.0
+            .lock()
+            .get(key)
+            .is_some_and(|failed_at| now.duration_since(*failed_at) < REGISTRY_RETRY_AFTER)
+    }
+
+    /// Record that `key`'s visit failed at `now`.
+    fn record_failure(&self, key: String, now: Instant) {
+        self.0.lock().insert(key, now);
+    }
+
+    /// Forget `key`'s last failure — its visit has since succeeded.
+    fn clear(&self, key: &str) {
+        self.0.lock().remove(key);
+    }
+}
+
+/// How a Module's artifact signature is checked.
+///
+/// Checking one means resolving the artifact's manifest in its registry and
+/// running cosign against it, so — exactly like [`ArtifactFactsReader`] — this
+/// is a value the context carries rather than a call the reconcile makes:
+/// a controller test drives `reconcile_module` end to end and must reach
+/// neither a registry nor a cosign binary to do it.
+type VerifyLookup = Arc<dyn Fn(&str, &CosignSignature) -> SignatureCheck + Send + Sync>;
+
+#[derive(Clone)]
+pub struct ArtifactVerifier(VerifyLookup);
+
+impl Default for ArtifactVerifier {
+    fn default() -> Self {
+        Self::from_registry()
+    }
+}
+
+impl ArtifactVerifier {
+    /// The production verifier: cosign, against the artifact's own registry.
+    #[must_use]
+    pub fn from_registry() -> Self {
+        Self(Arc::new(|reference, cosign| {
+            if cosign.keyless {
+                return cfgd_core::oci::check_signature(
+                    reference,
+                    &cfgd_core::oci::VerifyOptions {
+                        key: None,
+                        identity: cosign.certificate_identity.as_deref(),
+                        issuer: cosign.certificate_oidc_issuer.as_deref(),
+                    },
+                );
+            }
+            let Some(pem) = cosign.public_key.as_deref() else {
+                return SignatureCheck::Undetermined(
+                    "no public key and keyless not enabled".to_string(),
+                );
+            };
+            // cosign takes `--key` as a path, and the key lives in the CRD as
+            // PEM text — so the check needs it on disk for the length of one
+            // cosign run. The public half of a keypair, in a file the process
+            // owns and deletes on drop.
+            let key_file = match write_public_key(pem) {
+                Ok(file) => file,
+                Err(e) => {
+                    return SignatureCheck::Undetermined(format!(
+                        "cannot stage the module's public key for cosign: {e}"
+                    ));
+                }
+            };
+            cfgd_core::oci::check_signature(
+                reference,
+                &cfgd_core::oci::VerifyOptions {
+                    key: Some(&key_file.path().to_string_lossy()),
+                    identity: None,
+                    issuer: None,
+                },
+            )
+        }))
+    }
+
+    /// A verifier that answers `check` for every artifact.
+    #[cfg(test)]
+    #[must_use]
+    pub fn fixed(check: SignatureCheck) -> Self {
+        Self(Arc::new(move |_, _| check.clone()))
+    }
+
+    /// Check `reference` against `cosign`. Blocking: callers dispatch it off
+    /// the reactor.
+    #[must_use]
+    pub fn check(&self, reference: &str, cosign: &CosignSignature) -> SignatureCheck {
+        (self.0)(reference, cosign)
+    }
+}
+
+/// Write `pem` to a temporary file cosign can read with `--key`.
+fn write_public_key(pem: &str) -> std::io::Result<tempfile::NamedTempFile> {
+    use std::io::Write;
+    let mut file = tempfile::Builder::new().suffix(".pub").tempfile()?;
+    file.write_all(pem.as_bytes())?;
+    file.flush()?;
+    Ok(file)
 }
 
 /// How a Module's artifact facts — its platforms and its attestations — are read.
@@ -461,6 +587,8 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         metrics,
         stores,
         artifact_facts: ArtifactFactsReader::from_registry(),
+        artifact_verifier: ArtifactVerifier::from_registry(),
+        registry_backoff: RegistryBackoff::default(),
     });
 
     let mc_ctx = Arc::clone(&ctx);

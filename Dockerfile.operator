@@ -35,7 +35,20 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+# cosign is a runtime dependency of the Module controller: it verifies each
+# Module's artifact against the key the CRD declares, and without the binary
+# every Module reports its signature as `unknown`. Pinned to the same release
+# the e2e workflow installs, and checked against the digest that release
+# publishes.
+ARG COSIGN_VERSION=v2.4.3
+ARG COSIGN_SHA256=caaad125acef1cb81d58dcdc454a1e429d09a750d1e9e2b3ed1aed8964454708
+RUN curl -fsSL -o /usr/local/bin/cosign \
+    "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
+    && echo "${COSIGN_SHA256}  /usr/local/bin/cosign" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/cosign
 
 RUN adduser --disabled-password --gecos "" --uid 1000 cfgd
 

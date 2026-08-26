@@ -11,15 +11,16 @@ use kube::runtime::controller::Action;
 
 use super::module::{evaluate_module_verification, reconcile_module};
 use super::test_kube_harness::{
-    ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store,
+    ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, expect_event_series_patch,
+    seeded_store,
 };
-use super::{ArtifactFactsReader, ControllerStores};
+use super::{ArtifactFactsReader, ArtifactVerifier, ControllerStores};
 use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, CosignSignature, Module, ModuleSignature,
     ModuleSpec, ModuleStatus, SecurityPolicy,
 };
 use crate::metrics::ReconcileLabels;
-use cfgd_core::oci::ArtifactFacts;
+use cfgd_core::oci::{ArtifactFacts, SignatureCheck};
 
 const VALID_PEM: &str = concat!(
     "-----BEGIN PUBLIC KEY-----\n",
@@ -103,10 +104,16 @@ async fn reconcile_module_with_no_artifact_records_local_only_status_with_keyles
     assert_eq!(available["status"], "True");
     assert_eq!(available["reason"], "NoArtifact");
 
+    // A local-only module has no artifact to check a signature on, so the
+    // keyless block it declares is a configuration and never a verdict.
     let verified = conditions.iter().find(|c| c["type"] == "Verified").unwrap();
-    assert_eq!(verified["status"], "True");
-    assert_eq!(verified["reason"], "SignatureConfigured");
-    assert_eq!(status_body["status"]["verified"], true);
+    assert_eq!(verified["status"], "Unknown");
+    assert_eq!(verified["reason"], "NoVerifiableArtifact");
+    assert_eq!(status_body["status"]["verified"], false);
+    assert_eq!(
+        status_body["status"]["signature"],
+        cfgd_crd::SIGNATURE_UNKNOWN,
+    );
     assert!(
         status_body["status"]["signatureDigest"]
             .as_str()
@@ -350,9 +357,31 @@ async fn reconcile_module_keeps_recorded_platforms_when_the_artifact_is_unchange
     );
 }
 
-#[tokio::test]
-async fn reconcile_module_records_the_signature_verdict_as_one_word() {
-    let signed_spec = ModuleSpec {
+/// Reconcile `spec` with `check` installed as the only verifier, and return
+/// the status the controller patched.
+async fn status_under_verifier(
+    name: &str,
+    spec: ModuleSpec,
+    check: SignatureCheck,
+) -> serde_json::Value {
+    let module = make_module(name, spec);
+    let (ctx, _registry, harness) = MockKubeHarness::with_registry_seams(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path(name)))
+                .returning_json(&module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+        ArtifactFactsReader::fixed(Default::default()),
+        ArtifactVerifier::fixed(check),
+    );
+    reconcile_module(Arc::new(module), ctx).await.unwrap();
+    harness.finish().await.captured[0].body_json()["status"].clone()
+}
+
+fn signed_spec() -> ModuleSpec {
+    ModuleSpec {
         oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
         signature: Some(ModuleSignature {
             cosign: Some(CosignSignature {
@@ -361,25 +390,201 @@ async fn reconcile_module_records_the_signature_verdict_as_one_word() {
             }),
         }),
         ..Default::default()
-    };
-    let signed = make_module("signed-mod", signed_spec);
+    }
+}
 
-    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+fn condition(status: &serde_json::Value, kind: &str) -> serde_json::Value {
+    status["conditions"]
+        .as_array()
+        .expect("conditions")
+        .iter()
+        .find(|c| c["type"] == kind)
+        .unwrap_or_else(|| panic!("no {kind} condition"))
+        .clone()
+}
+
+/// A configured key is not a checked signature. The word the whole cluster
+/// reads comes from the verifier and from nothing else, so an artifact the
+/// verifier rejects — including one carrying no signature at all — can never
+/// reconcile to `verified`.
+#[tokio::test]
+async fn a_rejected_artifact_never_reconciles_to_verified() {
+    let status = status_under_verifier(
+        "rejected-mod",
+        signed_spec(),
+        SignatureCheck::Rejected("no matching signatures".to_string()),
+    )
+    .await;
+
+    assert_eq!(status["signature"], cfgd_crd::SIGNATURE_UNVERIFIED);
+    assert_eq!(status["verified"], false);
+    let verified = condition(&status, "Verified");
+    assert_eq!(verified["status"], "False");
+    assert_eq!(verified["reason"], "SignatureInvalid");
+    assert!(
+        verified["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no matching signatures"),
+        "the condition must carry what the verifier actually said, got {verified:?}"
+    );
+}
+
+/// `verified` is reachable, and only through a verifier that accepted the
+/// artifact.
+#[tokio::test]
+async fn an_accepted_artifact_reconciles_to_verified() {
+    let status = status_under_verifier("verified-mod", signed_spec(), SignatureCheck::Valid).await;
+
+    assert_eq!(status["signature"], cfgd_crd::SIGNATURE_VERIFIED);
+    assert_eq!(status["verified"], true);
+    let verified = condition(&status, "Verified");
+    assert_eq!(verified["status"], "True");
+    assert_eq!(verified["reason"], "SignatureVerified");
+}
+
+/// A check that could not run says so. `unknown` is neither `verified` (a
+/// claim nothing checked) nor `unverified` (a claim about a signature nobody
+/// looked at), and the condition is `Unknown` rather than `False`.
+#[tokio::test]
+async fn a_check_that_cannot_run_reconciles_to_unknown() {
+    let status = status_under_verifier(
+        "unknown-mod",
+        signed_spec(),
+        SignatureCheck::Undetermined("cosign is not installed".to_string()),
+    )
+    .await;
+
+    assert_eq!(status["signature"], cfgd_crd::SIGNATURE_UNKNOWN);
+    assert_eq!(status["verified"], false);
+    let verified = condition(&status, "Verified");
+    assert_eq!(verified["status"], "Unknown");
+    assert_eq!(verified["reason"], "VerificationUnavailable");
+    assert!(
+        verified["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cosign is not installed"),
+        "the reason the check could not run must reach the condition, got {verified:?}"
+    );
+}
+
+/// A verifier that accepts everything still cannot make an unsigned module
+/// `verified`: nothing is checked for a spec that declares no signature.
+#[tokio::test]
+async fn a_module_declaring_no_signature_stays_unsigned() {
+    let spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
+    let status = status_under_verifier("undeclared-mod", spec, SignatureCheck::Valid).await;
+
+    assert_eq!(status["signature"], cfgd_crd::SIGNATURE_UNSIGNED);
+    assert_eq!(status["verified"], false);
+    assert_eq!(condition(&status, "Verified")["reason"], "NotSigned");
+}
+
+/// Every component that reaches a module's registry exposes the same registry
+/// configuration surface in the chart.
+///
+/// The operator reads each Module's platforms, attestations and signature; the
+/// CSI driver pulls the layers it mounts; the agent pulls the modules it
+/// applies. A component whose deployment takes no `extraEnv` is one nobody can
+/// point at a private or plain-HTTP registry — which is how the operator came
+/// to render a blank `PLATFORMS` column in a cluster whose CSI driver mounted
+/// the same artifact happily.
+#[test]
+fn every_registry_reading_component_exposes_the_same_registry_knob() {
+    const TEMPLATES: &[(&str, &str)] = &[
+        (
+            "operator",
+            include_str!("../../../../chart/cfgd/templates/operator-deployment.yaml"),
+        ),
+        (
+            "csiDriver",
+            include_str!("../../../../chart/cfgd/templates/csi-daemonset.yaml"),
+        ),
+        (
+            "agent",
+            include_str!("../../../../chart/cfgd/templates/agent-daemonset.yaml"),
+        ),
+    ];
+    let values: serde_json::Value =
+        serde_yaml::from_str(include_str!("../../../../chart/cfgd/values.yaml"))
+            .expect("chart values must parse");
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../chart/cfgd/values.schema.json"))
+            .expect("chart values schema must parse");
+
+    for (component, template) in TEMPLATES {
+        assert!(
+            template.contains(&format!(".Values.{component}.extraEnv")),
+            "the {component} template renders no extraEnv, so its registry cannot be configured"
+        );
+        assert!(
+            !values[component]["extraEnv"].is_null(),
+            "values.yaml declares no {component}.extraEnv default"
+        );
+        assert!(
+            !schema["properties"][component]["properties"]["extraEnv"].is_null(),
+            "values.schema.json declares no {component}.extraEnv, so a chart user gets no validation"
+        );
+    }
+}
+
+/// A registry that answered nothing is not asked again by the very next
+/// reconcile. Every status patch and every event this controller writes lands
+/// as a watch event that triggers another reconcile, so a read whose failure
+/// is remembered nowhere is a registry round-trip per event, forever.
+#[tokio::test]
+async fn a_registry_that_answered_nothing_is_not_revisited_on_the_next_reconcile() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let visits = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&visits);
+    let reader = ArtifactFactsReader(Arc::new(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        ArtifactFacts::default()
+    }));
+
+    let spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
+    let module = Arc::new(make_module("backoff-mod", spec));
+    let status_path = format!("{}/status", module_path("backoff-mod"));
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_facts(
         vec![
-            ExpectedCall::patch_status(format!("{}/status", module_path("signed-mod")))
-                .returning_json(&signed),
+            ExpectedCall::patch_status(status_path.clone()).returning_json(&*module),
             expect_event_post("default"),
             expect_event_post("default"),
+            ExpectedCall::patch_status(status_path).returning_json(&*module),
+            // The second reconcile publishes the SAME two events, and kube's
+            // recorder increments the existing series rather than posting a
+            // second copy.
+            expect_event_series_patch("default"),
+            expect_event_series_patch("default"),
         ],
         stores_with_ccps(vec![]),
-    );
-    reconcile_module(Arc::new(signed), ctx).await.unwrap();
-    let report = harness.finish().await;
-    assert_eq!(
-        report.captured[0].body_json()["status"]["signature"],
-        cfgd_crd::SIGNATURE_VERIFIED,
+        reader,
     );
 
+    reconcile_module(Arc::clone(&module), Arc::clone(&ctx))
+        .await
+        .unwrap();
+    reconcile_module(module, ctx).await.unwrap();
+    harness.finish().await;
+
+    assert_eq!(
+        visits.load(Ordering::SeqCst),
+        1,
+        "a fact read that answered nothing must not be repeated within the requeue window"
+    );
+}
+
+#[tokio::test]
+async fn reconcile_module_records_the_signature_verdict_as_one_word() {
     let unsigned_spec = ModuleSpec {
         oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
         ..Default::default()

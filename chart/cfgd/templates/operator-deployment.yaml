@@ -41,6 +41,14 @@ spec:
           env:
             - name: RUST_LOG
               value: "info"
+            # The Module controller stages each module's public key on disk for
+            # the cosign run that checks its artifact, and cosign caches the
+            # Sigstore roots keyless verification needs. The root filesystem is
+            # read-only, so both are pointed at the scratch volume below.
+            - name: TMPDIR
+              value: /var/tmp/cfgd
+            - name: HOME
+              value: /var/tmp/cfgd
             - name: HEALTH_PORT
               value: {{ .Values.probes.port | quote }}
             {{- if .Values.operator.leaderElection.enabled }}
@@ -93,6 +101,9 @@ spec:
               value: {{ .Values.deviceGateway.apiKey | quote }}
             {{- end }}
             {{- end }}
+            {{- with .Values.operator.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           ports:
             {{- if .Values.webhook.enabled }}
             - name: webhook
@@ -117,6 +128,8 @@ spec:
           readinessProbe:
             {{- toYaml .Values.operator.readinessProbe | nindent 12 }}
           volumeMounts:
+            - name: scratch
+              mountPath: /var/tmp/cfgd
             {{- if .Values.webhook.enabled }}
             - name: webhook-certs
               mountPath: /tmp/k8s-webhook-server/serving-certs
@@ -129,6 +142,8 @@ spec:
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
       volumes:
+        - name: scratch
+          emptyDir: {}
         {{- if .Values.webhook.enabled }}
         - name: webhook-certs
           secret:

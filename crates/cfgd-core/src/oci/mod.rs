@@ -29,8 +29,9 @@ pub use push::{
     rust_arch_to_oci,
 };
 pub use sign::{
-    COSIGN_PREDICATE_TYPES, VerifyOptions, attach_attestation, attestation_type_name,
-    generate_slsa_provenance, sign_artifact, verify_attestation, verify_signature,
+    COSIGN_PREDICATE_TYPES, SignatureCheck, VerifyOptions, attach_attestation,
+    attestation_type_name, check_signature, generate_slsa_provenance, sign_artifact,
+    verify_attestation, verify_signature,
 };
 
 // ---------------------------------------------------------------------------
@@ -185,13 +186,25 @@ impl OciReference {
         }
     }
 
-    /// Base API URL for this registry.
-    pub(super) fn api_base(&self) -> String {
-        let scheme = if self.registry == "localhost"
+    /// Whether this reference's registry is reached over plain HTTP: a
+    /// loopback address, or a registry named in `OCI_INSECURE_REGISTRIES`.
+    ///
+    /// Public because cosign opens its own connection to the same registry and
+    /// has to be told the same thing. cosign only treats loopback as plain
+    /// HTTP on its own, so a signature check against any other insecure
+    /// registry fails at the TLS handshake while cfgd's own manifest reads
+    /// against it succeed.
+    #[must_use]
+    pub fn uses_plain_http(&self) -> bool {
+        self.registry == "localhost"
             || self.registry.starts_with("localhost:")
             || self.registry.starts_with("127.0.0.1")
             || is_insecure_registry(&self.registry)
-        {
+    }
+
+    /// Base API URL for this registry.
+    pub(super) fn api_base(&self) -> String {
+        let scheme = if self.uses_plain_http() {
             "http"
         } else {
             "https"

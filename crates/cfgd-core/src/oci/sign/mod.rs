@@ -3,6 +3,22 @@
 // per module-boundaries.md).
 
 use crate::errors::OciError;
+use crate::oci::OciReference;
+
+/// Tell cosign to reach `artifact_ref`'s registry over plain HTTP wherever cfgd
+/// itself does.
+///
+/// cosign resolves the manifest through its own client, so a registry cfgd
+/// reads over HTTP — anything named in `OCI_INSECURE_REGISTRIES` — is one
+/// cosign would otherwise attempt a TLS handshake against. An unparseable
+/// reference is left alone: cosign reports the reference error itself, and
+/// guessing a scheme for a string neither side could parse would only widen
+/// what is sent in the clear.
+fn apply_registry_scheme(cmd: &mut std::process::Command, artifact_ref: &str) {
+    if OciReference::parse(artifact_ref).is_ok_and(|r| r.uses_plain_http()) {
+        cmd.arg("--allow-insecure-registry");
+    }
+}
 
 /// Sign an OCI artifact with cosign.
 ///
@@ -28,6 +44,7 @@ pub fn sign_artifact(artifact_ref: &str, key_path: Option<&str>) -> Result<(), O
     // non-interactively on every path.
     cmd.arg("--yes");
 
+    apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg(artifact_ref);
 
     let output = cmd.output().map_err(|e| OciError::SigningError {
@@ -112,6 +129,7 @@ pub fn verify_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> Result<
     let mut cmd = crate::cosign_cmd();
     cmd.arg("verify");
     apply_verify_args(&mut cmd, opts);
+    apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg(artifact_ref);
 
     let output = cmd.output().map_err(|e| OciError::VerificationFailed {
@@ -131,6 +149,60 @@ pub fn verify_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> Result<
 
     tracing::debug!(reference = artifact_ref, "signature verified");
     Ok(())
+}
+
+/// What a signature check concluded, keeping "the signature is bad" and "I
+/// could not look" apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignatureCheck {
+    /// cosign checked the artifact against the caller's key and accepted it.
+    Valid,
+    /// cosign reached the artifact and rejected it — there is no signature, or
+    /// none the key accepts. A verdict ABOUT the signature.
+    Rejected(String),
+    /// The check could not be performed: cosign is not installed, the registry
+    /// is unreachable, the credentials were refused. NOT a verdict about the
+    /// signature, and never grounds for calling an artifact unverified.
+    Undetermined(String),
+}
+
+/// The cosign failures that mean "I resolved the artifact and its signature
+/// does not hold".
+///
+/// Read as an allow-list rather than a deny-list on purpose: an unrecognized
+/// failure is [`SignatureCheck::Undetermined`], which nobody may print as a
+/// verdict, where the reverse default would let a DNS failure be reported as a
+/// bad signature.
+const COSIGN_REJECTIONS: &[&str] = &[
+    "no matching signatures",
+    "no signatures found",
+    "MANIFEST_UNKNOWN",
+    "invalid signature",
+];
+
+/// [`verify_signature`] as a three-way verdict rather than a `Result`.
+///
+/// Every `Err` from `verify_signature` looks alike to a caller matching on
+/// `Result`, so turning one into "unverified" claims cosign rejected the
+/// artifact — which a missing cosign binary or an unreachable registry does
+/// not support. Reach for this wherever the outcome is DISPLAYED or recorded;
+/// `verify_signature` itself stays the right call where any failure is fatal.
+#[must_use]
+pub fn check_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> SignatureCheck {
+    match verify_signature(artifact_ref, opts) {
+        Ok(()) => SignatureCheck::Valid,
+        Err(OciError::ToolNotFound { tool }) => {
+            SignatureCheck::Undetermined(format!("{tool} is not installed"))
+        }
+        Err(e) => {
+            let message = e.to_string();
+            if COSIGN_REJECTIONS.iter().any(|m| message.contains(m)) {
+                SignatureCheck::Rejected(message)
+            } else {
+                SignatureCheck::Undetermined(message)
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +273,7 @@ pub fn attach_attestation(
     // Always skip the interactive consent prompt for non-interactive use.
     cmd.arg("--yes");
 
+    apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg("--predicate")
         .arg(attestation_path)
         .arg("--type")
@@ -278,6 +351,7 @@ pub fn verify_attestation(
     let mut cmd = crate::cosign_cmd();
     cmd.arg("verify-attestation");
     apply_verify_args(&mut cmd, opts);
+    apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg("--type").arg(predicate_type).arg(artifact_ref);
 
     let output = cmd.output().map_err(|e| OciError::AttestationError {

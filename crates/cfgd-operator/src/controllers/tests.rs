@@ -3171,6 +3171,10 @@ fn make_test_controller_context() -> (ControllerContext, prometheus_client::regi
             metrics,
             stores: crate::controllers::test_kube_harness::empty_stores(),
             artifact_facts: crate::controllers::ArtifactFactsReader::fixed(Default::default()),
+            artifact_verifier: crate::controllers::ArtifactVerifier::fixed(
+                cfgd_core::oci::SignatureCheck::Undetermined("no verifier".to_string()),
+            ),
+            registry_backoff: crate::controllers::RegistryBackoff::default(),
         },
         registry,
     )
