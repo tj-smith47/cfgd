@@ -74,6 +74,7 @@ fn ctx(title: RunTitle) -> RunContext<'static> {
         sources: &[],
         modules: &[],
         trigger: None,
+        subject: None,
     }
 }
 
@@ -560,6 +561,51 @@ fn align_width_counts_actions_without_trailing_content() {
 
 // --- header ---
 
+/// A run with no [`Plan`] and no backup units still states every row it holds:
+/// the unit in the title, the config it composed under, the sources it drew
+/// from, and the work it set out to do.
+///
+/// `cfgd backup restore` renders its own body and took only the rollup, so the
+/// verb that overwrites live data was the one that never named its config.
+#[test]
+fn an_unplanned_run_heads_itself_with_every_row_it_can_state() {
+    let sources = vec![ComposedSource {
+        name: "team".to_string(),
+        profile: Some("shared".to_string()),
+    }];
+    let config = std::path::Path::new("/home/me/.config/cfgd/cfgd.yaml");
+    let run = ApplyRun::unplanned(
+        RunContext {
+            title: RunTitle::Restore,
+            config_path: Some(config),
+            profile: Some("work"),
+            sources: &sources,
+            modules: &[],
+            trigger: None,
+            subject: Some("notes"),
+        },
+        crate::backup::RESTORE_ACTION_COUNT,
+    );
+
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    run.header(&printer);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+
+    assert!(
+        out.starts_with("Restore: notes"),
+        "the unit belongs in the title, not in a row: {out:?}"
+    );
+    for row in [
+        "Config   /home/me/.config/cfgd/cfgd.yaml",
+        "Profile  work",
+        "Sources  team (profile shared)",
+        "Actions  1 planned",
+    ] {
+        assert!(out.contains(row), "missing {row:?} in: {out:?}");
+    }
+}
+
 /// The header's count is the same in-scope predicate `Reconciler::apply` uses
 /// for its own `planned_total`, both unfiltered and under `--phase`.
 #[test]
@@ -686,6 +732,7 @@ fn header_omits_every_empty_row_and_skips_the_modules_phase() {
             sources: &[],
             modules: &modules,
             trigger: Some("drift (3 resources)"),
+            subject: None,
         },
         &plan,
     );
@@ -1219,6 +1266,7 @@ fn header_names_the_sources_a_run_composed() {
             sources: &sources,
             modules: &[],
             trigger: None,
+            subject: None,
         },
         &plan,
     );

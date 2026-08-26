@@ -379,6 +379,7 @@ fn init_apply_then_next_steps_bridge_invariant() {
             sources: &[],
             modules: &modules,
             trigger: None,
+            subject: None,
         },
         &plan,
     )

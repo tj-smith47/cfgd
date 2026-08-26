@@ -19035,6 +19035,7 @@ mod backup_timers {
             sources: &[],
             modules: &[],
             trigger: None,
+            subject: None,
         };
 
         // `cfgd backup run`

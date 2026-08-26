@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 
 use crate::backup::BackupUnit;
 use crate::errors::Result;
-use crate::output::{KvPair, OwnerLabel, PhaseLabel, Printer, Role, SectionGuard, measure_width};
+use crate::output::{
+    KvPair, OwnerLabel, PhaseLabel, Printer, Role, SectionGuard, TitleLabel, measure_width,
+};
 use crate::pluralize;
 use crate::state::{ApplyStatus, StateStore};
 
@@ -93,6 +95,11 @@ pub struct RunContext<'a> {
     /// What woke this run — the daemon's only extra row (`drift (3 resources)`,
     /// `schedule (daily)`).
     pub trigger: Option<&'a str>,
+    /// What this run acts ON, for a title that does not otherwise name it —
+    /// the unit `cfgd backup restore` puts back. Renders as the value half of
+    /// a `Restore: notes` title; `None` leaves the title bare, which is what
+    /// every run naming its subject in the tree below already does.
+    pub subject: Option<&'a str>,
 }
 
 /// One source a run's composition drew from, as the header names it and as the
@@ -301,6 +308,10 @@ pub struct ApplyRun<'a> {
     backups: Option<PendingBackups<'a>>,
     withheld: Option<&'a super::WithheldDecisions>,
     decide_answerable: bool,
+    /// Work the skeleton cannot enumerate because the caller renders it — see
+    /// [`ApplyRun::unplanned`]. Zero for every run that carries a [`Plan`] or
+    /// a [`PendingBackups`], whose counts are derived rather than stated.
+    unplanned_actions: usize,
 }
 
 impl<'a> ApplyRun<'a> {
@@ -320,6 +331,30 @@ impl<'a> ApplyRun<'a> {
             backups: None,
             withheld: None,
             decide_answerable: true,
+            unplanned_actions: 0,
+        }
+    }
+
+    /// A run whose body the CALLER renders and whose work is neither a [`Plan`]
+    /// action nor a `spec.backups[]` unit — `cfgd backup restore`, which
+    /// overlays one snapshot and reports the row itself.
+    ///
+    /// The skeleton still owns the header and the rollup, so `actions` is the
+    /// one number both of them state: it is the header's `Actions {n} planned`
+    /// row here and the [`RunTally::planned_total`] the caller closes with, and
+    /// a run whose two ends disagreed about how much it set out to do is
+    /// exactly what a shared skeleton exists to prevent. Not a synthesized
+    /// empty [`Plan`], which would put a phase tree with no phases in it.
+    pub fn unplanned(ctx: RunContext<'a>, actions: usize) -> Self {
+        Self {
+            ctx,
+            plan: None,
+            filter: None,
+            preview_only: false,
+            backups: None,
+            withheld: None,
+            decide_answerable: true,
+            unplanned_actions: actions,
         }
     }
 
@@ -373,6 +408,7 @@ impl<'a> ApplyRun<'a> {
             backups: Some(PendingBackups { units, store }),
             withheld: None,
             decide_answerable: true,
+            unplanned_actions: 0,
         }
     }
 
@@ -480,14 +516,26 @@ impl<'a> ApplyRun<'a> {
         }
 
         let warnings: &[String] = self.plan.map_or(&[], |p| p.warnings.as_slice());
+        // The subject is the title's value half, never a row: a run acting on
+        // one named unit says so where the reader looks for what ran.
+        let titled = self
+            .ctx
+            .subject
+            .map(|subject| TitleLabel::new(self.ctx.title.as_str(), subject));
         if rows.is_empty() && warnings.is_empty() {
-            printer.heading(self.ctx.title.as_str());
+            match &titled {
+                Some(label) => printer.heading_title(label),
+                None => printer.heading(self.ctx.title.as_str()),
+            }
         } else {
             // One section rather than a heading plus a top-level kv block: the
             // warnings belong to the header block and have to land at the same
             // indent as the rows they follow, which only a section's depth
             // gives.
-            let head = printer.section(self.ctx.title.as_str());
+            let head = match &titled {
+                Some(label) => printer.section_title(label),
+                None => printer.section(self.ctx.title.as_str()),
+            };
             head.kv_rows(rows);
             for warning in warnings {
                 printer.alert(warning);
@@ -647,6 +695,8 @@ impl<'a> ApplyRun<'a> {
         let _column = printer.report_column(self.backup_align_width());
         let started = Instant::now();
         let (tally, backups) = self.render_backups(printer)?;
+        // run-header-ok: both entry points render the header before delegating
+        // here, and a second one would head the same run twice.
         let status = render_run_rollup(&tally, self.ctx.title, printer, Some(started.elapsed()));
         Ok((status, backups))
     }
@@ -752,7 +802,7 @@ impl<'a> ApplyRun<'a> {
     }
 
     fn planned_count(&self) -> usize {
-        self.in_scope_action_count() + self.pending_backup_count()
+        self.in_scope_action_count() + self.pending_backup_count() + self.unplanned_actions
     }
 }
 
@@ -1165,6 +1215,8 @@ pub fn render_apply_result(
     printer: &Printer,
     elapsed: Option<Duration>,
 ) -> ApplyStatus {
+    // run-header-ok: a view over the rollup, not a run — the header belongs to
+    // whoever owns the run this result came out of.
     render_run_rollup(&result.tally(), title, printer, elapsed)
 }
 

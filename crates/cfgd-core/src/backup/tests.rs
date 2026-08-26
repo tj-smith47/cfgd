@@ -2592,6 +2592,7 @@ fn render_backup_run(h: &Harness, specs: &[&BackupSpec]) -> (String, crate::stat
             sources: &[],
             modules: &[],
             trigger: None,
+            subject: None,
         };
         let (status, _reports) = crate::reconciler::ApplyRun::backups(ctx, &units, &h.store)
             .execute_backups(&printer)

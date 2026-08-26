@@ -919,6 +919,7 @@ fn reconcile_tick(
             sources: &composed_sources,
             modules: &module_names,
             trigger: Some(&trigger),
+            subject: None,
         };
 
         match drift_policy {

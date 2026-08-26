@@ -23,6 +23,14 @@ use crate::state::{BackupRunKind, StateStore};
 
 use super::{BackupOperation, BackupUnit};
 
+/// What a restore sets out to do, counted as a run counts actions: the one
+/// overlay onto the target, however many hooks run around it.
+///
+/// Read by the header's `Actions {n} planned` row and by
+/// [`report_restore`]'s [`crate::reconciler::RunTally::planned_total`], so the
+/// two ends of one restore cannot state different amounts of work.
+pub const RESTORE_ACTION_COUNT: usize = 1;
+
 /// One snapshot on disk, as `cfgd backup list <name> --snapshots` lists it and
 /// `cfgd backup restore --at` selects it.
 #[derive(Debug, Clone)]
@@ -133,7 +141,7 @@ pub fn report_restore(printer: &Printer, outcome: &RestoreOutcome) -> crate::rec
         succeeded: usize::from(outcome.restored),
         skipped: 0,
         failed: usize::from(!outcome.restored),
-        planned_total: 1,
+        planned_total: RESTORE_ACTION_COUNT,
         status: if outcome.is_clean() {
             crate::state::ApplyStatus::Success
         } else if outcome.restored {

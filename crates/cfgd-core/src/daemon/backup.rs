@@ -629,6 +629,7 @@ pub(super) fn run_scheduled_backups(
         sources: &[],
         modules: &[],
         trigger: Some(SCHEDULE_TRIGGER),
+        subject: None,
     };
     let run = crate::reconciler::ApplyRun::backups(ctx, &units, &store);
     let reports = match run.execute_backups(printer) {

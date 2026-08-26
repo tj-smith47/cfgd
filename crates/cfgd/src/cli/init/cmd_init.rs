@@ -631,6 +631,7 @@ pub(super) fn apply_plan(
         sources: &composed_sources,
         modules: &module_names,
         trigger: None,
+        subject: None,
     };
     let run = cfgd_core::reconciler::ApplyRun::new(ctx, plan);
 

@@ -28,8 +28,8 @@ pub mod schedule;
 mod tests;
 
 pub use restore::{
-    RestoreOutcome, RestoreTarget, SnapshotInfo, list_snapshots, report_restore, restore_backup,
-    restore_target, select_snapshot,
+    RESTORE_ACTION_COUNT, RestoreOutcome, RestoreTarget, SnapshotInfo, list_snapshots,
+    report_restore, restore_backup, restore_target, select_snapshot,
 };
 pub use schedule::next_run_at;
 

@@ -23,6 +23,7 @@ Reach for the composer matching the call site's shape; never hand-build a `forma
 - `alert(text)` — a persistent advisory about what THIS run will actually do. Separate from `deprecation` because a deprecation is about spelling and an alert about effect, and not a substitute for `status_simple(Role::Warn, …)`, correctly suppressed under `-o json`. The ONE always-visible emit correct at any depth.
 - `table(table)` — tabular data.
 - `section(name)` — a `SectionGuard` (drop ends it) carrying `bullet`/`kv`/`kv_block`/`command_list`/`hint`/`note`/`table`/`code_block` plus `.diff` and `.syntax_highlight`. A nested plain section paints its heading `theme.secondary`, so nesting reads from styling alone; a first-level or OWNER section is unaffected.
+- `section_title(&TitleLabel)` — a `Label: value` section head (`Restore: notes`), `heading_title`'s sectioned counterpart and the only titled heading that can carry a block of rows. A heading plus a top-level `kv_block` puts the rows at the heading's own indent, where they read as the command's output rather than as facts about the run above them.
 - `section_owner(&OwnerLabel)` / `section_owner_or_collapse(&OwnerLabel)` — a top-level section headed by a styled owner token; `_or_collapse` leaves no trace when nothing renders inside it. `SectionGuard` carries the nested pair, `Doc::section_owner` / `subsection_owner` the buffered ones. A `Doc` belonging wholly to one owner opens with `Doc::section_owner` — the owner is never the `Doc`'s heading.
 - `diff(old, new)` / `syntax_highlight(code, lang)` — nest at whatever depth is ambient, flushing any pending section header first like every other emission.
 - `spinner(label)` — a `Spinner` with `.finish_ok` / `.finish_fail(...).detail(e)` / `.set_message`. Abandoned without an explicit finish, `Drop` settles it `Role::Skipped` + `" (interrupted)"`, the one honest record. A spinner borrowed from a `LiveRow` is exempt: the row settles its own line.
@@ -77,6 +78,14 @@ Three conventions about the SHAPE of a settled row, each with a walk-the-populat
 | A **duration slot never renders a zero** | anything the one-decimal form would round to `0.0` renders ` (<0.1s)` — a sub-tick action DID run, and `(0.0s)` says it took no time. One composer (`renderer::status::duration_text`) feeds the action suffix, the spinner finish and the rollup total alike | `a_sub_tick_duration_renders_the_floor_and_never_a_zero`, `every_duration_slot_composes_through_the_one_trailer` (`output/renderer/status.rs`) |
 
 Both snapshot normalizers know the floor's spelling (`util/paths.rs::duration_span`, `output/test_capture.rs::strip_spinner_duration`), so a golden stays host-stable across it.
+
+## A run's two ends come from one skeleton
+
+**A command that closes with the shared rollup opens with the shared header.** `cfgd backup restore` took `render_run_rollup`'s footer — the `✓ Restore complete — 1 action succeeded` verdict — while printing none of the `Config` / `Profile` / `Sources` rows `ApplyRun::header` exists for, so the one verb that overwrites live data was also the one that never said which config it acted under.
+
+Both ends come from `reconciler::ApplyRun`. A run whose body the caller renders and whose work is neither a `Plan` action nor a `spec.backups[]` unit builds one through `ApplyRun::unplanned(ctx, actions)` — never a synthesized empty `Plan`, and never a second `Config`/`Profile`/`Sources` renderer. `RunContext::subject` is what puts the acted-on unit in the title (`Restore: notes`); the header renders BEFORE any confirmation prompt, because an operator agreeing to overwrite live data is agreeing under a config and a profile.
+
+`every_run_that_renders_the_rollup_also_renders_the_run_header` (`crates/cfgd/src/cli/tests.rs`) walks both crates' production sources and fails on a function calling `render_run_rollup` / `render_apply_result` whose body renders no header. A helper whose caller already rendered one carries a `// run-header-ok: <why>` marker.
 
 ## Rules every key/value block and shared table obeys
 

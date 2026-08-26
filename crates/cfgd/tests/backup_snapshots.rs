@@ -1243,9 +1243,17 @@ fn backup_restore_human() {
     run_backup_restore(&cli, &printer, &restore_args("docs")).unwrap();
     drop(printer);
 
+    // The restore opens with the run skeleton's header, so the config file it
+    // names is host-varying the same way `backup run`'s is.
+    let config_file = config_dir.path().join("cfgd.yaml");
     let normalized = cfgd_core::normalize_for_snapshot(
         &cfgd_core::output::strip_ansi(&cap.human()),
-        &[(&source, "<SOURCE>"), (state_dir.path(), "<STATE_DIR>")],
+        &[
+            (&source, "<SOURCE>"),
+            (&config_file, "<CONFIG_DIR>/cfgd.yaml"),
+            (config_dir.path(), "<CONFIG_DIR>"),
+            (state_dir.path(), "<STATE_DIR>"),
+        ],
     );
     // The restore now closes with the run rollup `backup run` closes with, and
     // that line wears the run's elapsed time.

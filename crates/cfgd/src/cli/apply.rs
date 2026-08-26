@@ -477,6 +477,7 @@ pub fn run_apply(
         sources: &composed_sources,
         modules: &module_names,
         trigger: None,
+        subject: None,
     };
 
     if dry_run {

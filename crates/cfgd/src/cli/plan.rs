@@ -253,6 +253,7 @@ pub fn cmd_plan(
             sources: &composed_sources,
             modules: &module_names,
             trigger: None,
+            subject: None,
         },
         &plan,
     )

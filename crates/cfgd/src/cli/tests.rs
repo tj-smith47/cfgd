@@ -14613,6 +14613,89 @@ fn every_time_column_renders_a_relative_time() {
     );
 }
 
+/// The function containing line `n`, methods included: from the nearest `fn`
+/// line at or above it to the closing brace at that line's own indent.
+///
+/// [`enclosing_fn_body`]'s counterpart for a rule whose population lives inside
+/// `impl` blocks, where a column-zero `fn` scan finds nothing and silently
+/// widens every scope to the whole file.
+fn enclosing_fn_block(lines: &[&str], n: usize) -> String {
+    let is_fn_start = |l: &str| {
+        let t = l.trim_start();
+        t.starts_with("fn ")
+            || t.starts_with("pub fn ")
+            || t.starts_with("async fn ")
+            || t.starts_with("pub async fn ")
+            || (t.starts_with("pub(") && t.contains(" fn "))
+    };
+    let start = (0..=n).rev().find(|&i| is_fn_start(lines[i])).unwrap_or(0);
+    let closer = format!(
+        "{}}}",
+        &lines[start][..lines[start].len() - lines[start].trim_start().len()]
+    );
+    let end = ((start + 1)..lines.len())
+        .find(|&i| lines[i] == closer)
+        .map_or(lines.len(), |i| i + 1);
+    lines[start..end].join("\n")
+}
+
+/// A run that closes with the shared rollup opens with the shared header.
+///
+/// `cfgd backup restore` took `render_run_rollup`'s footer — the `✓ Restore
+/// complete — 1 action succeeded` verdict, which calls itself a run of one
+/// action — while printing none of the `Config` / `Profile` / `Sources` rows
+/// `ApplyRun::header` exists for. The higher-stakes of the command's two
+/// mutating verbs was the one that never said which config it acted under,
+/// twelve seconds after `backup run` had said it on the same screen.
+///
+/// The walk keys on the ENCLOSING FUNCTION: a body calling `render_run_rollup`
+/// or `render_apply_result` must also render a header (`.header(printer)`) or
+/// carry a `// run-header-ok: <why>` marker. Both markers in the tree today
+/// mean "my caller renders it"; a verb with genuinely no config to name would
+/// take the same hatch, and none exists.
+#[test]
+fn every_run_that_renders_the_rollup_also_renders_the_run_header() {
+    const ROLLUPS: &[&str] = &["render_run_rollup(", "render_apply_result("];
+    let mut checked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            // The definition of a rollup renderer names itself; only a CALL is
+            // a run reporting its own outcome.
+            if code.starts_with("//") || code.contains("fn ") {
+                continue;
+            }
+            if !ROLLUPS.iter().any(|call| line.contains(call)) {
+                continue;
+            }
+            let scope = enclosing_fn_block(&lines, n);
+            checked.push(format!("{}:{}", path.display(), n + 1));
+            if scope.contains(".header(printer)") || scope.contains("// run-header-ok:") {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+        }
+    }
+    // One witness per crate, so a gather that stopped reaching either source
+    // tree cannot pass by finding nothing.
+    for witness in ["cli/backup.rs", "reconciler/run.rs"] {
+        assert!(
+            checked.iter().any(|c| c.contains(witness)),
+            "the walk no longer reaches {witness} — it checked {checked:?}"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a function that renders a run's rollup renders the run's header too,          so a verdict counting actions is never the only thing on screen that          describes the run (a caller-rendered header takes a          `// run-header-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// Every stored enum whose wire token a human surface could reach has a DISPLAY
 /// counterpart beside it.
 ///

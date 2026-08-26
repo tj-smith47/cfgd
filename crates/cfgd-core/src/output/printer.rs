@@ -949,6 +949,30 @@ impl Printer {
         }
     }
 
+    /// Open a section headed by a `Label: value` title (`Restore: notes`).
+    ///
+    /// [`Printer::heading_title`]'s sectioned counterpart, and the only way a
+    /// titled heading can carry a block of rows: a heading plus a top-level
+    /// `kv_block` puts the rows at the heading's own indent, so they read as
+    /// the command's output rather than as facts about the run above them.
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
+    pub fn section_title(
+        &self,
+        label: &super::TitleLabel,
+    ) -> super::section_guard::SectionGuard<'_> {
+        self.renderer.render_section_open_styled(
+            &label.plain(),
+            Some(label.styled(&self.renderer.theme)),
+            /*keep_when_empty=*/ true,
+        );
+        super::section_guard::SectionGuard {
+            printer: self,
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 1,
+        }
+    }
+
     /// Open a section headed by a styled owner token (`module:nvim`).
     #[must_use = "section closes when SectionGuard is dropped; bind it"]
     pub fn section_owner(

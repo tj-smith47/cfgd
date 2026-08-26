@@ -5,7 +5,7 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::backup::{BackupUnit, SnapshotInfo};
 use cfgd_core::format_bytes;
-use cfgd_core::output::{Doc, Printer, Role, TitleLabel, renderer::Table};
+use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 use cfgd_core::state::BackupRunRecord;
 
 fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
@@ -413,8 +413,6 @@ pub fn run_backup_restore(
     printer: &Printer,
     args: &RestoreArgs<'_>,
 ) -> anyhow::Result<Option<cfgd_core::backup::RestoreOutcome>> {
-    printer.heading_title(&TitleLabel::new("Restore", args.name));
-
     let ctx = RunContext::new(cli, printer);
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     // Enforce, like `backup run`: a restore executes the unit's hooks and
@@ -428,6 +426,8 @@ pub fn run_backup_restore(
         false,
         composition::ConstraintMode::Enforce,
     )?;
+    let sources =
+        cfgd_core::reconciler::ComposedSource::from_profile_layers(&composition.resolved.layers);
     let backups = composition.resolved.merged.backups;
 
     let spec = find_backup_spec(&backups, args.name)?;
@@ -441,6 +441,22 @@ pub fn run_backup_restore(
             .map_err(|e| snapshot_selection_error(args.name, e))?;
 
     let target = cfgd_core::backup::restore_target(&unit, args.to);
+
+    // Ahead of the prompt, not after it: the operator agreeing to overwrite
+    // live data is agreeing under a config and a profile, and the header is
+    // where a run states them. `run_ctx`, not a second `ctx` — `cli::RunContext`
+    // is already bound above.
+    let run_ctx = cfgd_core::reconciler::RunContext {
+        title: cfgd_core::reconciler::RunTitle::Restore,
+        config_path: Some(cli.config.as_path()),
+        profile: Some(profile_name),
+        sources: &sources,
+        modules: &[],
+        trigger: None,
+        subject: Some(args.name),
+    };
+    cfgd_core::reconciler::ApplyRun::unplanned(run_ctx, cfgd_core::backup::RESTORE_ACTION_COUNT)
+        .header(printer);
 
     if !args.yes && !confirm_restore(printer, args.name, selected, &target)? {
         printer.emit(Doc::new().status(Role::Info, "Aborted").with_data(
@@ -590,6 +606,8 @@ pub fn run_backup_run(
         false,
         composition::ConstraintMode::Enforce,
     )?;
+    let sources =
+        cfgd_core::reconciler::ComposedSource::from_profile_layers(&composition.resolved.layers);
     let backups = composition.resolved.merged.backups;
 
     let targets: Vec<&config::BackupSpec> = match name {
@@ -619,9 +637,10 @@ pub fn run_backup_run(
         title: cfgd_core::reconciler::RunTitle::Backup,
         config_path: Some(cli.config.as_path()),
         profile: Some(profile_name),
-        sources: &[],
+        sources: &sources,
         modules: &[],
         trigger: None,
+        subject: None,
     };
     let (_status, reports) = cfgd_core::reconciler::ApplyRun::backups(run_ctx, &units, state)
         .execute_backups(printer)?;

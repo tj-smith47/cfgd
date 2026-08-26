@@ -1,4 +1,7 @@
 Restore: docs
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  withbackups
+  Actions  1 planned
 
 backup:docs
   ✓ Restored from notes.txt.<TIMESTAMP> — 12 B
