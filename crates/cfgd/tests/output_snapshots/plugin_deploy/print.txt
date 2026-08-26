@@ -11,4 +11,3 @@ spec:
   - name: app
     image:
       reference: registry.example.com/myapp/server@sha256:3a7b9c4d0000000000000000000000000000000000000000000000000000abcd
-

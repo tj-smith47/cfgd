@@ -6,6 +6,7 @@ Remove source:replace-old
 Add source:replace-old
 ◐ Cloning source:replace-old
   Cloning into '<STATE_DIR>/sources/replace-old'...
+
 Manifest
   Name     replace-new
   Version  1.0.0

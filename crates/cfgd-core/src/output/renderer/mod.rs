@@ -1065,8 +1065,10 @@ impl Renderer {
     /// Unlike a spinner message — which repaints a fixed window in place and so
     /// erases and rewrites the lines above it — this appends, letting output
     /// scroll exactly as it would in a bare terminal with the cursor resting on
-    /// the last line. Claims no `TopGroup`: interleaving child output must not
-    /// insert group-boundary blank lines between consecutive lines.
+    /// the last line. It is the BODY of the status group that announced the
+    /// command: it opens no group of its own, so consecutive lines never get a
+    /// blank between them, and it closes as that group, so the sibling block
+    /// after the last line gets the one blank every top-level boundary gets.
     pub fn render_stream_line(&self, w: &dyn Writer, depth: usize, text: &str) {
         if self.verbosity == Verbosity::Quiet {
             return;
@@ -1074,12 +1076,18 @@ impl Renderer {
         let body = self.theme.muted.apply_to(cursor_safe(text)).to_string();
         self.emit_with(w, |e| {
             e.flush_section_headers();
-            // Streamed output is the body of the line that just announced the
-            // command, so it continues that group rather than starting one:
-            // without this the status line's pending blank lands between the
-            // announcement and the first line of its own output.
+            // Streamed output continues the announcing line's group rather
+            // than starting one: without this the status line's pending blank
+            // lands between the announcement and the first line of its output.
             e.clear_blank_pending();
             e.push_line(depth, &body);
+            // …and re-arms the boundary it just consumed. Clearing without
+            // re-arming left a section header or a heading written after git's
+            // last passthrough line glued to it (`Cloning into …` / `Plan`),
+            // while the same header after a plain status row got its blank. The
+            // announcing line's own finish (`✓ Cloned …`) still binds: a status
+            // continues a status group.
+            e.mark_top_level_group(TopGroup::Status);
         });
     }
 
@@ -1286,6 +1294,50 @@ mod tests {
         assert!(
             !out.contains("\n\n"),
             "blank line inside a streamed block: {out:?}"
+        );
+    }
+
+    /// The streamed lines are the announcing status's body, so the block
+    /// after them is a new sibling and gets its blank — the same one it gets
+    /// after a plain status row — while the announcing line's own finish
+    /// binds to its output with none.
+    #[test]
+    fn a_block_after_streamed_output_gets_its_one_blank_line() {
+        use crate::output::Role;
+        let status = |role: Role, subject: &'static str| status::StatusFields {
+            role,
+            subject,
+            detail: None,
+            duration: None,
+            target: None,
+            subject_style: None,
+            detail_style: None,
+        };
+
+        let (r, sink, buf) = capture();
+        r.render_status(&sink, 0, &status(Role::Running, "Cloning source:acme"));
+        r.render_stream_line(&sink, 1, "Cloning into 'acme'...");
+        r.render_stream_line(&sink, 1, "done.");
+        r.render_heading(&sink, "Plan");
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            out.ends_with("  done.\n\nPlan\n"),
+            "the heading after the streamed body is a new sibling: {out:?}"
+        );
+        assert_eq!(
+            out.matches("\n\n").count(),
+            1,
+            "one blank, at the boundary only: {out:?}"
+        );
+
+        let (r, sink, buf) = capture();
+        r.render_status(&sink, 0, &status(Role::Running, "Fetching source:acme"));
+        r.render_stream_line(&sink, 1, "From file:///acme");
+        r.render_status(&sink, 0, &status(Role::Ok, "Updated"));
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            !out.contains("\n\n"),
+            "the finish line binds to the streamed body: {out:?}"
         );
     }
 

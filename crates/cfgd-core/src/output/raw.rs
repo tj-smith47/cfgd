@@ -159,7 +159,11 @@ impl super::Printer {
     /// Raw stdout line, no decoration, no indent. For `config get`-shaped
     /// callers whose output is consumed by other programs.
     pub fn data_line(&self, text: &str) {
-        self.sink_stdout.write_line(text);
+        // The sink appends the line's newline; a payload that already ends
+        // with one (a serialized YAML document) would otherwise close the
+        // command's output on a blank line.
+        self.sink_stdout
+            .write_line(text.trim_end_matches(['\n', '\r']));
     }
 
     /// One line of live child-process output, dim and rendered at `depth`.
@@ -356,6 +360,22 @@ mod tests {
             "syntect emitted no styling, so the assertion above proves \
              nothing about the highlighted arm: {out:?}"
         );
+    }
+
+    #[test]
+    /// A payload that already ends with a newline (a serialized document,
+    /// a decrypted file) closes on exactly one, never on a blank line.
+    fn data_line_closes_a_newline_terminated_payload_on_one_newline() {
+        use super::super::Verbosity;
+        use super::super::printer::Printer;
+
+        let stdout_buf = Arc::new(Mutex::new(String::new()));
+        let (mut p, _shared_buf) = Printer::for_test_at(Verbosity::Normal);
+        p.sink_stdout = Arc::new(StringSink(stdout_buf.clone()));
+        p.data_line("kind: Pod\nspec: {}\n");
+        p.flush();
+        let stdout = crate::test_helpers::captured_text(&stdout_buf);
+        assert_eq!(stdout, "kind: Pod\nspec: {}\n");
     }
 
     #[test]

@@ -91,6 +91,13 @@ pub fn cmd_diff(
 
     if let Some(mod_name) = module_filter {
         printer.heading_title(&TitleLabel::new("Diff", mod_name));
+        // The scoped run's header, the same two rows `apply --module` opens
+        // on: a title that owns no rows would put its blank line straight
+        // under the heading, which no other titled run does.
+        printer.kv_block([
+            ("Config".to_string(), cli.config.display_posix()),
+            ("Modules".to_string(), mod_name.to_string()),
+        ]);
         return cmd_diff_module(&ctx, mod_name, exit_code);
     }
 

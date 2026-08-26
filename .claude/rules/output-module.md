@@ -97,6 +97,25 @@ Both ends come from `reconciler::ApplyRun`. A run whose body the caller renders 
 
 **A run's only phase prints no phase row.** `Phase: Backups` earns its line inside `cfgd apply`, beside `Packages` and `Files`; on `cfgd backup run` and the daemon's scheduled fire it restated the title one indent down (`Backup` / `Phase: Backups` / `backup:notes`) while `backup restore` put the same owner group one level shallower. A plan-less `ApplyRun` renders its backups through `reconciler::sole_phase` — owner groups at the run's own depth — and a run carrying a `Plan` keeps `pseudo_phase(BACKUPS_PHASE_LABEL)`, filtered phases included (there the label states the filter). `sole_phase_renders_its_owner_groups_at_the_run_depth` (`reconciler/run/tests.rs`), `a_backup_run_prints_no_phase_row_for_its_only_phase` (`backup/tests.rs`) and the raw-render half of `backup_group_is_identical_across_surfaces` (`daemon/tests.rs`) pin the split.
 
+## Blank lines: the composer owns the separator
+
+**One blank line between sibling blocks; none at the start, none at the end, none after a heading that owns rows, never two in a row.** Every blank line a surface shows is a producer's, never a call site's: a top-level section close and a top-level group boundary (`TopGroup` — a run of status, hint or bullet lines) each ARM one pending blank (`RenderState.blank_pending`), and the next line drains it. A heading binds its rows, so no blank follows it. A streamed child line (`render_stream_line`, git's own `Cloning into …`) is the body of the status line that announced it: it consumes the pending blank and re-arms the boundary, so the section after a passthrough gets its blank while a finish line (`✓ Cloned`) still binds to what it announced. `data_line` writes a payload as ONE line, so a serialized document ending in `\n` closes on one newline, never a blank.
+
+```
+BAD (a stream line cleared the boundary)     GOOD
+──────────────────────────────────────       ──────────────────────────────────────
+◐ Cloning repository                         ◐ Cloning repository
+    Cloning into '/x'...                         Cloning into '/x'...
+    done.                                        done.
+Plan
+  Config  /x/cfgd.yaml                       Plan
+                                               Config  /x/cfgd.yaml
+```
+
+A title that owns no rows of its own (`Doctor`, `Verify`, `Checkin`) is a DOCUMENT title, and the blank under it separates it from its first section; a titled RUN (`Diff: nvim`, like `Apply` / `Plan` / `Status: nvim`) carries its header rows, so `cfgd diff --module` prints `Config` / `Modules` under its title the way `apply --module` does. A call site never emits a bare blank line (`printer.blank()` / `println!()`); a missing blank names a composer that cleared the boundary without re-arming it.
+
+Pins: `every_golden_separates_sibling_blocks_with_one_blank_line` (`crates/cfgd/src/cli/tests.rs`) walks every `.txt` golden under `crates/cfgd/tests/output_snapshots/**` and every `snapshots/` directory under `cfgd-core/src` and fails on a leading, trailing or doubled blank, on a blank straight under a heading that owns rows, and on two sibling blocks touching; `a_block_after_streamed_output_gets_its_one_blank_line` (`output/renderer/mod.rs`) pins the stream boundary and `data_line_closes_a_newline_terminated_payload_on_one_newline` (`output/raw.rs`) the data path.
+
 ## Rules every key/value block and shared table obeys
 
 | Rule | Shape | Pin |

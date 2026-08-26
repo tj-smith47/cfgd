@@ -1,6 +1,7 @@
 Add source:bridge-src
 ◐ Cloning source:bridge-src
   Cloning into '<STATE_DIR>/sources/bridge-src'...
+
 Manifest
   Name     bridge-src
   Version  1.0.0

@@ -13876,6 +13876,136 @@ fn no_kv_row_sits_between_two_result_lines() {
     );
 }
 
+/// Every golden is a rendered surface, and every one of them keeps the one
+/// spacing: no blank line opens or closes a command's output, no two blank
+/// lines touch, a heading is never followed by a blank line before its own
+/// rows, and two sibling blocks never touch. The producers own the
+/// separators (a section close and a top-level group boundary arm ONE
+/// pending blank; a streamed child line consumes and re-arms it; a heading
+/// binds its rows), so a golden that breaks any of these names a composer
+/// that leaked, never a call site to patch.
+///
+/// Walked over `crates/cfgd/tests/output_snapshots/**` and every
+/// `snapshots/` directory under `cfgd-core/src`. An empty golden is a
+/// surface that rendered nothing and is skipped. "Heading" is read off the
+/// ANSI-free structure: a column-0 line that carries no row glyph and whose
+/// next non-blank line is indented. "Two blocks touch" is an indented line
+/// directly followed by such a heading — a status row after streamed child
+/// output is the announcing line's own finish and binds by design, and a
+/// column-0 line ending in `:` is a raw document's own key, not a heading.
+#[test]
+fn every_golden_separates_sibling_blocks_with_one_blank_line() {
+    const GLYPHS: &[char] = &[
+        '✓', '✗', '⚠', '◉', '→', '◐', '—', '•', '-', '·', '⊙', '│', '├', '└',
+    ];
+    let cfgd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut roots = vec![cfgd.join("tests/output_snapshots")];
+    let core = cfgd.join("../cfgd-core/src");
+    let mut stack = vec![core];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n == "snapshots") {
+                    roots.push(p);
+                } else {
+                    stack.push(p);
+                }
+            }
+        }
+    }
+
+    let mut goldens = Vec::new();
+    let mut stack = roots;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|e| e == "txt") {
+                goldens.push(p);
+            }
+        }
+    }
+    goldens.sort();
+
+    let is_row = |l: &str| l.trim_start().starts_with(GLYPHS);
+    let mut offenders = Vec::new();
+    let mut judged = 0usize;
+    for path in &goldens {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let text = text.replace("\r\n", "\n");
+        if text.trim().is_empty() {
+            continue;
+        }
+        judged += 1;
+        let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+        let name = path.display();
+        let heading_at = |i: usize| -> bool {
+            let l = lines[i];
+            !l.starts_with(' ')
+                && !is_row(l)
+                && !l.ends_with(':')
+                && lines[i + 1..]
+                    .iter()
+                    .find(|n| !n.trim().is_empty())
+                    .is_some_and(|n| n.starts_with(' '))
+        };
+        if lines.first().is_some_and(|l| l.trim().is_empty()) {
+            offenders.push(format!("{name}:1: opens on a blank line"));
+        }
+        if text.ends_with("\n\n") {
+            offenders.push(format!(
+                "{name}:{}: closes on a blank line",
+                lines.len() + 1
+            ));
+        }
+        for i in 0..lines.len() {
+            let blank = lines[i].trim().is_empty();
+            if blank && i > 0 && lines[i - 1].trim().is_empty() {
+                offenders.push(format!("{name}:{}: two blank lines in a row", i + 1));
+            }
+            if blank && i > 0 && heading_at(i - 1) {
+                offenders.push(format!(
+                    "{name}:{}: a blank line after the heading `{}`",
+                    i + 1,
+                    lines[i - 1]
+                ));
+            }
+            if !blank
+                && lines[i].starts_with(' ')
+                && i + 1 < lines.len()
+                && !lines[i + 1].starts_with(' ')
+                && !lines[i + 1].trim().is_empty()
+                && heading_at(i + 1)
+            {
+                offenders.push(format!(
+                    "{name}:{}: `{}` touches the block above it",
+                    i + 2,
+                    lines[i + 1]
+                ));
+            }
+        }
+    }
+    assert!(
+        judged >= 300,
+        "the walk no longer reaches the goldens — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every rendered surface keeps one blank line between sibling blocks and \
+         none at its start, its end, after a heading or doubled; fix the \
+         composer that leaked, never the golden:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The string literal `expr` opens with, if it opens with one.
 fn literal_head(expr: &str) -> Option<String> {
     let rest = expr.strip_prefix('"')?;

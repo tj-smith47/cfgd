@@ -808,12 +808,14 @@ check could not run`). A run with nothing to report is a single line:
 ✓ No drift detected
 ```
 
-`--module <name>` scopes the run to one module. The heading carries it, and the
-closing line never calls `system` clean, because a module run evaluates no system
-configurator:
+`--module <name>` scopes the run to one module. The heading carries it, the header
+names the config and the module the way `apply --module` does, and the closing line
+never calls `system` clean, because a module run evaluates no system configurator:
 
 ```
 Diff: nvim
+  Config   /home/you/.config/cfgd/cfgd.yaml
+  Modules  nvim
 
 Files
   module:nvim

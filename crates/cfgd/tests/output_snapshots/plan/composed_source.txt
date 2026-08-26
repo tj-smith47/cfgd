@@ -1,5 +1,6 @@
 ◐ Cloning source:acme
   Cloning into '<STATE_DIR>/sources/acme'...
+
 Plan
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  default
