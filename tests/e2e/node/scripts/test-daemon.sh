@@ -69,7 +69,7 @@ else
     DAEMON_LOG=$(exec_in_pod cat /tmp/daemon.log 2>/dev/null || echo "")
     if $FIXED; then
         pass_test "DAEMON-01"
-    elif echo "$DAEMON_LOG" | grep -q "drift policy is Auto"; then
+    elif echo "$DAEMON_LOG" | grep -q "reconcile: drift detected in"; then
         pass_test "DAEMON-01"  # daemon detected drift and attempted reconciliation
     else
         FINAL=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "error")
@@ -363,7 +363,7 @@ INNEREOF'
     RECONCILED=false
     for i in $(seq 1 20); do
         DAEMON_LOG=$(exec_in_pod cat /tmp/daemon10.log 2>/dev/null || echo "")
-        if echo "$DAEMON_LOG" | grep -q "file changed\|running reconciliation\|reconcile:"; then
+        if echo "$DAEMON_LOG" | grep -q "watch: file changed\|reconcile: complete"; then
             echo "  Daemon detected config change after ${i}s"
             RECONCILED=true
             break
@@ -461,7 +461,7 @@ else
 
     if $RESTORED; then
         pass_test "DAEMON-11"
-    elif echo "$DAEMON_LOG" | grep -q "drift policy is Auto"; then
+    elif echo "$DAEMON_LOG" | grep -q "reconcile: drift detected in"; then
         pass_test "DAEMON-11"  # daemon detected drift and attempted auto-apply
     else
         FINAL=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "error")
@@ -523,9 +523,9 @@ else
     FINAL_VAL=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "error")
     echo "  Final vm.max_map_count: $FINAL_VAL"
 
-    if echo "$DAEMON_LOG" | grep -q "drift policy is NotifyOnly" && [ "$FINAL_VAL" = "65530" ]; then
+    if echo "$DAEMON_LOG" | grep -q "policy is notify-only, nothing applied" && [ "$FINAL_VAL" = "65530" ]; then
         pass_test "DAEMON-12"
-    elif echo "$DAEMON_LOG" | grep -q "action(s) needed" && [ "$FINAL_VAL" = "65530" ]; then
+    elif echo "$DAEMON_LOG" | grep -q "drifted, none applied" && [ "$FINAL_VAL" = "65530" ]; then
         pass_test "DAEMON-12"  # drift detected, not auto-applied
     else
         fail_test "DAEMON-12" "Expected drift logged + value unchanged (final: $FINAL_VAL)"
@@ -644,7 +644,7 @@ else
     echo "$DAEMON_LOG" | tail -20 | sed 's/^/    /'
 
     # Count reconciliation entries in log
-    RECONCILE_COUNT=$(echo "$DAEMON_LOG" | { grep -c "running reconciliation check" || true; })
+    RECONCILE_COUNT=$(echo "$DAEMON_LOG" | { grep -c "reconcile: complete" || true; })
     echo "  Reconciliation checks: $RECONCILE_COUNT"
 
     if [ "$RECONCILE_COUNT" -ge 2 ]; then
@@ -735,7 +735,7 @@ else
         pass_test "DAEMON-15"
     else
         DAEMON_LOG=$(exec_in_pod cat /tmp/daemon15.log 2>/dev/null || echo "")
-        if echo "$DAEMON_LOG" | grep -q "drift policy is Auto\|auto-apply complete"; then
+        if echo "$DAEMON_LOG" | grep -q "reconcile: drift detected in"; then
             pass_test "DAEMON-15"  # reconciliation ran; hooks may have executed in subprocess
         else
             fail_test "DAEMON-15" "Pre/post-reconcile hook artifacts not found"
@@ -820,7 +820,7 @@ else
 
     if $ONDRIFT_FIRED; then
         pass_test "DAEMON-16"
-    elif echo "$DAEMON_LOG" | grep -q "onDrift script completed\|running.*onDrift"; then
+    elif echo "$DAEMON_LOG" | grep -q "onDrift:"; then
         pass_test "DAEMON-16"  # hook ran even if artifact check failed
     else
         fail_test "DAEMON-16" "onDrift hook artifact not found"

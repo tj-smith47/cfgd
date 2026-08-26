@@ -365,7 +365,7 @@ else fail_test "SRC-MERGE-05"; fi
 
 begin_test "SRC-MERGE-06: Override sets value"
 run $MERGE_C source override merge-src-b set env.MY_KEY my-value
-if assert_ok && assert_contains "$OUTPUT" "Override set"; then
+if assert_ok && assert_contains "$OUTPUT" "Set override:"; then
     pass_test "SRC-MERGE-06"
 else fail_test "SRC-MERGE-06"; fi
 

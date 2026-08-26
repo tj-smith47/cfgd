@@ -14117,6 +14117,108 @@ fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
         );
     }
 }
+/// Every daemon-log marker the e2e suites grep for is a string the daemon can
+/// still emit. A shell suite pins a log line by substring and nothing in a Rust
+/// rename touches it, so `Health:`, `Reloading configuration (SIGHUP)`,
+/// `Received SIGTERM`, `action(s) needed` and `running reconciliation check`
+/// all sat in the suites long after the producers had moved or had never
+/// spoken them — and a grep that can never match turns an evidence check into
+/// the absence of a crash reported as a pass. The alternation is the unit: a
+/// grep holds if ANY branch is still spoken, which is what lets an absence
+/// assertion (`panic\|SIGSEGV\|signal: 11`) name a spelling no source carries
+/// beside one that does.
+#[test]
+fn every_daemon_log_marker_the_e2e_suites_grep_for_is_a_string_the_daemon_emits() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut sources = String::new();
+    let mut stack = vec![
+        root.join("crates/cfgd-core/src"),
+        root.join("crates/cfgd/src"),
+    ];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n != "tests") {
+                    stack.push(p);
+                }
+            } else if p.extension().is_some_and(|e| e == "rs")
+                && p.file_name().is_some_and(|n| n != "tests.rs")
+                && let Ok(body) = std::fs::read_to_string(&p)
+            {
+                sources.push_str(&body);
+                sources.push('\n');
+            }
+        }
+    }
+    assert!(
+        sources.contains("daemon: received SIGTERM"),
+        "the daemon's own sources must be in the walked set"
+    );
+
+    let mut scripts = vec![root.join("tests/e2e")];
+    let mut checked = 0usize;
+    while let Some(path) = scripts.pop() {
+        if path.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&path) {
+                scripts.extend(entries.flatten().map(|e| e.path()));
+            }
+            continue;
+        }
+        if path.extension().is_none_or(|e| e != "sh") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (n, line) in body.lines().enumerate() {
+            // A grep against anything else reads a manifest, a kubectl payload
+            // or a proc file — none of them cfgd's own prose.
+            if line.trim_start().starts_with('#')
+                || !(line.contains("DAEMON_LOG") || line.contains(".log\""))
+            {
+                continue;
+            }
+            // Shell quoting, not Rust: a `\\|` alternation must survive to the
+            // split below, so the line is read as raw `"`-delimited fields
+            // rather than through a Rust literal scanner that would eat the
+            // backslash. Odd fields are quoted, and a field is the grep's own
+            // argument when `grep ` is the last thing before its opening quote.
+            let fields: Vec<&str> = line.split('"').collect();
+            for (i, literal) in fields.iter().enumerate() {
+                if i % 2 == 0 || literal.contains('$') {
+                    continue;
+                }
+                if !fields[i - 1].trim_end().ends_with("grep")
+                    && !fields[i - 1]
+                        .rsplit_once("grep ")
+                        .is_some_and(|(_, after)| after.trim().starts_with('-'))
+                {
+                    continue;
+                }
+                checked += 1;
+                assert!(
+                    literal
+                        .split("\\|")
+                        .any(|branch| !branch.trim().is_empty() && sources.contains(branch.trim())),
+                    "{}:{} greps a daemon log for {literal:?}, and no branch of it \
+                     appears in the daemon's sources — the producer was renamed and \
+                     the assertion can no longer fire",
+                    path.display(),
+                    n + 1
+                );
+            }
+        }
+    }
+    assert!(
+        checked >= 10,
+        "the daemon-log grep population collapsed to {checked} — the walk stopped \
+         finding the suites it exists to police"
+    );
+}
 
 /// The string literal `expr` opens with, if it opens with one.
 fn literal_head(expr: &str) -> Option<String> {
