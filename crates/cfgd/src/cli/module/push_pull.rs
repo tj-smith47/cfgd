@@ -80,8 +80,6 @@ pub fn cmd_module_push(
             applied_name = Some(module_doc.metadata.name.clone());
         }
         push_sec.hint(super::success_next_step(super::Mutation::ModulePushed {
-            dir,
-            artifact,
             applied: applied_name.as_deref(),
         }));
         (digest, signed, attested)

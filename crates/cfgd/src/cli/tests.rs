@@ -15207,48 +15207,86 @@ fn every_mutating_verb_closes_on_a_next_step() {
 /// in backticks — the same shape `every_closing_hint_names_a_command` holds
 /// literal hints to, which cannot see a text built here. Walks every variant,
 /// so a new one lands under the rule.
+///
+/// A hint that spells the verb that JUST RAN is a re-run, and a re-run is
+/// either a `<placeholder>` template or a lie: `module push`'s hint once
+/// recomposed the push from the directory and the artifact alone, dropping
+/// `--sign --key`, `--platform` and `--attest`, so following it re-pushed a
+/// fresh digest the cosign signature did not cover. Each variant names the
+/// verbs that produce it; a backticked command opening on one of them must
+/// carry a placeholder rather than the arguments the reader already typed.
 #[test]
 fn every_composed_next_step_names_a_command() {
-    let mutations = [
-        Mutation::SourceSubscribed,
-        Mutation::SourceUpdated {
-            trust_changed: true,
-        },
-        Mutation::SourceUpdated {
-            trust_changed: false,
-        },
-        Mutation::SourceRemoved,
-        Mutation::SourceReplaced,
-        Mutation::SourceOverridden,
-        Mutation::SourceReprioritized,
-        Mutation::ModuleCreated { name: "nvim" },
-        Mutation::ModuleUpdated,
-        Mutation::ModuleLocked,
-        Mutation::ModuleBuilt { output: "./out" },
-        Mutation::ModulePushed {
-            dir: "./tools",
-            artifact: "ghcr.io/acme/tools:v1",
-            applied: None,
-        },
-        Mutation::ModulePushed {
-            dir: "./tools",
-            artifact: "ghcr.io/acme/tools:v1",
-            applied: Some("tools"),
-        },
-        Mutation::ModulePulled { name: None },
-        Mutation::ModulePulled {
-            name: Some("tools"),
-        },
-        Mutation::RegistryAdded,
-        Mutation::KeysGenerated { dir: "./keys" },
-        Mutation::KeysRotated {
-            dir: "./keys",
-            resigned: true,
-        },
-        Mutation::KeysRotated {
-            dir: "./keys",
-            resigned: false,
-        },
+    let mutations: &[(Mutation<'_>, &[&str])] = &[
+        (Mutation::SourceSubscribed, &["cfgd source add"]),
+        (
+            Mutation::SourceUpdated {
+                trust_changed: true,
+            },
+            &["cfgd source update"],
+        ),
+        (
+            Mutation::SourceUpdated {
+                trust_changed: false,
+            },
+            &["cfgd source update"],
+        ),
+        (Mutation::SourceRemoved, &["cfgd source remove"]),
+        (Mutation::SourceReplaced, &["cfgd source replace"]),
+        (Mutation::SourceOverridden, &["cfgd source override"]),
+        (Mutation::SourceReprioritized, &["cfgd source priority"]),
+        (
+            Mutation::ModuleCreated { name: "nvim" },
+            &["cfgd module create"],
+        ),
+        (
+            Mutation::ModuleUpdated,
+            &["cfgd module update", "cfgd module edit"],
+        ),
+        (
+            Mutation::ModuleLocked,
+            &["cfgd module add", "cfgd module upgrade"],
+        ),
+        (
+            Mutation::ModuleBuilt { output: "./out" },
+            &["cfgd module build"],
+        ),
+        (
+            Mutation::ModulePushed { applied: None },
+            &["cfgd module push", "cfgd module build"],
+        ),
+        (
+            Mutation::ModulePushed {
+                applied: Some("tools"),
+            },
+            &["cfgd module push", "cfgd module build"],
+        ),
+        (Mutation::ModulePulled { name: None }, &["cfgd module pull"]),
+        (
+            Mutation::ModulePulled {
+                name: Some("tools"),
+            },
+            &["cfgd module pull"],
+        ),
+        (Mutation::RegistryAdded, &["cfgd module registry add"]),
+        (
+            Mutation::KeysGenerated { dir: "./keys" },
+            &["cfgd module keys generate"],
+        ),
+        (
+            Mutation::KeysRotated {
+                dir: "./keys",
+                resigned: true,
+            },
+            &["cfgd module keys rotate"],
+        ),
+        (
+            Mutation::KeysRotated {
+                dir: "./keys",
+                resigned: false,
+            },
+            &["cfgd module keys rotate"],
+        ),
     ];
     let source = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
@@ -15271,12 +15309,22 @@ fn every_composed_next_step_names_a_command() {
         declared, 15,
         "a new Mutation variant is walked here with every shape it can take"
     );
-    for mutation in mutations {
-        let hint = success_next_step(mutation);
+    for (mutation, own_verbs) in mutations {
+        let hint = success_next_step(*mutation);
+        let commands: Vec<&str> = hint.split('`').skip(1).step_by(2).collect();
         assert!(
-            hint.matches('`').count() >= 2,
+            !commands.is_empty(),
             "{mutation:?} closes on a hint naming no command: {hint}"
         );
+        for command in commands {
+            if own_verbs.iter().any(|verb| command.starts_with(verb)) {
+                assert!(
+                    command.contains('<'),
+                    "{mutation:?} re-spells the verb that just ran with concrete arguments — \
+                     a re-run hint is a <placeholder> template or names a different command: {hint}"
+                );
+            }
+        }
     }
 }
 

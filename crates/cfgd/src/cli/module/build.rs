@@ -155,11 +155,7 @@ pub fn cmd_module_build(
         // multi-platform build whose one index artifact is already pushed.
         let built = output_artifacts.first().map_or(dir, String::as_str);
         build_sec.hint(super::success_next_step(match artifact {
-            Some(artifact) => super::Mutation::ModulePushed {
-                dir: built,
-                artifact,
-                applied: None,
-            },
+            Some(_) => super::Mutation::ModulePushed { applied: None },
             None => super::Mutation::ModuleBuilt { output: built },
         }));
     }

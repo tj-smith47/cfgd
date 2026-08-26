@@ -122,13 +122,18 @@ pub(in crate::cli) enum Mutation<'a> {
     ModuleLocked,
     /// `module build` produced an OCI-ready directory nothing has pushed.
     ModuleBuilt { output: &'a str },
-    /// `module push` (or `module build --artifact`) put `artifact` in a
+    /// `module push` (or `module build --artifact`) put an artifact in a
     /// registry; `applied` names the Module resource a `--apply` registered.
-    ModulePushed {
-        dir: &'a str,
-        artifact: &'a str,
-        applied: Option<&'a str>,
-    },
+    ///
+    /// Deliberately NOT the directory or the artifact reference: the hint
+    /// once recomposed the push from those two, which dropped `--sign --key`,
+    /// `--platform` and `--attest` on the floor — following it re-pushed a
+    /// fresh digest the cosign signature did not cover — and handed the
+    /// CLIENT's registry address (`localhost:5001/…`) to a Module resource
+    /// the CLUSTER resolves by its own. A completed invocation is never
+    /// re-spelled, and a reference resolved on this side of the network is
+    /// never interpolated into an instruction for the other.
+    ModulePushed { applied: Option<&'a str> },
     /// `module pull` extracted a module; `name` is what its manifest said,
     /// when it had one.
     ModulePulled { name: Option<&'a str> },
@@ -179,14 +184,11 @@ pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> String {
             applied: Some(name),
             ..
         } => format!("Check it with `kubectl get module {name}`"),
-        Mutation::ModulePushed {
-            dir,
-            artifact,
-            applied: None,
-        } => format!(
-            "Reference `{artifact}` from a Module resource, or register it with \
-             `cfgd module push {dir} --artifact {artifact} --apply`"
-        ),
+        Mutation::ModulePushed { applied: None } => {
+            "Register it as a Module at the cluster's registry address: \
+             `kubectl apply -f <module>.yaml`, or `--apply` next time"
+                .to_string()
+        }
         Mutation::ModulePulled { name: Some(name) } => {
             format!("Review it with `cfgd module show {name}`, then run `cfgd apply`")
         }
