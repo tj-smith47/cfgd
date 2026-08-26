@@ -491,6 +491,7 @@ pub struct ModuleSignature {
     printcolumn = r#"{"name": "Artifact", "type": "string", "jsonPath": ".spec.ociArtifact"}"#,
     printcolumn = r#"{"name": "Signature", "type": "string", "jsonPath": ".status.signature"}"#,
     printcolumn = r#"{"name": "Platforms", "type": "string", "jsonPath": ".status.platformsSummary"}"#,
+    printcolumn = r#"{"name": "Available", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Available\")].status"}"#,
     printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]

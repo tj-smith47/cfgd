@@ -248,6 +248,8 @@ The operator checks each `Module`'s artifact against the key its `spec.signature
 | `unverified` | cosign checked the artifact and rejected it: no signature, or none the key accepts |
 | `unsigned` | the module declares no signature, so there is nothing to check |
 | `unknown` | the check could not run at all: no cosign in the operator image, an unreachable registry, a module with no artifact to check, or a `Module` the operator has not reconciled yet |
+The `AVAILABLE` column is the `Available` condition: `True` when the operator serves the module, `False` when it withholds it (an unresolvable artifact, or a verdict a `ClusterConfigPolicy` with `allowUnsigned: false` refuses). Every cfgd kind exposes its readiness condition this way (`RECONCILED` on a `MachineConfig`, `ENFORCED` on a policy, `RESOLVED` on a `DriftAlert`), so `kubectl get` answers "is this being served" without a `describe`.
+
 
 `unknown` is not a verdict about the signature, and the `Verified` condition carries it as `status: Unknown` with the reason on the condition's message:
 

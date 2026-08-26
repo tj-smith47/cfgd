@@ -447,10 +447,79 @@ fn module_crd_has_printer_columns() {
     assert!(col_names.contains(&"Artifact"));
     assert!(col_names.contains(&"Signature"));
     assert!(col_names.contains(&"Platforms"));
+    assert!(col_names.contains(&"Available"));
     assert!(col_names.contains(&"Age"));
 }
 
-/// Every kind whose status carries `conditionsts the Go rendering of the
+/// Every kind whose status carries `conditions` exposes its readiness
+/// condition as a printer column. `Module` shipped without one, so a module
+/// the operator WITHHELD over its signature verdict (`Available: False`) and
+/// a served one were the same row in `kubectl get modules` — the one surface
+/// a cluster user reaches for. The column's condition type is checked against
+/// the literals the operator's controllers write, so a column bound to a
+/// condition nothing sets would trip here too.
+#[test]
+fn every_kind_with_conditions_exposes_its_readiness_condition_as_a_column() {
+    use kube::CustomResourceExt;
+
+    let controllers =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-operator/src/controllers");
+    let written: String = std::fs::read_dir(&controllers)
+        .expect("the operator's controllers directory is checked out")
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|x| x == "rs"))
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .collect();
+
+    let crds = [
+        ("MachineConfig", MachineConfig::crd()),
+        ("ConfigPolicy", ConfigPolicy::crd()),
+        ("ClusterConfigPolicy", ClusterConfigPolicy::crd()),
+        ("DriftAlert", DriftAlert::crd()),
+        ("Module", Module::crd()),
+    ];
+    let mut judged = 0usize;
+    for (kind, crd) in crds {
+        let version = &crd.spec.versions[0];
+        let schema = version
+            .schema
+            .as_ref()
+            .and_then(|s| s.open_api_v3_schema.as_ref())
+            .unwrap_or_else(|| panic!("{kind} must publish a schema"));
+        if resolve_column_schema(schema, ".status.conditions").as_deref() != Some("array") {
+            continue;
+        }
+        judged += 1;
+        let condition_types: Vec<String> = version
+            .additional_printer_columns
+            .iter()
+            .flatten()
+            .filter_map(|c| {
+                let rest = c
+                    .json_path
+                    .strip_prefix(".status.conditions[?(@.type==\"")?;
+                let (ty, _) = rest.split_once("\")].status")?;
+                Some(ty.to_string())
+            })
+            .collect();
+        assert!(
+            !condition_types.is_empty(),
+            "{kind} writes conditions but exposes none of them as a printer column"
+        );
+        for ty in condition_types {
+            assert!(
+                written.contains(&format!("\"{ty}\"")),
+                "{kind}'s printer column binds to a `{ty}` condition no controller writes"
+            );
+        }
+    }
+    assert_eq!(
+        judged, 5,
+        "every kind carries conditions; the walk reached {judged}"
+    );
+}
+
+/// A printer column resolving to an ARRAY prints the Go rendering of the
 /// slice, so an empty one reads as the literal `[]` where an absent value
 /// leaves the cell blank — `kubectl get` has no way to join one. A column
 /// resolving to a BOOL prints `true`/`false`, a second vocabulary beside the
