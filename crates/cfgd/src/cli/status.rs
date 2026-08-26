@@ -2436,9 +2436,18 @@ mod tests {
             drift_checked_live: true,
             ..output
         };
+        let live_out = dashboard(&live);
         assert!(
-            !dashboard(&live).contains("scanned "),
+            !live_out.contains("scanned "),
             "a run that just scanned does not date its own findings"
+        );
+        assert!(
+            live_out.contains(&super::heal_drift_hint(None)),
+            "a live drift verdict offers the machine-wide heal: {live_out}"
+        );
+        assert!(
+            !out.contains(&super::heal_drift_hint(None)),
+            "a recorded finding is not healed on the strength of an old scan: {out}"
         );
     }
 
