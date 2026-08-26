@@ -52,13 +52,13 @@ const NOW: &str = "2026-05-14T12:00:00Z";
 fn happy_entries() -> Vec<SourceListEntry> {
     vec![SourceListEntry {
         name: "team-config".into(),
-        url: "https://github.com/team/config".into(),
-        priority: 100,
+        url: Some("https://github.com/team/config".into()),
+        priority: Some(100),
         version: Some("1.0.0".into()),
         status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
         last_fetched: Some("2026-05-14T10:00:00Z".into()),
         signed: Some(true),
-        require_signed_commits: true,
+        require_signed_commits: Some(true),
         last_commit: Some("4b8857cd0f1e2a3b4c5d6e7f8091a2b3c4d5e6f7".into()),
         drift_count: None,
     }]

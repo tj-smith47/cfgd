@@ -248,7 +248,7 @@ isolation). Query with `cfgd daemon status` to get:
 - How long ago the last reconcile ran (`2m ago`; the stored ISO 8601 instant stays in `-o json`)
 - The reconcile and sync intervals the loop is currently on (`reconcileIntervalSecs` / `syncIntervalSecs` in `-o json`), so a SIGHUP reload can be confirmed without reading the log
 - Drift count
-- Per-source sync status, each with its own `Last Sync` age (when using multi-source config)
+- Per-source sync status in the same `Sources` table `cfgd source list` renders, each row with its own `Last Sync` age and the commit the daemon's last pull landed on (`Commit`, shortened; the full id is `sources[].lastCommit` in `-o json`). The implicit `local` layer declares no origin, priority or signing demand, so those cells read `-` beside a declared source and the columns are left off when it is the only row
 
 ## CLI Commands
 

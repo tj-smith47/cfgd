@@ -275,6 +275,7 @@ fn source_status_round_trips() {
         last_reconcile: None,
         drift_count: 3,
         status: "active".to_string(),
+        last_commit: None,
     };
     let json = serde_json::to_string(&status).unwrap();
     let parsed: SourceStatus = serde_json::from_str(&json).unwrap();
@@ -4177,6 +4178,7 @@ fn daemon_state_with_multiple_sources() {
         last_reconcile: None,
         drift_count: 2,
         status: "active".to_string(),
+        last_commit: None,
     });
     state.sources.push(SourceStatus {
         name: "team-tools".to_string(),
@@ -4184,6 +4186,7 @@ fn daemon_state_with_multiple_sources() {
         last_reconcile: Some("2026-03-30T11:00:00Z".to_string()),
         drift_count: 0,
         status: "error".to_string(),
+        last_commit: None,
     });
 
     let response = state.to_response();
@@ -4643,6 +4646,7 @@ fn source_status_defaults() {
         last_reconcile: None,
         drift_count: 0,
         status: "active".to_string(),
+        last_commit: None,
     };
 
     assert!(status.last_sync.is_none());
@@ -4660,6 +4664,7 @@ fn source_status_all_fields_populated() {
         last_reconcile: Some("2026-03-30T10:05:00Z".to_string()),
         drift_count: 15,
         status: "error".to_string(),
+        last_commit: None,
     };
 
     let json = serde_json::to_string(&status).unwrap();
@@ -5613,6 +5618,7 @@ async fn handle_sync_updates_per_source_status() {
             last_reconcile: None,
             drift_count: 0,
             status: "active".to_string(),
+            last_commit: None,
         });
     }
 
@@ -5705,6 +5711,19 @@ async fn handle_sync_auto_pull_with_remote_changes() {
         work_dir.join("NEWFILE").exists(),
         "pulled file should exist after sync"
     );
+    // The row's commit is the one the pull landed on — the same id the log
+    // line named — so `daemon status` can answer without a `git log`.
+    let landed = git2::Repository::open(&work_dir)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap()
+        .to_string();
+    let st = state.lock().await;
+    let local = st.sources.iter().find(|s| s.name == "local").unwrap();
+    assert_eq!(local.last_commit.as_deref(), Some(landed.as_str()));
+    assert!(local.last_sync.is_some());
 }
 
 // --- handle_sync: auto_push with local changes ---
@@ -6765,6 +6784,7 @@ fn daemon_state_to_response_preserves_source_order() {
         last_reconcile: None,
         drift_count: 0,
         status: "active".into(),
+        last_commit: None,
     });
     state.sources.push(SourceStatus {
         name: "a-source".into(),
@@ -6772,6 +6792,7 @@ fn daemon_state_to_response_preserves_source_order() {
         last_reconcile: None,
         drift_count: 0,
         status: "active".into(),
+        last_commit: None,
     });
 
     let response = state.to_response();
@@ -6960,6 +6981,7 @@ fn daemon_status_response_roundtrip_symmetry() {
                 last_reconcile: Some("2026-04-01T12:00:00Z".into()),
                 drift_count: 50,
                 status: "active".into(),
+                last_commit: None,
             },
             SourceStatus {
                 name: "corp".into(),
@@ -6967,6 +6989,7 @@ fn daemon_status_response_roundtrip_symmetry() {
                 last_reconcile: None,
                 drift_count: 50,
                 status: "error".into(),
+                last_commit: None,
             },
         ],
         update_available: Some("5.0.0".into()),
@@ -7011,6 +7034,7 @@ fn source_status_camel_case_serialization() {
         last_reconcile: Some("tr".into()),
         drift_count: 1,
         status: "active".into(),
+        last_commit: None,
     };
     let json = serde_json::to_string(&status).unwrap();
     assert!(json.contains("\"lastSync\""));
@@ -11463,7 +11487,7 @@ spec:
 
     #[test]
     fn build_initial_source_status_empty_when_no_sources() {
-        let rows = runner::build_initial_source_status(&[]);
+        let rows = runner::build_initial_source_status(&[], Path::new("/nonexistent"));
         assert!(rows.is_empty());
     }
 
@@ -11472,7 +11496,8 @@ spec:
         let cfg = parse_cfgd_config(
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  sources:\n    - name: alpha\n      origin:\n        type: Git\n        url: https://example.com/a.git\n    - name: beta\n      origin:\n        type: Git\n        url: https://example.com/b.git\n",
         );
-        let rows = runner::build_initial_source_status(&cfg.spec.sources);
+        let rows =
+            runner::build_initial_source_status(&cfg.spec.sources, Path::new("/nonexistent"));
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].name, "alpha");
         assert_eq!(rows[1].name, "beta");
@@ -11481,6 +11506,7 @@ spec:
             assert_eq!(r.drift_count, 0);
             assert!(r.last_sync.is_none());
             assert!(r.last_reconcile.is_none());
+            assert!(r.last_commit.is_none(), "nothing fetched, nothing to be at");
         }
     }
 
@@ -15240,6 +15266,7 @@ spec: {}
             last_reconcile: None,
             drift_count: 2,
             status: "active".to_string(),
+            last_commit: None,
         });
         let resp = state.to_response();
         assert!(resp.running);
@@ -18964,7 +18991,7 @@ mod backup_timers {
             }
             out.replace_range(start..end, "<STAMP>");
         }
-        strip_durations(&out)
+        crate::normalize_snapshot_durations(&out)
     }
 
     /// Byte offset of the first `YYYYmmddTHHMMSSZ` stamp in `s`, if any. Byte
@@ -18978,33 +19005,6 @@ mod backup_timers {
                 && b[i + 9..i + 15].iter().all(u8::is_ascii_digit)
                 && b[i + 15] == b'Z'
         })
-    }
-
-    /// Replace every `(1.2s)` with `(<DUR>)`.
-    fn strip_durations(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut rest = s;
-        while let Some(open) = rest.find('(') {
-            let Some(close) = rest[open..].find(')') else {
-                break;
-            };
-            let inner = &rest[open + 1..open + close];
-            out.push_str(&rest[..open]);
-            if inner.ends_with('s')
-                && inner[..inner.len() - 1]
-                    .chars()
-                    .all(|c| c.is_ascii_digit() || c == '.')
-            {
-                out.push_str("(<DUR>)");
-            } else {
-                out.push('(');
-                out.push_str(inner);
-                out.push(')');
-            }
-            rest = &rest[open + close + 1..];
-        }
-        out.push_str(rest);
-        out
     }
 
     /// A backup spec's whole rendered group must not depend on which surface

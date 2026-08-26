@@ -8,6 +8,7 @@
   "sources": [
     {
       "driftCount": 0,
+      "lastCommit": null,
       "lastReconcile": null,
       "lastSync": null,
       "name": "local",
@@ -15,6 +16,7 @@
     },
     {
       "driftCount": 7,
+      "lastCommit": null,
       "lastReconcile": null,
       "lastSync": "2026-05-12T09:00:00Z",
       "name": "team",

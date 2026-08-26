@@ -578,8 +578,14 @@ pub struct DoctorConfiguratorCheck {
 #[serde(rename_all = "camelCase")]
 pub struct SourceListEntry {
     pub name: String,
-    pub url: String,
-    pub priority: u32,
+    /// The declared origin. Every field below `name` and `status` is an
+    /// `Option`, because a row is not always a `spec.sources[]` entry: the
+    /// daemon reports the implicit `local` layer, which declares no origin,
+    /// no priority and no signing demand. `None` renders `-` (or drops the
+    /// column when no row can fill it) and serializes `null`; a default such
+    /// as `0` or `false` would state a fact nobody declared.
+    pub url: Option<String>,
+    pub priority: Option<u32>,
     pub version: Option<String>,
     pub status: String,
     /// The ISO 8601 stamp of the last fetch. The human table humanizes it
@@ -592,7 +598,8 @@ pub struct SourceListEntry {
     /// Whether the subscription DEMANDS a signed HEAD. Distinct from `signed`,
     /// which reports what the last fetch found: two sources with signed HEADs,
     /// one demanding signatures and one not, are not the same subscription.
-    pub require_signed_commits: bool,
+    /// `None` is "nothing declared", never "not required".
+    pub require_signed_commits: Option<bool>,
     /// The commit the cached checkout is at, full length. The human table
     /// shortens it through `short_commit`; the payload keeps the whole id,
     /// which is the only form a machine consumer can match against a remote.
@@ -1887,13 +1894,13 @@ mod tests {
     fn source_list_entry_camelcases_last_fetched_and_emits_nulls() {
         let v = SourceListEntry {
             name: "main".to_string(),
-            url: "https://example.com/repo.git".to_string(),
-            priority: 100,
+            url: Some("https://example.com/repo.git".to_string()),
+            priority: Some(100),
             version: None,
             status: "synced".to_string(),
             last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
             signed: Some(true),
-            require_signed_commits: true,
+            require_signed_commits: Some(true),
             last_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             drift_count: None,
         };

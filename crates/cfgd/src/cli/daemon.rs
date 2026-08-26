@@ -239,18 +239,24 @@ fn daemon_source_row(
     catalog: &[SourceListEntry],
 ) -> SourceListEntry {
     let declared = catalog.iter().find(|e| e.name == src.name);
+    // Every catalog-sourced slot stays absent for a row the catalog does not
+    // hold (the implicit `local` layer, a source the config dropped): a
+    // substituted default reads as a declared fact.
     SourceListEntry {
         name: src.name.clone(),
-        url: declared
-            .map(|e| e.url.clone())
-            .unwrap_or_else(|| cfgd_core::ABSENT.into()),
-        priority: declared.map_or(0, |e| e.priority),
+        url: declared.and_then(|e| e.url.clone()),
+        priority: declared.and_then(|e| e.priority),
         version: declared.and_then(|e| e.version.clone()),
         status: src.status.clone(),
         last_fetched: src.last_sync.clone(),
         signed: declared.and_then(|e| e.signed),
-        require_signed_commits: declared.is_some_and(|e| e.require_signed_commits),
-        last_commit: declared.and_then(|e| e.last_commit.clone()),
+        require_signed_commits: declared.and_then(|e| e.require_signed_commits),
+        // The daemon holds the commit its own pull landed on; the catalog's
+        // is what the last `cfgd sync` recorded, and may be older.
+        last_commit: src
+            .last_commit
+            .clone()
+            .or_else(|| declared.and_then(|e| e.last_commit.clone())),
         drift_count: Some(src.drift_count),
     }
 }
@@ -1089,6 +1095,7 @@ mod tests {
                 drift_count: 0,
                 last_sync: Some("2026-05-14T10:00:00Z".into()),
                 last_reconcile: None,
+                last_commit: None,
             },
             cfgd_core::daemon::SourceStatus {
                 name: "apps".into(),
@@ -1096,6 +1103,7 @@ mod tests {
                 drift_count: 3,
                 last_sync: None,
                 last_reconcile: None,
+                last_commit: None,
             },
         ];
         let (printer, cap) = Printer::for_test_doc();
@@ -1109,6 +1117,136 @@ mod tests {
         assert!(
             human.contains("Active") && human.contains("Failed"),
             "each source's status must render as its display word: {human}"
+        );
+    }
+
+    /// The daemon reports the implicit `local` layer, which no `spec.sources[]`
+    /// entry declares. Its row read `Priority 0` / `Requires Signed no` —
+    /// two facts nobody stated — because the row type could not say absent.
+    /// Alone, the columns nothing can fill are dropped; beside a declared
+    /// source they read `-`; and the row on the wire carries `null`.
+    #[test]
+    fn the_implicit_local_source_declares_no_priority_origin_or_signing_demand() {
+        let mut status = make_status(true);
+        status.sources = vec![cfgd_core::daemon::SourceStatus {
+            name: cfgd_core::config::LOCAL_LAYER.into(),
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
+            drift_count: 0,
+            last_sync: None,
+            last_reconcile: None,
+            last_commit: None,
+        }];
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_daemon_status_doc(
+            Some(&status),
+            &[],
+            DAEMON_STATUS_NOW,
+        ));
+        let human = cap.human();
+        let header = human
+            .lines()
+            .find(|l| l.trim_start().starts_with("Name"))
+            .unwrap_or_else(|| panic!("a Sources header: {human}"));
+        for column in ["Source", "Priority", "Requires Signed"] {
+            assert!(
+                !header.contains(column),
+                "`{column}` has nothing to say about a row nothing declared and is dropped: {human}"
+            );
+        }
+
+        let declared = SourceListEntry {
+            name: "team".into(),
+            url: Some("https://github.com/team/config".into()),
+            priority: Some(100),
+            version: None,
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
+            last_fetched: None,
+            signed: None,
+            require_signed_commits: Some(true),
+            last_commit: None,
+            drift_count: None,
+        };
+        status.sources.push(cfgd_core::daemon::SourceStatus {
+            name: "team".into(),
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
+            drift_count: 0,
+            last_sync: None,
+            last_reconcile: None,
+            last_commit: None,
+        });
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_daemon_status_doc(
+            Some(&status),
+            std::slice::from_ref(&declared),
+            DAEMON_STATUS_NOW,
+        ));
+        let human = cap.human();
+        let local_row = human
+            .lines()
+            .find(|l| l.trim_start().starts_with("local"))
+            .unwrap_or_else(|| panic!("a local row: {human}"));
+        let cells: Vec<&str> = local_row.split_whitespace().collect();
+        // Name, Source, Priority, Status, Drift, Last Sync, Requires Signed
+        assert_eq!(
+            cells,
+            vec!["local", "-", "-", "Active", "0", "never", "-"],
+            "every undeclared slot reads absent, never a default: {human}"
+        );
+
+        let row = daemon_source_row(&status.sources[0], std::slice::from_ref(&declared));
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["url"], serde_json::Value::Null);
+        assert_eq!(json["priority"], serde_json::Value::Null);
+        assert_eq!(json["requiresSignedCommits"], serde_json::Value::Null);
+    }
+
+    /// The daemon names the commit its own pull landed on, so the `Commit`
+    /// column is filled from the live row (shortened) while the payload keeps
+    /// the full id; the catalog's recorded commit is only the fallback.
+    #[test]
+    fn the_commit_column_reads_the_daemons_own_pull_in_full_on_the_wire() {
+        const LANDED: &str = "719956f7587f0a1b2c3d4e5f60718293a4b5c6d7";
+        let mut status = make_status(true);
+        status.sources = vec![cfgd_core::daemon::SourceStatus {
+            name: cfgd_core::config::LOCAL_LAYER.into(),
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
+            drift_count: 0,
+            last_sync: Some("2026-05-14T11:00:00Z".into()),
+            last_reconcile: None,
+            last_commit: Some(LANDED.into()),
+        }];
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_daemon_status_doc(
+            Some(&status),
+            &[],
+            DAEMON_STATUS_NOW,
+        ));
+        let human = cap.human();
+        assert!(human.contains("Commit"), "the column is filled: {human}");
+        assert!(
+            human.contains(cfgd_core::short_commit(LANDED)) && !human.contains(LANDED),
+            "the cell is the short form: {human}"
+        );
+        let json = cap.json().expect("doc captured json");
+        assert_eq!(json["sources"][0]["lastCommit"], LANDED);
+
+        let stale = SourceListEntry {
+            name: cfgd_core::config::LOCAL_LAYER.into(),
+            url: None,
+            priority: None,
+            version: None,
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
+            last_fetched: None,
+            signed: None,
+            require_signed_commits: None,
+            last_commit: Some("0000000000000000000000000000000000000000".into()),
+            drift_count: None,
+        };
+        let row = daemon_source_row(&status.sources[0], std::slice::from_ref(&stale));
+        assert_eq!(
+            row.last_commit.as_deref(),
+            Some(LANDED),
+            "live beats recorded"
         );
     }
 
@@ -1138,6 +1276,7 @@ mod tests {
             last_reconcile: None,
             drift_count: 0,
             status: "Active".into(),
+            last_commit: None,
         }];
         let (printer, cap) = Printer::for_test_doc();
         printer.emit(build_daemon_status_doc(

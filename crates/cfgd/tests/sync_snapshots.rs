@@ -298,13 +298,13 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
     // so the shared `Sources` table has something to render.
     let declared = vec![cfgd::cli::output_types::SourceListEntry {
         name: "acme".to_string(),
-        url: acme.origin_url.clone(),
-        priority: 100,
+        url: Some(acme.origin_url.clone()),
+        priority: Some(100),
         version: acme.source_version.clone(),
         status: acme.status.clone(),
         last_fetched: acme.last_fetched.clone(),
         signed: None,
-        require_signed_commits: false,
+        require_signed_commits: Some(false),
         last_commit: acme.last_commit.clone(),
         drift_count: None,
     }];

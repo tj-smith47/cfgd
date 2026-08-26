@@ -1586,7 +1586,9 @@ between one listing and the next. A column no listed source can fill is left off
 the table rather than padded with `-` (`Commit` and `Signed` before the first
 fetch, `Drift`, which only the daemon's own `cfgd daemon status` holds); the
 `-o json` / `-o yaml` payload keeps every field, with the exact ISO 8601 instant
-in `lastFetched`.
+in `lastFetched`. A row nothing declares (the implicit `local` layer on
+`cfgd daemon status`) reads `-` in `Source`, `Priority` and `Requires Signed`
+rather than a default, and carries `null` there on the wire.
 `--wide` adds a `Version` column carrying the source's self-reported
 `metadata.version`.
 

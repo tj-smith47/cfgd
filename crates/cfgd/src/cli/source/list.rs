@@ -59,13 +59,13 @@ pub fn sources_table(entries: &[SourceListEntry], wide: bool, now: &str) -> Tabl
         ),
         (
             "Source",
-            entries.iter().map(|e| (e.url.clone(), None)).collect(),
+            entries.iter().map(|e| cell(e.url.clone())).collect(),
         ),
         (
             "Priority",
             entries
                 .iter()
-                .map(|e| (e.priority.to_string(), None))
+                .map(|e| cell(e.priority.map(|p| p.to_string())))
                 .collect(),
         ),
     ];
@@ -124,7 +124,7 @@ pub fn sources_table(entries: &[SourceListEntry], wide: bool, now: &str) -> Tabl
             "Requires Signed",
             entries
                 .iter()
-                .map(|e| (yes_no(Some(e.require_signed_commits)).to_string(), None))
+                .map(|e| (yes_no(e.require_signed_commits).to_string(), None))
                 .collect(),
         ),
     ]);
@@ -201,8 +201,8 @@ pub fn configured_source_entries(
             let state_info = state.config_source_by_name(&source.name).ok().flatten();
             SourceListEntry {
                 name: source.name.clone(),
-                url: source.origin.url.clone(),
-                priority: source.subscription.priority,
+                url: Some(source.origin.url.clone()),
+                priority: Some(source.subscription.priority),
                 version: state_info.as_ref().and_then(|s| s.source_version.clone()),
                 status: state_info
                     .as_ref()
@@ -210,7 +210,7 @@ pub fn configured_source_entries(
                     .unwrap_or_else(|| "unknown".into()),
                 last_fetched: state_info.as_ref().and_then(|s| s.last_fetched.clone()),
                 signed: state_info.as_ref().and_then(|s| s.last_commit_signed),
-                require_signed_commits: source.subscription.require_signed_commits,
+                require_signed_commits: Some(source.subscription.require_signed_commits),
                 last_commit: state_info.as_ref().and_then(|s| s.last_commit.clone()),
                 drift_count: None,
             }
@@ -226,13 +226,13 @@ mod tests {
     fn entry(name: &str) -> SourceListEntry {
         SourceListEntry {
             name: name.to_string(),
-            url: format!("https://example.test/{name}.git"),
-            priority: 500,
+            url: Some(format!("https://example.test/{name}.git")),
+            priority: Some(500),
             version: None,
             status: "active".to_string(),
             last_fetched: None,
             signed: None,
-            require_signed_commits: false,
+            require_signed_commits: Some(false),
             last_commit: None,
             drift_count: None,
         }

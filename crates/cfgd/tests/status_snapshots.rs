@@ -453,13 +453,13 @@ fn per_module_clean_scanned_output() -> ModuleStatus {
 fn declared_sources() -> Vec<cfgd::cli::output_types::SourceListEntry> {
     vec![cfgd::cli::output_types::SourceListEntry {
         name: "team-config".into(),
-        url: "https://github.com/team/config".into(),
-        priority: 100,
+        url: Some("https://github.com/team/config".into()),
+        priority: Some(100),
         version: Some("3.1.0".into()),
         status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
         last_fetched: Some("2026-05-14T09:00:00Z".into()),
         signed: Some(true),
-        require_signed_commits: true,
+        require_signed_commits: Some(true),
         last_commit: Some("abc1234567890def".into()),
         drift_count: None,
     }]

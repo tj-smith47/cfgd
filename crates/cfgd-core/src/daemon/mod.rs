@@ -372,6 +372,14 @@ pub struct SourceStatus {
     pub last_reconcile: Option<String>,
     pub drift_count: u32,
     pub status: String,
+    /// The commit the source's checkout is at, full length: seeded from the
+    /// repository HEAD when the daemon starts and moved by every pull the
+    /// sync tick accepts. The `Commit` column renders it through
+    /// `short_commit`; the payload keeps the whole id. `None` is "not a
+    /// repository" (a `local` layer that is not under git), never "unknown
+    /// commit".
+    #[serde(default)]
+    pub last_commit: Option<String>,
 }
 
 // --- Shared Daemon State ---
@@ -447,6 +455,7 @@ impl DaemonState {
                 last_reconcile: None,
                 drift_count: 0,
                 status: "active".to_string(),
+                last_commit: None,
             }],
             update_available: None,
             skills_stale_notified: None,
@@ -689,6 +698,9 @@ pub(super) struct PreLoopSetup {
     pub config_dir: PathBuf,
     pub sync_tasks: Vec<SyncTask>,
     pub initial_source_status: Vec<SourceStatus>,
+    /// The config directory's HEAD, when it is a repository: what the `local`
+    /// row's `Commit` column reads before the first pull moves it.
+    pub local_head_commit: Option<String>,
     pub managed_paths: Vec<PathBuf>,
     pub reconcile_tasks: Vec<ReconcileTask>,
     /// One timer per SCHEDULED `spec.backups[]` entry, plus the re-resolve
@@ -759,7 +771,8 @@ pub(super) fn build_pre_loop_setup(
                 .map(|m| m.spec.policy.constraints.require_signed_commits)
         },
     );
-    let initial_source_status = build_initial_source_status(&cfg.spec.sources);
+    let initial_source_status = build_initial_source_status(&cfg.spec.sources, &source_cache_dir);
+    let local_head_commit = crate::sources::SourceManager::head_commit(&config_dir);
 
     let managed_paths = discover_managed_paths(config_path, profile_override, hooks);
 
@@ -826,6 +839,7 @@ pub(super) fn build_pre_loop_setup(
         config_dir,
         sync_tasks,
         initial_source_status,
+        local_head_commit,
         managed_paths,
         reconcile_tasks,
         backup_timers,
@@ -1002,6 +1016,9 @@ pub(super) async fn run_daemon_with(
     // Initialize per-source status entries
     {
         let mut st = state.lock().await;
+        for s in st.sources.iter_mut().filter(|s| s.name == LOCAL_LAYER) {
+            s.last_commit = setup.local_head_commit.clone();
+        }
         st.sources.extend(setup.initial_source_status.clone());
     }
 

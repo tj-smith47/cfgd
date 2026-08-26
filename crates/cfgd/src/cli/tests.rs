@@ -17306,6 +17306,7 @@ fn sample_source(
         drift_count: drift,
         last_sync: last_sync.map(|s| s.to_string()),
         last_reconcile: None,
+        last_commit: None,
     }
 }
 
@@ -27140,4 +27141,57 @@ fn every_closing_hint_names_a_command() {
         "a closing hint names the command the reader runs next, in backticks:\n{}",
         offenders.join("\n")
     );
+}
+
+/// A `Sources` row is not always a declared `spec.sources[]` entry: the daemon
+/// reports the implicit `local` layer, which declares no origin, priority or
+/// signing demand, and a source the config has since dropped. `daemon status`
+/// printed `Priority 0` / `Requires Signed no` for `local` because two slots
+/// on `SourceListEntry` could not say absent. Every slot but the two a row
+/// always has (`name`, `status`) is an `Option`, and the daemon's merge never
+/// substitutes a default for a catalog fact it does not hold.
+#[test]
+fn every_catalog_sourced_sources_column_can_be_absent() {
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let types = std::fs::read_to_string(cli_dir.join("output_types.rs")).unwrap();
+    let start = types
+        .find("pub struct SourceListEntry {")
+        .expect("SourceListEntry is declared in output_types.rs");
+    let body = &types[start..];
+    let body = &body[..body.find("\n}").expect("the struct closes")];
+    let mut seen = 0usize;
+    let mut offenders = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        let Some(field) = trimmed.strip_prefix("pub ") else {
+            continue;
+        };
+        let Some((name, ty)) = field.split_once(':') else {
+            continue;
+        };
+        seen += 1;
+        if matches!(name, "name" | "status") {
+            continue;
+        }
+        if !ty.trim().starts_with("Option<") {
+            offenders.push(format!("{name}: {}", ty.trim().trim_end_matches(',')));
+        }
+    }
+    assert!(seen >= 8, "the walk read the struct's fields, found {seen}");
+    assert!(
+        offenders.is_empty(),
+        "a `Sources` column a row may not have is an Option, never a default:\n{}",
+        offenders.join("\n")
+    );
+
+    let daemon = production_body(&std::fs::read_to_string(cli_dir.join("daemon.rs")).unwrap());
+    let lines: Vec<&str> = daemon.lines().collect();
+    let merge = fn_body(&lines, "daemon_source_row").expect("daemon_source_row is declared");
+    for substitute in ["unwrap_or", "map_or", "is_some_and", "ABSENT"] {
+        assert!(
+            !merge.contains(substitute),
+            "`daemon_source_row` substitutes a default (`{substitute}`) for a fact the \
+             catalog does not hold; leave the slot absent so the table can drop or dash it"
+        );
+    }
 }

@@ -20,6 +20,7 @@ pub(crate) async fn handle_sync(
 ) -> bool {
     let timestamp = crate::utc_now_iso8601();
     let mut changes = false;
+    let mut pulled_to: Option<String> = None;
 
     if auto_pull {
         let repo = repo_path.to_path_buf();
@@ -71,6 +72,7 @@ pub(crate) async fn handle_sync(
                     theme.arrow(),
                     crate::short_commit(&movement.to)
                 );
+                pulled_to = Some(movement.to);
                 changes = true;
             }
             Ok(Ok(None)) => tracing::debug!("sync: already up to date"),
@@ -99,6 +101,9 @@ pub(crate) async fn handle_sync(
         for s in &mut st.sources {
             if s.name == source_name {
                 s.last_sync = Some(timestamp.clone());
+                if let Some(commit) = &pulled_to {
+                    s.last_commit = Some(commit.clone());
+                }
             }
         }
     }

@@ -862,9 +862,14 @@ pub(super) fn compute_sighup_intervals(cfg: &CfgdConfig) -> (Option<Duration>, O
     (reconcile, sync)
 }
 
-/// Build the initial `SourceStatus` rows for each configured source. Extracted
-/// for testability; consumed by `run_daemon` to seed `DaemonState.sources`.
-pub(super) fn build_initial_source_status(sources: &[config::SourceSpec]) -> Vec<SourceStatus> {
+/// Build the initial `SourceStatus` rows for each configured source, each at
+/// the commit its cached checkout under `source_cache_dir` is on (none when
+/// nothing has been fetched yet). Extracted for testability; consumed by
+/// `run_daemon` to seed `DaemonState.sources`.
+pub(super) fn build_initial_source_status(
+    sources: &[config::SourceSpec],
+    source_cache_dir: &Path,
+) -> Vec<SourceStatus> {
     sources
         .iter()
         .map(|source| SourceStatus {
@@ -873,6 +878,9 @@ pub(super) fn build_initial_source_status(sources: &[config::SourceSpec]) -> Vec
             last_reconcile: None,
             drift_count: 0,
             status: "active".to_string(),
+            last_commit: crate::sources::SourceManager::head_commit(
+                &source_cache_dir.join(&source.name),
+            ),
         })
         .collect()
 }
