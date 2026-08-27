@@ -448,6 +448,126 @@ fn the_rollups_elapsed_hangs_off_the_line_that_names_the_run() {
     }
 }
 
+/// One outcome CLASS per line. `outcome_counts` fused every count into one
+/// `Role::Ok` sentence, so `✓ 20 actions succeeded, 1 not attempted: no session
+/// manager` painted work that never happened under a green tick — and invited
+/// a reader to sum `20 + 1 + 2` against a header promising `Actions 22
+/// planned`, of which the withheld count is deliberately no part.
+#[test]
+fn every_outcome_class_in_a_rollup_carries_its_own_role() {
+    // The word each class states itself with, and the role its own action rows
+    // wear. A settled skip and a pre-skip both paint `Role::Skipped`, so their
+    // lines do too — what neither may do is share a line with another class.
+    //
+    // The withheld clause is keyed on its colon: it always carries the reason
+    // the row above gave, which is what separates it from the SHORTFALL line
+    // (`N actions not attempted`) — a different class, for work the run
+    // planned and never reached, which already has a line and a role of its
+    // own and is checked below.
+    let classes = [
+        ("succeeded", Role::Ok),
+        ("failed", Role::Fail),
+        ("skipped", Role::Skipped),
+        ("not attempted:", Role::Skipped),
+    ];
+    let theme = crate::output::Theme::default();
+    let mut seen: Vec<&str> = Vec::new();
+    for status in [
+        ApplyStatus::Success,
+        ApplyStatus::Partial,
+        ApplyStatus::Failed,
+        ApplyStatus::InProgress,
+        ApplyStatus::Aborted,
+    ] {
+        // Every class nonzero at once, which is the shape that fused them.
+        let tally = RunTally {
+            succeeded: 20,
+            skipped: 1,
+            not_attempted: vec![crate::NO_SESSION_MANAGER.to_string()],
+            failed: 2,
+            planned_total: 23,
+            status: status.clone(),
+            aborted: None,
+        };
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        render_run_rollup(&tally, RunTitle::Apply, &printer, None);
+        drop(printer);
+        let out = crate::test_helpers::captured_text(&buf);
+        for line in out.lines().filter(|l| !l.trim().is_empty()) {
+            // The abort line is a SENTENCE about an interrupted run, not a
+            // count list: it accounts for everything on the one line a reader
+            // keeps, and it is `Role::Warn`, so it paints no non-success count
+            // as a success.
+            if line.contains("aborted by signal") {
+                continue;
+            }
+            let named: Vec<&str> = classes
+                .iter()
+                .map(|(word, _)| *word)
+                .filter(|word| line.contains(word))
+                .collect();
+            assert!(
+                named.len() <= 1,
+                "{status:?}: one line states {named:?} — two outcome classes \
+                 under one role: {out:?}"
+            );
+            let Some(word) = named.first() else { continue };
+            seen.push(word);
+            let (_, role) = classes
+                .iter()
+                .find(|(w, _)| w == word)
+                .copied()
+                .unwrap_or(("", Role::Info));
+            let (glyph, _) = crate::output::renderer::role_glyph(&theme, role);
+            assert!(
+                glyph.is_some_and(|g| line.starts_with(g)),
+                "{status:?}: the {word:?} line must wear {role:?}'s glyph \
+                 ({glyph:?}): {line:?}"
+            );
+        }
+    }
+    for (word, _) in classes {
+        assert!(
+            seen.contains(&word),
+            "the walk never rendered a {word:?} line, so it proved nothing about it"
+        );
+    }
+
+    // The fifth class, on the tally shape that produces it: work the run
+    // planned and never reached. Its own line, its own role, and never fused
+    // into a sentence with any of the four above.
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    render_run_rollup(
+        &RunTally {
+            succeeded: 1,
+            skipped: 0,
+            not_attempted: Vec::new(),
+            failed: 0,
+            planned_total: 4,
+            status: ApplyStatus::Success,
+            aborted: None,
+        },
+        RunTitle::Apply,
+        &printer,
+        None,
+    );
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    let shortfall = out
+        .lines()
+        .find(|l| l.contains("not attempted"))
+        .unwrap_or_else(|| panic!("the shortfall must state itself: {out:?}"));
+    let (glyph, _) = crate::output::renderer::role_glyph(&theme, Role::Info);
+    assert!(
+        glyph.is_some_and(|g| shortfall.starts_with(g)),
+        "the shortfall wears its own role, not a success glyph: {shortfall:?}"
+    );
+    assert!(
+        !shortfall.contains("succeeded"),
+        "the shortfall shares no line with the success count: {out:?}"
+    );
+}
+
 /// A rollup is a block of STATUS lines, and every status line reserves the
 /// glyph column. The partial arm's failure count took `Role::Accent`, which
 /// reserves none, so the one line counting the failures hung a column left of
@@ -632,11 +752,20 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
     );
     drop(printer);
     let out = crate::test_helpers::captured_text(&buf);
-    assert!(
-        out.contains(
-            "Apply complete — 2 actions succeeded, 1 skipped, 1 not attempted: no session manager (278.2s wall)"
-        ),
-        "the verdict prices the withheld action as one more clause of the count list: {out:?}"
+    // One outcome class per line, each in the role its own action rows wore:
+    // fused into the tick's detail, "1 not attempted" rendered under a green
+    // glyph and invited a reader to sum four numbers against a header that
+    // counts two of them.
+    assert_eq!(
+        out.lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect::<Vec<_>>(),
+        vec![
+            "\u{2713} Apply complete — 2 actions succeeded (278.2s wall)",
+            "\u{2205} 1 skipped",
+            "\u{2205} 1 not attempted: no session manager",
+        ],
+        "the verdict states each outcome on its own line: {out:?}"
     );
     assert_eq!(
         out.matches("not attempted").count(),

@@ -1124,60 +1124,107 @@ pub fn report_align_width(plan: &Plan, filter: Option<&PhaseFilter>) -> usize {
     align_width_of(items.iter().map(String::as_str))
 }
 
-/// Every arm returns; `Partial` returns three lines. No path panics, so the
-/// function is safe in core and testable without a `Printer` — and it reads a
-/// [`RunTally`], so a backup run reaches it without an [`ApplyResult`].
-///
-/// Each line is `(role, subject, detail)`: the detail glues to the subject
-/// through the ONE canonical " — " composer at render time
-/// (`StatusBuilder::detail`), never baked into the subject string by hand.
-/// `13 actions succeeded`, or `12 actions succeeded, 1 skipped` — the ONE
-/// rendering of what a run's actions came to, so no closing line can claim a
-/// skipped action as a success. Silent about skips when there were none: a
-/// clean run's line does not name outcomes that did not occur.
+/// What a run's actions came to, as ONE line: `13 actions succeeded`, or
+/// `12 actions succeeded, 1 skipped` — every clause [`outcome_clauses`]
+/// produced, joined. So no closing line can claim a skipped action as a
+/// success, and silent about outcomes that did not occur: a clean run's line
+/// does not name skips it has none of. No path panics, so the function is safe
+/// in core and testable without a `Printer` — and it reads a [`RunTally`], so a
+/// backup run reaches it without an [`ApplyResult`].
 ///
 /// Public because the daemon's `reconcile: complete — …` log line accounts for
 /// the same run the rollup above it does, and a tick whose log and whose
 /// on-screen rollup disagree about how many actions succeeded is two answers to
 /// one question. Take it over a hand-built `succeeded`/`failed` pair: those
-/// counted a skip as a success, which is the whole reason this exists.
+/// counted a skip as a success, which is the whole reason this exists. A LOG
+/// line has no glyph column, which is why this joined form exists beside the
+/// rollup's one-line-per-clause layout rather than being replaced by it.
 pub fn outcome_counts(tally: &RunTally) -> String {
+    outcome_clauses(tally)
+        .into_iter()
+        .map(|(_, clause)| clause)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// One clause per outcome CLASS the run produced, each carrying the role that
+/// class's own action rows carried — the ONE decomposition, which
+/// [`outcome_counts`] joins for the daemon's single log line and
+/// [`rollup_lines`] lays out one line per clause.
+///
+/// The classes are distinct outcomes and cannot share a sentence: a skip RAN
+/// and changed nothing, a withheld action never ran at all, and neither is a
+/// success. Fused into the `Role::Ok` counts string, both rendered under a
+/// green tick — `✓ 20 actions succeeded, 1 not attempted: no session manager`
+/// — which invites two wrong readings. A careful reader sums `20 + 1 + 2`
+/// against a header that promised `Actions  22 planned` and concludes the
+/// arithmetic is off (the withheld count sits OUTSIDE `planned_total` by
+/// design); a quick reader takes "1 not attempted" for a kind of success.
+///
+/// A settled skip and a pre-skip both paint `Role::Skipped` on their own rows
+/// (`settled_success_role`, and `render_plan_tree`'s `pre_skip_reason` arm), so
+/// their clauses take it too: the rollup speaks the tree's vocabulary rather
+/// than minting a second one. What no clause may do is share a LINE with
+/// another class.
+fn outcome_clauses(tally: &RunTally) -> Vec<(Role, String)> {
+    let mut clauses: Vec<(Role, String)> = Vec::new();
     // A run whose every action was skipped says so outright: "0 actions
     // succeeded, 1 skipped" leads with a count of nothing and reads as a
     // shortfall the run does not have.
-    let counts = if tally.succeeded == 0 && tally.skipped > 0 {
-        format!("{} skipped", pluralize(tally.skipped, "action"))
+    if tally.succeeded == 0 && tally.skipped > 0 {
+        clauses.push((
+            Role::Skipped,
+            format!("{} skipped", pluralize(tally.skipped, "action")),
+        ));
     } else {
-        let succeeded = format!("{} succeeded", pluralize(tally.succeeded, "action"));
-        match tally.skipped {
-            0 => succeeded,
-            skipped => format!("{succeeded}, {skipped} skipped"),
+        clauses.push((
+            Role::Ok,
+            format!("{} succeeded", pluralize(tally.succeeded, "action")),
+        ));
+        if tally.skipped > 0 {
+            clauses.push((Role::Skipped, format!("{} skipped", tally.skipped)));
         }
-    };
+    }
     // The withheld actions are OUTSIDE the counted rollup — the header never
-    // promised them, and they never reconcile against `planned_total` — but
-    // they close the count list as one more comma clause, with the reason the
-    // row above already gave after a colon. A parenthetical here sat beside
-    // the elapsed parenthetical, and an em-dash inside it nested under the
-    // detail's own: two `(…)` groups back to back holding a caveat and a
-    // measurement, on the one line a reader stops on.
-    if tally.not_attempted.is_empty() {
-        return counts;
-    }
-    let mut reasons: Vec<&str> = Vec::new();
-    for reason in &tally.not_attempted {
-        if !reasons.contains(&reason.as_str()) {
-            reasons.push(reason);
+    // promised them, and they never reconcile against `planned_total` — and
+    // they close the list with the reason the row above already gave, after a
+    // colon.
+    if !tally.not_attempted.is_empty() {
+        let mut reasons: Vec<&str> = Vec::new();
+        for reason in &tally.not_attempted {
+            if !reasons.contains(&reason.as_str()) {
+                reasons.push(reason);
+            }
         }
+        clauses.push((
+            Role::Skipped,
+            format!(
+                "{} not attempted: {}",
+                tally.not_attempted.len(),
+                reasons.join(", ")
+            ),
+        ));
     }
-    format!(
-        "{counts}, {} not attempted: {}",
-        tally.not_attempted.len(),
-        reasons.join(", ")
-    )
+    clauses
 }
 
+/// The rollup's lines, one per outcome the run has to state. Every arm
+/// returns and no path panics, so the function is safe in core and testable
+/// without a `Printer`.
+///
+/// Each line is `(role, subject, detail)`: the detail glues to the subject
+/// through the ONE canonical " — " composer at render time
+/// (`StatusBuilder::detail`), never baked into the subject string by hand. One
+/// outcome CLASS per line — see [`outcome_clauses`] — so the `Role::Ok` line
+/// states only what succeeded.
 fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<String>)> {
+    // Every clause but the first hangs below the verdict on a line of its own.
+    let clauses = outcome_clauses(tally);
+    let trailing = |from: usize| {
+        clauses[from.min(clauses.len())..]
+            .iter()
+            .map(|(role, clause)| (*role, clause.clone(), None))
+    };
     match tally.status {
         // Partial leads with a Warn title line naming the outcome, because the
         // block below it opens on a ✓ and a reader who takes the first line as
@@ -1187,28 +1234,37 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
         // failure count read as distinct outcomes — fusing them into one Warn
         // line makes a "9 succeeded, 1 failed" run look the same colour as a
         // "1 succeeded, 9 failed" run.
-        ApplyStatus::Partial => vec![
-            (
+        ApplyStatus::Partial => {
+            let mut lines = vec![(
                 Role::Warn,
                 format!("{} partial", title.as_str()),
                 Some(format!(
                     "{} of {} applied",
                     tally.succeeded, tally.planned_total
                 )),
-            ),
-            (Role::Ok, outcome_counts(tally), None),
+            )];
+            lines.extend(
+                clauses
+                    .first()
+                    .map(|(role, clause)| (*role, clause.clone(), None)),
+            );
             // `Role::Fail`, not `Role::Accent`: these are status lines in a
             // status block, and `Accent` reserves no glyph column. The failure
             // count hung one column left of the two lines above it — the only
             // unmarked line in a report where every failed action row carries
             // a red glyph — so the bad news read as a stray fragment of the
             // green line above it.
-            (
+            //
+            // It sits above the withheld clauses because a failure is what the
+            // reader acts on, and what did not happen is the footnote.
+            lines.push((
                 Role::Fail,
                 format!("{} failed", pluralize(tally.failed, "action")),
                 None,
-            ),
-        ],
+            ));
+            lines.extend(trailing(1));
+            lines
+        }
         // A run that reached none of what it planned did not complete, whatever
         // its status says. One line, not two: the shortfall it would otherwise
         // carry below is exactly the count named here.
@@ -1220,11 +1276,20 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
                 pluralize(tally.planned_total, "action")
             )),
         )],
-        ApplyStatus::Success => vec![(
-            Role::Ok,
-            format!("{} complete", title.as_str()),
-            Some(outcome_counts(tally)),
-        )],
+        ApplyStatus::Success => {
+            // Only a `Role::Ok` clause may ride the tick as its detail. A run
+            // that succeeded nothing and skipped something leads with the
+            // skip clause, and hanging that off the tick is the fusion this
+            // layout exists to prevent.
+            let head = matches!(clauses.first(), Some((Role::Ok, _)));
+            let mut lines = vec![(
+                Role::Ok,
+                format!("{} complete", title.as_str()),
+                head.then(|| clauses[0].1.clone()),
+            )];
+            lines.extend(trailing(usize::from(head)));
+            lines
+        }
         ApplyStatus::Failed => vec![(
             Role::Fail,
             format!("{} failed", title.as_str()),
