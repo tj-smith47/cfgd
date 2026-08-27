@@ -150,6 +150,27 @@ pub enum ManagerAction {
     Provision {
         manager: String,
         via: String,
+        /// The module's OWN declared route to this tool, when a resolved
+        /// `spec.packages` entry names the same canonical tool as the manager
+        /// being provisioned: the manager that entry's `prefer` chain picked
+        /// and the name its `aliases` gave it there.
+        ///
+        /// `Some` means the provision installs THAT, not the manager's default
+        /// cascade. cfgd provisioning `pipx` by its own route (apt) while a
+        /// module declares `pipx` with `prefer: [brew, apt]` puts two pipx on
+        /// the machine and leaves `PATH` order to decide which one every later
+        /// command means; `package_survives_elision` cannot catch it, being
+        /// asked against ONE manager's listing, and brew's listing does not
+        /// know about apt's pipx. The module's statement is the more specific
+        /// one, so it decides — and, unlike a cascade, it also carries the
+        /// entry's `minVersion` floor, which `modules::resolve_package`
+        /// already refused every candidate below.
+        ///
+        /// A declared route is never batched: the batch is one mediator
+        /// command over `mediated_packages`, and those are the manager's own
+        /// names, not the alias the module wrote.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        declared: Option<DeclaredProvision>,
         /// The other managers this node's ONE `via` command provisions
         /// alongside `manager`, in provision order and never naming `manager`
         /// itself.
@@ -183,6 +204,21 @@ pub enum ManagerAction {
     /// phase the user is told to look at, instead of being a manager that
     /// quietly never appears.
     Refuse { manager: String, reason: String },
+}
+
+/// The route a module declared to a tool cfgd also needs as a MANAGER.
+///
+/// Built by the planner from the module's already-resolved `spec.packages`
+/// entry, so the `prefer` chain and the `aliases` map are read exactly once,
+/// by the code that owns them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeclaredProvision {
+    /// The registered manager the entry's `prefer` chain resolved to.
+    pub installer: String,
+    /// The package name that manager installs it under — the entry's alias for
+    /// this manager, which is why `cargo` under apt reads `rustc`.
+    pub package: String,
 }
 
 /// The `resource_type` half of every [`ManagerAction`]'s persisted identity.

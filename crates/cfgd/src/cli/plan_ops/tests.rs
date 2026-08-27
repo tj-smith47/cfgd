@@ -290,6 +290,7 @@ fn action_type_str_manager_variants() {
         action_type_str(&Action::Manager(ManagerAction::Provision {
             manager: "brew".to_string(),
             via: "homebrew installer".to_string(),
+            declared: None,
             batched: vec![],
             depends_on: vec![],
         })),
@@ -336,6 +337,7 @@ fn manager_action_output_provision_carries_via_and_requires() {
     let out = manager_action_output(&Action::Manager(ManagerAction::Provision {
         manager: "pipx".to_string(),
         via: "pip install pipx".to_string(),
+        declared: None,
         batched: vec![],
         depends_on: vec!["manager:prereq:curl".to_string()],
     }))
@@ -603,6 +605,7 @@ fn skip_and_only_patterns_reach_a_prerequisite_by_tool_not_installer() {
     let brew_provision = Action::Manager(ManagerAction::Provision {
         manager: "brew".to_string(),
         via: "curl".to_string(),
+        declared: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -777,6 +780,7 @@ fn batched_provision_plan() -> cfgd_core::reconciler::Plan {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "npm".to_string(),
                 via: "apt".to_string(),
+                declared: None,
                 batched: vec!["pipx".to_string()],
                 depends_on: vec![],
             })],
@@ -853,6 +857,7 @@ fn a_batched_provision_names_every_manager_it_delivers_in_the_json_payload() {
     let out = manager_action_output(&Action::Manager(ManagerAction::Provision {
         manager: "npm".to_string(),
         via: "apt".to_string(),
+        declared: None,
         batched: vec!["pipx".to_string()],
         depends_on: vec![],
     }))
@@ -874,6 +879,7 @@ fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_i
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -918,6 +924,7 @@ fn filter_plan_skip_prerequisites_session_removes_only_the_broadcast_and_strands
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    declared: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -980,12 +987,14 @@ fn filter_plan_skip_prerequisites_managers_strands_every_manager_it_removes() {
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    declared: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
                 Action::Manager(ManagerAction::Provision {
                     manager: "npm".to_string(),
                     via: "node installer".to_string(),
+                    declared: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1041,6 +1050,7 @@ fn filter_plan_skip_prerequisites_brew_leaves_other_managers_untouched() {
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    declared: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1109,6 +1119,7 @@ fn filter_plan_skip_last_package_consumer_silently_prunes_its_now_purposeless_ma
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -1194,6 +1205,7 @@ fn filter_plan_only_prerequisites_managers_keeps_every_manager_node() {
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    declared: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1256,6 +1268,7 @@ fn filter_plan_only_cfgd_managers_keeps_every_manager_node() {
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    declared: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1663,6 +1676,7 @@ fn build_plan_output_orders_groups_profile_first() {
             Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -1727,6 +1741,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
             Action::Manager(ManagerAction::Provision {
                 manager: "pipx".to_string(),
                 via: "pip install pipx".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec!["manager:prereq:curl".to_string()],
             }),
@@ -3298,6 +3313,7 @@ fn brew_provision_plan() -> Plan {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -3613,6 +3629,7 @@ fn stranded_warning_counts_actions_not_distinct_managers() {
             Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             }),

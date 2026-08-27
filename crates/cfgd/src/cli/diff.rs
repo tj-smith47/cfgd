@@ -1867,6 +1867,7 @@ mod tests {
             ManagerAction::Provision {
                 manager: "pipx".into(),
                 via: "pip install pipx".into(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             },
