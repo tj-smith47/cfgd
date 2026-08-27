@@ -152,7 +152,7 @@ fn rollup_lines_covers_every_apply_status() {
         (
             ApplyStatus::Partial,
             3,
-            vec![Role::Warn, Role::Ok, Role::Accent],
+            vec![Role::Warn, Role::Ok, Role::Fail],
         ),
         (ApplyStatus::Failed, 1, vec![Role::Fail]),
         (ApplyStatus::InProgress, 1, vec![Role::Warn]),
@@ -307,7 +307,7 @@ fn a_completed_rollup_names_the_run_it_finished() {
                 Some("1 of 2 applied".to_string())
             ),
             (Role::Ok, "1 action succeeded".to_string(), None),
-            (Role::Accent, "1 action failed".to_string(), None),
+            (Role::Fail, "1 action failed".to_string(), None),
         ],
         "a partial rollup leads with its own verdict and keeps both counts"
     );
@@ -405,41 +405,129 @@ fn an_abort_that_killed_an_action_names_the_failure_too() {
     );
 }
 
+/// The wall total measures the RUN, so it belongs to the line that names the
+/// run. Hanging it off whichever line came last fused it to that line's own
+/// count: a partial run closed on `2 actions failed (274.0s wall)`, which
+/// reads as the failures having burned four and a half minutes.
 #[test]
-fn rollup_attaches_elapsed_to_the_last_line_emitted() {
-    // Partial with no shortfall: the duration belongs to the failure line.
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    render_run_rollup(
-        &RunTally {
-            succeeded: 1,
-            skipped: 0,
-            not_attempted: Vec::new(),
-            failed: 1,
-            planned_total: 2,
-            status: ApplyStatus::Partial,
-            aborted: None,
-        },
+fn the_rollups_elapsed_hangs_off_the_line_that_names_the_run() {
+    for (status, first) in [
+        (ApplyStatus::Partial, "Apply partial"),
+        (ApplyStatus::Failed, "Apply failed"),
+        (ApplyStatus::Success, "Apply complete"),
+    ] {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        render_run_rollup(
+            &RunTally {
+                succeeded: 1,
+                skipped: 0,
+                not_attempted: Vec::new(),
+                failed: if status == ApplyStatus::Success { 0 } else { 1 },
+                planned_total: if status == ApplyStatus::Success { 1 } else { 2 },
+                status: status.clone(),
+                aborted: None,
+            },
+            RunTitle::Apply,
+            &printer,
+            Some(Duration::from_millis(400)),
+        );
+        drop(printer);
+        let out = crate::test_helpers::captured_text(&buf);
+        let mut lines = out.lines().filter(|l| !l.trim().is_empty());
+        let head = lines.next().unwrap_or_default();
+        assert!(
+            head.contains(first) && head.contains("(0.4s wall)"),
+            "{status:?}: the total must ride the line naming the run: {out:?}"
+        );
+        for line in lines {
+            assert!(
+                !line.contains("wall"),
+                "{status:?}: only the run's own line carries the total: {out:?}"
+            );
+        }
+    }
+}
+
+/// A rollup is a block of STATUS lines, and every status line reserves the
+/// glyph column. The partial arm's failure count took `Role::Accent`, which
+/// reserves none, so the one line counting the failures hung a column left of
+/// the two above it — unmarked, in a report where every failed action row
+/// carries a red glyph.
+#[test]
+fn every_rollup_line_reserves_the_glyph_column() {
+    let theme = crate::output::Theme::default();
+    let statuses = [
+        ApplyStatus::Success,
+        ApplyStatus::Partial,
+        ApplyStatus::Failed,
+        ApplyStatus::InProgress,
+        ApplyStatus::Aborted,
+    ];
+    let titles = [
+        RunTitle::Plan,
         RunTitle::Apply,
-        &printer,
-        Some(Duration::from_millis(400)),
-    );
-    drop(printer);
-    let out = crate::test_helpers::captured_text(&buf);
-    let failed_line = out
-        .lines()
-        .find(|l| l.contains("1 action failed"))
-        .unwrap_or_default();
+        RunTitle::Reconcile,
+        RunTitle::Backup,
+        RunTitle::Restore,
+    ];
+    // Two shapes per arm: one that reached what it planned, and one that fell
+    // short — the shortfall line is pushed by the renderer, outside
+    // `rollup_lines`, and the `nothing_attempted` arm only exists in the second.
+    let shapes = [(2usize, 1usize, 3usize), (0, 0, 3)];
+    let mut checked = 0usize;
+    for status in &statuses {
+        for title in titles {
+            for (succeeded, failed, planned_total) in shapes {
+                let tally = RunTally {
+                    succeeded,
+                    skipped: 0,
+                    not_attempted: Vec::new(),
+                    failed,
+                    planned_total,
+                    status: status.clone(),
+                    aborted: None,
+                };
+                let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+                render_run_rollup(&tally, title, &printer, None);
+                drop(printer);
+                let out = crate::test_helpers::captured_text(&buf);
+                for line in out.lines().filter(|l| !l.trim().is_empty()) {
+                    let glyph = line.chars().next().unwrap_or(' ');
+                    assert!(
+                        [
+                            theme.icon_ok.as_str(),
+                            theme.icon_warn.as_str(),
+                            theme.icon_fail.as_str(),
+                            theme.icon_pending.as_str(),
+                            theme.icon_running.as_str(),
+                            theme.icon_skipped.as_str(),
+                            theme.icon_info.as_str(),
+                        ]
+                        .iter()
+                        .any(|icon| icon.starts_with(glyph)),
+                        "{status:?}/{title:?}: rollup line opens on {glyph:?}, \
+                         not a glyph: {out:?}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
     assert!(
-        failed_line.contains("(0.4s wall)"),
-        "the run's total rides the failure line, and names itself wall time: {out:?}"
+        checked >= 50,
+        "the walk rendered almost nothing ({checked} lines) — it cannot pass vacuously"
     );
-    assert!(
-        !out.lines()
-            .find(|l| l.contains("1 action succeeded"))
-            .unwrap_or_default()
-            .contains("(0.4s)"),
-        "duration must not also ride the success line: {out:?}"
-    );
+
+    // The role table the render above reads, stated directly: a role with no
+    // glyph is what a rollup line may never take.
+    for role in [Role::Accent, Role::Secondary] {
+        assert!(
+            crate::output::renderer::role_glyph(&theme, role)
+                .0
+                .is_none(),
+            "{role:?} is the class this test exists to keep out of a rollup"
+        );
+    }
 }
 
 #[test]
