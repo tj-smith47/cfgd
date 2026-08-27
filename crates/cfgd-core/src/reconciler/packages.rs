@@ -126,6 +126,9 @@ pub(super) struct PackageExec<'x> {
     printer: &'x Printer,
     notes: &'x NoteSink,
     lane: Option<&'x dyn LaneOutput>,
+    /// Managers an earlier phase of this run already failed to provision, which
+    /// no action of this one may reach: see `super::Reconciler::unprovisioned`.
+    unprovisioned: &'x [String],
     /// Every bootstrap this exec performed, drained by whoever owns the SQLite
     /// connection. A `RefCell` because the trait methods take `&self` and one
     /// exec is only ever used from the thread that built it.
@@ -145,6 +148,7 @@ impl<'x> PackageExec<'x> {
             printer,
             notes,
             lane: None,
+            unprovisioned: &[],
             bootstrapped: RefCell::new(Vec::new()),
         }
     }
@@ -154,6 +158,14 @@ impl<'x> PackageExec<'x> {
     #[must_use]
     pub(super) fn in_lane(mut self, lane: &'x dyn LaneOutput) -> Self {
         self.lane = Some(lane);
+        self
+    }
+
+    /// Refuse every action naming one of `managers` — the run's own record of
+    /// what it could not put on the machine.
+    #[must_use]
+    pub(super) fn withholding_managers(mut self, managers: &'x [String]) -> Self {
+        self.unprovisioned = managers;
         self
     }
 
@@ -371,6 +383,42 @@ impl<'x> PackageExec<'x> {
         }
     }
 
+    /// Refuse `name` when a node of THIS run already failed to put it on the
+    /// machine.
+    ///
+    /// The run's own verdict outranks any later probe: `is_available()` bottoms
+    /// out in a path lookup whose memo the intervening installs moved and whose
+    /// last arm is a bare `exists()`, so a cargo cfgd had just reported it could
+    /// not provision answered available one phase later — and `cargo install
+    /// stylua` was spawned into `No such file or directory (os error 2)`
+    /// instead of the recovery
+    /// [`crate::errors::PackageError::ManagerNotAvailable`] already states for
+    /// exactly this case.
+    ///
+    /// Asked before the manager is touched, so neither the install nor the
+    /// [`Self::installed_now`] re-read behind it spawns. Deliberately NOT a
+    /// live availability probe: a manager that is merely unavailable right now
+    /// is still dispatched — alone, the phase draining around it — because the
+    /// action ahead of it in the drain may be what delivers it.
+    fn refuse_withheld_manager(&self, name: &str) -> Result<()> {
+        if self.unprovisioned.iter().any(|m| m == name) {
+            return Err(self.package_manager_missing_error(name));
+        }
+        Ok(())
+    }
+
+    /// The manager `name` names, or the reason a profile-owned action may not
+    /// reach it: this run's own failed provision first, then availability.
+    fn usable_manager(&self, name: &str) -> Result<&'x dyn PackageManager> {
+        self.refuse_withheld_manager(name)?;
+        for pm in self.registry.available_package_managers() {
+            if pm.name() == name {
+                return Ok(pm);
+            }
+        }
+        Err(self.package_manager_missing_error(name))
+    }
+
     /// What `pm` reports installed at THIS moment, or `None` when it cannot be
     /// asked.
     ///
@@ -420,63 +468,53 @@ impl<'x> PackageExec<'x> {
             PackageAction::Install {
                 manager, packages, ..
             } => {
-                for pm in self.registry.available_package_managers() {
-                    if pm.name() == manager {
-                        // Install with the original entries (go needs the full
-                        // module path), but build the tracking description from
-                        // IDENTITIES so the tracked key matches what prune later
-                        // compares against (`go/2fa`, not `go/rsc.io/2fa`).
-                        let pending: Vec<String> = match self.installed_now(pm, &cx) {
-                            Some(installed) => packages
-                                .iter()
-                                .filter(|p| !installed.contains(&pm.package_identity(p)))
-                                .cloned()
-                                .collect(),
-                            None => packages.clone(),
-                        };
-                        let changed = !pending.is_empty();
-                        if changed {
-                            self.install_recording_created(pm, &pending, &cx)?;
-                        }
-                        // The description names the whole DECLARED set either
-                        // way: the entries this run did not have to install are
-                        // on the machine and are still this action's managed
-                        // resources.
-                        let identities: Vec<String> =
-                            packages.iter().map(|p| pm.package_identity(p)).collect();
-                        return Ok(ActionRun::new(
-                            format!("package:{}:install:{}", manager, identities.join(",")),
-                            changed,
-                        )
-                        .installed(pending.len()));
-                    }
+                let pm = self.usable_manager(manager)?;
+                // Install with the original entries (go needs the full module
+                // path), but build the tracking description from IDENTITIES so
+                // the tracked key matches what prune later compares against
+                // (`go/2fa`, not `go/rsc.io/2fa`).
+                let pending: Vec<String> = match self.installed_now(pm, &cx) {
+                    Some(installed) => packages
+                        .iter()
+                        .filter(|p| !installed.contains(&pm.package_identity(p)))
+                        .cloned()
+                        .collect(),
+                    None => packages.clone(),
+                };
+                let changed = !pending.is_empty();
+                if changed {
+                    self.install_recording_created(pm, &pending, &cx)?;
                 }
-                Err(self.package_manager_missing_error(manager))
+                // The description names the whole DECLARED set either way: the
+                // entries this run did not have to install are on the machine
+                // and are still this action's managed resources.
+                let identities: Vec<String> =
+                    packages.iter().map(|p| pm.package_identity(p)).collect();
+                Ok(ActionRun::new(
+                    format!("package:{}:install:{}", manager, identities.join(",")),
+                    changed,
+                )
+                .installed(pending.len()))
             }
             PackageAction::Uninstall {
                 manager, packages, ..
             } => {
-                for pm in self.registry.available_package_managers() {
-                    if pm.name() == manager {
-                        let removed = pm.uninstall(packages, &cx);
-                        // A removal takes a binary OFF `PATH` — the mirror of
-                        // the install side, and just as invisible to a memo
-                        // keyed on `PATH` alone. Reported whether or not the
-                        // command as a whole succeeded, because a partial
-                        // uninstall has already deleted what it deleted.
-                        crate::invalidate_command_resolution();
-                        removed?;
-                        // Every name it listed was handed to the manager: cfgd
-                        // narrows nothing on the way out, so the row's subject
-                        // and its work are the same set and there is no count
-                        // to qualify.
-                        return Ok(ActionRun::new(
-                            format!("package:{}:uninstall:{}", manager, packages.join(",")),
-                            true,
-                        ));
-                    }
-                }
-                Err(self.package_manager_missing_error(manager))
+                let pm = self.usable_manager(manager)?;
+                let removed = pm.uninstall(packages, &cx);
+                // A removal takes a binary OFF `PATH` — the mirror of the
+                // install side, and just as invisible to a memo keyed on `PATH`
+                // alone. Reported whether or not the command as a whole
+                // succeeded, because a partial uninstall has already deleted
+                // what it deleted.
+                crate::invalidate_command_resolution();
+                removed?;
+                // Every name it listed was handed to the manager: cfgd narrows
+                // nothing on the way out, so the row's subject and its work are
+                // the same set and there is no count to qualify.
+                Ok(ActionRun::new(
+                    format!("package:{}:uninstall:{}", manager, packages.join(",")),
+                    true,
+                ))
             }
             // A planned skip ran nothing by construction, so it neither counts
             // as a change nor triggers the onChange scripts a change gates.
@@ -776,6 +814,12 @@ impl<'x> PackageExec<'x> {
                     }
                 }
             } else {
+                // A manager this run already failed to provision is refused in
+                // cfgd's own words rather than spawned into an errno. Merely
+                // unavailable is not refused here: an action naming one is
+                // dispatched alone and the drain around it may be what delivers
+                // the manager (`unavailable_manager_action_drains_the_phase`).
+                self.refuse_withheld_manager(&first.manager)?;
                 // Find the manager — check all registered, not just available
                 let pm = self
                     .registry
@@ -862,7 +906,9 @@ impl super::Reconciler<'_> {
         printer: &Printer,
         notes: &NoteSink,
     ) -> Result<ActionRun> {
-        let exec = PackageExec::new(self.registry, self.state, printer, notes);
+        let unprovisioned = self.unprovisioned.borrow();
+        let exec = PackageExec::new(self.registry, self.state, printer, notes)
+            .withholding_managers(&unprovisioned);
         let result = exec.apply_package_action(action);
         self.persist_bootstraps(exec.take_bootstrapped());
         result
