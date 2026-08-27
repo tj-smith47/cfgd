@@ -7850,6 +7850,55 @@ fn apply_manager_provision_unknown_manager_errors() {
     assert!(result.action_results[0].error.is_some());
 }
 
+/// A declared route's verification failure names the package the route chose.
+///
+/// The install ran and succeeded — it was `apt-get install rustc` — and the
+/// tool is still absent, because `rustc` does not provide `/usr/bin/cargo`.
+/// Reporting only "cargo still not available after bootstrap" asserts a
+/// post-condition and names neither the installer that ran nor the package it
+/// landed, so the reader is told cfgd's provisioning broke rather than that
+/// their own `aliases:` entry cannot deliver the tool.
+#[test]
+fn a_declared_routes_verification_failure_names_the_package_it_installed() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").unavailable(),
+    ));
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "apt",
+    )));
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::cfgd("managers"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "cargo".to_string(),
+                via: "apt".to_string(),
+                declared: Some(crate::reconciler::types::DeclaredProvision {
+                    installer: "apt".to_string(),
+                    package: "rustc".to_string(),
+                }),
+                batched: vec![],
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let (result, _) = apply_manager_plan(&registry, &state, &plan);
+    assert_eq!(result.failed(), 1);
+    let error = result.action_results[0]
+        .error
+        .clone()
+        .expect("the verification refuses an absent tool");
+    assert!(
+        error.contains("rustc") && error.contains("apt"),
+        "the failure must name the installer that ran and the package it landed, got {error:?}"
+    );
+}
+
 #[test]
 fn an_unprovisioned_managers_install_names_a_recovery_that_holds_off_a_filter() {
     // The reach path the error's own comment once denied: no phase filter, a

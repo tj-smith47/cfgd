@@ -599,10 +599,26 @@ impl<'x> PackageExec<'x> {
                     if declared.is_none() {
                         self.record_bootstrap(pm.as_ref(), via);
                     }
+                    // The verification names what the run actually did. A
+                    // declared route ran no cascade at all — it is an ordinary
+                    // install by another manager, as the arm eleven lines up
+                    // says — so calling its failure a bootstrap tells the
+                    // reader a cascade broke when none ran, and naming only the
+                    // absent tool hides the one fact that explains the absence:
+                    // the package the module's own `aliases:` entry chose does
+                    // not provide it.
                     if !pm.is_available() {
                         return Err(crate::errors::PackageError::BootstrapFailed {
                             manager: (*name).to_string(),
-                            message: format!("{name} still not available after bootstrap"),
+                            message: match declared {
+                                Some(route) => format!(
+                                    "{name} not on PATH after {} installed {}",
+                                    route.installer, route.package
+                                ),
+                                None => {
+                                    format!("{name} still not on PATH after the {via} bootstrap")
+                                }
+                            },
                         }
                         .into());
                     }
