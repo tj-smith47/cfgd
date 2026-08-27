@@ -2044,7 +2044,8 @@ mod tests {
 
             let captured = cfgd_core::test_helpers::captured_text(&buf);
             assert!(
-                captured.contains("npm has no writable global prefix"),
+                // The tag says npm; the body must not (`no_provider_note_repeats_its_own_tag`).
+                captured.contains("no writable global prefix"),
                 "install()'s fallback-notice branch must have executed: {captured}"
             );
         }
