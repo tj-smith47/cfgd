@@ -2155,7 +2155,7 @@ images:
             "no status line may reach the data channel: {stdout}"
         );
         assert!(
-            stderr.contains("\u{25C9} pinned registry.jarvispro.io/gome/server:abc"),
+            stderr.contains("\u{25C9} Pinned registry.jarvispro.io/gome/server:abc"),
             "the rewrite summary must reach the human channel on stderr: {stderr}"
         );
         // The unmapped volume passes through untouched.

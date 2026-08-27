@@ -22815,7 +22815,7 @@ fn a_withheld_reason_and_an_error_detail_both_render_bright() {
         "a withheld row's reason carries the line, so it renders bright"
     );
     assert!(
-        !detail_is_styled(&raw, "package error"),
+        !detail_is_styled(&raw, "package manager 'nosuch'"),
         "an error detail is never muted"
     );
 }
@@ -26244,5 +26244,13 @@ fn a_failing_write_over_an_adopted_target_still_names_the_copy_it_took() {
         before.contains('—') && before.len() > before.find('—').unwrap() + 3,
         "the error keeps its own place ahead of the copy, got: {row}"
     );
-    assert!(after.ends_with(".cfgd-backup"), "got: {row}");
+    // A failed action that RAN is timed like a successful one, so the row's
+    // own elapsed follows the copy's path.
+    assert!(
+        after
+            .split_once(" (")
+            .map_or(after, |(path, _)| path)
+            .ends_with(".cfgd-backup"),
+        "got: {row}"
+    );
 }

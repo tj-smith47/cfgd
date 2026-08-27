@@ -3143,7 +3143,7 @@ mod download_and_install_to {
         );
         let captured = crate::test_helpers::captured_text(&buf);
         assert!(
-            captured.contains("no cosign bundle attached"),
+            captured.contains("No cosign bundle attached"),
             "warning text must surface so operators see the trust downgrade: {captured}"
         );
     }

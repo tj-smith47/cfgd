@@ -24492,7 +24492,7 @@ mod cmd_source_add_local {
                 "expected required-items expansion message, got: {update_out}"
             );
             assert!(
-                update_out.contains("skipped (prompt cancelled)"),
+                update_out.contains("Skipped (prompt cancelled)"),
                 "expected prompt-cancelled skip line, got: {update_out}"
             );
             // The upsert_config_source success line MUST NOT appear — the
