@@ -466,7 +466,10 @@ pub(super) fn report_abandoned_step(
         manager,
         format!(
             "{method} could not install {manager} ({}); trying the next method",
-            command_failure_reason(output)
+            // The reason sits mid-sentence here, inside parentheses: the one
+            // destination of `command_failure_reason` that needs its bounded
+            // tail on one physical row rather than as continuation lines.
+            collapse_to_subject_line(command_failure_reason(output))
         ),
     );
 }
@@ -474,19 +477,21 @@ pub(super) fn report_abandoned_step(
 /// One line naming why a package command failed: its exit code, plus the stderr
 /// it produced when there is any.
 ///
-/// The `CommandOutput` counterpart of `collapse_to_subject_line`, and the only
-/// place that shape is built. Two callers need it and neither may print a raw
-/// tail of its own: `run_pkg_cmd_live`, whose error IS the caller's status
-/// detail (a downstream branch also matches on its substring — snap's
-/// classic-confinement retry), and a fallback chain that inspects the exit
-/// status itself and reports the step it is about to abandon. Collapsed,
-/// because both destinations are a single status subject/detail and
-/// `Renderer::write_line` debug-asserts on an embedded newline. The exit code
-/// stays in the message so an operator can still tell "unknown failure" from a
-/// tool that exited non-zero saying nothing.
+/// The `CommandOutput` counterpart of `captured_output_detail`, and the ONE
+/// place a package manager's stderr becomes a message. Its destinations are a
+/// status detail (`run_pkg_cmd_live`, whose error IS the caller's detail — a
+/// downstream branch also matches on its substring, snap's classic-confinement
+/// retry) and the tail of a bootstrap-failure sentence, both of which the
+/// renderer lays out as continuation lines; the one destination that needs a
+/// single physical row collapses it itself. Bounded there too: cargo writes its
+/// download progress to stderr, so an uncapped fold put forty `Downloaded
+/// <crate>` lines in one action row. The exit code stays in the message so an
+/// operator can still tell "unknown failure" from a tool that exited non-zero
+/// saying nothing, and the full text survives in the journal and in
+/// `-o json`.
 pub(super) fn command_failure_reason(output: &CommandOutput) -> String {
     let reason = cfgd_core::exit_status_reason(&output.status);
-    let stderr = collapse_to_subject_line(output.stderr.trim());
+    let stderr = cfgd_core::output::captured_output_detail(output.stderr.trim());
     if stderr.is_empty() {
         reason
     } else {

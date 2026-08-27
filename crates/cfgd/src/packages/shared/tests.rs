@@ -2136,3 +2136,92 @@ fn every_package_manager_spawn_wrapper_hands_the_child_the_bootstrapped_dirs() {
     .expect("the probe exits 0");
     leads(out.stdout.as_bytes(), "pkg_run");
 }
+
+/// The demo's `cargo install stylua` failure: forty lines of download progress,
+/// then the one sentence that says why.
+fn cargo_style_stderr() -> String {
+    let mut lines = vec!["Updating crates.io index".to_string()];
+    lines.extend((0..40).map(|i| format!("Downloaded crate-{i} v1.0.0")));
+    lines.push("error: feature `edition2024` is required".to_string());
+    lines.join("\n")
+}
+
+#[test]
+fn a_failed_commands_reason_is_bounded_and_keeps_the_diagnosis() {
+    let reason = command_failure_reason(&test_cmd_output("", &cargo_style_stderr()));
+    let lines: Vec<&str> = reason.lines().collect();
+    assert!(
+        lines.len() <= 5,
+        "a manager's stderr reaches one action row; it may not be 42 lines of it: {reason:?}"
+    );
+    assert!(
+        reason.ends_with("error: feature `edition2024` is required"),
+        "cargo, npm, pip and brew all put the diagnosis last: {reason:?}"
+    );
+    assert!(
+        !reason.contains("Downloaded crate-0 "),
+        "the progress the reader does not need must be elided: {reason:?}"
+    );
+    assert!(
+        !reason.contains(" — "),
+        "the row's subject/detail separator may not double as the glue between \
+         a child's own lines: {reason:?}"
+    );
+}
+
+#[test]
+fn command_failure_reason_is_the_only_place_a_managers_stderr_becomes_a_message() {
+    // Every line under `packages/` mentioning a captured stderr, and what it is
+    // allowed to be: a `Command` builder, a PARSE that selects specific lines,
+    // or the one bounded fold. Anything else is a new unbounded dump in a row.
+    let hatched = [
+        ("Stdio::null()", "stdio configuration, nothing captured"),
+        (
+            "output.stdout, output.stderr",
+            "extract_caveat_bodies parses the combined capture; each note it \
+             selects is one line",
+        ),
+        (
+            "output.stderr.lines()",
+            "the generic caveat arm, same parse by line",
+        ),
+        (
+            "captured_output_detail(",
+            "the ONE bounded fold from a captured child's output to a rendered slot",
+        ),
+    ];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut offenders: Vec<String> = Vec::new();
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("packages tree is readable") {
+            let path = entry.expect("readable entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs")
+                || path.file_name().and_then(|f| f.to_str()) == Some("tests.rs")
+            {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).expect("readable source");
+            for (n, line) in body.lines().enumerate() {
+                if !line.contains(".stderr") {
+                    continue;
+                }
+                if hatched.iter().any(|(shape, _)| line.contains(shape)) {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a package manager's captured stderr reaches a rendered slot only through \
+         `command_failure_reason`, which bounds it; hatch a parse in this test's \
+         table with its reason:\n{}",
+        offenders.join("\n")
+    );
+}

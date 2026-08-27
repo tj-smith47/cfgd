@@ -240,19 +240,54 @@ pub fn measure_width(text: &str) -> usize {
 /// flattened first. The first non-empty line becomes the head; subsequent
 /// non-empty lines are joined with ` — ` so trailing systemctl/launchd
 /// context (e.g. `"See system logs and 'systemctl status …' for details."`)
-/// stays visible on a single physical row.
+/// stays visible on a single physical row. Bounded through [`bounded_lines`],
+/// so a slot that must be one row cannot become forty screens of a child's
+/// progress output.
 pub fn collapse_to_subject_line(err: impl std::fmt::Display) -> String {
-    let s = err.to_string();
-    let mut lines = s.lines().filter(|l| !l.trim().is_empty());
-    let first = match lines.next() {
-        Some(line) => line.trim().to_string(),
-        None => return String::new(),
-    };
-    let mut out = first;
-    for line in lines {
-        out.push_str(" — ");
-        out.push_str(line.trim());
+    bounded_lines(&err.to_string()).join(" — ")
+}
+
+/// The DETAIL-slot twin of [`collapse_to_subject_line`], for a message that may
+/// carry a child process's captured output.
+///
+/// Same bound, different glue: the lines are kept as lines, because
+/// `renderer::compose_status` already lays a `\n`-carrying detail out as the
+/// subject's first line plus indented continuations. Joining them with ` — `
+/// instead — which `collapse_to_subject_line` must, its destination being one
+/// physical row — spends the row's own subject/detail separator on text that is
+/// not a subject boundary, and an error chain comes out as
+/// `Caused by: — failed to download …`.
+///
+/// Reach for this wherever a captured message reaches a detail slot and nothing
+/// downstream needs one physical line. The STORED copies are untouched:
+/// `journal_fail`, `ActionResult.error` and the `-o json` payload keep the full
+/// text, exactly as `compliance::system_checks_from_diffs` keeps its persisted
+/// detail out of `drift_detail`.
+pub fn captured_output_detail(err: impl std::fmt::Display) -> String {
+    bounded_lines(&err.to_string()).join("\n")
+}
+
+/// The ONE bound on a captured message reaching a rendered slot: its
+/// non-empty lines, trimmed, capped at [`window::VISIBLE_LINES`] — the same
+/// count the live output window kept under the spinner while the command ran.
+///
+/// A child's stderr is unbounded and mostly progress: `cargo install` prefixes
+/// its diagnosis with forty `Downloaded <crate>` lines, so an uncapped fold put
+/// twenty-one physical lines in one action row and pushed the run's own header
+/// off the screen. The head is kept because it names what failed; the elision
+/// is taken out of the MIDDLE and never off the tail, because cargo, npm, pip
+/// and brew all put the progress first and the diagnosis last. Never a byte
+/// cap, which cuts mid-sentence.
+fn bounded_lines(s: &str) -> Vec<String> {
+    let lines: Vec<&str> = s.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if lines.len() <= window::VISIBLE_LINES {
+        return lines.into_iter().map(str::to_string).collect();
     }
+    // head + marker + tail == VISIBLE_LINES, so the bound is what a reader counts.
+    let tail = window::VISIBLE_LINES - 2;
+    let elided = lines.len() - 1 - tail;
+    let mut out = vec![lines[0].to_string(), format!("… {elided} more lines")];
+    out.extend(lines[lines.len() - tail..].iter().map(|l| l.to_string()));
     out
 }
 
@@ -686,7 +721,69 @@ mod drift_vocabulary_tests {
 
 #[cfg(test)]
 mod collapse_tests {
-    use super::collapse_to_subject_line;
+    use super::window::VISIBLE_LINES;
+    use super::{captured_output_detail, collapse_to_subject_line};
+
+    /// 40 `Downloaded <crate>` lines followed by the one sentence that says
+    /// why: what `cargo install` really writes to stderr.
+    fn cargo_style_stderr() -> String {
+        let mut lines = vec!["Updating crates.io index".to_string()];
+        lines.extend((0..40).map(|i| format!("Downloaded crate-{i} v1.0.0")));
+        lines.push("error: feature `edition2024` is required".to_string());
+        lines.join("\n")
+    }
+
+    #[test]
+    fn a_captured_dump_is_bounded_and_elided_from_the_middle() {
+        for rendered in [
+            captured_output_detail(cargo_style_stderr()),
+            collapse_to_subject_line(cargo_style_stderr()),
+        ] {
+            let parts: Vec<&str> = if rendered.contains('\n') {
+                rendered.lines().collect()
+            } else {
+                rendered.split(" — ").collect()
+            };
+            assert_eq!(
+                parts.len(),
+                VISIBLE_LINES,
+                "a captured dump must be bounded at the window's own ceiling: {rendered:?}"
+            );
+            assert_eq!(
+                parts[0], "Updating crates.io index",
+                "the head names what failed and is kept"
+            );
+            assert_eq!(
+                parts[VISIBLE_LINES - 1],
+                "error: feature `edition2024` is required",
+                "the diagnosis is last on every manager and must survive"
+            );
+            assert!(
+                parts[1].starts_with('…') && parts[1].contains("more lines"),
+                "the elision is marked, not silent: {rendered:?}"
+            );
+            assert!(
+                !rendered.contains("Downloaded crate-0 "),
+                "progress noise from the head must be elided: {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_detail_fold_keeps_its_lines_as_lines() {
+        let input = "failed to compile\nCaused by:\nfeature is required";
+        assert_eq!(
+            captured_output_detail(input),
+            input,
+            "the renderer lays continuation lines out itself; the ` — ` glue is \
+             the row's subject/detail separator and means something else"
+        );
+        assert_eq!(
+            collapse_to_subject_line(input),
+            "failed to compile — Caused by: — feature is required",
+            "the subject fold still owes its caller one physical row"
+        );
+    }
 
     #[test]
     fn single_line_passes_through_trimmed() {
