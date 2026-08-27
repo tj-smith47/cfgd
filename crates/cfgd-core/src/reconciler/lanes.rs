@@ -110,6 +110,10 @@ pub(super) struct LaneRun<'x> {
     /// into that list while these workers run, and a failure inside THIS phase
     /// is `fail_dependents`' to withhold, not this list's.
     pub(super) unprovisioned: &'x [String],
+    /// Managers an EARLIER phase of this run already PUT on the machine, taken
+    /// with the snapshot above and for the same reason: see
+    /// `Reconciler::provisioned`.
+    pub(super) provisioned: &'x [String],
 }
 
 /// Where a finished action goes: through the caller's settle, which journals
@@ -1389,6 +1393,7 @@ fn run_one_action(
                 shell_override: run.shell_override,
                 abort: run.abort,
                 path_dirs,
+                provisioned: run.provisioned,
             },
         ),
         // The dispatched set holds only package and manager work by

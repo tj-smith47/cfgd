@@ -77,6 +77,15 @@ struct Graph {
 /// module-entry grammar, and a profile-level `spec.packages.<manager>` list
 /// names the manager's own package name (`rustc`), which carries no canonical
 /// tool to match a manager against.
+///
+/// And only an entry whose AUTHOR named the manager
+/// ([`ResolvedPackage::manager_declared`](crate::modules::ResolvedPackage::manager_declared)).
+/// `ResolvedPackage::manager` is what RESOLUTION chose, which for an entry
+/// carrying neither `prefer` nor `aliases` is cfgd's own platform default —
+/// so a bare `- name: npm` read as a declaration and turned the npm node into
+/// `provision npm via apt`, installing apt's entire node toolchain in place of
+/// the brew cascade [`plan_managers`] documents npm as preferring. A route
+/// outranks that cascade, so only a real declaration may mint one.
 fn declared_manager_routes(
     module_routed: &[(PhaseName, Action)],
 ) -> BTreeMap<String, DeclaredProvision> {
@@ -90,6 +99,11 @@ fn declared_manager_routes(
             continue;
         };
         for pkg in resolved {
+            // cfgd's own platform default is not a statement by the module's
+            // author, and only a statement outranks the manager's cascade.
+            if !pkg.manager_declared {
+                continue;
+            }
             // An inline script names no registry entry, so there is no
             // installer to route a provision through.
             if pkg.manager == SCRIPT_SENTINEL {
@@ -934,8 +948,14 @@ mod tests {
     }
 
     /// One module install of `package` through `manager`, routed to `Packages`
-    /// exactly as `plan_modules` routes it.
-    fn module_install(manager: &str, package: &str) -> Vec<(PhaseName, Action)> {
+    /// exactly as `plan_modules` routes it. `declared` is whether the module's
+    /// author named that manager (`prefer`/`aliases`) or resolution defaulted
+    /// to it.
+    fn module_install_declared(
+        manager: &str,
+        package: &str,
+        declared: bool,
+    ) -> Vec<(PhaseName, Action)> {
         vec![(
             PhaseName::Packages,
             Action::Module(ModuleAction::with_origin(
@@ -945,6 +965,7 @@ mod tests {
                         canonical_name: package.to_string(),
                         resolved_name: package.to_string(),
                         manager: manager.to_string(),
+                        manager_declared: declared,
                         version: None,
                         script: None,
                         creates: None,
@@ -956,6 +977,73 @@ mod tests {
                 None,
             )),
         )]
+    }
+
+    fn module_install(manager: &str, package: &str) -> Vec<(PhaseName, Action)> {
+        module_install_declared(manager, package, false)
+    }
+
+    /// The `via` and `declared` a `tool` provision settles as, given a module
+    /// entry for `tool` resolved onto `alt` with the stated provenance. `tool`
+    /// is absent and its own cascade installs it through `sys`.
+    fn tool_route(declared: bool) -> (String, Option<DeclaredProvision>) {
+        // `widget` is why cfgd needs `tool` as a MANAGER at all; the `tool`
+        // entry beside it is what may or may not route its provision.
+        let mut routed = module_install_declared("alt", "tool", declared);
+        routed.extend(module_install_declared("tool", "widget", false));
+        let actions = plan_actions_with_modules(
+            Vec::new(),
+            routed,
+            vec![
+                MockPackageManager::new("alt"),
+                MockPackageManager::new("sys"),
+                MockPackageManager::new("tool")
+                    .unavailable()
+                    .bootstrappable_via("sys"),
+            ],
+        );
+        actions
+            .iter()
+            .find_map(|a| match a {
+                Action::Manager(ManagerAction::Provision {
+                    manager,
+                    via,
+                    declared,
+                    ..
+                }) if manager == "tool" => Some((via.clone(), declared.clone())),
+                _ => None,
+            })
+            .expect("the absent manager is provisioned")
+    }
+
+    /// `ResolvedPackage::manager` is what RESOLUTION chose, not what the module
+    /// author said. An entry carrying neither `prefer` nor `aliases` lands on
+    /// cfgd's own platform default, and reading that as a declaration is what
+    /// turned a bare `- name: npm` into `provision npm via apt` — apt's whole
+    /// node toolchain in place of the brew cascade npm's own bootstrap picks.
+    #[test]
+    fn a_resolver_defaulted_manager_is_not_a_declared_provision_route() {
+        let (via, declared) = tool_route(false);
+        assert_eq!(
+            via, "sys",
+            "with no declaration the manager's own cascade provisions it"
+        );
+        assert!(
+            declared.is_none(),
+            "cfgd's platform default is not a route the module declared: {declared:?}"
+        );
+    }
+
+    /// The other half of the same predicate: an entry the author DID route
+    /// still outranks the cascade, so the fix cannot have retired the feature.
+    #[test]
+    fn an_author_declared_manager_still_routes_the_provision() {
+        let (via, declared) = tool_route(true);
+        assert_eq!(via, "alt", "the module's own chain picks the installer");
+        assert_eq!(
+            declared.map(|d| (d.installer, d.package)),
+            Some(("alt".to_string(), "tool".to_string()))
+        );
     }
 
     /// Every action `plan_managers` mints for the given package work.

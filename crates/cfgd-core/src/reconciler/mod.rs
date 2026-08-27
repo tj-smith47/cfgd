@@ -197,6 +197,24 @@ pub struct Reconciler<'a> {
     /// already withholds the downstream work; this is the same withholding
     /// carried ACROSS phases, where no DAG edge reaches.
     unprovisioned: std::cell::RefCell<Vec<String>>,
+    /// Managers a node of THIS run has already PUT on the machine — the
+    /// mirror of [`Self::unprovisioned`], and the answer to "did this run's
+    /// own `Prerequisites` phase already deliver this tool".
+    ///
+    /// A module entry naming a tool cfgd bootstraps (`- name: npm`) with no
+    /// `prefer` and no `aliases` is not a route
+    /// (`ResolvedPackage::manager_declared`), so the manager's own cascade
+    /// provisions it — brew for npm — and the entry then still stands as an
+    /// apt install of the same toolchain, which apt's installed listing has
+    /// no way to elide because apt is not what landed it. Two copies of one
+    /// toolchain with `PATH` order picking the winner is exactly what the
+    /// route feature exists to prevent, so the elision keys on the tool the
+    /// provision DELIVERED rather than on the manager that delivered it.
+    ///
+    /// Recorded from the node's own success, never re-probed: `is_available()`
+    /// cannot tell a tool this run installed from one that was here all along,
+    /// and only the former makes the entry beside it a duplicate.
+    provisioned: std::cell::RefCell<Vec<String>>,
     /// What this run is scoped to, for the `applies` row it records.
     ///
     /// `None` falls back to the resolved profile's own name, which is what
@@ -218,6 +236,7 @@ impl<'a> Reconciler<'a> {
             installed: None,
             sidecar_backups: std::collections::HashSet::new(),
             unprovisioned: std::cell::RefCell::new(Vec::new()),
+            provisioned: std::cell::RefCell::new(Vec::new()),
             recorded_scope: None,
         }
     }
@@ -313,6 +332,7 @@ impl<'a> Reconciler<'a> {
             installed: None,
             sidecar_backups: std::collections::HashSet::new(),
             unprovisioned: std::cell::RefCell::new(Vec::new()),
+            provisioned: std::cell::RefCell::new(Vec::new()),
             recorded_scope: None,
         }
     }

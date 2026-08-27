@@ -323,6 +323,7 @@ mod tests {
             canonical_name: name.to_string(),
             resolved_name: name.to_string(),
             manager: manager.to_string(),
+            manager_declared: false,
             version: None,
             script: None,
             creates: None,

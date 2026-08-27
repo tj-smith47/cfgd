@@ -1395,6 +1395,7 @@ mod tests {
                 canonical_name: "typescript".to_string(),
                 resolved_name: "typescript".to_string(),
                 manager: "npm".to_string(),
+                manager_declared: false,
                 version: None,
                 script: None,
                 creates: None,

@@ -72,6 +72,9 @@ pub fn resolve_package(
                 canonical_name: entry.name.clone(),
                 resolved_name: entry.name.clone(),
                 manager: "script".to_string(),
+                // `script` only ever reaches a candidate list the author
+                // wrote: it is not any platform's native manager.
+                manager_declared: true,
                 version: None,
                 script: Some(script.clone()),
                 creates: entry.creates.clone(),
@@ -99,6 +102,10 @@ pub fn resolve_package(
             .get(candidate)
             .cloned()
             .unwrap_or_else(|| entry.name.clone());
+        // Whoever chose this manager: the author, when the candidate came out
+        // of their own `prefer` list or their `aliases` map names it, and cfgd
+        // otherwise. See `ResolvedPackage::manager_declared`.
+        let manager_declared = !entry.prefer.is_empty() || entry.aliases.contains_key(candidate);
 
         // If the manager isn't installed yet but can be bootstrapped, resolve
         // optimistically — we can't query versions until it's installed.
@@ -107,6 +114,7 @@ pub fn resolve_package(
                 canonical_name: entry.name.clone(),
                 resolved_name,
                 manager: candidate.clone(),
+                manager_declared,
                 version: None,
                 script: None,
                 creates: None,
@@ -129,6 +137,7 @@ pub fn resolve_package(
                         canonical_name: entry.name.clone(),
                         resolved_name,
                         manager: candidate.clone(),
+                        manager_declared,
                         version: Some(ver),
                         script: None,
                         creates: None,
@@ -149,6 +158,7 @@ pub fn resolve_package(
                 canonical_name: entry.name.clone(),
                 resolved_name,
                 manager: candidate.clone(),
+                manager_declared,
                 version: None,
                 script: None,
                 creates: None,
