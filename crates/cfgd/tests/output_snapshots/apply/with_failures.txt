@@ -12,3 +12,5 @@ Phase: Files
 ⚠ Apply partial — 1 of 2 applied (XXs wall)
 ✓ 1 action succeeded
 ✗ 1 action failed
+
+→ Fix what failed, then run `cfgd apply` again

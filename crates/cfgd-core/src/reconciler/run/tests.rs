@@ -373,13 +373,13 @@ fn abort_rollup_keeps_the_lowercase_cli_sentence() {
     assert_eq!(lines[0].1, "apply aborted by signal");
     assert_eq!(
         lines[0].2.as_deref(),
-        Some("2 of 5 actions applied; no partial writes, rerun to converge")
+        Some("2 of 5 actions applied; no partial writes")
     );
     let reconcile = rollup_lines(&tally, RunTitle::Reconcile);
     assert_eq!(reconcile[0].1, "reconcile aborted by signal");
     assert_eq!(
         reconcile[0].2.as_deref(),
-        Some("2 of 5 actions applied; no partial writes, rerun to converge")
+        Some("2 of 5 actions applied; no partial writes")
     );
 }
 
@@ -401,7 +401,7 @@ fn an_abort_that_killed_an_action_names_the_failure_too() {
     assert_eq!(lines[0].1, "apply aborted by signal");
     assert_eq!(
         lines[0].2.as_deref(),
-        Some("2 of 3 actions applied, 1 failed; no partial writes, rerun to converge")
+        Some("2 of 3 actions applied, 1 failed; no partial writes")
     );
 }
 
@@ -499,6 +499,11 @@ fn every_outcome_class_in_a_rollup_carries_its_own_role() {
             // keeps, and it is `Role::Warn`, so it paints no non-success count
             // as a success.
             if line.contains("aborted by signal") {
+                continue;
+            }
+            // The block's closing next step names the failure it is about; it
+            // is an instruction, not one of the outcome classes.
+            if line.starts_with(theme.icon_arrow.as_str()) {
                 continue;
             }
             let named: Vec<&str> = classes
@@ -622,6 +627,9 @@ fn every_rollup_line_reserves_the_glyph_column() {
                             theme.icon_running.as_str(),
                             theme.icon_skipped.as_str(),
                             theme.icon_info.as_str(),
+                            // The block's closing next step reserves the same
+                            // column with the hint marker.
+                            theme.icon_arrow.as_str(),
                         ]
                         .iter()
                         .any(|icon| icon.starts_with(glyph)),
@@ -1771,5 +1779,110 @@ fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
     assert!(
         out.contains("- write /home/u/.cfgd.env — 3 vars, 1 alias"),
         "the env write states its produced counts in the same slot: {out}"
+    );
+}
+
+/// Every verdict a run can close on, and whether it leaves the reader with
+/// something to do. A run that did not converge is the only closing line in
+/// the CLI family that ever shipped without one — a drift verdict has
+/// `heal_drift_hint`, a refused source `source_failure_next_step`, a mutating
+/// verb `success_next_step`, a decisions section `answer_decisions_hint`, a
+/// no-op run `nothing_to_do_verdict` — and the env-file reminder that happened
+/// to be on screen is about a different subject.
+#[test]
+fn every_unfinished_verdict_closes_on_the_one_next_step() {
+    const TITLES: &[RunTitle] = &[
+        RunTitle::Plan,
+        RunTitle::Apply,
+        RunTitle::Reconcile,
+        RunTitle::Backup,
+        RunTitle::Restore,
+    ];
+    let converged = |status: ApplyStatus| RunTally {
+        succeeded: 2,
+        skipped: 0,
+        not_attempted: Vec::new(),
+        failed: 1,
+        planned_total: 3,
+        status,
+        aborted: None,
+    };
+    let withheld = RunTally {
+        succeeded: 0,
+        skipped: 0,
+        not_attempted: vec!["no session manager".to_string()],
+        failed: 0,
+        planned_total: 1,
+        status: ApplyStatus::Success,
+        aborted: None,
+    };
+    for title in TITLES {
+        for tally in [
+            converged(ApplyStatus::Partial),
+            converged(ApplyStatus::Failed),
+            converged(ApplyStatus::Aborted),
+            converged(ApplyStatus::InProgress),
+            withheld.clone(),
+        ] {
+            let next = super::run_next_step(&tally, *title).unwrap_or_else(|| {
+                panic!(
+                    "{:?} on a {title:?} run leaves the reader nothing to do",
+                    tally.status
+                )
+            });
+            assert!(
+                next.contains('`') && next.contains("cfgd "),
+                "a closing hint names the command that comes next, in backticks: {next:?}"
+            );
+            assert!(
+                !next.contains("<name>") || matches!(title, RunTitle::Backup | RunTitle::Restore),
+                "only a run over one declared unit has a unit to name: {next:?}"
+            );
+            // The verdict lines state facts; the instruction is the hint's.
+            for (_, subject, detail) in super::rollup_lines(&tally, *title) {
+                let line = format!("{subject} {}", detail.unwrap_or_default());
+                assert!(
+                    !line.contains("rerun") && !line.contains("run `"),
+                    "an instruction baked into a verdict line cannot be found by a \
+                     sweep over the hint composers: {line:?}"
+                );
+            }
+        }
+        // A run that converged has nothing left to say; the surfaces that do
+        // (a withheld decision, a written env file) say it themselves.
+        assert_eq!(
+            super::run_next_step(&converged(ApplyStatus::Success), *title),
+            None,
+            "a converged {title:?} run must not close on a rerun instruction"
+        );
+    }
+}
+
+#[test]
+fn a_failed_run_renders_its_next_step_under_the_verdict() {
+    let tally = RunTally {
+        succeeded: 21,
+        skipped: 0,
+        not_attempted: Vec::new(),
+        failed: 1,
+        planned_total: 22,
+        status: ApplyStatus::Partial,
+        aborted: None,
+    };
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    render_run_rollup(&tally, RunTitle::Apply, &printer, None);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    let hint = out
+        .lines()
+        .position(|l| l.contains("Fix what failed, then run `cfgd apply` again"))
+        .unwrap_or_else(|| panic!("the partial verdict must close on its next step: {out:?}"));
+    let failed = out
+        .lines()
+        .position(|l| l.contains("1 action failed"))
+        .expect("the failure count is on screen");
+    assert!(
+        failed < hint,
+        "the instruction follows the counts it is about: {out:?}"
     );
 }

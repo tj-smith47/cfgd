@@ -172,7 +172,8 @@ Phase: Packages
   profile:abortdemo
     ✓ slowbox install epsilon (6.0s)
 
-⚠ apply aborted by signal — 2 of 3 actions applied; no partial writes, rerun to converge
+⚠ apply aborted by signal — 2 of 3 actions applied; no partial writes
+→ Run `cfgd apply` again to converge
 ◉ 1 action not attempted (6.0s wall)
 $ echo $?
 130

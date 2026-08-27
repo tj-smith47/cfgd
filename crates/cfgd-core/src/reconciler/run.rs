@@ -1304,6 +1304,11 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
         // sentence by `tests/apply_signal_abort.rs` and by the sample in
         // `docs/safety.md`, and it reads correctly for every other title.
         //
+        // The detail states the FACT (nothing was half-written); the
+        // instruction that follows from it is the run's next step, and closes
+        // the block through `run_next_step` like every other unfinished
+        // verdict's.
+        //
         // A signal reaches the child process too, so an abort can carry a
         // failure: the install that was in flight dies with it. Naming only
         // what was applied and what was never attempted leaves that action in
@@ -1313,7 +1318,7 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
             Role::Warn,
             format!("{} aborted by signal", title.as_str().to_ascii_lowercase()),
             Some(format!(
-                "{} of {} applied{}; no partial writes, rerun to converge",
+                "{} of {} applied{}; no partial writes",
                 tally.succeeded,
                 pluralize(tally.planned_total, "action"),
                 if tally.failed > 0 {
@@ -1323,6 +1328,49 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
                 }
             )),
         )],
+    }
+}
+
+/// The command a run of this kind is re-run with, in the placeholder form a
+/// hint may name it — never the invocation that just ran, re-spelled with its
+/// own arguments.
+fn rerun_command(title: RunTitle) -> &'static str {
+    match title {
+        RunTitle::Plan => "cfgd plan",
+        // A daemon tick is not something the reader re-runs; the verb that
+        // converges the machine by hand is the same one `Apply` names.
+        RunTitle::Apply | RunTitle::Reconcile => "cfgd apply",
+        RunTitle::Backup => "cfgd backup run <name>",
+        RunTitle::Restore => "cfgd backup restore <name>",
+    }
+}
+
+/// What a reader DOES about a run that did not converge — the failure-side twin
+/// of [`nothing_to_do_verdict`], and the one thing every other closing line in
+/// the CLI already has.
+///
+/// A reader who has just watched cfgd narrate twenty-two actions gets
+/// `✗ 1 action failed` and, without this, an instruction about a different
+/// subject (the env-file reminder, emitted whenever the env phase wrote a
+/// file). They reasonably read the run as unrepeatable, which is the opposite
+/// of what an idempotent reconciler promises. One wording per state, and the
+/// command is a PLACEHOLDER: `cfgd apply` is a different verb from the
+/// `cfgd init` that ran, and the unit a backup verb acts on is `<name>`.
+///
+/// `Success` with something attempted is the one verdict with no next step:
+/// the run converged, and the surfaces that DO have something left to say
+/// (a withheld decision, a written env file) say it themselves.
+pub fn run_next_step(tally: &RunTally, title: RunTitle) -> Option<String> {
+    let cmd = rerun_command(title);
+    match tally.status {
+        ApplyStatus::Success if tally.nothing_attempted() => Some(format!(
+            "Resolve what withheld the actions above, then run `{cmd}` again"
+        )),
+        ApplyStatus::Success => None,
+        ApplyStatus::Aborted => Some(format!("Run `{cmd}` again to converge")),
+        ApplyStatus::Failed | ApplyStatus::Partial | ApplyStatus::InProgress => {
+            Some(format!("Fix what failed, then run `{cmd}` again"))
+        }
     }
 }
 
@@ -1367,6 +1415,11 @@ pub fn render_run_rollup(
                 None => printer.status_simple(role, subject),
             },
         }
+    }
+    // Before anything the run's own phases have left to say (the env-file
+    // reminder rides the caveats below): the reader acts on the failure first.
+    if let Some(next) = run_next_step(tally, title) {
+        printer.hint(next);
     }
     tally.status.clone()
 }
