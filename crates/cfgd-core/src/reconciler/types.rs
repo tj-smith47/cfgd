@@ -363,6 +363,20 @@ impl ManagerAction {
         }
     }
 
+    /// Every manager this node FAILING leaves unusable for the rest of the run.
+    ///
+    /// A provision speaks for its whole batch, and a refusal speaks for the one
+    /// manager it refuses. A prerequisite install and an index refresh name
+    /// nothing: `apt install curl` failing says nothing about apt, and a stale
+    /// index is not a missing binary.
+    pub fn managers_left_unavailable(&self) -> Vec<&str> {
+        match self {
+            ManagerAction::Provision { .. } => self.provisioned_managers(),
+            ManagerAction::Refuse { manager, .. } => vec![manager.as_str()],
+            ManagerAction::Prerequisite { .. } | ManagerAction::RefreshIndex { .. } => Vec::new(),
+        }
+    }
+
     /// Whether a `--skip`/`--only`/`--phase` selector naming `subject` reaches
     /// this node — its own [`ManagerAction::filter_subject`], or any manager
     /// batched onto it.

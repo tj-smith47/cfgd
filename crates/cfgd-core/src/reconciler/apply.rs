@@ -1109,6 +1109,9 @@ impl<'a> super::Reconciler<'a> {
                 // the dispatcher first has something to say about it, and the
                 // finish settles that row in place. Off one there are no rows,
                 // and the outcomes are held for `emit_phase_tree` below.
+                // Taken before the dispatch opens, since `settle` below keeps
+                // writing to the list while these lanes run.
+                let unprovisioned = self.unprovisioned.borrow().clone();
                 let run = super::lanes::LaneRun {
                     printer,
                     apply_id,
@@ -1121,6 +1124,7 @@ impl<'a> super::Reconciler<'a> {
                     abort,
                     plan_index_base,
                     action_depth: phase_section.as_ref().map_or(0, |s| s.depth + 1),
+                    unprovisioned: &unprovisioned,
                 };
                 let mut tree = super::live_tree::PhaseTree::new(
                     printer,
@@ -1984,6 +1988,17 @@ impl<'a> super::Reconciler<'a> {
                     && let Err(je) = self.state.journal_fail(jid, finished, &e.to_string())
                 {
                     tracing::warn!("failed to record journal failure: {je}");
+                }
+                // The run's own verdict about what is on the machine, recorded
+                // where every finish lands so a later phase answers from it
+                // instead of re-probing: see `Reconciler::unprovisioned`.
+                if let Action::Manager(node) = action {
+                    let mut withheld = self.unprovisioned.borrow_mut();
+                    for manager in node.managers_left_unavailable() {
+                        if !withheld.iter().any(|m| m == manager) {
+                            withheld.push(manager.to_string());
+                        }
+                    }
                 }
                 (
                     desc,

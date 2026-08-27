@@ -20320,6 +20320,71 @@ fn apply_manager_provision_is_skipped_when_already_available() {
     );
 }
 
+/// A provision that failed is the run's own verdict that the manager is not on
+/// the machine, and it has to outrank every later probe: `is_available()`
+/// bottoms out in a path lookup the intervening installs moved, so a manager
+/// cfgd has just reported it could not provision can answer "available" one
+/// phase later and be spawned into an `ENOENT`. Both package shapes that name a
+/// manager are withheld, and neither the install nor the installed-state re-read
+/// behind it reaches the binary.
+#[test]
+fn a_package_action_for_a_manager_whose_provision_failed_is_never_spawned() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        DispatchLogManager::new("brew", &log, false).stays_unavailable(),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::profile("work"),
+                vec![Action::Manager(ManagerAction::Provision {
+                    manager: "brew".to_string(),
+                    via: "stub".to_string(),
+                    declared: None,
+                    batched: vec![],
+                    depends_on: vec![],
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("work"),
+                vec![
+                    install_action("brew", &["fd"]),
+                    module_install_action("nvim", "brew", "neovim"),
+                ],
+            ),
+        ],
+        warnings: vec![],
+    };
+    let modules = vec![module_for("nvim", "brew", "neovim")];
+
+    let result = run_apply(&reconciler, &plan, &modules, None);
+
+    assert!(
+        !dispatch_log(&log).iter().any(|e| e.starts_with("install:")),
+        "nothing may be handed to a manager this run failed to provision: {:?}",
+        dispatch_log(&log)
+    );
+    let packages: Vec<&ActionResult> = result
+        .action_results
+        .iter()
+        .filter(|r| r.phase == PhaseName::Packages.as_str())
+        .collect();
+    assert_eq!(packages.len(), 2, "both package rows settled");
+    for row in packages {
+        let error = row.error.as_deref().unwrap_or_default();
+        assert!(
+            error.contains("brew is not provisioned"),
+            "a withheld package action states the recovery, not an errno: {error}"
+        );
+    }
+}
+
 #[test]
 fn action_index_is_the_plan_position_not_the_dispatch_counter() {
     let log = new_dispatch_log();

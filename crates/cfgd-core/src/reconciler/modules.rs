@@ -304,8 +304,10 @@ impl<'a> super::Reconciler<'a> {
 
         match &action.kind {
             ModuleActionKind::InstallPackages { resolved: pkgs } => {
+                let unprovisioned = self.unprovisioned.borrow();
                 let exec =
-                    super::packages::PackageExec::new(self.registry, self.state, printer, notes);
+                    super::packages::PackageExec::new(self.registry, self.state, printer, notes)
+                        .withholding_managers(&unprovisioned);
                 let outcome = exec.install_module_packages(
                     action,
                     pkgs,

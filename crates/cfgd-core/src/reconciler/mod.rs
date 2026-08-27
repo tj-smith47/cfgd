@@ -186,6 +186,17 @@ pub struct Reconciler<'a> {
     /// under `Phase: Files`, on the success row and the failure row alike —
     /// instead of standing as its own line above the run's header.
     sidecar_backups: std::collections::HashSet<PathBuf>,
+    /// Managers a node of THIS run already failed to put on the machine.
+    ///
+    /// A provision that failed is the run's own verdict that the manager is not
+    /// here, and it outranks any later probe: `is_available()` bottoms out in a
+    /// path lookup whose memo the intervening installs moved and whose last arm
+    /// is a bare `exists()`, so a manager cfgd just reported it could not
+    /// provision can answer "available" one phase later and be spawned into an
+    /// `ENOENT`. Within one phase the lane dispatcher's `fail_dependents`
+    /// already withholds the downstream work; this is the same withholding
+    /// carried ACROSS phases, where no DAG edge reaches.
+    unprovisioned: std::cell::RefCell<Vec<String>>,
     /// What this run is scoped to, for the `applies` row it records.
     ///
     /// `None` falls back to the resolved profile's own name, which is what
@@ -206,6 +217,7 @@ impl<'a> Reconciler<'a> {
             config_dir: None,
             installed: None,
             sidecar_backups: std::collections::HashSet::new(),
+            unprovisioned: std::cell::RefCell::new(Vec::new()),
             recorded_scope: None,
         }
     }
@@ -300,6 +312,7 @@ impl<'a> Reconciler<'a> {
             config_dir: None,
             installed: None,
             sidecar_backups: std::collections::HashSet::new(),
+            unprovisioned: std::cell::RefCell::new(Vec::new()),
             recorded_scope: None,
         }
     }

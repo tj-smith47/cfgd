@@ -104,6 +104,12 @@ pub(super) struct LaneRun<'x> {
     pub(super) plan_index_base: usize,
     /// Depth an action's line — and so its lane's window — renders at.
     pub(super) action_depth: usize,
+    /// Managers an EARLIER phase of this run already failed to provision, as
+    /// they stood when this phase opened: see `Reconciler::unprovisioned`. A
+    /// snapshot rather than a live view because the coordinator keeps recording
+    /// into that list while these workers run, and a failure inside THIS phase
+    /// is `fail_dependents`' to withhold, not this list's.
+    pub(super) unprovisioned: &'x [String],
 }
 
 /// Where a finished action goes: through the caller's settle, which journals
@@ -1361,7 +1367,9 @@ fn run_one_action(
     // below to still see them. Moving construction inside the guarded
     // closure, as it once did, drops `exec` along with the panic and loses
     // every bootstrap the action performed just before failing.
-    let exec = PackageExec::new(registry, &proxy, run.printer, &notes).in_lane(lane);
+    let exec = PackageExec::new(registry, &proxy, run.printer, &notes)
+        .in_lane(lane)
+        .withholding_managers(run.unprovisioned);
     let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match action {
         Action::Package(pkg) => exec.apply_package_action(pkg),
         Action::Manager(node) => exec.apply_manager_action(node),
