@@ -118,10 +118,20 @@ impl BrewTapManager {
                 {
                     return;
                 }
+                // The error's own Display opens on the manager name, because
+                // it is read standalone in a `Result` chain; here the tag
+                // already says `brew-tap`, so the note states what was left
+                // behind instead of repeating the speaker.
+                let detail = match &e {
+                    PackageError::UninstallFailed { message, .. } => {
+                        cfgd_core::output::collapse_to_subject_line(message)
+                    }
+                    other => cfgd_core::output::collapse_to_subject_line(other),
+                };
                 cx.report(
                     Role::Warn,
                     "brew-tap",
-                    cfgd_core::output::collapse_to_subject_line(&e),
+                    format!("could not untrust {tap}: {detail}"),
                 );
             }
         }
