@@ -518,12 +518,23 @@ fn format_manager_action_item(action: &ManagerAction) -> String {
         // A batch names every manager the one command delivers, in the order
         // `provisioned_managers` holds them — the line has to account for what
         // it installs, and `provision npm via apt` would silently also install
-        // pipx.
-        ManagerAction::Provision { via, .. } => {
-            format!(
-                "provision {} via {via}",
-                action.provisioned_managers().join(", ")
-            )
+        // pipx. A declared route names its package for the same reason: the
+        // command a module's `aliases: {apt: rustc}` produces is `apt-get
+        // install rustc`, and a line saying only `cargo` sends a reader whose
+        // alias cannot provide the tool looking for a cfgd bug instead of at
+        // the entry they wrote. Suppressed when the route's package IS the
+        // manager's name — there the operand is already in the sentence, and
+        // `provision cargo via brew (cargo)` says one word twice.
+        ManagerAction::Provision { via, declared, .. } => {
+            let managers = action.provisioned_managers().join(", ");
+            match declared
+                .as_ref()
+                .map(|route| route.package.as_str())
+                .filter(|package| *package != managers)
+            {
+                Some(package) => format!("provision {managers} via {via} ({package})"),
+                None => format!("provision {managers} via {via}"),
+            }
         }
         ManagerAction::Prerequisite {
             tool,
@@ -686,7 +697,112 @@ pub(super) fn parse_package_description(desc: &str) -> Option<(String, String, V
 
 #[cfg(test)]
 mod tests {
-    use super::parse_package_description;
+    use super::super::types::{DeclaredProvision, ManagerAction};
+    use super::{format_manager_action_item, parse_package_description};
+
+    /// The operands a manager action holds — every name the subject has to
+    /// account for. Bound field by field with no `..`, so a new field on any
+    /// variant has to be classified here before this file compiles.
+    fn operands(action: &ManagerAction) -> Vec<&str> {
+        match action {
+            ManagerAction::RefreshIndex { manager } => vec![manager.as_str()],
+            ManagerAction::Provision {
+                manager,
+                via,
+                declared,
+                batched,
+                depends_on: _,
+            } => std::iter::once(manager.as_str())
+                .chain(std::iter::once(via.as_str()))
+                .chain(batched.iter().map(String::as_str))
+                .chain(declared.iter().map(|route| route.package.as_str()))
+                .collect(),
+            ManagerAction::Prerequisite {
+                tool,
+                installer,
+                required_by,
+                depends_on: _,
+            } => std::iter::once(tool.as_str())
+                .chain(std::iter::once(installer.as_str()))
+                .chain(required_by.iter().map(String::as_str))
+                .collect(),
+            ManagerAction::Refuse { manager, reason } => vec![manager.as_str(), reason.as_str()],
+        }
+    }
+
+    /// A subject names every operand its action carries.
+    ///
+    /// The one string reaches the plan preview bullet, the alignment column,
+    /// the executed row and `PlanActionOutput.description`, so an operand it
+    /// drops is dropped from all four at once: `provision cargo via apt` for a
+    /// route whose command is `apt-get install rustc` promised work no part of
+    /// the run performed, and told the reader cfgd's apt provisioning was
+    /// broken rather than that their own `aliases:` entry was.
+    #[test]
+    fn every_manager_action_subject_names_every_operand_it_holds() {
+        let cases = [
+            ManagerAction::RefreshIndex {
+                manager: "sentinel-manager".into(),
+            },
+            // A declared route is never batched: the batch is one mediator
+            // command over the manager's own names, so the two shapes are two
+            // cases rather than one impossible action.
+            ManagerAction::Provision {
+                manager: "sentinel-manager".into(),
+                via: "sentinel-via".into(),
+                declared: Some(DeclaredProvision {
+                    installer: "sentinel-via".into(),
+                    package: "sentinel-package".into(),
+                }),
+                batched: Vec::new(),
+                depends_on: Vec::new(),
+            },
+            ManagerAction::Provision {
+                manager: "sentinel-manager".into(),
+                via: "sentinel-via".into(),
+                declared: None,
+                batched: vec!["sentinel-batched".into()],
+                depends_on: Vec::new(),
+            },
+            ManagerAction::Prerequisite {
+                tool: "sentinel-tool".into(),
+                installer: "sentinel-installer".into(),
+                required_by: vec!["sentinel-requirer".into()],
+                depends_on: Vec::new(),
+            },
+            ManagerAction::Refuse {
+                manager: "sentinel-manager".into(),
+                reason: "sentinel-reason".into(),
+            },
+        ];
+        for action in &cases {
+            let subject = format_manager_action_item(action);
+            for operand in operands(action) {
+                assert!(
+                    subject.contains(operand),
+                    "{action:?} holds {operand:?}, and its subject {subject:?} never names it"
+                );
+            }
+        }
+    }
+
+    /// The one exception, and the reason it is not a dropped operand: a route
+    /// whose package IS the manager's name has its operand in the sentence
+    /// already.
+    #[test]
+    fn a_route_whose_package_is_the_manager_name_is_not_named_twice() {
+        let subject = format_manager_action_item(&ManagerAction::Provision {
+            manager: "cargo".into(),
+            via: "brew".into(),
+            declared: Some(DeclaredProvision {
+                installer: "brew".into(),
+                package: "cargo".into(),
+            }),
+            batched: Vec::new(),
+            depends_on: Vec::new(),
+        });
+        assert_eq!(subject, "provision cargo via brew");
+    }
 
     #[test]
     fn parse_package_install_single() {
