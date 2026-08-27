@@ -26174,9 +26174,13 @@ fn every_surviving_path_declaration_reaches_the_one_generated_line() {
             ..Default::default()
         },
     };
+    // The layer fold joins on the host's separator, and the generated line is
+    // read back with the dialect that matches it — a `:`-joined declaration on
+    // Windows is one entry to both halves.
+    let sep = crate::PATH_LIST_SEPARATOR;
     let merged = crate::config::merge_layers(&[
-        layer("base", "$HOME/.local/bin:$PATH"),
-        layer("work", "$HOME/go/bin:$PATH"),
+        layer("base", &format!("$HOME/.local/bin{sep}$PATH")),
+        layer("work", &format!("$HOME/go/bin{sep}$PATH")),
     ]);
     assert_eq!(
         merged.env.iter().filter(|e| e.name == "PATH").count(),
@@ -26187,7 +26191,7 @@ fn every_surviving_path_declaration_reaches_the_one_generated_line() {
     let mut module = crate::test_helpers::make_resolved_module("nvim");
     module.env = vec![crate::config::EnvVar {
         name: "PATH".into(),
-        value: "$HOME/.cargo/bin:$PATH".into(),
+        value: format!("$HOME/.cargo/bin{sep}$PATH"),
         platforms: vec![],
     }];
 
@@ -26212,7 +26216,11 @@ fn every_surviving_path_declaration_reaches_the_one_generated_line() {
         &path_dirs,
         &origins,
         tmp_home.path(),
-        super::env_engine::EnvPlatform::Linux,
+        if cfg!(windows) {
+            super::env_engine::EnvPlatform::Windows
+        } else {
+            super::env_engine::EnvPlatform::Linux
+        },
     )
     .expect("a declared PATH folds into a line");
     let content = super::generate_env_file_content(&env, &aliases, Some(&folded), &origins);
@@ -26226,6 +26234,9 @@ fn every_surviving_path_declaration_reaches_the_one_generated_line() {
         1,
         "one variable, one assignment: {content}"
     );
+    // The generated file is the POSIX one whatever the host, so the line it
+    // writes joins on `:` and names the ambient value `$PATH` — only the
+    // SPLIT of the declared value follows the host's own separator.
     assert!(
         line.contains("$HOME/.local/bin:$HOME/go/bin:$HOME/.cargo/bin:"),
         "every declaration contributes, in declaration order: {line}"

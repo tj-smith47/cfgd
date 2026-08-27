@@ -2990,12 +2990,15 @@ fn a_gated_out_entry_never_reaches_the_layer_merge() {
 #[test]
 fn a_gated_path_declaration_concatenates_only_where_it_applies() {
     let here = crate::platform::Platform::current().os.as_str().to_string();
+    // The layer fold joins on the host's separator, so the declarations are
+    // written with it too: a `:`-joined value on Windows is one entry.
+    let sep = crate::PATH_LIST_SEPARATOR;
     let merged = merge_layers(&[gated_layer(
         "base",
         vec![
-            tagged_env("PATH", "/common/bin:$PATH", &[]),
-            tagged_env("PATH", "/here/bin:$PATH", &[&here]),
-            tagged_env("PATH", "/elsewhere/bin:$PATH", &[NOWHERE]),
+            tagged_env("PATH", &format!("/common/bin{sep}$PATH"), &[]),
+            tagged_env("PATH", &format!("/here/bin{sep}$PATH"), &[&here]),
+            tagged_env("PATH", &format!("/elsewhere/bin{sep}$PATH"), &[NOWHERE]),
         ],
         vec![],
     )]);
@@ -3004,7 +3007,7 @@ fn a_gated_path_declaration_concatenates_only_where_it_applies() {
         .iter()
         .find(|e| e.name == "PATH")
         .expect("a PATH entry survives");
-    assert_eq!(path.value, "/common/bin:/here/bin:$PATH");
+    assert_eq!(path.value, format!("/common/bin{sep}/here/bin{sep}$PATH"));
     assert_eq!(
         merged.env.iter().filter(|e| e.name == "PATH").count(),
         1,
