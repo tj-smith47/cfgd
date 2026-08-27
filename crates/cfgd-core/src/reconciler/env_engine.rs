@@ -1156,7 +1156,7 @@ mod tests {
     /// A file holding two `export PATH=` lines assigns one variable twice, and
     /// every count over it then has to choose between naming written lines and
     /// naming variables — which is how `write ~/.cfgd.env — 4 vars` came to sit
-    /// one row above `publish 3 vars to the session manager`, both counting the
+    /// one row above `publish 3 vars to the live session`, both counting the
     /// same file. The walk is over every dialect `env_targets` can produce on
     /// every platform, so a sixth generator cannot quietly reintroduce the
     /// split.
@@ -1240,7 +1240,7 @@ mod tests {
                 EnvTarget::LiveSession { vars } => Some(vars.len()),
                 _ => None,
             })
-            .unwrap_or_else(|| panic!("a scope of All publishes to the session manager"));
+            .unwrap_or_else(|| panic!("a scope of All publishes to the live session"));
         assert_eq!(
             rendered.vars, published,
             "the file's variables and the session publish's are one count"

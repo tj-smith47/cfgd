@@ -1468,7 +1468,7 @@ fn preview_bullet_styles_a_scripts_marker() {
 fn both_trees_paint_a_withheld_row_with_the_same_bytes() {
     use crate::output::{Role, Theme};
 
-    let subject = "publish 3 vars to the session manager";
+    let subject = "publish 3 vars to the live session";
     let reason = crate::NO_SESSION_MANAGER;
     let theme = Theme::from_preset("dracula").with_colors(true);
 

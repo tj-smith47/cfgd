@@ -53,6 +53,47 @@ pub fn system_key_doubling_error(configurator: &str, key: &str) -> Option<String
     })
 }
 
+/// The diagnostic for a pre-skip reason that repeats a noun its own action's
+/// subject already carries, or `None` when the two halves say different things.
+///
+/// The ONE statement of the rule for the withheld row's two slots, and the
+/// third member of the family `system_key_doubling_error` and
+/// `note_tag_doubling_error` already hold: a row composes as
+/// `<subject> — <reason>`, so a subject naming the very thing the reason says
+/// is missing prints one noun twice on one line —
+/// `publish 3 vars to the session manager — no session manager`. The subject
+/// names what the work is FOR, the reason names what the host does not have.
+///
+/// Judged on the reason's own noun, which is the reason minus the `no ` a
+/// wording of absence opens on: [`crate::NO_SESSION_MANAGER`] stays the one
+/// wording of that absence, read by the plan, the apply's skip detail and
+/// `status`'s session row alike, so the doubling is fixed on the subject side.
+pub fn pre_skip_doubling_error(subject: &str, reason: &str) -> Option<String> {
+    let noun = reason.strip_prefix("no ").unwrap_or(reason);
+    subject.contains(noun).then(|| {
+        format!(
+            "pre-skip row `{subject} — {reason}` repeats `{noun}`;              the subject names the work and the reason names what is missing"
+        )
+    })
+}
+
+/// Debug-only guard that a pre-skip reason does not double its own subject,
+/// returning the reason so every arm of [`Action::pre_skip_reason`] is checked
+/// by the shape of how it answers rather than by a test remembering to.
+///
+/// Debug-only for the same reason its drift-key sibling is: the row still
+/// composes, it just says one noun twice, and a release build must not panic
+/// mid-plan over a wording defect.
+pub(crate) fn debug_checked_pre_skip_reason(action: &Action, reason: &'static str) -> &'static str {
+    if cfg!(debug_assertions)
+        && let Some(message) =
+            pre_skip_doubling_error(&action_display_subject(action).to_string(), reason)
+    {
+        debug_assert!(false, "{message}");
+    }
+    reason
+}
+
 /// Debug-only guard that a configurator's drift key does not repeat its name.
 ///
 /// Called by [`system_resource_key`] and from the planner, which is where a
@@ -497,7 +538,7 @@ pub fn format_plan_item(action: &Action) -> String {
             }
             EnvAction::RefreshLiveSession { vars } => {
                 format!(
-                    "publish {} to the session manager",
+                    "publish {} to the live session",
                     crate::pluralize(vars.len(), "var")
                 )
             }
@@ -713,11 +754,62 @@ pub(super) fn parse_package_description(desc: &str) -> Option<(String, String, V
 
 #[cfg(test)]
 mod tests {
-    use super::super::types::{DeclaredProvision, ManagerAction, ModuleAction, ModuleActionKind};
-    use super::{
-        elided_list, format_manager_action_item, format_module_action_item,
-        parse_package_description,
+    use super::super::types::{
+        Action, DeclaredProvision, EnvAction, ManagerAction, ModuleAction, ModuleActionKind,
     };
+    use super::{
+        action_display_subject, elided_list, format_manager_action_item, format_module_action_item,
+        parse_package_description, pre_skip_doubling_error,
+    };
+
+    /// No withheld row states one noun twice.
+    ///
+    /// A pre-skipped action renders as `<subject> — <reason>`, two slots the
+    /// withholding role deliberately paints in opposite emphasis, and
+    /// `publish 3 vars to the session manager — no session manager` spent both
+    /// of them on the same noun. The same defect
+    /// `system_key_doubling_error` and `note_tag_doubling_error` already
+    /// forbid on the other two name-prefixed compositions.
+    ///
+    /// The table is every action `Action::pre_skip_reason` answers `Some` for.
+    /// Its completeness is asserted against that function's own source, so a
+    /// second gate of that shape is classified here before it can ship a
+    /// doubled row.
+    #[test]
+    fn no_pre_skip_reason_repeats_a_noun_its_subject_already_names() {
+        let withheld: Vec<(Action, &str)> = vec![(
+            Action::Env(EnvAction::RefreshLiveSession {
+                vars: vec![("EDITOR".into(), "nvim".into())],
+            }),
+            crate::NO_SESSION_MANAGER,
+        )];
+
+        for (action, reason) in &withheld {
+            let subject = action_display_subject(action).to_string();
+            assert!(
+                pre_skip_doubling_error(&subject, reason).is_none(),
+                "{}",
+                pre_skip_doubling_error(&subject, reason).unwrap_or_default()
+            );
+        }
+
+        let types = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reconciler/types.rs"),
+        )
+        .expect("types.rs is readable");
+        let body = types
+            .split_once("pub fn pre_skip_reason(")
+            .expect("pre_skip_reason is declared")
+            .1
+            .split_once("\n    }\n")
+            .expect("pre_skip_reason has a body")
+            .0;
+        assert_eq!(
+            body.matches("Some(").count(),
+            withheld.len(),
+            "a pre-skip arm was added without a row in this walk: {body}"
+        );
+    }
 
     /// The elision marker `elided_list` mints, as a reader sees it.
     const ELIDED: &str = " more";

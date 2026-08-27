@@ -23214,7 +23214,7 @@ fn an_executed_action_is_timed_and_a_skipped_one_is_not() {
         installed.contains("(XXs)"),
         "an executed action is timed however briefly: {installed:?}"
     );
-    let skipped = line_with("the session manager");
+    let skipped = line_with("the live session");
     assert!(
         !skipped.contains("(XXs)"),
         "a skipped action did no work, so it has no elapsed time: {skipped:?}"
@@ -23326,7 +23326,7 @@ fn refresh_live_session_reports_no_session_manager_when_unavailable() {
         "the skipped line must say why, not just that nothing changed: {raw}"
     );
     assert!(
-        !raw.contains("publish 1 var to the session manager \u{2014} unchanged"),
+        !raw.contains("publish 1 var to the live session \u{2014} unchanged"),
         "the unavailable case must not render as the generic unchanged detail: {raw}"
     );
 
