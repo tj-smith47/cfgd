@@ -263,9 +263,6 @@ pub(super) async fn handle_file_change_tick(
                     if let Some(count) = super::drift::current_drift_count(&store) {
                         let mut st = ctx.state.lock().await;
                         st.drift_count = count;
-                        if let Some(source) = st.sources.first_mut() {
-                            source.drift_count = count;
-                        }
                     }
 
                     if ctx.notify_on_drift {
@@ -875,8 +872,7 @@ pub(super) fn build_initial_source_status(
         .map(|source| SourceStatus {
             name: source.name.clone(),
             last_sync: None,
-            last_reconcile: None,
-            drift_count: 0,
+            drift_count: None,
             status: "active".to_string(),
             last_commit: crate::sources::SourceManager::head_commit(
                 &source_cache_dir.join(&source.name),

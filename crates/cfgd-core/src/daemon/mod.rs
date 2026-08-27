@@ -369,8 +369,19 @@ pub(super) struct ReconcileTask {
 pub struct SourceStatus {
     pub name: String,
     pub last_sync: Option<String>,
-    pub last_reconcile: Option<String>,
-    pub drift_count: u32,
+    /// Outstanding drift attributable to THIS source, or `None` for "cannot
+    /// say".
+    ///
+    /// Nothing fills it today, and the `Drift` column it feeds is dropped from
+    /// every render as a result (`Table::without_unfillable_columns`). Drift is
+    /// recorded per RESOURCE and the resource's declaring layer is not on the
+    /// row: four of the seven action kinds hardcode `LOCAL_LAYER` as their
+    /// origin, and the file watcher records with no origin at all, so a count
+    /// derived from what is stored would attribute a `team` module's script to
+    /// `local`. The machine-wide total lives on
+    /// [`DaemonStatusResponse::drift_count`] and is stated once, in the header.
+    #[serde(default)]
+    pub drift_count: Option<u32>,
     pub status: String,
     /// The commit the source's checkout is at, full length: seeded from the
     /// repository HEAD when the daemon starts and moved by every pull the
@@ -452,8 +463,7 @@ impl DaemonState {
             sources: vec![SourceStatus {
                 name: LOCAL_LAYER.to_string(),
                 last_sync: None,
-                last_reconcile: None,
-                drift_count: 0,
+                drift_count: None,
                 status: "active".to_string(),
                 last_commit: None,
             }],

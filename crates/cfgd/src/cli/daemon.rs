@@ -259,7 +259,10 @@ fn daemon_source_row(
             .last_commit
             .clone()
             .or_else(|| declared.and_then(|e| e.last_commit.clone())),
-        drift_count: Some(src.drift_count),
+        // Straight through: the daemon cannot attribute drift to one source
+        // (see `SourceStatus::drift_count`), so the `Drift` column is dropped
+        // rather than filled with the machine-wide total.
+        drift_count: src.drift_count,
     }
 }
 
@@ -1094,17 +1097,15 @@ mod tests {
             cfgd_core::daemon::SourceStatus {
                 name: "infra".into(),
                 status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
-                drift_count: 0,
+                drift_count: None,
                 last_sync: Some("2026-05-14T10:00:00Z".into()),
-                last_reconcile: None,
                 last_commit: None,
             },
             cfgd_core::daemon::SourceStatus {
                 name: "apps".into(),
                 status: cfgd_core::state::SOURCE_STATUS_ERROR.into(),
-                drift_count: 3,
+                drift_count: None,
                 last_sync: None,
-                last_reconcile: None,
                 last_commit: None,
             },
         ];
@@ -1133,9 +1134,8 @@ mod tests {
         status.sources = vec![cfgd_core::daemon::SourceStatus {
             name: cfgd_core::config::LOCAL_LAYER.into(),
             status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
-            drift_count: 0,
+            drift_count: None,
             last_sync: None,
-            last_reconcile: None,
             last_commit: None,
         }];
         let (printer, cap) = Printer::for_test_doc();
@@ -1171,9 +1171,8 @@ mod tests {
         status.sources.push(cfgd_core::daemon::SourceStatus {
             name: "team".into(),
             status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
-            drift_count: 0,
+            drift_count: None,
             last_sync: None,
-            last_reconcile: None,
             last_commit: None,
         });
         let (printer, cap) = Printer::for_test_doc();
@@ -1188,10 +1187,11 @@ mod tests {
             .find(|l| l.trim_start().starts_with("local"))
             .unwrap_or_else(|| panic!("a local row: {human}"));
         let cells: Vec<&str> = local_row.split_whitespace().collect();
-        // Name, Source, Priority, Status, Drift, Last Sync, Requires Signed
+        // Name, Source, Priority, Status, Last Sync, Requires Signed —
+        // `Drift` is gone: no row can fill it (see `SourceStatus::drift_count`).
         assert_eq!(
             cells,
-            vec!["local", "-", "-", "Active", "0", "never", "-"],
+            vec!["local", "-", "-", "Active", "never", "-"],
             "every undeclared slot reads absent, never a default: {human}"
         );
 
@@ -1212,9 +1212,8 @@ mod tests {
         status.sources = vec![cfgd_core::daemon::SourceStatus {
             name: cfgd_core::config::LOCAL_LAYER.into(),
             status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
-            drift_count: 0,
+            drift_count: None,
             last_sync: Some("2026-05-14T11:00:00Z".into()),
-            last_reconcile: None,
             last_commit: Some(LANDED.into()),
         }];
         let (printer, cap) = Printer::for_test_doc();
@@ -1275,8 +1274,7 @@ mod tests {
         status.sources = vec![cfgd_core::daemon::SourceStatus {
             name: "local".into(),
             last_sync: Some("2026-05-14T11:00:00Z".into()),
-            last_reconcile: None,
-            drift_count: 0,
+            drift_count: None,
             status: "Active".into(),
             last_commit: None,
         }];

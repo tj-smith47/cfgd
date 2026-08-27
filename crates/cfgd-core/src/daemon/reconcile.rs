@@ -668,10 +668,7 @@ fn reconcile_tick(
         if let Some(name) = module_filter {
             st.module_last_reconcile.insert(name.to_string(), timestamp);
         } else {
-            st.last_reconcile = Some(timestamp.clone());
-            if let Some(source) = st.sources.first_mut() {
-                source.last_reconcile = Some(timestamp);
-            }
+            st.last_reconcile = Some(timestamp);
         }
     });
 
@@ -708,9 +705,6 @@ fn reconcile_tick(
         rt.block_on(async {
             let mut st = state.lock().await;
             st.drift_count = 0;
-            if let Some(source) = st.sources.first_mut() {
-                source.drift_count = 0;
-            }
         });
         Some("nothing to do".to_string())
     } else {
@@ -894,9 +888,6 @@ fn reconcile_tick(
             rt.block_on(async {
                 let mut st = state.lock().await;
                 st.drift_count = outstanding;
-                if let Some(source) = st.sources.first_mut() {
-                    source.drift_count = outstanding;
-                }
             });
         }
 
@@ -1031,9 +1022,6 @@ fn reconcile_tick(
                             rt.block_on(async {
                                 let mut st = state.lock().await;
                                 st.drift_count = outstanding;
-                                if let Some(source) = st.sources.first_mut() {
-                                    source.drift_count = outstanding;
-                                }
                             });
                         }
 

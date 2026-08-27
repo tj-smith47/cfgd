@@ -272,8 +272,7 @@ fn source_status_round_trips() {
     let status = SourceStatus {
         name: "local".to_string(),
         last_sync: Some("2026-01-01T00:00:00Z".to_string()),
-        last_reconcile: None,
-        drift_count: 3,
+        drift_count: Some(3),
         status: "active".to_string(),
         last_commit: None,
     };
@@ -281,8 +280,7 @@ fn source_status_round_trips() {
     let parsed: SourceStatus = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.name, "local");
     assert_eq!(parsed.last_sync.as_deref(), Some("2026-01-01T00:00:00Z"));
-    assert!(parsed.last_reconcile.is_none());
-    assert_eq!(parsed.drift_count, 3);
+    assert_eq!(parsed.drift_count, Some(3));
     assert_eq!(parsed.status, "active");
     // Verify camelCase renaming
     assert!(json.contains("\"driftCount\":3"));
@@ -4180,16 +4178,14 @@ fn daemon_state_with_multiple_sources() {
     state.sources.push(SourceStatus {
         name: "acme-corp".to_string(),
         last_sync: Some("2026-03-30T10:00:00Z".to_string()),
-        last_reconcile: None,
-        drift_count: 2,
+        drift_count: Some(2),
         status: "active".to_string(),
         last_commit: None,
     });
     state.sources.push(SourceStatus {
         name: "team-tools".to_string(),
         last_sync: None,
-        last_reconcile: Some("2026-03-30T11:00:00Z".to_string()),
-        drift_count: 0,
+        drift_count: Some(0),
         status: "error".to_string(),
         last_commit: None,
     });
@@ -4197,24 +4193,92 @@ fn daemon_state_with_multiple_sources() {
     let response = state.to_response();
     assert_eq!(response.sources.len(), 3); // local + acme-corp + team-tools
     assert_eq!(response.sources[1].name, "acme-corp");
-    assert_eq!(response.sources[1].drift_count, 2);
+    assert_eq!(response.sources[1].drift_count, Some(2));
     assert_eq!(response.sources[2].name, "team-tools");
     assert_eq!(response.sources[2].status, "error");
 }
 
+/// A per-source row states facts about ITS source. A machine-wide fact reached
+/// one by POSITION — `st.sources.first_mut()` — and four sites wrote the whole
+/// machine's outstanding drift count, plus the profile-wide reconcile stamp,
+/// onto whichever source happened to be first in the vec; `daemon status` then
+/// printed one number twice and its `Sources` table credited the machine's
+/// drift to one arbitrary row.
+///
+/// A write that legitimately targets one source finds it BY NAME (the `local`
+/// layer's commit seeding does), so nothing production needs the positional
+/// reach. A future one that does says why with a `// positional-source-ok:`
+/// marker on the line or the line above.
+#[test]
+fn no_daemon_state_write_reaches_a_source_row_by_position() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .expect("the daemon module is checked out")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
+        .collect();
+    files.sort();
+    assert!(
+        files.len() >= 5,
+        "the walk no longer reaches the daemon module — it found {} files",
+        files.len()
+    );
+    // A positional reach that can WRITE: the borrow, and the indexed
+    // assignment. A positional READ in an assertion is not this bug.
+    let positional_write = |line: &str| {
+        line.contains("sources.first_mut()")
+            || line.contains("sources.get_mut(")
+            || (line.contains("sources[") && line.contains("] ="))
+            || (line.contains("sources[")
+                && line.split("sources[").nth(1).is_some_and(|tail| {
+                    tail.split_once(']')
+                        .is_some_and(|(_, rest)| rest.starts_with('.') && rest.contains(" = "))
+                }))
+    };
+    let mut offenders = Vec::new();
+    for path in &files {
+        let Ok(body) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !positional_write(line) {
+                continue;
+            }
+            let hatched = line.contains("// positional-source-ok:")
+                || n.checked_sub(1)
+                    .is_some_and(|p| lines[p].contains("// positional-source-ok:"));
+            if !hatched {
+                offenders.push(format!("{}:{}", path.display(), n + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a source row is reached by NAME, never by position — a machine-wide \
+         fact written into `sources[0]` claims the whole machine belongs to \
+         one arbitrary source:\n{}",
+        offenders.join("\n")
+    );
+}
+
 // --- DaemonState: drift counting ---
 
+/// The machine-wide count reaches the response's own field and NOTHING else:
+/// a per-source row it were copied onto would claim the whole machine's drift
+/// belongs to whichever source happens to sit first in the vec.
 #[test]
-fn daemon_state_drift_increments_propagate_to_response() {
+fn daemon_state_drift_count_stays_machine_wide() {
     let mut state = DaemonState::new();
     state.drift_count = 10;
-    if let Some(source) = state.sources.first_mut() {
-        source.drift_count = 7;
-    }
 
     let response = state.to_response();
     assert_eq!(response.drift_count, 10);
-    assert_eq!(response.sources[0].drift_count, 7);
+    assert!(
+        response.sources.iter().all(|s| s.drift_count.is_none()),
+        "a machine-wide count must not be attributed to a source row"
+    );
 }
 
 // --- DaemonState: module_last_reconcile tracking ---
@@ -4652,15 +4716,13 @@ fn source_status_defaults() {
     let status = SourceStatus {
         name: "test".to_string(),
         last_sync: None,
-        last_reconcile: None,
-        drift_count: 0,
+        drift_count: None,
         status: "active".to_string(),
         last_commit: None,
     };
 
     assert!(status.last_sync.is_none());
-    assert!(status.last_reconcile.is_none());
-    assert_eq!(status.drift_count, 0);
+    assert!(status.drift_count.is_none());
 }
 
 // --- SourceStatus: all fields populated ---
@@ -4670,8 +4732,7 @@ fn source_status_all_fields_populated() {
     let status = SourceStatus {
         name: "corp-source".to_string(),
         last_sync: Some("2026-03-30T10:00:00Z".to_string()),
-        last_reconcile: Some("2026-03-30T10:05:00Z".to_string()),
-        drift_count: 15,
+        drift_count: Some(15),
         status: "error".to_string(),
         last_commit: None,
     };
@@ -4680,11 +4741,7 @@ fn source_status_all_fields_populated() {
     let parsed: SourceStatus = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.name, "corp-source");
     assert_eq!(parsed.last_sync.as_deref(), Some("2026-03-30T10:00:00Z"));
-    assert_eq!(
-        parsed.last_reconcile.as_deref(),
-        Some("2026-03-30T10:05:00Z")
-    );
-    assert_eq!(parsed.drift_count, 15);
+    assert_eq!(parsed.drift_count, Some(15));
     assert_eq!(parsed.status, "error");
 }
 
@@ -5627,8 +5684,7 @@ async fn handle_sync_updates_per_source_status() {
         st.sources.push(SourceStatus {
             name: "acme".to_string(),
             last_sync: None,
-            last_reconcile: None,
-            drift_count: 0,
+            drift_count: Some(0),
             status: "active".to_string(),
             last_commit: None,
         });
@@ -6728,7 +6784,7 @@ fn daemon_status_response_full_deserialization() {
     assert_eq!(parsed.last_sync.as_deref(), Some("2026-04-01T00:01:00Z"));
     assert_eq!(parsed.drift_count, 42);
     assert_eq!(parsed.sources.len(), 1);
-    assert_eq!(parsed.sources[0].drift_count, 10);
+    assert_eq!(parsed.sources[0].drift_count, Some(10));
     assert_eq!(parsed.update_available.as_deref(), Some("4.0.0"));
     assert_eq!(parsed.module_reconcile.len(), 1);
     assert_eq!(parsed.module_reconcile[0].name, "sec");
@@ -6793,16 +6849,14 @@ fn daemon_state_to_response_preserves_source_order() {
     state.sources.push(SourceStatus {
         name: "z-source".into(),
         last_sync: None,
-        last_reconcile: None,
-        drift_count: 0,
+        drift_count: Some(0),
         status: "active".into(),
         last_commit: None,
     });
     state.sources.push(SourceStatus {
         name: "a-source".into(),
         last_sync: None,
-        last_reconcile: None,
-        drift_count: 0,
+        drift_count: Some(0),
         status: "active".into(),
         last_commit: None,
     });
@@ -6990,16 +7044,14 @@ fn daemon_status_response_roundtrip_symmetry() {
             SourceStatus {
                 name: "local".into(),
                 last_sync: Some("2026-04-01T12:01:00Z".into()),
-                last_reconcile: Some("2026-04-01T12:00:00Z".into()),
-                drift_count: 50,
+                drift_count: Some(50),
                 status: "active".into(),
                 last_commit: None,
             },
             SourceStatus {
                 name: "corp".into(),
                 last_sync: None,
-                last_reconcile: None,
-                drift_count: 50,
+                drift_count: Some(50),
                 status: "error".into(),
                 last_commit: None,
             },
@@ -7043,18 +7095,19 @@ fn source_status_camel_case_serialization() {
     let status = SourceStatus {
         name: "test".into(),
         last_sync: Some("ts".into()),
-        last_reconcile: Some("tr".into()),
-        drift_count: 1,
+        drift_count: Some(1),
         status: "active".into(),
         last_commit: None,
     };
     let json = serde_json::to_string(&status).unwrap();
     assert!(json.contains("\"lastSync\""));
-    assert!(json.contains("\"lastReconcile\""));
     assert!(json.contains("\"driftCount\""));
     assert!(!json.contains("\"last_sync\""));
-    assert!(!json.contains("\"last_reconcile\""));
     assert!(!json.contains("\"drift_count\""));
+    assert!(
+        !json.contains("Reconcile"),
+        "a source row carries no reconcile stamp of its own: {json}"
+    );
 }
 
 // --- compute_config_hash: uses only packages for hash ---
@@ -8564,9 +8617,6 @@ async fn handle_reconcile_clean_tick_clears_outstanding_drift() {
     {
         let mut st = state.lock().await;
         st.drift_count = 1;
-        if let Some(source) = st.sources.first_mut() {
-            source.drift_count = 1;
-        }
     }
     let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
 
@@ -11517,9 +11567,11 @@ spec:
         assert_eq!(rows[1].name, "beta");
         for r in &rows {
             assert_eq!(r.status, "active");
-            assert_eq!(r.drift_count, 0);
+            assert!(
+                r.drift_count.is_none(),
+                "a seeded row has no drift of its own to report"
+            );
             assert!(r.last_sync.is_none());
-            assert!(r.last_reconcile.is_none());
             assert!(r.last_commit.is_none(), "nothing fetched, nothing to be at");
         }
     }
@@ -15283,8 +15335,7 @@ spec: {}
         state.sources.push(super::super::SourceStatus {
             name: "remote".to_string(),
             last_sync: None,
-            last_reconcile: None,
-            drift_count: 2,
+            drift_count: Some(2),
             status: "active".to_string(),
             last_commit: None,
         });
