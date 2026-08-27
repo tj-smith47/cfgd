@@ -612,8 +612,11 @@ pub struct SourceListEntry {
     /// which is the only form a machine consumer can match against a remote.
     pub last_commit: Option<String>,
     /// Unresolved drift attributed to this source, when the surface rendering
-    /// the row knows it. `None` is "not known" — `cfgd source list` reads
-    /// config and source state and never scans — and renders `-`.
+    /// the row knows it. `None` is "not known" and renders `-`; every producer
+    /// answers `None` today, so the column is dropped from every render (see
+    /// `cfgd_core::daemon::SourceStatus::drift_count` for why the daemon's own
+    /// rows cannot answer it either). The machine-wide total is a header fact,
+    /// never a row's.
     pub drift_count: Option<u32>,
 }
 

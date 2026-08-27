@@ -636,7 +636,7 @@ mod tests {
         assert_eq!(status.drift_count, 7, "driftCount → drift_count mapping");
         assert_eq!(status.sources.len(), 1);
         assert_eq!(status.sources[0].name, "remote");
-        assert_eq!(status.sources[0].drift_count, 2);
+        assert_eq!(status.sources[0].drift_count, Some(2));
         assert_eq!(status.sources[0].status, "degraded");
         assert!(status.update_available.is_none(), "absent field → None");
     }

@@ -44,11 +44,12 @@ pub fn build_source_list_doc(entries: &[SourceListEntry], wide: bool, now: &str)
 /// non-demanding one with signed HEADs rendered identically without both.
 ///
 /// A column no row in THIS render can fill is dropped, not padded
-/// (`Table::without_unfillable_columns`): `Drift` is live per-source drift
-/// only the daemon holds, so on `source list` every cell was `-` — seven
-/// characters per row answering nothing on the listing that is the family's
-/// rest point. The same rule covers `Version` (`--wide`, absent until a
-/// manifest names one) and `Commit` / `Signed` before the first fetch. The
+/// (`Table::without_unfillable_columns`): `Drift` is per-source drift, which
+/// nothing can attribute today (see
+/// `cfgd_core::daemon::SourceStatus::drift_count`), so every cell was `-` —
+/// seven characters per row answering nothing on the listing that is the
+/// family's rest point. The same rule covers `Version` (`--wide`, absent until
+/// a manifest names one) and `Commit` / `Signed` before the first fetch. The
 /// `-o json` payload keeps every field; a `null` there is a fact.
 pub fn sources_table(entries: &[SourceListEntry], wide: bool, now: &str) -> Table {
     let cell = |value: Option<String>| (value.unwrap_or_else(|| ABSENT.to_string()), None);
@@ -188,8 +189,10 @@ pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 /// Every `spec.sources[]` entry paired with what the state store recorded for
 /// it — the row set both `cfgd source list` and `cfgd daemon status` render.
 ///
-/// `drift_count` is left `None` here: this read never scans, and the daemon,
-/// which holds live per-source drift, fills it on its own rows.
+/// `drift_count` is left `None` here: this read never scans, and no surface
+/// can attribute drift to one source (see
+/// `cfgd_core::daemon::SourceStatus::drift_count`) — the machine-wide total is
+/// stated once, in the header of whichever report holds it.
 pub fn configured_source_entries(
     cfg: &cfgd_core::config::CfgdConfig,
     state: &cfgd_core::state::StateStore,

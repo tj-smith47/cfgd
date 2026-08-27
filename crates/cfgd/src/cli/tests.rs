@@ -19245,15 +19245,15 @@ fn sample_daemon_status(
 fn sample_source(
     name: &str,
     status: &str,
-    drift: u32,
     last_sync: Option<&str>,
 ) -> cfgd_core::daemon::SourceStatus {
     cfgd_core::daemon::SourceStatus {
         name: name.to_string(),
         status: status.to_string(),
-        drift_count: drift,
+        // The daemon cannot attribute drift to one source; see
+        // `SourceStatus::drift_count`.
+        drift_count: None,
         last_sync: last_sync.map(|s| s.to_string()),
-        last_reconcile: None,
         last_commit: None,
     }
 }
@@ -19271,8 +19271,8 @@ fn render_daemon_status_human_running_with_sources_and_update() {
         3600,
         7,
         vec![
-            sample_source("local", "active", 0, None),
-            sample_source("team", "error", 7, Some("2026-05-12T09:00:00Z")),
+            sample_source("local", "active", None),
+            sample_source("team", "error", Some("2026-05-12T09:00:00Z")),
         ],
         Some("9.9.9".to_string()),
     );
@@ -19347,7 +19347,7 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
 #[test]
 fn render_daemon_status_json_emits_some_status_shape() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
-    let status = sample_daemon_status(99, 60, 1, vec![sample_source("s1", "ok", 0, None)], None);
+    let status = sample_daemon_status(99, 60, 1, vec![sample_source("s1", "ok", None)], None);
     printer.emit(super::daemon::build_daemon_status_doc(
         Some(&status),
         &[],

@@ -67,16 +67,14 @@ fn sample_status_basic() -> DaemonStatusResponse {
             SourceStatus {
                 name: "local".to_string(),
                 last_sync: None,
-                last_reconcile: None,
-                drift_count: 0,
+                drift_count: None,
                 status: cfgd_core::state::SOURCE_STATUS_ACTIVE.to_string(),
                 last_commit: None,
             },
             SourceStatus {
                 name: "team".to_string(),
                 last_sync: Some("2026-05-12T09:00:00Z".to_string()),
-                last_reconcile: None,
-                drift_count: 7,
+                drift_count: None,
                 status: cfgd_core::state::SOURCE_STATUS_ERROR.to_string(),
                 last_commit: None,
             },

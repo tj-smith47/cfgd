@@ -10,7 +10,7 @@ Drift Count         7
 Last Reconcile      2d ago
 
 Sources
-  Name   Source                          Priority  Status  Drift  Commit        Last Sync  Signed  Requires Signed
-  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  local  /etc/cfgd/local                 50        Active  0      -             never      -       no             
-  team   https://github.com/team/config  100       Failed  7      abc123456789  2d ago     yes     yes            
+  Name   Source                          Priority  Status  Commit        Last Sync  Signed  Requires Signed
+  ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+  local  /etc/cfgd/local                 50        Active  -             never      -       no             
+  team   https://github.com/team/config  100       Failed  abc123456789  2d ago     yes     yes            
