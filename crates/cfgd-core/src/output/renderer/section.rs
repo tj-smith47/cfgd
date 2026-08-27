@@ -843,7 +843,7 @@ mod alignment_group_tests {
         ),
         (
             Role::Skipped,
-            "publish 4 vars to the session manager",
+            "publish 4 vars to the live session",
             "no session manager",
         ),
     ];

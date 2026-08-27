@@ -416,7 +416,10 @@ impl Action {
             Action::Env(EnvAction::RefreshLiveSession { .. })
                 if !crate::session_manager_available() =>
             {
-                Some(crate::NO_SESSION_MANAGER)
+                Some(super::format::debug_checked_pre_skip_reason(
+                    self,
+                    crate::NO_SESSION_MANAGER,
+                ))
             }
             _ => None,
         }

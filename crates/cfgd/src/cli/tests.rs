@@ -14233,11 +14233,7 @@ fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
     /// The env-target action subjects, as `action_display_subject` renders
     /// them. `write` is qualified by the generated basenames so a fixture's
     /// own file write cannot look like one.
-    const ROW_MARKERS: &[&str] = &[
-        "inject source line into",
-        "to the session manager",
-        "write ",
-    ];
+    const ROW_MARKERS: &[&str] = &["inject source line into", "to the live session", "write "];
     const GENERATED_FILES: &[&str] = &[
         "/.cfgd.env",
         "/.cfgd-env.ps1",
