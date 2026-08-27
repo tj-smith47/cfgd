@@ -284,6 +284,76 @@ pub(in crate::cli) fn heal_drift_hint(module: Option<&str>) -> String {
     }
 }
 
+/// How a preview was SCOPED, for [`perform_preview_hint`] to re-state on the
+/// command that performs it.
+///
+/// Every field is a flag `plan` and `apply --dry-run` share, so one struct
+/// serves both; `init --apply --dry-run` exposes none of them and takes
+/// [`PreviewScope::unscoped`].
+#[derive(Clone, Copy, Default)]
+pub(in crate::cli) struct PreviewScope<'a> {
+    pub module: &'a [String],
+    pub with_profile: bool,
+    pub phase: Option<&'a PhaseArg>,
+    pub only: &'a [String],
+    pub skip: &'a [String],
+    pub skip_scripts: bool,
+}
+
+impl PreviewScope<'_> {
+    /// A preview no scoping flag could have narrowed.
+    pub(in crate::cli) fn unscoped() -> Self {
+        Self::default()
+    }
+
+    /// The flags as they would be typed again, in the order `--help` lists
+    /// them. Empty when nothing narrowed the preview.
+    fn flags(&self) -> String {
+        let mut parts = Vec::new();
+        for name in self.module {
+            parts.push(format!("--module {name}"));
+        }
+        if self.with_profile {
+            parts.push("--with-profile".to_string());
+        }
+        if let Some(phase) = self.phase {
+            parts.push(format!("--phase {phase}"));
+        }
+        for path in self.only {
+            parts.push(format!("--only {path}"));
+        }
+        for path in self.skip {
+            parts.push(format!("--skip {path}"));
+        }
+        if self.skip_scripts {
+            parts.push("--skip-scripts".to_string());
+        }
+        parts.join(" ")
+    }
+}
+
+/// The next step a PREVIEW closes on, once it has listed work the machine has
+/// not done yet.
+///
+/// The third of three next-step wordings, split by what the reader has just
+/// seen. [`MSG_RUN_APPLY`] invites a preview of changes they have NOT seen (a
+/// mutating verb just edited the config out from under them).
+/// [`heal_drift_hint`] follows a report that FOUND drift. This one follows the
+/// preview itself, so it neither re-offers the preview that just ran nor
+/// claims a drift check was made.
+///
+/// Scoped exactly as the preview was, because a bare `cfgd apply` after
+/// `cfgd plan --only packages` performs work the reader was never shown — the
+/// one way a next step can be worse than none.
+pub(in crate::cli) fn perform_preview_hint(scope: &PreviewScope<'_>) -> String {
+    let flags = scope.flags();
+    if flags.is_empty() {
+        "Run `cfgd apply` to make these changes".to_string()
+    } else {
+        format!("Run `cfgd apply {flags}` to make these changes")
+    }
+}
+
 /// Collapse a `--flag` / `--no-flag` pair into the edit it asks for. `None` is
 /// "the caller said nothing", which must stay distinct from `Some(false)` — a
 /// stored `true` has to survive an invocation that never mentioned the knob.
@@ -2321,6 +2391,27 @@ impl PhaseArg {
         PhaseArg {
             phase,
             selector: None,
+        }
+    }
+}
+
+impl std::fmt::Display for PhaseArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Rendered back through clap's own vocabulary, so a `--phase` a hint
+        // re-states re-parses by construction rather than through a second
+        // table kept by hand. The retired spelling renders as the phase it
+        // selects: re-emitting `env` would hand the reader a command that
+        // prints a deprecation on its way to doing what `prerequisites` does.
+        let name = match self.phase {
+            ApplyPhase::Env => "prerequisites".to_string(),
+            phase => <ApplyPhase as clap::ValueEnum>::to_possible_value(&phase)
+                .map(|pv| pv.get_name().to_string())
+                .unwrap_or_else(|| "prerequisites".to_string()),
+        };
+        write!(f, "{name}")?;
+        match &self.selector {
+            Some(selector) => write!(f, ".{selector}"),
+            None => Ok(()),
         }
     }
 }

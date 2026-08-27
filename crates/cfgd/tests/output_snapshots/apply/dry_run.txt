@@ -8,3 +8,5 @@ Phase: Files
     - create <TARGET>
 
 ◉ 1 action planned
+
+→ Run `cfgd apply` to make these changes

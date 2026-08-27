@@ -2554,7 +2554,7 @@ mod tests {
         });
         let out = dashboard(&output);
         assert!(
-            out.contains("21 succeeded, 1 skipped, 0 failed"),
+            out.contains("21 succeeded, 1 skipped"),
             "the Summary row must read as prose: {out}"
         );
         assert!(

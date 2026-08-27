@@ -493,6 +493,14 @@ pub fn run_apply(
             printer,
             &PlanPreviewArgs {
                 context: &args.context,
+                preview: crate::cli::PreviewScope {
+                    module: &args.module,
+                    with_profile: args.with_profile,
+                    phase: args.phase.as_ref(),
+                    only: &args.only,
+                    skip: &args.skip,
+                    skip_scripts: args.skip_scripts,
+                },
                 phase_filter: phase_filter.as_ref(),
                 dry_run_fm: dry_run_fm.as_ref(),
                 scope: &scope,
@@ -616,7 +624,15 @@ pub fn run_apply(
                 &resolved_modules,
             );
         }
-        report_plan_verdict(printer, 0, Some(&scope), withheld.pending.len());
+        report_plan_verdict(
+            printer,
+            0,
+            Some(&scope),
+            withheld.pending.len(),
+            // The zero-action arms word themselves; nothing here is scoped
+            // into a next step.
+            &crate::cli::PreviewScope::unscoped(),
+        );
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
         return Ok(ApplyOutcome::success());
     }

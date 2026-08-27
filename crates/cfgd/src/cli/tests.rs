@@ -13402,6 +13402,132 @@ fn report_no_in_scope_actions_classifies_outcomes() {
     }
 }
 
+/// A verdict that has just shown the reader pending work names the command
+/// that settles it. `cfgd plan` ended on `◉ 4 actions planned` and nothing
+/// else, in a CLI where every other verdict surface — `diff`, `verify`,
+/// `status`, `compliance` — closes on `heal_drift_hint`, and where even the
+/// filter-excluded arm of this same function already hinted.
+///
+/// The table is the whole population of states `report_plan_verdict` can close
+/// in, and which of them leaves the reader with something to do.
+#[test]
+fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
+    let scope_with_work = ScopeReport {
+        filter_active: true,
+        unfiltered_total: 4,
+        phases_with_work: vec!["Packages".to_string()],
+        filter_miss: true,
+    };
+    let in_sync = ScopeReport {
+        filter_active: false,
+        unfiltered_total: 0,
+        phases_with_work: vec![],
+        filter_miss: false,
+    };
+    // (name, emit, does this state leave the reader work to do?)
+    type VerdictState<'a> = (
+        &'static str,
+        Box<dyn Fn(&cfgd_core::output::Printer) + 'a>,
+        bool,
+    );
+    let states: Vec<VerdictState<'_>> = vec![
+        (
+            "has work",
+            Box::new(|p: &cfgd_core::output::Printer| {
+                report_plan_verdict(p, 4, Some(&in_sync), 0, &PreviewScope::unscoped())
+            }),
+            true,
+        ),
+        (
+            "has work, unscoped surface",
+            Box::new(|p: &cfgd_core::output::Printer| {
+                report_plan_verdict(p, 4, None, 0, &PreviewScope::unscoped())
+            }),
+            true,
+        ),
+        (
+            "filter excluded the work",
+            Box::new(|p: &cfgd_core::output::Printer| {
+                report_plan_verdict(p, 0, Some(&scope_with_work), 0, &PreviewScope::unscoped())
+            }),
+            true,
+        ),
+        (
+            "up to date",
+            Box::new(|p: &cfgd_core::output::Printer| {
+                report_plan_verdict(p, 0, Some(&in_sync), 0, &PreviewScope::unscoped())
+            }),
+            false,
+        ),
+        (
+            // The decisions SECTION closes on `answer_decisions_hint` from
+            // inside itself, so the verdict under it adds nothing.
+            "withheld by a pending decision",
+            Box::new(|p: &cfgd_core::output::Printer| {
+                report_plan_verdict(p, 0, Some(&in_sync), 1, &PreviewScope::unscoped())
+            }),
+            false,
+        ),
+    ];
+
+    for (name, emit, leaves_work) in states {
+        let (printer, buf) = test_printer_capture();
+        emit(&printer);
+        printer.flush();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert_eq!(
+            out.contains("cfgd "),
+            leaves_work,
+            "{name}: a verdict names a command exactly when it leaves the reader \
+             something to do, got:\n{out}"
+        );
+    }
+
+    // The hint is scoped as the preview was: a bare `cfgd apply` after a
+    // filtered preview performs work the reader was never shown.
+    let module = vec!["nvim".to_string()];
+    let only = vec!["packages".to_string()];
+    let phase = PhaseArg {
+        phase: ApplyPhase::Packages,
+        selector: Some("brew".to_string()),
+    };
+    let scoped = PreviewScope {
+        module: &module,
+        with_profile: true,
+        phase: Some(&phase),
+        only: &only,
+        skip: &[],
+        skip_scripts: true,
+    };
+    let hint = perform_preview_hint(&scoped);
+    assert_eq!(
+        hint,
+        "Run `cfgd apply --module nvim --with-profile --phase packages.brew \
+         --only packages --skip-scripts` to make these changes"
+    );
+    // And it re-parses: a next step nobody can type is worse than none.
+    let flags = hint
+        .split('`')
+        .nth(1)
+        .unwrap_or_else(|| panic!("the hint backticks its command: {hint}"));
+    Cli::try_parse_from(flags.split_whitespace())
+        .unwrap_or_else(|e| panic!("the composed next step must re-parse: {e}"));
+
+    // The retired `--phase env` spelling renders as the phase it selects, so
+    // following the hint does not re-emit a deprecation.
+    let retired = PhaseArg {
+        phase: ApplyPhase::Env,
+        selector: None,
+    };
+    assert_eq!(
+        perform_preview_hint(&PreviewScope {
+            phase: Some(&retired),
+            ..PreviewScope::unscoped()
+        }),
+        "Run `cfgd apply --phase prerequisites` to make these changes"
+    );
+}
+
 /// A withheld decision is unanswered work the machine knows about, so a run
 /// that planned nothing is not up to date — it has nothing it is ALLOWED to
 /// do. `plan` printed the green up-to-date verdict three lines under its own
@@ -13430,13 +13556,19 @@ fn a_pending_decision_denies_the_up_to_date_verdict_on_every_verdict_surface() {
         (
             "report_plan_verdict/scoped",
             Box::new(|p: &cfgd_core::output::Printer, pending: usize| {
-                report_plan_verdict(p, 0, Some(&empty_scope()), pending)
+                report_plan_verdict(
+                    p,
+                    0,
+                    Some(&empty_scope()),
+                    pending,
+                    &PreviewScope::unscoped(),
+                )
             }),
         ),
         (
             "report_plan_verdict/unscoped",
             Box::new(|p: &cfgd_core::output::Printer, pending: usize| {
-                report_plan_verdict(p, 0, None, pending)
+                report_plan_verdict(p, 0, None, pending, &PreviewScope::unscoped())
             }),
         ),
     ];

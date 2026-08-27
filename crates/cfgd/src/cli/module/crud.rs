@@ -335,7 +335,13 @@ pub fn cmd_module_create(
             run.header(printer);
             // `module create` exposes no scoping flag, so the verdict takes the
             // filter-less arm of the one helper that owns both spellings.
-            crate::cli::plan_ops::report_plan_verdict(printer, 0, None, 0);
+            crate::cli::plan_ops::report_plan_verdict(
+                printer,
+                0,
+                None,
+                0,
+                &crate::cli::PreviewScope::unscoped(),
+            );
         } else {
             // Same requirement as `cfgd init --apply-module`: the apply records
             // module state from this slice, and regenerates the env files from

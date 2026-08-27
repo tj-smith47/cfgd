@@ -13,3 +13,5 @@ Phase: Prerequisites
     - inject source line into <HOME>/.bashrc
 
 ◉ 2 actions planned
+
+→ Run `cfgd apply` to make these changes

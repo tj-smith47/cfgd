@@ -651,7 +651,15 @@ pub(super) fn apply_plan(
         run.header(printer);
         // `init` scaffolds no scoping flag, so the verdict takes the
         // filter-less arm of the one helper that owns both spellings.
-        crate::cli::plan_ops::report_plan_verdict(printer, total, None, 0);
+        crate::cli::plan_ops::report_plan_verdict(
+            printer,
+            total,
+            None,
+            0,
+            // `init` scaffolds no scoping flag, so its preview's next step is
+            // the bare apply.
+            &crate::cli::PreviewScope::unscoped(),
+        );
         return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 
@@ -659,7 +667,15 @@ pub(super) fn apply_plan(
         let run = run.preview_only();
         run.header(printer);
         run.preview(printer);
-        crate::cli::plan_ops::report_plan_verdict(printer, total, None, 0);
+        crate::cli::plan_ops::report_plan_verdict(
+            printer,
+            total,
+            None,
+            0,
+            // `init` scaffolds no scoping flag, so its preview's next step is
+            // the bare apply.
+            &crate::cli::PreviewScope::unscoped(),
+        );
         return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 

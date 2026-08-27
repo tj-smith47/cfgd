@@ -9,3 +9,5 @@ Phase: Packages
     - fakemgr install fd
 
 ◉ 1 action planned
+
+→ Run `cfgd apply` to make these changes
