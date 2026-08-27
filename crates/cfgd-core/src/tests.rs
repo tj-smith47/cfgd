@@ -1093,16 +1093,23 @@ fn a_declaration_naming_no_ambient_path_is_taken_at_its_word() {
 fn one_directory_written_two_ways_lands_on_path_once() {
     let home = crate::expand_tilde(std::path::Path::new("~"));
     let literal = format!("{}/.cargo/bin", crate::to_posix_string(&home));
-    let mut base = vec![ev("PATH", "$HOME/.cargo/bin:$PATH")];
+    // The host's own separator, because a Windows home is `C:/Users/...` and
+    // splitting that on `:` reads one directory as two entries — the exact
+    // reading `PATH_LIST_SEPARATOR` exists to keep out of the fold.
+    let sep = crate::PATH_LIST_SEPARATOR;
+    let mut base = vec![ev("PATH", &format!("$HOME/.cargo/bin{sep}$PATH"))];
     fold_env_layer(
         &mut base,
-        &[ev("PATH", &format!("{literal}:/opt/bin"))],
-        ':',
+        &[ev("PATH", &format!("{literal}{sep}/opt/bin"))],
+        sep,
     );
     // First occurrence wins, so the spelling the earlier layer used survives;
     // the overlay names no ambient reference, so its remaining entry joins the
     // bucket ahead of the one the base declaration placed.
-    assert_eq!(path_value(&base), "$HOME/.cargo/bin:/opt/bin:$PATH");
+    assert_eq!(
+        path_value(&base),
+        format!("$HOME/.cargo/bin{sep}/opt/bin{sep}$PATH")
+    );
 }
 
 #[test]
