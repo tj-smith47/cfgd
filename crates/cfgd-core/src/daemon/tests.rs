@@ -8540,6 +8540,167 @@ async fn handle_reconcile_no_drift_when_no_actions() {
     assert_eq!(guard.drift_count, 0);
 }
 
+/// Every `if let Err` in the reconcile tick throws its `Ok` half away. Doing
+/// that to a COUNT costs the log the only fact separating two ticks:
+/// `refresh_link_deployed_hashes` returns how many recorded hashes a pull
+/// moved, and discarding it left the tick that carried a sync byte-identical
+/// to an idle one. The rest are `Ok(())` or a row id, which say nothing a
+/// reader wants — this table is where a new one is classified, so the next
+/// count-returning call cannot slip in as an error-only arm.
+#[test]
+fn every_error_only_arm_of_the_reconcile_tick_is_classified() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/reconcile.rs");
+    let body = std::fs::read_to_string(&path).expect("the reconcile tick is checked out");
+    // callee → why its `Ok` half carries nothing a reader of the log wants.
+    let classified = [
+        ("watcher.watch", "Ok(())"),
+        ("store.resolve_all_drift", "Ok(())"),
+        ("store.record_drift", "a row id, not a count"),
+        ("store.resolve_drift_not_in", "Ok(())"),
+        ("store.remove_managed_resource", "Ok(())"),
+        ("crate::state::clear_pending_server_config", "Ok(())"),
+    ];
+    let lines: Vec<&str> = body.lines().collect();
+    let mut seen = 0usize;
+    let mut unclassified = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        if !line.contains("if let Err(") {
+            continue;
+        }
+        seen += 1;
+        // The callee is on this line after the `=`, or on the next one when
+        // rustfmt broke the arm.
+        let tail = line.split_once("= ").map(|(_, t)| t).unwrap_or("");
+        let tail = if tail.trim().is_empty() {
+            lines.get(n + 1).copied().unwrap_or("")
+        } else {
+            tail
+        };
+        if !classified.iter().any(|(callee, _)| tail.contains(callee)) {
+            unclassified.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+    }
+    assert!(
+        seen >= 6,
+        "the walk no longer reaches the tick's error-only arms — it found {seen}"
+    );
+    assert!(
+        unclassified.is_empty(),
+        "an error-only arm throws its `Ok` half away: classify the new one here, \
+         and if it returns a COUNT, report it instead:\n{}",
+        unclassified.join("\n")
+    );
+}
+
+/// The beat a `sync` demo turns on: an edit made on another machine arrives
+/// through a symlink, so the tick that carried it plans nothing and used to
+/// close on the same `nothing to do` as the four idle ticks above it. The
+/// refresh count is the only fact separating the two states, and the tick
+/// discarded it with an `if let Err`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(daemon_log)]
+async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle() {
+    reset_daemon_log();
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    // The row an apply left behind, recording no hash yet — what the pull's
+    // bytes are about to move.
+    let target = tmp.path().join("deployed.conf");
+    let resource_id = crate::to_posix_string(&target);
+    let store = StateStore::open(&state_dir.join("state.db")).unwrap();
+    store
+        .upsert_managed_resource("file", &resource_id, "local", None, None)
+        .unwrap();
+    drop(store);
+
+    struct LinkHooks {
+        target: PathBuf,
+    }
+    impl DaemonHooks for LinkHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_files_with_manager(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<crate::daemon::PlannedFiles> {
+            let fm = crate::test_helpers::MockFileManager::new();
+            fm.set_link_deployed(vec![(
+                self.target.clone(),
+                crate::sha256_hex(b"landed by the pull"),
+            )]);
+            Ok((vec![], Some(Box::new(fm))))
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    let hooks = LinkHooks { target };
+    tokio::task::spawn_blocking(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &hooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let logs = daemon_log();
+    assert!(
+        logs.contains("reconcile: complete — nothing to do, 1 deployed file refreshed"),
+        "the tick that carried the sync must not read like an idle one: {logs}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_reconcile_clean_tick_clears_outstanding_drift() {
     // A previously-recorded drift row that no longer diverges must be resolved

@@ -63,6 +63,10 @@ pub struct MockFileManager {
     /// When set, `content_drift` returns this result verbatim instead of deriving
     /// the outcome from on-disk content. Lets tests pin an exact drift shape.
     pub content_drift_result: Mutex<Option<FileDriftResult>>,
+    /// What `link_deployed_content_hashes` reports. Empty by default — the mock
+    /// deploys nothing — so only a test that has recorded a managed row for the
+    /// same target fills it.
+    pub link_deployed: Mutex<Vec<(PathBuf, String)>>,
 }
 
 impl MockFileManager {
@@ -75,7 +79,14 @@ impl MockFileManager {
             content_drift_calls: Mutex::new(Vec::new()),
             fail_apply: Mutex::new(false),
             content_drift_result: Mutex::new(None),
+            link_deployed: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Pin what `link_deployed_content_hashes` reports, so a caller can drive
+    /// the recorded-hash refresh without a real symlink deployment.
+    pub fn set_link_deployed(&self, rows: Vec<(PathBuf, String)>) {
+        *self.link_deployed.lock().unwrap() = rows;
     }
 
     pub fn set_fail_apply(&self, fail: bool) {
@@ -187,13 +198,13 @@ impl crate::providers::FileManager for MockFileManager {
         })
     }
 
-    /// The mock deploys nothing, so it reports no link-deployed content: a
-    /// reconciler driven by it refreshes no recorded hash.
+    /// The mock deploys nothing, so it reports no link-deployed content unless
+    /// a test pinned some through [`MockFileManager::set_link_deployed`].
     fn link_deployed_content_hashes(
         &self,
         _profile: &crate::config::MergedProfile,
     ) -> crate::errors::Result<Vec<(PathBuf, String)>> {
-        Ok(Vec::new())
+        Ok(self.link_deployed.lock().unwrap().clone())
     }
 }
 
