@@ -272,11 +272,13 @@ impl std::fmt::Display for ApplySummary {
                 rollback_of,
                 restored,
                 removed,
-            } => write!(
-                f,
-                "{} restored, {removed} removed (rollback of apply {rollback_of})",
-                restored
-            ),
+            } => {
+                write!(f, "{restored} restored")?;
+                if *removed > 0 {
+                    write!(f, ", {removed} removed")?;
+                }
+                write!(f, " (rollback of apply {rollback_of})")
+            }
             Self::Actions {
                 succeeded,
                 skipped,
@@ -288,11 +290,15 @@ impl std::fmt::Display for ApplySummary {
             } => {
                 write!(f, "{succeeded} succeeded")?;
                 // Only when there is one to report: a clean run's row would
-                // otherwise carry two zeroes for outcomes that did not occur.
+                // otherwise carry zeroes for outcomes that did not occur. The
+                // lead is the one deliberate exception, so an all-failed run
+                // still opens on a count rather than on its second clause.
                 if *skipped > 0 {
                     write!(f, ", {skipped} skipped")?;
                 }
-                write!(f, ", {failed} failed")?;
+                if *failed > 0 {
+                    write!(f, ", {failed} failed")?;
+                }
                 if *not_attempted > 0 {
                     write!(f, ", {not_attempted} not attempted")?;
                 }
@@ -496,10 +502,7 @@ mod apply_summary_tests {
             not_run: None,
             aborted: false,
         };
-        assert_eq!(
-            ApplySummary::prose(&clean.to_column()),
-            "22 succeeded, 0 failed"
-        );
+        assert_eq!(ApplySummary::prose(&clean.to_column()), "22 succeeded");
 
         let split = ApplySummary::Actions {
             total: 13,
@@ -512,7 +515,7 @@ mod apply_summary_tests {
         };
         assert_eq!(
             ApplySummary::prose(&split.to_column()),
-            "12 succeeded, 1 skipped, 0 failed"
+            "12 succeeded, 1 skipped"
         );
 
         let aborted = ApplySummary::Actions {
@@ -542,7 +545,7 @@ mod apply_summary_tests {
         };
         assert_eq!(
             ApplySummary::prose(&withheld.to_column()),
-            "2 succeeded, 0 failed, 1 not attempted"
+            "2 succeeded, 1 not attempted"
         );
         assert!(
             !clean.to_column().contains("notAttempted"),
@@ -573,6 +576,80 @@ mod apply_summary_tests {
         }
     }
 
+    /// One rule for every zero clause, not one clause at a time. `skipped`,
+    /// `not_attempted`, `not_run` and `aborted` each named their outcome only
+    /// when it occurred; `failed` wrote unconditionally, so a recalled run read
+    /// `20 succeeded, 0 failed, 1 not attempted` next to a `Result Success`
+    /// row that already made the zero a constant — while the LIVE rollup for
+    /// the same numbers (`outcome_clauses`) said nothing about it at all.
+    ///
+    /// The lead count is the one deliberate exception, hatched by name: an
+    /// all-failed run opens on `0 succeeded` rather than on its second clause.
+    #[test]
+    fn no_summary_slot_names_an_outcome_that_did_not_occur() {
+        /// Each non-lead slot of the `Actions` variant, the word it puts on
+        /// screen, and a value that makes it occur.
+        const SLOTS: &[(&str, &str)] = &[
+            ("skipped", "skipped"),
+            ("failed", "failed"),
+            ("not_attempted", "not attempted"),
+            ("not_run", "not run"),
+            ("aborted", "(aborted)"),
+        ];
+
+        let build = |slot: &str| ApplySummary::Actions {
+            total: 4,
+            succeeded: 4,
+            skipped: (slot == "skipped") as usize,
+            failed: (slot == "failed") as usize,
+            not_attempted: (slot == "not_attempted") as usize,
+            not_run: (slot == "not_run").then_some(1),
+            aborted: slot == "aborted",
+        };
+
+        for (slot, word) in SLOTS {
+            let named = build(slot).to_string();
+            assert!(
+                named.contains(word),
+                "{slot} occurred, so the sentence names it: {named:?}"
+            );
+            let silent = build("none").to_string();
+            assert!(
+                !silent.contains(word),
+                "{slot} did not occur, so the sentence must not name it: {silent:?}"
+            );
+        }
+
+        // The lead: unconditional by design, and the whole sentence when
+        // nothing else happened.
+        assert_eq!(build("none").to_string(), "4 succeeded");
+        assert_eq!(
+            ApplySummary::Actions {
+                total: 2,
+                succeeded: 0,
+                skipped: 0,
+                failed: 2,
+                not_attempted: 0,
+                not_run: None,
+                aborted: false,
+            }
+            .to_string(),
+            "0 succeeded, 2 failed"
+        );
+
+        // The sibling variant answers the same question about its own second
+        // half: a rollback that removed nothing does not say so.
+        assert_eq!(
+            ApplySummary::Rollback {
+                rollback_of: 7,
+                restored: 3,
+                removed: 0,
+            }
+            .to_string(),
+            "3 restored (rollback of apply 7)"
+        );
+    }
+
     /// A row an older cfgd wrote — before `skipped` was split out of
     /// `succeeded` — still parses, and a value nothing can parse falls back to
     /// itself rather than vanishing.
@@ -580,7 +657,7 @@ mod apply_summary_tests {
     fn an_unparseable_or_older_summary_still_renders() {
         assert_eq!(
             ApplySummary::prose(r#"{"total":3,"succeeded":3,"failed":0}"#),
-            "3 succeeded, 0 failed"
+            "3 succeeded"
         );
         assert_eq!(ApplySummary::prose("running"), "running");
     }

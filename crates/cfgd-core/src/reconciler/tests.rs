@@ -22212,7 +22212,7 @@ fn an_apply_with_a_skipped_action_renders_and_stores_the_split() {
     assert_eq!(parsed["total"], 2, "stored: {stored}");
     assert_eq!(
         crate::state::ApplySummary::prose(&stored),
-        "1 succeeded, 1 skipped, 0 failed"
+        "1 succeeded, 1 skipped"
     );
 }
 
@@ -23188,7 +23188,7 @@ fn refresh_live_session_reports_no_session_manager_when_unavailable() {
         .expect("the apply row carries a summary");
     assert_eq!(
         crate::state::ApplySummary::prose(&stored),
-        "0 succeeded, 0 failed, 1 not attempted",
+        "0 succeeded, 1 not attempted",
         "the stored summary prices the withheld action outside its total"
     );
 }
