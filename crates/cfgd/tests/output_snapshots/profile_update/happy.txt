@@ -2,3 +2,5 @@ Update Profile: default
 ✓ Set env: EDITOR="nvim"
 
 ✓ 1 change written
+
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

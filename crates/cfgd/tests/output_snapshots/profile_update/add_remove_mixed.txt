@@ -5,3 +5,5 @@ Update Profile: default
 ✓ Removed env: EDITOR
 
 ✓ 2 changes written
+
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

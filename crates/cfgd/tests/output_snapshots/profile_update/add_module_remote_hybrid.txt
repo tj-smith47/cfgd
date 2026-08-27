@@ -17,3 +17,5 @@ module:mymod
 → Run `cfgd plan` to preview changes, then `cfgd apply`
 
 ✓ 1 change written
+
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

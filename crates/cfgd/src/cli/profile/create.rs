@@ -297,7 +297,9 @@ pub fn cmd_profile_create(
         out = out.kv("Modules", doc.spec.modules.join(", "));
     }
     out = out
-        .hint(format!("Activate with: `cfgd profile switch {}`", name))
+        .hint(crate::cli::success_next_step(
+            crate::cli::Mutation::ProfileCreated { name },
+        ))
         .with_data(serde_json::json!({
             "name": name,
             "path": cfgd_core::to_posix_string(&profile_path),

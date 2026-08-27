@@ -6,3 +6,5 @@ Phase: Files
   ✓ 2 newly created files removed
 
 ✓ Rolled back
+
+→ Run `cfgd diff` to see how the machine now differs from your config

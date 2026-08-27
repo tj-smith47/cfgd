@@ -53,7 +53,9 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
             Role::Ok,
             format!("Switched profile: {} → {}", old_profile, name),
         )
-        .hint(MSG_RUN_APPLY)
+        .hint(crate::cli::success_next_step(
+            crate::cli::Mutation::ProfileSwitched,
+        ))
         .with_data(serde_json::json!({
             "from": old_profile,
             "to": name,

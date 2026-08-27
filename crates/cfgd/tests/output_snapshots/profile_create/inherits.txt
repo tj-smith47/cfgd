@@ -6,6 +6,6 @@ Create Profile: child
 Inherits  default
 Modules   nvim
 
-→ Activate with: `cfgd profile switch child`
+→ Activate it with `cfgd profile switch child`
 
 ✓ Generated .github/workflows/cfgd-release.yml
