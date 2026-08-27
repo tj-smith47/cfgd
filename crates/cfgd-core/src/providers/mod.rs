@@ -411,6 +411,28 @@ impl ActionNote {
         }
     }
 
+    /// Re-tag a note with the SUBJECT of the action that produced it.
+    ///
+    /// A note's tag names the speaker, which is enough while the note renders
+    /// under the action's own line. The closing `Caveats` section has no such
+    /// line: it groups by `kind:name` OWNER, so a `profile:base` that installed
+    /// nine formulae stacked several `[brew]` bodies with nothing tying any of
+    /// them to a package — and "Bash completion has been installed to" is a body
+    /// several formulae emit. The subject already names the manager
+    /// (`brew install gum`), so this fills the one existing slot rather than
+    /// minting a second tag vocabulary.
+    ///
+    /// An UNTAGGED note is left alone: it carries no tag precisely because its
+    /// owner group already identifies it (`system:shell.defaultShell`), and a
+    /// next step is the run's closing instruction rather than a remark about
+    /// one action.
+    pub fn attributed_to(mut self, subject: &str) -> Self {
+        if self.tag.is_some() {
+            self.tag = Some(subject.to_string());
+        }
+        self
+    }
+
     /// The rendered body of the note — the ONE derivation, so a tagged and an
     /// untagged note cannot drift into two layouts.
     pub fn body(&self) -> String {

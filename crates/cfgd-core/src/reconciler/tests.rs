@@ -23675,8 +23675,10 @@ fn action_notes_collect_into_the_run_wide_caveats_group() {
     assert_eq!(
         notes.iter().map(ActionNote::body).collect::<Vec<_>>(),
         vec![
-            "[brew] add /opt/brew/bin to PATH".to_string(),
-            "[brew] restart your shell".to_string(),
+            // Re-tagged with the action's subject: the closing section groups by
+            // owner, so `[brew]` alone would not say which package spoke.
+            "[brew install neovim] add /opt/brew/bin to PATH".to_string(),
+            "[brew install neovim] restart your shell".to_string(),
         ],
         "one note per push, in order, under the action's owner: {notes:?}"
     );
@@ -23746,6 +23748,71 @@ impl PackageManager for NotePushingManager {
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
         Ok(None)
     }
+}
+
+/// A caveat names the action that produced it, not the manager that spoke.
+///
+/// `extract_caveats` tags every note with the manager (`[brew]`), and the
+/// closing section then groups by OWNER — so the action line, the only thing
+/// naming what brew spoke ABOUT, is gone by the time the note renders. A
+/// `profile:base` installing nine formulae stacked several `[brew]` bodies with
+/// nothing tying any of them to a package, and "Bash completion has been
+/// installed to" is a body several formulae emit verbatim: the section's
+/// body-dedup then dropped the second one entirely.
+#[test]
+fn every_caveat_names_the_subject_that_produced_it() {
+    // The worst case: one owner, one manager, two actions, the SAME body.
+    let owner = Owner::profile("base");
+    let body = "Bash completion has been installed to: /opt/brew/etc";
+    let mut caveats: Vec<(Owner, Vec<crate::providers::ActionNote>)> = Vec::new();
+    crate::reconciler::apply::collect_caveats(
+        &mut caveats,
+        &owner,
+        "brew install gum",
+        vec![crate::providers::ActionNote::info("brew", body)],
+    );
+    crate::reconciler::apply::collect_caveats(
+        &mut caveats,
+        &owner,
+        "brew install fzf",
+        vec![crate::providers::ActionNote::info("brew", body)],
+    );
+    // An untagged note carries no tag precisely because its owner group already
+    // identifies it, so re-tagging must leave it alone.
+    crate::reconciler::apply::collect_caveats(
+        &mut caveats,
+        &owner,
+        "set shell.defaultShell: bash -> zsh",
+        vec![crate::providers::ActionNote::untagged(
+            crate::output::Role::Info,
+            "Updated /etc/shells",
+        )],
+    );
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    crate::reconciler::render_caveats(&printer, &caveats);
+    drop(printer);
+    let out = crate::output::strip_ansi(&cap.human());
+
+    assert!(
+        out.contains("[brew install gum]") && out.contains("[brew install fzf]"),
+        "each caveat names the action that produced it: {out}"
+    );
+    assert!(
+        !out.contains("[brew] "),
+        "no caveat is left tagged with the manager alone: {out}"
+    );
+    // The dedup is by BODY, so two indistinguishable notes were one line before
+    // this: the second formula's caveat vanished under the first's.
+    assert_eq!(
+        out.matches(body).count(),
+        2,
+        "two actions that said the same thing keep both lines: {out}"
+    );
+    assert!(
+        out.contains("Updated /etc/shells") && !out.contains("[set shell"),
+        "an untagged note keeps its shape: {out}"
+    );
 }
 
 /// A next step is not a warning. `⚠ run `source ~/.cfgd.env`, or open a new
