@@ -261,6 +261,10 @@ mod tests {
             "permissions",
             "encryption",
             "envs",
+            // `env[].platforms` / `aliases[].platforms`: a profile has no
+            // platform gate of its own, so the only way this key reaches the
+            // profile schema is the per-entry one.
+            "platforms",
         ] {
             assert!(p.contains(field), "cfgd-profile schema missing {field}");
         }

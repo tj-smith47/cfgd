@@ -117,7 +117,11 @@ pub struct ModuleSpec {
     /// platform matches none of them, the module is skipped entirely (it
     /// appears as a skipped action rather than vanishing). Tags are matched
     /// against the machine's OS, distro, and arch; use `macos` for macOS.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::platform::deserialize_platform_tags"
+    )]
     pub platforms: Vec<String>,
 
     /// Packages this module installs.
@@ -210,7 +214,11 @@ pub struct ModulePackageEntry {
 
     /// Platform tags gating this package alone. Empty means install on every
     /// platform the module itself is not already gated off of.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::platform::deserialize_platform_tags"
+    )]
     pub platforms: Vec<String>,
 }
 
@@ -451,6 +459,18 @@ pub fn parse_module(contents: &str) -> Result<ModuleDocument> {
     validate_module_file_entries(&doc.spec.files)?;
 
     Ok(doc)
+}
+
+impl crate::platform::PlatformGated for ModuleSpec {
+    fn platforms(&self) -> &[String] {
+        &self.platforms
+    }
+}
+
+impl crate::platform::PlatformGated for ModulePackageEntry {
+    fn platforms(&self) -> &[String] {
+        &self.platforms
+    }
 }
 
 #[cfg(test)]

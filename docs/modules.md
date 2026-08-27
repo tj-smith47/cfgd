@@ -91,9 +91,17 @@ The canonical macOS token is `macos` (not `darwin`). A skipped module shows up a
 action in the plan rather than vanishing, and an active module may not `depends` on a module that
 is skipped on the current platform (that is a configuration error).
 
-Use `spec.platforms` for a wholly platform-specific module; use the per-package
+Gating comes at three levels, each the same field with the same tag vocabulary:
+
+| Level | Field | Gated-out behavior |
+|-------|-------|--------------------|
+| Module | `spec.platforms` | The module is skipped whole, and shows as a **Skipped** action. |
+| Package | `spec.packages[].platforms` | The package is not installed; `cfgd module show` lists it as `skipped (platform filter)`. |
+| Entry | `spec.env[].platforms`, `spec.aliases[].platforms` | The entry is absent from this machine's desired state entirely; the document surfaces annotate it `(platforms: macos)`. |
+
+Use `spec.platforms` for a wholly platform-specific module, the per-package
 [`platforms`](#package-entry-fields) field when only some packages within a cross-platform module
-are platform-specific.
+are platform-specific, and the per-entry one when a single variable or alias is.
 
 ```yaml
 apiVersion: cfgd.io/v1alpha1
@@ -105,6 +113,30 @@ spec:
   packages:
     - name: rectangle
 ```
+
+A cross-platform module gates single entries instead:
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+spec:
+  env:
+    - name: PATH
+      value: $HOME/.local/bin:$PATH
+    - name: PATH
+      value: /opt/homebrew/opt/ruby/bin:$PATH
+      platforms: [macos]
+  aliases:
+    - name: pbcopy
+      command: xclip -selection clipboard
+      platforms: [linux]
+```
+
+The two `PATH` declarations concatenate on macOS (`PATH` is the one name whose surviving
+declarations fold together rather than replace one another); on Linux only the first applies, and
+`pbcopy` is installed there and nowhere else.
 
 ### Package Entry Fields
 

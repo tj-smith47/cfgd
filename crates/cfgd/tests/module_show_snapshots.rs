@@ -109,20 +109,24 @@ fn happy_show_output() -> ModuleShowOutput {
                 EnvVar {
                     name: "EDITOR".into(),
                     value: "nvim".into(),
+                    platforms: vec![],
                 },
                 EnvVar {
                     name: "GH_TOKEN".into(),
                     value: "ghp_secret_token_value".into(),
+                    platforms: vec![],
                 },
             ],
             aliases: vec![
                 ShellAlias {
                     name: "gs".into(),
                     command: "git status".into(),
+                    platforms: vec![],
                 },
                 ShellAlias {
                     name: "ll".into(),
                     command: "ls -la".into(),
+                    platforms: vec![],
                 },
             ],
             // Declared out of run order on purpose: the Scripts section

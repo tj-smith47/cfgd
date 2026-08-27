@@ -61,6 +61,17 @@ spec:
                     name:
                       description: Variable name, as exported into the container or shell environment.
                       type: string
+                    platforms:
+                      description: |-
+                        Platform tags gating this entry alone. Empty means every platform the
+                        declaring module is not already gated off of. Tags are matched against
+                        the machine's OS, distro, and arch; use `macos` for macOS. A pod is a
+                        Linux container, so the pod-mutating webhook injects an entry only when
+                        this is empty or names `linux` — nothing about a pod can answer a
+                        distro or arch tag.
+                      items:
+                        type: string
+                      type: array
                     value:
                       description: Value assigned to the variable.
                       type: string

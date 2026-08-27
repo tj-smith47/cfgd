@@ -29,8 +29,12 @@ pub fn union_extend(target: &mut Vec<String>, source: &[String]) {
     }
 }
 
-/// Merge env vars by name: later entries override earlier ones with the same name.
-/// Used by config layer merging, composition, and reconciler module merge.
+/// Merge env vars by name: later entries override earlier ones with the same
+/// name — the DOCUMENT-edit semantic, which is why the CLI setters call it:
+/// `profile update --env PATH=x` replaces the file's `PATH` declaration rather
+/// than appending to it.
+///
+/// A LAYER fold takes [`fold_env_layer`] instead, where `PATH` concatenates.
 pub fn merge_env(base: &mut Vec<config::EnvVar>, updates: &[config::EnvVar]) {
     let mut index: std::collections::HashMap<String, usize> = base
         .iter()
@@ -46,6 +50,89 @@ pub fn merge_env(base: &mut Vec<config::EnvVar>, updates: &[config::EnvVar]) {
         }
     }
 }
+
+/// Fold `overlay` onto `base` as one LAYER of a machine's desired state.
+///
+/// Every name but `PATH` is last-writer-wins, exactly as [`merge_env`]. `PATH`
+/// is the one variable whose value is a LIST: a profile declaring the common
+/// entries and a module (or a `platforms:`-gated sibling entry) declaring more
+/// both apply, and replacing one with the other silently discards directories
+/// the user asked for. So the surviving declarations concatenate.
+///
+/// Each declaration splits on `separator` into the entries BEFORE its ambient
+/// `PATH` reference and the entries AFTER it; the fold keeps the two buckets in
+/// declaration order — base first, then overlay — and renders
+/// `before…:$PATH:after…`. The ambient reference is written once, in the
+/// spelling of the first declaration that named one, and is absent only when no
+/// declaration named one (that declaration is taken at its word, exactly as
+/// `fold_path_line` takes it). Duplicates drop on [`crate::normalize_path_entry`],
+/// first occurrence winning, because `$HOME/.cargo/bin` and `/home/x/.cargo/bin`
+/// are one directory written two ways.
+///
+/// The result is at most ONE `PATH` entry per merged env, which is what lets
+/// `fold_path_line` keep finding the declaration with a single lookup.
+pub fn fold_env_layer(base: &mut Vec<config::EnvVar>, overlay: &[config::EnvVar], separator: char) {
+    let (path_overlay, plain): (Vec<&config::EnvVar>, Vec<&config::EnvVar>) =
+        overlay.iter().partition(|e| e.name == PATH_VAR);
+    let plain: Vec<config::EnvVar> = plain.into_iter().cloned().collect();
+    merge_env(base, &plain);
+    if path_overlay.is_empty() {
+        return;
+    }
+
+    let home = crate::expand_tilde(std::path::Path::new("~"));
+    let mut before: Vec<String> = Vec::new();
+    let mut after: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut inherited: Option<String> = None;
+
+    let mut absorb = |value: &str| {
+        let mut past_ref = false;
+        for segment in value.split(separator) {
+            if segment.is_empty() {
+                continue;
+            }
+            if crate::is_inherited_path_ref(segment) {
+                past_ref = true;
+                inherited.get_or_insert_with(|| segment.trim().to_string());
+                continue;
+            }
+            if !seen.insert(crate::normalize_path_entry(segment, &home)) {
+                continue;
+            }
+            if past_ref { &mut after } else { &mut before }.push(segment.trim().to_string());
+        }
+    };
+
+    let existing = base.iter().position(|e| e.name == PATH_VAR);
+    if let Some(pos) = existing {
+        absorb(&base[pos].value);
+    }
+    for entry in &path_overlay {
+        absorb(&entry.value);
+    }
+
+    let mut parts = before;
+    if let Some(reference) = inherited {
+        parts.push(reference);
+    }
+    parts.extend(after);
+    // A gated `PATH` entry that survives is part of THIS host's state and its
+    // tags have already done their work; the folded entry carries none, so no
+    // later reader re-applies a gate to a value several declarations produced.
+    let folded = config::EnvVar {
+        name: PATH_VAR.to_string(),
+        value: parts.join(&separator.to_string()),
+        platforms: Vec::new(),
+    };
+    match existing {
+        Some(pos) => base[pos] = folded,
+        None => base.push(folded),
+    }
+}
+
+/// The one variable whose declarations concatenate rather than replace.
+const PATH_VAR: &str = "PATH";
 
 /// Merge shell aliases by name: later entries override earlier ones with the same name.
 /// Same semantics as `merge_env`.

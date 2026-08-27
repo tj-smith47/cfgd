@@ -8,8 +8,9 @@ Docs        docs/spec/profile.md#fields
 
 Fields (under spec)
   aliases   <[]ShellAlias>
-    command  <string> (required)
-    name     <string> (required)
+    command    <string> (required)
+    name       <string> (required)
+    platforms  <[]string>
   backups   <[]BackupSpec>
     destination  <string>
     name         <string> (required)
@@ -46,8 +47,9 @@ Fields (under spec)
     schedule     <string>
     source       <string> (required)
   env       <[]EnvVar>
-    name   <string> (required)
-    value  <string> (required)
+    name       <string> (required)
+    platforms  <[]string>
+    value      <string> (required)
   envScope  <EnvScope>
     enum: All, Login, Interactive
   files     <FilesSpec>

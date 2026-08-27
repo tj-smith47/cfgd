@@ -39,6 +39,18 @@ spec:
     # replace with your own address — this one is reserved for documentation
     - name: GIT_AUTHOR_EMAIL
       value: you@example.com
+    # gated: xdg-open is the freedesktop opener, and setting BROWSER to it on
+    # macOS or Windows would name a binary that is not there
+    - name: BROWSER
+      value: xdg-open
+      platforms: [linux, freebsd]
+
+  aliases:
+    # macOS ships pbcopy; everywhere else this is the closest equivalent, and
+    # the clipboard tool it shells out to is X11's
+    - name: pbcopy
+      command: xclip -selection clipboard
+      platforms: [linux]
 
   packages:
     # cargo rather than a system manager: these four move faster than distro

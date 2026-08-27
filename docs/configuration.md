@@ -394,6 +394,26 @@ the rest.
 > writer: put the loader line in the rc source you deploy, or leave the rc
 > file out of `files.managed` and let `spec.env` own it.
 
+Any `spec.env` or `spec.aliases` entry can be gated to named platforms with the
+same `platforms:` list a module and a package take; an entry gated off the
+current host is absent from its desired state entirely. `PATH` is the one name
+whose surviving declarations **concatenate** instead of the last one winning, so
+a common declaration and a platform-specific one both reach the generated file,
+in declaration order with the ambient `$PATH` written once:
+
+```yaml
+env:
+  - name: PATH
+    value: $HOME/.local/bin:$PATH
+  - name: PATH
+    value: /opt/homebrew/opt/ruby/bin:$PATH   # macOS only
+    platforms: [macos]
+```
+
+On macOS that writes one line,
+`export PATH="$HOME/.local/bin:/opt/homebrew/opt/ruby/bin:$PATH"`; on Linux the
+second declaration contributes nothing.
+
 ### Partial-file edits (`strategy: Patch`)
 
 `Patch` is the strategy for files cfgd must *share* rather than own: a

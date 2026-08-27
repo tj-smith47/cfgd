@@ -1226,7 +1226,9 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
                     } else {
                         ev.name.clone()
                     };
-                    s.status(Role::Ok, subject)
+                    // Declared state, so a gated entry is listed and annotated
+                    // exactly as `module show` annotates it.
+                    s.status(Role::Ok, super::module::list_show::gated_value(subject, ev))
                 })
             });
             s.subsection_if_nonempty("Aliases", &output.declared.aliases, |s, aliases| {
@@ -1238,7 +1240,10 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
                     } else {
                         alias.name.clone()
                     };
-                    s.status(Role::Ok, subject)
+                    s.status(
+                        Role::Ok,
+                        super::module::list_show::gated_value(subject, alias),
+                    )
                 })
             })
         });
@@ -3307,6 +3312,7 @@ mod tests {
         let declared_env = vec![cfgd_core::config::EnvVar {
             name: "EDITOR".to_string(),
             value: "vim".to_string(),
+            platforms: vec![],
         }];
         // The owners the profile-layer merge records for this profile: the
         // generated line names its layer, so a needle rendered with no owner
@@ -3430,6 +3436,7 @@ mod tests {
         let declared_env = vec![cfgd_core::config::EnvVar {
             name: "EDITOR".to_string(),
             value: "vim".to_string(),
+            platforms: vec![],
         }];
         // The owners the profile-layer merge records for this profile: the
         // generated line names its layer, so a needle rendered with no owner
@@ -3527,6 +3534,7 @@ mod tests {
         let declared_env = vec![cfgd_core::config::EnvVar {
             name: "EDITOR".to_string(),
             value: "vim".to_string(),
+            platforms: vec![],
         }];
         // The owners the profile-layer merge records for this profile: the
         // generated line names its layer, so a needle rendered with no owner

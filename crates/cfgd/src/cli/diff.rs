@@ -1128,6 +1128,7 @@ mod tests {
         let hand_edited = cfgd_core::config::ShellAlias {
             name: "ll".to_string(),
             command: "ls -lah".to_string(),
+            platforms: vec![],
         };
         let hand_edited_line = cfgd_core::reconciler::MergedEnvItems::new(
             &[],
@@ -1167,6 +1168,7 @@ mod tests {
         let declared = cfgd_core::config::ShellAlias {
             name: "ll".to_string(),
             command: "ls -la".to_string(),
+            platforms: vec![],
         };
         // The owners the profile-layer merge records: the declared line names
         // the layer that declared it, so a needle rendered with no owner is a

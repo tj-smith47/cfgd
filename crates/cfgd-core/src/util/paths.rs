@@ -758,6 +758,25 @@ pub fn expand_env_value_tilde(value: &str) -> String {
         .join(":")
 }
 
+/// The character separating entries inside a `PATH` value on this host.
+///
+/// `std` exposes no constant for it (`env::split_paths` hides the split), and a
+/// generated env file's `PATH` line is folded in one place and rendered in
+/// another — two spellings of this character would concatenate two lists into
+/// one unusable entry.
+pub const PATH_LIST_SEPARATOR: char = if cfg!(windows) { ';' } else { ':' };
+
+/// Whether a declared `PATH` segment references the `PATH` the shell already
+/// has, in any dialect's spelling. A declaration is authored once and rendered
+/// into every dialect, so `$PATH` in a value that ends up in a PowerShell file
+/// has to become `$env:PATH` there rather than a literal nobody set.
+pub fn is_inherited_path_ref(segment: &str) -> bool {
+    matches!(
+        segment.trim().to_ascii_uppercase().as_str(),
+        "$PATH" | "${PATH}" | "$ENV:PATH" | "%PATH%"
+    )
+}
+
 /// Fold one PATH entry to the single form two spellings of the same directory
 /// compare equal in: `$HOME` / `${HOME}` / `~` resolved to `home`, separators
 /// folded to `/`, and any trailing `/` dropped.

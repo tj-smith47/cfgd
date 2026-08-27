@@ -869,15 +869,18 @@ fn merge_aliases_override_by_name() {
         config::ShellAlias {
             name: "vim".into(),
             command: "vi".into(),
+            platforms: vec![],
         },
         config::ShellAlias {
             name: "ll".into(),
             command: "ls -l".into(),
+            platforms: vec![],
         },
     ];
     let updates = vec![config::ShellAlias {
         name: "vim".into(),
         command: "nvim".into(),
+        platforms: vec![],
     }];
     merge_aliases(&mut base, &updates);
     assert_eq!(base.len(), 2);
@@ -890,10 +893,12 @@ fn merge_aliases_appends_new() {
     let mut base = vec![config::ShellAlias {
         name: "vim".into(),
         command: "nvim".into(),
+        platforms: vec![],
     }];
     let updates = vec![config::ShellAlias {
         name: "ll".into(),
         command: "ls -la".into(),
+        platforms: vec![],
     }];
     merge_aliases(&mut base, &updates);
     assert_eq!(base.len(), 2);
@@ -997,15 +1002,18 @@ fn merge_env_overrides_by_name() {
         config::EnvVar {
             name: "FOO".into(),
             value: "old".into(),
+            platforms: vec![],
         },
         config::EnvVar {
             name: "BAR".into(),
             value: "keep".into(),
+            platforms: vec![],
         },
     ];
     let updates = vec![config::EnvVar {
         name: "FOO".into(),
         value: "new".into(),
+        platforms: vec![],
     }];
     merge_env(&mut base, &updates);
     assert_eq!(base.len(), 2);
@@ -1019,10 +1027,117 @@ fn merge_env_adds_new() {
     let updates = vec![config::EnvVar {
         name: "NEW".into(),
         value: "val".into(),
+        platforms: vec![],
     }];
     merge_env(&mut base, &updates);
     assert_eq!(base.len(), 1);
     assert_eq!(base[0].name, "NEW");
+}
+
+// --- fold_env_layer: PATH concatenates, every other name replaces ---
+
+fn ev(name: &str, value: &str) -> config::EnvVar {
+    config::EnvVar {
+        name: name.into(),
+        value: value.into(),
+        platforms: vec![],
+    }
+}
+
+fn path_value(env: &[config::EnvVar]) -> &str {
+    let paths: Vec<&config::EnvVar> = env.iter().filter(|e| e.name == "PATH").collect();
+    // The invariant `fold_path_line`'s single lookup depends on: however many
+    // layers declared PATH, the fold leaves exactly one entry behind.
+    assert_eq!(paths.len(), 1, "one PATH per merged env: {env:?}");
+    &paths[0].value
+}
+
+#[test]
+fn a_layers_path_concatenates_onto_the_base_in_declaration_order() {
+    let mut base = vec![ev("PATH", "$HOME/.local/bin:$PATH"), ev("EDITOR", "vim")];
+    fold_env_layer(
+        &mut base,
+        &[ev("PATH", "/opt/homebrew/bin:$PATH"), ev("EDITOR", "nvim")],
+        ':',
+    );
+    // Base bucket first, then overlay, with the ambient reference written once.
+    assert_eq!(
+        path_value(&base),
+        "$HOME/.local/bin:/opt/homebrew/bin:$PATH"
+    );
+    // Every other name is still last-writer-wins.
+    assert_eq!(
+        base.iter().find(|e| e.name == "EDITOR").unwrap().value,
+        "nvim"
+    );
+}
+
+#[test]
+fn entries_after_the_ambient_reference_stay_after_it() {
+    let mut base = vec![ev("PATH", "$PATH:/usr/local/games")];
+    fold_env_layer(&mut base, &[ev("PATH", "/opt/bin:$PATH:/opt/late")], ':');
+    assert_eq!(
+        path_value(&base),
+        "/opt/bin:$PATH:/usr/local/games:/opt/late"
+    );
+}
+
+#[test]
+fn a_declaration_naming_no_ambient_path_is_taken_at_its_word() {
+    let mut base = vec![ev("PATH", "/only/this")];
+    fold_env_layer(&mut base, &[ev("PATH", "/and/this")], ':');
+    assert_eq!(path_value(&base), "/only/this:/and/this");
+}
+
+#[test]
+fn one_directory_written_two_ways_lands_on_path_once() {
+    let home = crate::expand_tilde(std::path::Path::new("~"));
+    let literal = format!("{}/.cargo/bin", crate::to_posix_string(&home));
+    let mut base = vec![ev("PATH", "$HOME/.cargo/bin:$PATH")];
+    fold_env_layer(
+        &mut base,
+        &[ev("PATH", &format!("{literal}:/opt/bin"))],
+        ':',
+    );
+    // First occurrence wins, so the spelling the earlier layer used survives;
+    // the overlay names no ambient reference, so its remaining entry joins the
+    // bucket ahead of the one the base declaration placed.
+    assert_eq!(path_value(&base), "$HOME/.cargo/bin:/opt/bin:$PATH");
+}
+
+#[test]
+fn the_windows_separator_folds_the_same_way() {
+    // A PowerShell env file joins on `;`; folding a Windows PATH on `:` would
+    // read one declaration as a single entry and concatenate two lists into an
+    // unusable one.
+    let mut base = vec![ev("PATH", "C:\\tools;$env:PATH")];
+    fold_env_layer(&mut base, &[ev("PATH", "C:\\other;$env:PATH")], ';');
+    assert_eq!(path_value(&base), "C:\\tools;C:\\other;$env:PATH");
+}
+
+#[test]
+fn the_ambient_reference_keeps_the_spelling_of_the_first_declaration_that_named_one() {
+    let mut base = vec![ev("PATH", "/a:${PATH}")];
+    fold_env_layer(&mut base, &[ev("PATH", "/b:$PATH")], ':');
+    assert_eq!(path_value(&base), "/a:/b:${PATH}");
+}
+
+#[test]
+fn a_layer_declaring_no_path_leaves_the_base_declaration_alone() {
+    let mut base = vec![ev("PATH", "/a:$PATH")];
+    fold_env_layer(&mut base, &[ev("EDITOR", "nvim")], ':');
+    assert_eq!(path_value(&base), "/a:$PATH");
+}
+
+#[test]
+fn the_cli_setter_still_replaces_a_path_declaration() {
+    // `merge_env` is the DOCUMENT-edit semantic: `profile update --env PATH=x`
+    // rewrites the user's YAML, and concatenating there would make the flag
+    // unable to ever shorten a PATH.
+    let mut doc = vec![ev("PATH", "/old:$PATH")];
+    merge_env(&mut doc, &[ev("PATH", "/new")]);
+    assert_eq!(doc.len(), 1);
+    assert_eq!(doc[0].value, "/new");
 }
 
 #[test]

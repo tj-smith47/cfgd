@@ -17,6 +17,12 @@
             "name": "name",
             "required": true,
             "type": "string"
+          },
+          {
+            "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+            "name": "platforms",
+            "required": false,
+            "type": "[]string"
           }
         ],
         "description": "Shell aliases this module contributes.",
@@ -38,6 +44,12 @@
             "name": "name",
             "required": true,
             "type": "string"
+          },
+          {
+            "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+            "name": "platforms",
+            "required": false,
+            "type": "[]string"
           },
           {
             "description": "Value assigned to the variable, exported verbatim into the shell environment.",
@@ -824,6 +836,12 @@
             "name": "name",
             "required": true,
             "type": "string"
+          },
+          {
+            "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+            "name": "platforms",
+            "required": false,
+            "type": "[]string"
           }
         ],
         "description": "Shell aliases this profile sets.",
@@ -1068,6 +1086,12 @@
             "name": "name",
             "required": true,
             "type": "string"
+          },
+          {
+            "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+            "name": "platforms",
+            "required": false,
+            "type": "[]string"
           },
           {
             "description": "Value assigned to the variable, exported verbatim into the shell environment.",
@@ -2202,6 +2226,12 @@
                     "name": "name",
                     "required": true,
                     "type": "string"
+                  },
+                  {
+                    "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+                    "name": "platforms",
+                    "required": false,
+                    "type": "[]string"
                   }
                 ],
                 "description": "Shell aliases offered at this tier.",
@@ -2217,6 +2247,12 @@
                     "name": "name",
                     "required": true,
                     "type": "string"
+                  },
+                  {
+                    "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+                    "name": "platforms",
+                    "required": false,
+                    "type": "[]string"
                   },
                   {
                     "description": "Value assigned to the variable, exported verbatim into the shell environment.",
@@ -2687,6 +2723,12 @@
                     "name": "name",
                     "required": true,
                     "type": "string"
+                  },
+                  {
+                    "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+                    "name": "platforms",
+                    "required": false,
+                    "type": "[]string"
                   }
                 ],
                 "description": "Shell aliases offered at this tier.",
@@ -2702,6 +2744,12 @@
                     "name": "name",
                     "required": true,
                     "type": "string"
+                  },
+                  {
+                    "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+                    "name": "platforms",
+                    "required": false,
+                    "type": "[]string"
                   },
                   {
                     "description": "Value assigned to the variable, exported verbatim into the shell environment.",
@@ -3172,6 +3220,12 @@
                     "name": "name",
                     "required": true,
                     "type": "string"
+                  },
+                  {
+                    "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+                    "name": "platforms",
+                    "required": false,
+                    "type": "[]string"
                   }
                 ],
                 "description": "Shell aliases offered at this tier.",
@@ -3187,6 +3241,12 @@
                     "name": "name",
                     "required": true,
                     "type": "string"
+                  },
+                  {
+                    "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+                    "name": "platforms",
+                    "required": false,
+                    "type": "[]string"
                   },
                   {
                     "description": "Value assigned to the variable, exported verbatim into the shell environment.",
@@ -3657,6 +3717,12 @@
                     "name": "name",
                     "required": true,
                     "type": "string"
+                  },
+                  {
+                    "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+                    "name": "platforms",
+                    "required": false,
+                    "type": "[]string"
                   }
                 ],
                 "description": "Shell aliases offered at this tier.",
@@ -3672,6 +3738,12 @@
                     "name": "name",
                     "required": true,
                     "type": "string"
+                  },
+                  {
+                    "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+                    "name": "platforms",
+                    "required": false,
+                    "type": "[]string"
                   },
                   {
                     "description": "Value assigned to the variable, exported verbatim into the shell environment.",
@@ -5580,6 +5652,12 @@
             "name": "name",
             "required": true,
             "type": "string"
+          },
+          {
+            "description": "Platform tags gating this entry alone. Empty means every platform the declaring module is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. A pod is a Linux container, so the pod-mutating webhook injects an entry only when this is empty or names `linux` — nothing about a pod can answer a distro or arch tag.",
+            "name": "platforms",
+            "required": false,
+            "type": "[]string"
           },
           {
             "description": "Value assigned to the variable.",

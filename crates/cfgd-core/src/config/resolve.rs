@@ -52,6 +52,10 @@ impl ProfileLayer {
     }
 }
 
+/// The one env var whose declarations concatenate, and so whose surviving
+/// value can have several owners.
+const PATH_VAR: &str = "PATH";
+
 /// Which layer declared each env var and alias that SURVIVED the layer merge.
 ///
 /// Recorded by the merge rather than re-derived from the layer list, because
@@ -61,7 +65,9 @@ impl ProfileLayer {
 ///
 /// Names only — the value is whatever survived, and the token says who put it
 /// there. Display-only: `#[serde(skip)]` where it hangs off [`MergedProfile`],
-/// and never persisted or matched.
+/// and never persisted or matched. `PATH` is the one name that can carry
+/// SEVERAL owner tokens, space-separated in fold order, because its
+/// declarations concatenate instead of displacing one another.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EntryOwners {
     pub env: std::collections::HashMap<String, String>,
@@ -84,7 +90,21 @@ impl EntryOwners {
     /// layer's exactly as a plain `spec.env` entry is.
     pub fn claim_env_names<'a>(&mut self, owner: &str, names: impl IntoIterator<Item = &'a str>) {
         for name in names {
-            self.env.insert(name.to_string(), owner.to_string());
+            match self.env.get_mut(name) {
+                // `PATH` is the one name whose declarations CONCATENATE
+                // (`fold_env_layer`), so its surviving value has as many
+                // authors as contributed to it and a single claim would name
+                // one of them over directories the others put there.
+                Some(existing) if name == PATH_VAR => {
+                    if !existing.split_whitespace().any(|t| t == owner) {
+                        existing.push(' ');
+                        existing.push_str(owner);
+                    }
+                }
+                _ => {
+                    self.env.insert(name.to_string(), owner.to_string());
+                }
+            }
         }
     }
 }
@@ -233,9 +253,20 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
         union_extend(&mut merged.modules, modules);
 
         let layer_owner = layer.owner_token();
-        // Env: later layer overrides earlier by name
-        crate::merge_env(&mut merged.env, env);
-        merged.entry_owners.claim(&layer_owner, env, aliases);
+        // Platform-gated entries are filtered BEFORE the fold: an entry this
+        // host is not part of the desired state of must never reach a
+        // last-writer-wins merge, where it would displace the value that does
+        // apply and then have to be un-displaced.
+        let platform = crate::platform::Platform::current();
+        let env: Vec<EnvVar> = crate::platform::applicable_here(env, platform)
+            .cloned()
+            .collect();
+        let aliases: Vec<ShellAlias> = crate::platform::applicable_here(aliases, platform)
+            .cloned()
+            .collect();
+        // Env: later layer overrides earlier by name; `PATH` concatenates.
+        crate::fold_env_layer(&mut merged.env, &env, crate::PATH_LIST_SEPARATOR);
+        merged.entry_owners.claim(&layer_owner, &env, &aliases);
         for secret in secrets {
             merged.entry_owners.claim_env_names(
                 &layer_owner,
@@ -250,7 +281,7 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
         }
 
         // Aliases: later layer overrides earlier by name
-        crate::merge_aliases(&mut merged.aliases, aliases);
+        crate::merge_aliases(&mut merged.aliases, &aliases);
 
         // Packages: union (delegated to composition::merge_packages)
         if let Some(pkgs) = packages {

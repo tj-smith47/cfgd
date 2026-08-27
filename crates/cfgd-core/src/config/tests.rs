@@ -175,10 +175,12 @@ fn merge_env_override() {
                 EnvVar {
                     name: "editor".into(),
                     value: "vim".into(),
+                    platforms: vec![],
                 },
                 EnvVar {
                     name: "shell".into(),
                     value: "/bin/bash".into(),
+                    platforms: vec![],
                 },
             ],
             ..Default::default()
@@ -193,6 +195,7 @@ fn merge_env_override() {
             env: vec![EnvVar {
                 name: "editor".into(),
                 value: "code".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -2888,4 +2891,170 @@ fn load_config_rejects_oversized_file() {
         err.to_string().contains("too large"),
         "oversized config must be rejected with a size message, got: {err}"
     );
+}
+
+// --- per-entry platform gating at the layer fold ---
+
+/// A tag no host can ever match, spelled the way the validator accepts: it is
+/// lowercase and unknown, which is exactly a distro cfgd does not name.
+const NOWHERE: &str = "nowhere_at_all";
+
+fn gated_layer(name: &str, env: Vec<EnvVar>, aliases: Vec<ShellAlias>) -> ProfileLayer {
+    ProfileLayer {
+        source: "local".into(),
+        profile_name: name.into(),
+        priority: 1000,
+        policy: LayerPolicy::Local,
+        spec: ProfileSpec {
+            env,
+            aliases,
+            ..Default::default()
+        },
+    }
+}
+
+fn tagged_env(name: &str, value: &str, platforms: &[&str]) -> EnvVar {
+    EnvVar {
+        name: name.into(),
+        value: value.into(),
+        platforms: platforms.iter().map(|t| t.to_string()).collect(),
+    }
+}
+
+#[test]
+fn a_gated_out_entry_never_reaches_the_layer_merge() {
+    // The filter runs BEFORE the fold: reaching a last-writer-wins merge, a
+    // gated entry would displace the value that DOES apply here and then have
+    // to be un-displaced — and filtering afterwards deletes the base value.
+    let here = crate::platform::Platform::current().os.as_str().to_string();
+    let merged = merge_layers(&[
+        gated_layer(
+            "base",
+            vec![tagged_env("EDITOR", "vim", &[])],
+            vec![ShellAlias {
+                name: "ll".into(),
+                command: "ls -la".into(),
+                platforms: vec![],
+            }],
+        ),
+        gated_layer(
+            "work",
+            vec![
+                tagged_env("EDITOR", "elsewhere", &[NOWHERE]),
+                tagged_env("PAGER", "here", &[&here]),
+            ],
+            vec![ShellAlias {
+                name: "ll".into(),
+                command: "elsewhere".into(),
+                platforms: vec![NOWHERE.to_string()],
+            }],
+        ),
+    ]);
+
+    assert_eq!(
+        merged
+            .env
+            .iter()
+            .find(|e| e.name == "EDITOR")
+            .map(|e| &e.value),
+        Some(&"vim".to_string()),
+        "a gated-out overlay must not displace the value that applies here"
+    );
+    assert_eq!(
+        merged
+            .env
+            .iter()
+            .find(|e| e.name == "PAGER")
+            .map(|e| &e.value),
+        Some(&"here".to_string()),
+        "an entry naming this host's platform survives"
+    );
+    assert_eq!(
+        merged
+            .aliases
+            .iter()
+            .find(|a| a.name == "ll")
+            .map(|a| &a.command),
+        Some(&"ls -la".to_string()),
+        "the alias half is filtered on the same predicate"
+    );
+    // Absent, not annotated: an entry that does not apply here is no part of
+    // this host's desired state, exactly as a platform-filtered package is not.
+    assert!(
+        !merged.env.iter().any(|e| e.value == "elsewhere"),
+        "a gated-out entry reaches no surface: {:?}",
+        merged.env
+    );
+}
+
+#[test]
+fn a_gated_path_declaration_concatenates_only_where_it_applies() {
+    let here = crate::platform::Platform::current().os.as_str().to_string();
+    let merged = merge_layers(&[gated_layer(
+        "base",
+        vec![
+            tagged_env("PATH", "/common/bin:$PATH", &[]),
+            tagged_env("PATH", "/here/bin:$PATH", &[&here]),
+            tagged_env("PATH", "/elsewhere/bin:$PATH", &[NOWHERE]),
+        ],
+        vec![],
+    )]);
+    let path = merged
+        .env
+        .iter()
+        .find(|e| e.name == "PATH")
+        .expect("a PATH entry survives");
+    assert_eq!(path.value, "/common/bin:/here/bin:$PATH");
+    assert_eq!(
+        merged.env.iter().filter(|e| e.name == "PATH").count(),
+        1,
+        "however many declarations survive, one PATH entry comes out"
+    );
+    // The folded entry carries no gate of its own: its tags have done their
+    // work, and a later reader must not re-apply one to a value several
+    // declarations produced.
+    assert!(path.platforms.is_empty());
+}
+
+#[test]
+fn an_ungated_entry_serializes_exactly_as_it_did_before_the_field_existed() {
+    // Two things ride on this. `rewrite_user_yaml` round-trips every existing
+    // profile and module byte-identically, and a source decision is keyed on
+    // `sha256(serde_json::to_string(entry))` — a `platforms: []` on the wire
+    // would re-ask every recorded decision on the first upgrade.
+    let env = EnvVar {
+        name: "EDITOR".into(),
+        value: "nvim".into(),
+        platforms: vec![],
+    };
+    assert_eq!(
+        serde_json::to_string(&env).unwrap(),
+        r#"{"name":"EDITOR","value":"nvim"}"#
+    );
+    assert_eq!(
+        serde_yaml::to_string(&env).unwrap(),
+        "name: EDITOR\nvalue: nvim\n"
+    );
+
+    let alias = ShellAlias {
+        name: "ll".into(),
+        command: "ls -la".into(),
+        platforms: vec![],
+    };
+    assert_eq!(
+        serde_json::to_string(&alias).unwrap(),
+        r#"{"name":"ll","command":"ls -la"}"#
+    );
+
+    // And a gated one carries the field, so the fingerprint moves exactly when
+    // the declaration does.
+    let gated = EnvVar {
+        platforms: vec!["macos".into()],
+        ..env.clone()
+    };
+    assert_eq!(
+        serde_json::to_string(&gated).unwrap(),
+        r#"{"name":"EDITOR","value":"nvim","platforms":["macos"]}"#
+    );
+    assert_ne!(env, gated, "a gate is part of what the entry declares");
 }

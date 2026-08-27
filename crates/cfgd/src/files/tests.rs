@@ -266,10 +266,12 @@ fn template_rendering_with_env() {
         EnvVar {
             name: "editor".into(),
             value: "vim".into(),
+            platforms: vec![],
         },
         EnvVar {
             name: "shell".into(),
             value: "/bin/zsh".into(),
+            platforms: vec![],
         },
     ];
 
@@ -774,6 +776,7 @@ fn source_template_cannot_access_local_env() {
     let local_env = vec![EnvVar {
         name: "personal_var".into(),
         value: "my-secret".into(),
+        platforms: vec![],
     }];
 
     let resolved = make_resolved_profile(
@@ -802,6 +805,7 @@ fn source_template_cannot_access_local_env() {
         vec![EnvVar {
             name: "team_name".into(),
             value: "Platform".into(),
+            platforms: vec![],
         }],
     );
     fm.set_source_env(&source_vars);
@@ -842,6 +846,7 @@ fn source_template_sandbox_violation_pins_variant() {
     let local_env = vec![EnvVar {
         name: "personal_var".into(),
         value: "my-secret".into(),
+        platforms: vec![],
     }];
 
     let resolved = make_resolved_profile(
@@ -868,6 +873,7 @@ fn source_template_sandbox_violation_pins_variant() {
         vec![EnvVar {
             name: "team_name".into(),
             value: "Platform".into(),
+            platforms: vec![],
         }],
     );
     fm.set_source_env(&source_vars);
@@ -921,6 +927,7 @@ fn source_template_can_access_own_env() {
         vec![EnvVar {
             name: "team_name".into(),
             value: "Platform".into(),
+            platforms: vec![],
         }],
     );
     fm.set_source_env(&source_vars);
@@ -1322,6 +1329,7 @@ fn template_auto_upgrades_to_copy() {
     let env = vec![EnvVar {
         name: "val".into(),
         value: "hello".into(),
+        platforms: vec![],
     }];
 
     let resolved = make_resolved_profile(
@@ -1639,6 +1647,7 @@ fn render_template_for_display_basic() {
     let env = vec![EnvVar {
         name: "name".into(),
         value: "world".into(),
+        platforms: vec![],
     }];
 
     let resolved = make_resolved_profile(env, FilesSpec::default());
@@ -2431,6 +2440,7 @@ fn render_template_for_display_multiline_and_whitespace() {
     let env = vec![EnvVar {
         name: "greeting".into(),
         value: "hi".into(),
+        platforms: vec![],
     }];
     let resolved = make_resolved_profile(env, FilesSpec::default());
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
@@ -2590,6 +2600,7 @@ fn global_symlink_strategy_overridden_for_template() {
     let env = vec![EnvVar {
         name: "port".into(),
         value: "8080".into(),
+        platforms: vec![],
     }];
 
     let resolved = make_resolved_profile(
@@ -4516,6 +4527,7 @@ fn a_repeated_render_reuses_the_registration_it_already_made() {
     let env = vec![EnvVar {
         name: "name".into(),
         value: "world".into(),
+        platforms: vec![],
     }];
     let resolved = make_resolved_profile(env, FilesSpec::default());
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();

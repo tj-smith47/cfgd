@@ -489,6 +489,7 @@ fn extract_source_resources_from_merged_profile() {
         env: vec![crate::config::EnvVar {
             name: "EDITOR".into(),
             value: "vim".into(),
+            platforms: vec![],
         }],
         ..Default::default()
     };
@@ -4418,10 +4419,12 @@ fn extract_source_resources_aliases_not_tracked() {
             ShellAlias {
                 name: "ll".into(),
                 command: "ls -la".into(),
+                platforms: vec![],
             },
             ShellAlias {
                 name: "gp".into(),
                 command: "git push".into(),
+                platforms: vec![],
             },
         ],
         ..Default::default()
@@ -4487,10 +4490,12 @@ fn extract_source_resources_full_profile() {
             EnvVar {
                 name: "EDITOR".into(),
                 value: "vim".into(),
+                platforms: vec![],
             },
             EnvVar {
                 name: "GOPATH".into(),
                 value: "/home/user/go".into(),
+                platforms: vec![],
             },
         ],
         system,
@@ -4937,14 +4942,17 @@ fn extract_source_resources_multiple_env_vars() {
             EnvVar {
                 name: "PATH".into(),
                 value: "/usr/local/bin:$PATH".into(),
+                platforms: vec![],
             },
             EnvVar {
                 name: "EDITOR".into(),
                 value: "nvim".into(),
+                platforms: vec![],
             },
             EnvVar {
                 name: "GOPATH".into(),
                 value: "/home/user/go".into(),
+                platforms: vec![],
             },
         ],
         ..Default::default()
@@ -7068,6 +7076,7 @@ fn compute_config_hash_ignores_non_package_fields() {
             env: vec![EnvVar {
                 name: "FOO".into(),
                 value: "bar".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -7086,6 +7095,7 @@ fn compute_config_hash_ignores_non_package_fields() {
             env: vec![EnvVar {
                 name: "BAZ".into(),
                 value: "qux".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },

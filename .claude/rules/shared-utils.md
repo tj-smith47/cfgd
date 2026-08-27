@@ -50,6 +50,7 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 ## YAML / merges
 
 - `deep_merge_yaml(base, overlay)` — recursive YAML value merge.
+- `fold_env_layer(base, overlay, separator)` — the LAYER fold of `spec.env`, and the ONE place `PATH` concatenates instead of being replaced: every declaration that survives the platform filter contributes its entries around the ambient `$PATH` reference (written once, in the first declaration's spelling), deduplicated by `normalize_path_entry`, leaving exactly one `PATH` entry. Every layer fold reads it (`config::merge_layers`, `composition::merge_with_policy`, `composition::engine`, `reconciler::verify::merge_module_env_aliases`); `merge_env` stays the DOCUMENT-edit semantic the CLI setters need, where the caller is rewriting one YAML file's own list and last-wins is what they typed.
 - `union_extend(target, source)` — `Vec<String>` merge without duplicates.
 - `merge_env(base, updates)` / `merge_aliases(base, updates)` — merge by name, later wins.
 - `split_add_remove(values)` — split `&[String]` into (adds, removes); a leading `-` is a removal.
@@ -82,6 +83,7 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 - `RunContext` (`crates/cfgd/src/cli/run_context.rs`) — the per-invocation holder of everything a run builds at most once. Build one at a `cmd_*`'s top; never `Sync`, so concurrent phases get the resolved objects, not the context.
 - `ManifestCache` + `resolve_manifest_packages_cached(spec, config_dir, cache)` (`crates/cfgd/src/packages/mod.rs`) — reached through `ctx.resolve_manifest_packages`; never process-global, a manifest being stable only for one run.
 - `Platform::current()` (`platform/mod.rs`) — the ONE platform detection per process; `detect()` is for the detection unit tests only.
+- `PlatformGated` + `applicable_here(entries, platform)` + `validate_platform_tag(tag)` / `deserialize_platform_tags` (`platform/mod.rs`) — the ONE gating predicate and the ONE list filter over every type carrying a `platforms:` list (`ModuleSpec`, `ModulePackageEntry`, `EnvVar`, `ShellAlias`), plus the serde hook every one of those four fields deserializes through, so a near-miss tag (`darwin`, `osx`, `win`, `arm64`, `AMD64`) is refused at parse time with the spelling cfgd matches. `platform_annotation()` is the display half (`platforms: macos/linux`), read by every surface that shows a gated entry. A gated-off entry is filtered BEFORE the layer fold, never inside it: an entry that does not apply here must not displace one that does.
 - `http_agent(timeout)` (`http.rs`) — the ONE `ureq::Agent` per named timeout, so pooled TLS connections survive; a caller needing a different agent SHAPE builds its own.
 - `format_bytes(bytes)` — the workspace's ONE human byte-size renderer; never hand-roll a second scale.
 - `Theme::PRESET_NAMES` + `Theme::preset(name)` (`output/theme.rs`) — the ONE preset list and lookup; `cli::resolve_theme_config(path, preset)` is the ONE composition of a printer's theme block.
@@ -182,6 +184,7 @@ A PowerShell function-wrapper alias carries its command as a quoted string built
 - `default_config_dir()` — cross-platform config dir.
 - `expand_tilde(path)` — expand `~/` to home (`HOME`, then `USERPROFILE` on Windows).
 - `normalize_path_entry(entry, home)` — fold ONE `PATH` entry to the form two spellings of the same directory compare equal in (`$HOME`/`${HOME}`/`~` resolved, separators folded, trailing `/` dropped). COMPARISON only; never render the result. Every env dialect's derived manager-PATH line drops a directory the declared `PATH` already carries through this one key.
+- `PATH_LIST_SEPARATOR` / `is_inherited_path_ref(segment)` — the host's `PATH` list separator (`;` on Windows, `:` elsewhere) and the ONE predicate for a segment that REFERS to the ambient `PATH` (`$PATH`, `${PATH}`, `$env:PATH`, `%PATH%`) rather than naming a directory. Both are read by `fold_env_layer` and by the env engine's own `PATH` line, so the fold and the render cannot disagree about where the inherited value sits.
 - `absolutize_path(path)` — make a path absolute LEXICALLY without requiring it to exist; use at any CLI entry point. Never canonicalizes, so a symlinked config keeps the name the user gave it.
 - `resolve_relative_path(path, base)` — resolve relative to base with traversal validation.
 - `resolve_managed_file_source(source, config_dir)` — the ONE resolution of a `spec.files[].source` against the config dir, taken by BOTH readers of that field.

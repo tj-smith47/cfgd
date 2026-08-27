@@ -218,7 +218,10 @@ pub(super) fn merge_module_env_aliases(
     // the value merge below does.
     let mut origins = EnvOrigins::from_owners(layer_owners);
     for module in modules {
-        crate::merge_env(&mut merged, &module.env);
+        // A module's own entries were filtered when it resolved, so this fold
+        // sees only what applies here; `PATH` concatenates onto the profile's
+        // declaration rather than replacing it.
+        crate::fold_env_layer(&mut merged, &module.env, crate::PATH_LIST_SEPARATOR);
         crate::merge_aliases(&mut merged_aliases, &module.aliases);
         origins.claim_module_entries(module);
     }

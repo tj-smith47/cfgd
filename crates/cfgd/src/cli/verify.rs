@@ -416,6 +416,7 @@ mod tests {
         let declared_env = vec![cfgd_core::config::EnvVar {
             name: "EDITOR".to_string(),
             value: "vim".to_string(),
+            platforms: vec![],
         }];
         // The owners the profile-layer merge records for this profile: the
         // generated line names its layer, so a needle rendered with no owner

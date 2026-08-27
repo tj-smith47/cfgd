@@ -748,6 +748,7 @@ mod tests {
         let hand_edited = ShellAlias {
             name: "ll".to_string(),
             command: "ls -lah".to_string(),
+            platforms: vec![],
         };
         let hand_edited_line = cfgd_core::reconciler::MergedEnvItems::new(
             &[],
@@ -776,6 +777,7 @@ mod tests {
                 aliases: vec![ShellAlias {
                     name: "ll".to_string(),
                     command: "ls -la".to_string(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },

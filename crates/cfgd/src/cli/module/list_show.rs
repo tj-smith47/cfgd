@@ -23,6 +23,19 @@ pub enum PackageDisplay {
     },
 }
 
+/// A declared value with its own `platforms:` gate named after it, for the two
+/// surfaces that list a module's DOCUMENT rather than this host's desired
+/// state. Ungated values are returned untouched.
+pub(in crate::cli) fn gated_value(
+    value: String,
+    entry: &impl cfgd_core::platform::PlatformGated,
+) -> String {
+    match entry.platform_annotation() {
+        Some(tags) => format!("{value} ({tags})"),
+        None => value,
+    }
+}
+
 /// `secondary` (pink/magenta) attaches to remote-sourced modules so the
 /// upgrade-candidate set is scannable without re-reading the column. The
 /// literal value ("remote") still carries the meaning when colors are off.
@@ -219,6 +232,9 @@ pub fn build_module_show_doc(
         })
     });
 
+    // This surface describes what the module DECLARES, not what this host will
+    // take from it, so a gated entry is listed and annotated — the same
+    // annotation vocabulary a platform-filtered package row already carries.
     doc = doc.section_if_nonempty("Env", &output.spec.env, |s, env| {
         env.iter().fold(s, |s, ev| {
             let display = if show_values {
@@ -226,14 +242,14 @@ pub fn build_module_show_doc(
             } else {
                 mask_value(&ev.value)
             };
-            s.kv(&ev.name, display)
+            s.kv(&ev.name, gated_value(display, ev))
         })
     });
 
     doc = doc.section_if_nonempty("Aliases", &output.spec.aliases, |s, aliases| {
-        aliases
-            .iter()
-            .fold(s, |s, alias| s.kv(&alias.name, &alias.command))
+        aliases.iter().fold(s, |s, alias| {
+            s.kv(&alias.name, gated_value(alias.command.clone(), alias))
+        })
     });
 
     // Every hook the module declares, in execution order — read through the

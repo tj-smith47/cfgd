@@ -450,6 +450,14 @@ pub struct ModuleEnvVar {
     /// separator instead of replacing it. Default: `false`.
     #[serde(default)]
     pub append: bool,
+    /// Platform tags gating this entry alone. Empty means every platform the
+    /// declaring module is not already gated off of. Tags are matched against
+    /// the machine's OS, distro, and arch; use `macos` for macOS. A pod is a
+    /// Linux container, so the pod-mutating webhook injects an entry only when
+    /// this is empty or names `linux` — nothing about a pod can answer a
+    /// distro or arch tag.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
 }
 
 /// Cosign configuration for OCI artifact signature verification.

@@ -2108,6 +2108,7 @@ fn module_with_env_and_aliases(env: &[(&str, &str)], aliases: &[(&str, &str)]) -
                 .map(|(name, value)| crate::config::EnvVar {
                     name: (*name).into(),
                     value: (*value).into(),
+                    platforms: vec![],
                 })
                 .collect(),
             aliases: aliases
@@ -2115,6 +2116,7 @@ fn module_with_env_and_aliases(env: &[(&str, &str)], aliases: &[(&str, &str)]) -
                 .map(|(name, command)| crate::config::ShellAlias {
                     name: (*name).into(),
                     command: (*command).into(),
+                    platforms: vec![],
                 })
                 .collect(),
             ..Default::default()
@@ -4264,6 +4266,7 @@ fn diff_module_specs_env_only_change_is_still_a_change() {
             env: vec![crate::config::EnvVar {
                 name: "OLD".into(),
                 value: "1".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -4277,6 +4280,7 @@ fn diff_module_specs_env_only_change_is_still_a_change() {
             env: vec![crate::config::EnvVar {
                 name: "NEW".into(),
                 value: "2".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -6336,4 +6340,70 @@ fn fetch_registry_modules_skips_dirs_without_module_yaml() {
     let modules = fetch_registry_modules(&registry, cache.path(), &printer).unwrap();
     assert_eq!(modules.len(), 1);
     assert_eq!(modules[0].name, "valid");
+}
+
+/// A module's own `spec.env` / `spec.aliases` entries are filtered where its
+/// packages are, so a gated entry never becomes part of a host's desired
+/// state. Filtering later would mean every consumer of a `ResolvedModule` —
+/// the env writer, the plan, drift verification, pending decisions — had to
+/// re-apply the gate, and the first one that forgot would export a variable
+/// naming a directory that does not exist on this OS.
+#[test]
+fn resolve_modules_drops_env_and_alias_entries_gated_off_this_platform() {
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("modules").join("shell");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: shell
+spec:
+  env:
+    - name: EDITOR
+      value: nvim
+    - name: PATH
+      value: /opt/homebrew/opt/ruby/bin:$PATH
+      platforms: [macos]
+    - name: BROWSER
+      value: xdg-open
+      platforms: [linux, freebsd]
+  aliases:
+    - name: pbcopy
+      command: xclip -selection clipboard
+      platforms: [linux]
+    - name: openf
+      command: open
+      platforms: [macos]
+"#,
+    )
+    .unwrap();
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let resolved = resolve_modules(
+        &["shell".into()],
+        dir.path(),
+        cache_dir.path(),
+        &[],
+        &linux_ubuntu_platform(),
+        &managers,
+        &test_printer(),
+    )
+    .unwrap();
+
+    let names: Vec<&str> = resolved[0].env.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["EDITOR", "BROWSER"],
+        "the macOS-gated PATH declaration is absent on Linux, in declaration order"
+    );
+    let aliases: Vec<&str> = resolved[0]
+        .aliases
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect();
+    assert_eq!(aliases, vec!["pbcopy"]);
 }

@@ -1325,6 +1325,7 @@ fn module_at(dir: &Path) -> crate::modules::ResolvedModule {
         env: vec![crate::config::EnvVar {
             name: "BUILD_HOST".to_string(),
             value: "build.internal".to_string(),
+            platforms: vec![],
         }],
         aliases: Vec::new(),
         system: std::collections::BTreeMap::new(),

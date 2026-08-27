@@ -318,6 +318,7 @@ pub(super) fn env_var_line_prefix(
             &crate::config::EnvVar {
                 name: name.to_string(),
                 value: value.to_string(),
+                platforms: vec![],
             },
             platform,
             // A prefix ends where the two sentinel values first differ, which
@@ -342,6 +343,7 @@ pub(super) fn alias_line_prefixes(
             &crate::config::ShellAlias {
                 name: name.to_string(),
                 command: command.to_string(),
+                platforms: vec![],
             },
             platform,
             &Default::default(),
@@ -721,6 +723,7 @@ mod tests {
         vec![EnvVar {
             name: "V".to_string(),
             value: value.to_string(),
+            platforms: vec![],
         }]
     }
 
@@ -728,6 +731,7 @@ mod tests {
         vec![ShellAlias {
             name: "q".to_string(),
             command: command.to_string(),
+            platforms: vec![],
         }]
     }
 
@@ -973,6 +977,7 @@ mod tests {
         let env = vec![EnvVar {
             name: "PATH".to_string(),
             value: "a\\:b".to_string(),
+            platforms: vec![],
         }];
         let fold = super::super::env_engine::fold_path_line(
             &env,
@@ -1011,6 +1016,7 @@ mod tests {
         let env = vec![EnvVar {
             name: "V".to_string(),
             value: "$env:PATH;$(Write-Output pwned)".to_string(),
+            platforms: vec![],
         }];
         let content = super::generate_powershell_env_content(&env, &[], None, &Default::default());
         assert!(
@@ -1076,6 +1082,7 @@ mod tests {
         let env = vec![EnvVar {
             name: "V".to_string(),
             value: "/opt/bin:$PATH:$(id)".to_string(),
+            platforms: vec![],
         }];
         let content = super::generate_env_file_content(&env, &[], None, &Default::default());
         assert!(
@@ -1140,6 +1147,7 @@ mod tests {
                     &EnvVar {
                         name: "EDITOR".to_string(),
                         value: value.to_string(),
+                        platforms: vec![],
                     },
                     platform,
                     &Default::default(),
@@ -1172,6 +1180,7 @@ mod tests {
                     &ShellAlias {
                         name: "g".to_string(),
                         command: command.to_string(),
+                        platforms: vec![],
                     },
                     platform,
                     &Default::default(),
