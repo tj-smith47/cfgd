@@ -22108,8 +22108,9 @@ fn an_apply_with_a_skipped_action_renders_and_stores_the_split() {
     assert_eq!(result.skipped(), 1, "{:?}", result.action_results);
     assert_eq!(result.failed(), 0);
     assert!(
-        out.contains("1 action succeeded, 1 skipped"),
-        "the footer must not claim a skip as work done: {out}"
+        out.contains("1 action succeeded") && out.contains("\u{2205} 1 skipped"),
+        "the footer must not claim a skip as work done, and states it on its \
+         own line in the role the skipped row wore: {out}"
     );
 
     let stored = state
@@ -23215,7 +23216,7 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
         "a skip is an in-scope action and is counted: {out}"
     );
     assert!(
-        out.contains("1 action succeeded, 1 skipped"),
+        out.contains("1 action succeeded") && out.contains("\u{2205} 1 skipped"),
         "the rollup reconciles against the planned count, and a skip is \
          counted as a skip rather than as work that was done: {out}"
     );
@@ -23275,7 +23276,10 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
             "Profile  work".to_string(),
             "Modules  wsl-tools skipped: platform not matched (requires: windows)".to_string(),
             "Actions  1 planned".to_string(),
-            "\u{2713} Apply complete \u{2014} 1 action skipped".to_string(),
+            "\u{2713} Apply complete".to_string(),
+            // The skip states itself in the role its own row wears, rather
+            // than riding the tick's detail as though it were work done.
+            "\u{2205} 1 action skipped".to_string(),
         ],
         "header + annotation + rollup and nothing else"
     );
