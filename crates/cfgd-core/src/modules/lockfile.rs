@@ -351,6 +351,10 @@ pub fn load_all_modules(
 /// failure) reading as "this upgrade failed" at the exact moment the user is
 /// approving it; the words remove that ambiguity without inventing a
 /// dedicated add/remove role the rest of the theme has no other use for.
+///
+/// name-row-ok: every row NAMES the declared kind that changed (`dependency
+/// added: nvim`, `env 'EDITOR': vi -> nvim`), so its subject is a schema noun
+/// and not a past-tense report of something the command did.
 pub fn diff_module_specs(
     old: &LoadedModule,
     new: &LoadedModule,

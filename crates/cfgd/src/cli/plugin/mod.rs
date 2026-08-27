@@ -885,7 +885,7 @@ pub fn cmd_deploy(
         for (old, new) in &rewrites {
             printer.status_simple(
                 Role::Info,
-                format!("pinned {old} {} {new}", printer.arrow()),
+                format!("Pinned {old} {} {new}", printer.arrow()),
             );
         }
         printer.data_line(&yaml_out);

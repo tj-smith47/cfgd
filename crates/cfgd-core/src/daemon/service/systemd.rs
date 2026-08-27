@@ -207,7 +207,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
             "systemctl --user enable --now cfgd.service"
         };
         printer
-            .status(Role::Warn, "systemctl not found")
+            .status(Role::Warn, "systemctl not found") // name-row-ok: the init system's own tool name, which is lowercase
             .detail(super::INSTALLED_NOT_STARTED);
         printer.hint(format!("Start it later with `{hint_cmd}`"));
         return Ok(false);
@@ -229,7 +229,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
                 printer
                     .status(
                         Role::Warn,
-                        "no user session bus (XDG_RUNTIME_DIR unset and /run/user/<uid> absent)",
+                        "No user session bus (XDG_RUNTIME_DIR unset and /run/user/<uid> absent)",
                     )
                     .detail(super::INSTALLED_NOT_STARTED);
                 printer.hint(
@@ -253,7 +253,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
             Ok(output) => {
                 let detail = crate::stderr_lossy_trimmed(&output);
                 printer.status_simple(
-                    Role::Warn,
+                    Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                     format!(
                         "systemctl {} failed: {}",
                         args.join(" "),
@@ -269,7 +269,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
             }
             Err(e) => {
                 printer.status_simple(
-                    Role::Warn,
+                    Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                     format!(
                         "systemctl {} failed: {}",
                         args.join(" "),
@@ -326,7 +326,7 @@ pub(crate) fn stop_systemd_service(printer: &Printer, scope: crate::Scope) {
     }
     if !crate::systemctl_available() {
         printer
-            .status(Role::Warn, "systemctl not found")
+            .status(Role::Warn, "systemctl not found") // name-row-ok: the init system's own tool name, which is lowercase
             .detail("unit file removed but daemon may still be running");
         let hint_cmd = if scope == crate::Scope::System {
             "systemctl disable --now cfgd.service".to_string()
@@ -345,7 +345,7 @@ pub(crate) fn stop_systemd_service(printer: &Printer, scope: crate::Scope) {
         Ok(output) => {
             let detail = crate::stderr_lossy_trimmed(&output);
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "systemctl {} failed: {}",
                     disable.join(" "),
@@ -355,7 +355,7 @@ pub(crate) fn stop_systemd_service(printer: &Printer, scope: crate::Scope) {
         }
         Err(e) => {
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "systemctl {} failed: {}",
                     disable.join(" "),
@@ -396,7 +396,7 @@ pub(crate) fn uninstall_systemd_service(printer: &Printer, scope: crate::Scope) 
         {
             let detail = crate::stderr_lossy_trimmed(&output);
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "systemctl {} failed: {}",
                     reload.join(" "),

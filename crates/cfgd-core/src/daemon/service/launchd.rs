@@ -184,7 +184,7 @@ pub(crate) fn launchd_enable_argv(uid: u32, scope: crate::Scope) -> Vec<String> 
 pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> Result<bool> {
     if !crate::command_available("launchctl") {
         printer
-            .status(Role::Warn, "launchctl not found")
+            .status(Role::Warn, "launchctl not found") // name-row-ok: the init system's own tool name, which is lowercase
             .detail(super::INSTALLED_NOT_STARTED);
         printer.hint("Start it later from a GUI login session with: `cfgd daemon install`");
         return Ok(false);
@@ -207,7 +207,7 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
         Ok(output) => {
             let detail = crate::stderr_lossy_trimmed(&output);
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "launchctl bootstrap failed: {}",
                     crate::output::collapse_to_subject_line(&detail)
@@ -219,7 +219,7 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
         }
         Err(e) => {
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "launchctl bootstrap failed: {}",
                     crate::output::collapse_to_subject_line(&e)
@@ -239,7 +239,7 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
         Ok(output) => {
             let detail = crate::stderr_lossy_trimmed(&output);
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "launchctl enable failed: {}",
                     crate::output::collapse_to_subject_line(&detail)
@@ -249,7 +249,7 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
         }
         Err(e) => {
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "launchctl enable failed: {}",
                     crate::output::collapse_to_subject_line(&e)
@@ -305,7 +305,7 @@ pub(crate) fn stop_launchd_service(printer: &Printer, scope: crate::Scope) {
     }
     if !crate::command_available("launchctl") {
         printer
-            .status(Role::Warn, "launchctl not found")
+            .status(Role::Warn, "launchctl not found") // name-row-ok: the init system's own tool name, which is lowercase
             .detail("plist removed but daemon may still be running");
         let hint = if scope == crate::Scope::System {
             "Stop it later with `launchctl bootout system /Library/LaunchDaemons/com.cfgd.daemon.plist`".to_string()
@@ -333,7 +333,7 @@ pub(crate) fn stop_launchd_service(printer: &Printer, scope: crate::Scope) {
         Ok(output) => {
             let detail = crate::stderr_lossy_trimmed(&output);
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "launchctl bootout failed: {}",
                     crate::output::collapse_to_subject_line(&detail)
@@ -342,7 +342,7 @@ pub(crate) fn stop_launchd_service(printer: &Printer, scope: crate::Scope) {
         }
         Err(e) => {
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "launchctl bootout failed: {}",
                     crate::output::collapse_to_subject_line(&e)

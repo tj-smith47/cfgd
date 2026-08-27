@@ -485,7 +485,7 @@ fn verify_cosign_bundle(
             });
         }
         if let Some(p) = printer {
-            p.status(Role::Warn, "no cosign bundle attached to release")
+            p.status(Role::Warn, "No cosign bundle attached to release")
                 .detail("falling back to SHA256-only checksum verification. Downgrades publisher-compromise resistance to GitHub Releases trust.");
         }
         return Ok(VerificationMode::Sha256Only);
@@ -498,7 +498,10 @@ fn verify_cosign_bundle(
             });
         }
         if let Some(p) = printer {
-            p.status(Role::Warn, "cosign bundle found but the cosign CLI is not installed")
+            p.status(
+                Role::Warn,
+                "Signature bundle found, but the cosign CLI is not installed",
+            )
                 .detail("install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) to enable signature verification. Falling back to SHA256-only.");
         }
         return Ok(VerificationMode::Sha256Only);
