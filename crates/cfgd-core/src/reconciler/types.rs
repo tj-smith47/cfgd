@@ -1088,6 +1088,14 @@ pub struct ActionResult {
     /// reason; the counted rollup names it only in its parenthetical. `None`
     /// for every action the run attempted, whatever became of it.
     pub not_attempted: Option<String>,
+    /// How many of the entries this action NAMED it actually put on the
+    /// machine, when the executed set was narrower than the planned one.
+    /// `description` keeps the planned set — it is the wire contract and the
+    /// `managed_resources` id — so a consumer differencing the two reads
+    /// exactly what the row's `N of M packages` detail states. `None` whenever
+    /// the action installed everything it named, or installs nothing at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installed: Option<usize>,
 }
 
 /// Result of an entire apply operation.

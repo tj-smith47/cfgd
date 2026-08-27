@@ -2629,6 +2629,7 @@ fn env_apply_result(descriptions: &[&str]) -> ApplyResult {
                 changed: !d.ends_with(":skipped"),
                 skipped: d.ends_with(":skipped"),
                 not_attempted: None,
+                installed: None,
             })
             .collect(),
         status: ApplyStatus::Success,

@@ -532,7 +532,7 @@ pub(in crate::cli) fn build_plan_output(
                                 targets: action_targets(action),
                                 origin: action_origin(action),
                                 manager: manager_action_output(action),
-                                detail: reconciler::action_produced_detail(action),
+                                detail: reconciler::action_produced_detail(action, None),
                             })
                             .collect(),
                     )
