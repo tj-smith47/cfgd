@@ -685,13 +685,22 @@ fn reconcile_tick(
     // skipped when the hash already agrees, so a settled machine pays nothing per
     // interval. The file manager is the one this tick already planned through, and
     // is absent for a hook that owns none — the module half is refreshed either way.
-    if let Err(e) = reconciler.refresh_link_deployed_hashes(
+    //
+    // The count comes out with it. A pull that lands another machine's edit
+    // through a symlink leaves nothing to plan, so the tick that carried the
+    // sync closed on the same `nothing to do` as the four idle ticks above it
+    // — this is the only fact that separates the two.
+    let refreshed_hashes = match reconciler.refresh_link_deployed_hashes(
         file_manager.as_deref(),
         resolved,
         resolved_modules_ref.as_slice(),
     ) {
-        tracing::warn!(error = %e, "reconcile: failed to refresh recorded file hashes");
-    }
+        Ok(refreshed) => refreshed,
+        Err(e) => {
+            tracing::warn!(error = %e, "reconcile: failed to refresh recorded file hashes");
+            0
+        }
+    };
 
     let outcome = if effective_total == 0 {
         tracing::debug!("reconcile: no drift detected");
@@ -1081,6 +1090,19 @@ fn reconcile_tick(
                 ))
             }
         }
+    };
+
+    // The sentence states what the tick did to the RECORD as well as what it
+    // did to the machine. Folded here rather than in the clean arm, so every
+    // arm of the branch above reports it on the same terms.
+    let outcome = match refreshed_hashes {
+        0 => outcome,
+        n => outcome.map(|sentence| {
+            format!(
+                "{sentence}, {} refreshed",
+                crate::pluralize(n, "deployed file")
+            )
+        }),
     };
 
     // A per-module tick names its module: the log carries ticks of both
