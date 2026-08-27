@@ -936,3 +936,73 @@ fn no_explain_description_names_a_position_on_the_screen() {
          sort does not guarantee — name the sibling fields instead: {found:#?}"
     );
 }
+
+/// Every mark a field row carries lands in a COLUMN.
+///
+/// The legend tells the reader to scan for `[+]`, and only a column can be
+/// scanned: concatenated onto a variable-width type span the mark landed at
+/// six different x positions down eight rows, and ` (required)` — which sits
+/// between the type and the mark — moved every mark after it again.
+///
+/// Both slots are walked, on both surfaces that render a field row: the flat
+/// field list and the `--recursive` tree, whose rows are indented per level
+/// and so are measured per level.
+#[test]
+fn every_field_row_mark_lands_in_a_column() {
+    /// Split rendered rows into LEVELS — the unit each column is measured
+    /// over. In the flat list that is the whole list; in the `--recursive`
+    /// tree a level is one parent's children, so two sibling groups at the
+    /// same indent are two levels and legitimately pad to different widths.
+    fn levels(rendered: &str) -> Vec<Vec<String>> {
+        let mut out: Vec<Vec<String>> = Vec::new();
+        // (indent, index into `out`) for each open level, outermost first.
+        let mut open: Vec<(usize, usize)> = Vec::new();
+        for line in rendered.lines().filter(|l| !l.trim().is_empty()) {
+            let indent = line.len() - line.trim_start().len();
+            while open.last().is_some_and(|(at, _)| *at > indent) {
+                open.pop();
+            }
+            let slot = match open.last() {
+                Some((at, slot)) if *at == indent => *slot,
+                _ => {
+                    out.push(Vec::new());
+                    open.push((indent, out.len() - 1));
+                    out.len() - 1
+                }
+            };
+            out[slot].push(line.to_string());
+        }
+        out
+    }
+
+    for (query, recursive) in [("module", false), ("profile", true)] {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        cmd_explain(&printer, Some(query), recursive).unwrap();
+        printer.flush();
+        let rendered = cfgd_core::test_helpers::captured_text(&buf);
+
+        for needle in ["[+]", "(required)"] {
+            for level in levels(&rendered) {
+                let marked: Vec<(usize, &String)> = level
+                    .iter()
+                    .filter_map(|line| {
+                        line.find(needle)
+                            .map(|at| (line[..at].chars().count(), line))
+                    })
+                    .collect();
+                let Some((first, _)) = marked.first() else {
+                    continue;
+                };
+                assert!(
+                    marked.iter().all(|(at, _)| at == first),
+                    "`{needle}` lands at more than one column within one level of \
+                     `cfgd explain {query}`: {marked:#?}"
+                );
+            }
+        }
+        assert!(
+            !rendered.lines().any(|l| l.ends_with(' ')),
+            "a padded column left trailing whitespace: {rendered:?}"
+        );
+    }
+}

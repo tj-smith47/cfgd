@@ -417,20 +417,68 @@ fn expandable_hint(base: &str, fields: &[&FieldNode], recursive: bool) -> Option
         .then(|| format!("`cfgd explain {base}.<field>` expands a field marked [+]"))
 }
 
-fn field_row(f: &FieldNode, name_width: usize) -> CommandPair {
-    let expandable = is_expandable(f);
+/// The marker `[+]` and the ` (required)` flag each get a COLUMN, not a
+/// concatenation.
+///
+/// The legend tells the reader to scan for `[+]`, and only a column can be
+/// scanned: concatenated onto a variable-width type span it landed at six
+/// different x positions down eight rows, and ` (required)` — which sits
+/// between the type and the mark — moved every mark after it again. Each
+/// width is measured over the LEVEL, the same unit the name column is
+/// measured over, and a level with nothing required spends no width on the
+/// flag, so a list without one is byte-identical to what it always was.
+fn field_row(f: &FieldNode, widths: &LevelWidths) -> CommandPair {
     let req = if f.required { " (required)" } else { "" };
-    let more = if expandable { " [+]" } else { "" };
+    let more = if is_expandable(f) { " [+]" } else { "" };
     let type_span = type_span(f);
+    let key = format!(
+        "{:<name_width$}  {:<type_width$}{:<req_width$}{more}",
+        f.name,
+        type_span,
+        req,
+        name_width = widths.name,
+        type_width = widths.type_span,
+        req_width = widths.required,
+    );
     CommandPair::typed(
-        format!(
-            "{:<name_width$}  {type_span}{req}{more}",
-            f.name,
-            name_width = name_width
-        ),
+        // Nothing follows the last filled column, so its padding is trailing
+        // whitespace; `command_list` pads every key to the widest anyway.
+        key.trim_end().to_string(),
         type_span,
         described_with_enum(f),
     )
+}
+
+/// The three column widths a level's rows pad to, measured over that level.
+#[derive(Default)]
+struct LevelWidths {
+    name: usize,
+    type_span: usize,
+    required: usize,
+}
+
+impl LevelWidths {
+    /// Measured in chars: a schema field name is an ASCII identifier and a
+    /// type description is ASCII too, so char width is column width.
+    fn of(fields: &[&FieldNode]) -> Self {
+        Self {
+            name: fields
+                .iter()
+                .map(|f| f.name.chars().count())
+                .max()
+                .unwrap_or(0),
+            type_span: fields
+                .iter()
+                .map(|f| type_span(f).chars().count())
+                .max()
+                .unwrap_or(0),
+            required: if fields.iter().any(|f| f.required) {
+                " (required)".chars().count()
+            } else {
+                0
+            },
+        }
+    }
 }
 
 /// Append one level of fields.
@@ -451,12 +499,8 @@ fn append_fields(s: SectionBuilder, fields: &[&FieldNode], recursive: bool) -> S
         push_tree_rows(&mut rows, fields, 0);
         return s.command_list(rows);
     }
-    let name_width = fields
-        .iter()
-        .map(|f| f.name.chars().count())
-        .max()
-        .unwrap_or(0);
-    s.command_list(fields.iter().map(|f| field_row(f, name_width)))
+    let widths = LevelWidths::of(fields);
+    s.command_list(fields.iter().map(|f| field_row(f, &widths)))
 }
 
 /// Collect the recursive structure tree: a `name <type> (required)` row per
@@ -468,22 +512,24 @@ fn append_fields(s: SectionBuilder, fields: &[&FieldNode], recursive: bool) -> S
 /// depth its children would occupy: the values ARE what the field expands into,
 /// and the tree has no other place to put a fact about one row.
 fn push_tree_rows(rows: &mut Vec<CommandPair>, fields: &[&FieldNode], depth: usize) {
-    let name_width = fields
-        .iter()
-        .map(|f| f.name.chars().count())
-        .max()
-        .unwrap_or(0);
+    let widths = LevelWidths::of(fields);
     for f in fields {
         let req = if f.required { " (required)" } else { "" };
         let type_span = type_span(f);
+        // The tree carries no `[+]`, so the flag is last and needs no padding
+        // of its own — but the type span it follows is variable-width, which
+        // is what moved it. Same column, same measurement unit.
+        let key = format!(
+            "{:indent$}{:<name_width$}  {:<type_width$}{req}",
+            "",
+            f.name,
+            type_span,
+            indent = depth * 2,
+            name_width = widths.name,
+            type_width = widths.type_span,
+        );
         rows.push(CommandPair::typed(
-            format!(
-                "{:indent$}{:<name_width$}  {type_span}{req}",
-                "",
-                f.name,
-                indent = depth * 2,
-                name_width = name_width
-            ),
+            key.trim_end().to_string(),
             type_span,
             String::new(),
         ));
