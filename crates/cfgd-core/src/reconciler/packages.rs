@@ -558,6 +558,10 @@ impl<'x> PackageExec<'x> {
                 })
         };
         let mut changed = true;
+        // How many of the managers this node NAMES it actually had to install,
+        // for the detail beside its own row. Set by the provision arm alone —
+        // every other node installs exactly what its subject names.
+        let mut provisioned_now: Option<usize> = None;
         match action {
             // An index refresh is best-effort and never fails the phase: a
             // flaky mirror must not turn a run into a failure the installs
@@ -599,6 +603,12 @@ impl<'x> PackageExec<'x> {
                         pending.push(*name);
                     }
                 }
+                // The re-read the row's detail is worded from, and the same
+                // re-read the arms below branch on: a node whose members were
+                // all available already runs nothing, so it neither claims a
+                // green tick nor reports a count it did not earn.
+                provisioned_now = Some(pending.len());
+                changed = !pending.is_empty();
                 let outcome = match (declared, pending.as_slice()) {
                     (_, []) => Ok(()),
                     // The module's own entry for this tool: install exactly
@@ -690,7 +700,11 @@ impl<'x> PackageExec<'x> {
                 .into());
             }
         }
-        Ok(ActionRun::new(action.node_id(), changed))
+        let run = ActionRun::new(action.node_id(), changed);
+        Ok(match provisioned_now {
+            Some(landed) => run.installed(landed),
+            None => run,
+        })
     }
 
     /// Apply one module-owned `InstallPackages` action.
