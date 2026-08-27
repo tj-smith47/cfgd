@@ -410,7 +410,8 @@ pub struct ClusterConfigPolicyStatus {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageEntry {
-    /// Default package name, used on every platform with no override below.
+    /// Default package name, used on every platform `platforms` names no
+    /// override for.
     pub name: String,
     /// Per-platform package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"}).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

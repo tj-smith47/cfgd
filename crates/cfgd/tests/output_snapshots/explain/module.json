@@ -215,7 +215,7 @@
           "type": "[]string"
         },
         {
-          "description": "Manager preference order for this package, overriding the profile's default manager priority (e.g. `[brew, apt]`, or `[script]` to force the install script below).",
+          "description": "Manager preference order for this package, overriding the profile's default manager priority (e.g. `[brew, apt]`, or `[script]` to force this entry's own `script`).",
           "name": "prefer",
           "required": false,
           "type": "[]string"

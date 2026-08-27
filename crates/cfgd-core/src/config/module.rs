@@ -172,8 +172,8 @@ pub struct ModulePackageEntry {
     pub min_version: Option<String>,
 
     /// Manager preference order for this package, overriding the profile's
-    /// default manager priority (e.g. `[brew, apt]`, or `[script]` to force the
-    /// install script below).
+    /// default manager priority (e.g. `[brew, apt]`, or `[script]` to force
+    /// this entry's own `script`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefer: Vec<String>,
 
