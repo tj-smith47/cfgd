@@ -7897,6 +7897,14 @@ fn a_declared_routes_verification_failure_names_the_package_it_installed() {
         error.contains("rustc") && error.contains("apt"),
         "the failure must name the installer that ran and the package it landed, got {error:?}"
     );
+    assert!(
+        !error.contains("bootstrap"),
+        "a declared route runs no cascade, so its failure may not call itself a bootstrap: {error:?}"
+    );
+    assert!(
+        !error.contains("package error"),
+        "the sentence names its own subject, so it opens on no category label: {error:?}"
+    );
 }
 
 #[test]

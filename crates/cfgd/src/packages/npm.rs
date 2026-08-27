@@ -646,7 +646,7 @@ impl PackageManager for NpmManager {
 
         Err(PackageError::BootstrapFailed {
             manager: "npm".into(),
-            message: "no installation method available".into(),
+            message: "no method available to install npm".into(),
         }
         .into())
     }

@@ -162,7 +162,7 @@ impl PackageManager for PipxManager {
                 Some(method) => planned_method_unavailable("pipx", method),
                 None => PackageError::BootstrapFailed {
                     manager: "pipx".into(),
-                    message: "no installation method available".into(),
+                    message: "no method available to install pipx".into(),
                 },
             }
             .into());
