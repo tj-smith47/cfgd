@@ -212,7 +212,7 @@ fn dependency_order_cycle_chain_is_sorted_every_run() {
         ("mid", &["alpha"]),
         ("alpha", &["zeta"]),
     ]);
-    let expected = "module error: module dependency cycle: [\"alpha\", \"mid\", \"zeta\"]";
+    let expected = "module dependency cycle: [\"alpha\", \"mid\", \"zeta\"]";
     for _ in 0..50 {
         let result = resolve_dependency_order(&["zeta".into()], &modules);
         let err = result.unwrap_err();

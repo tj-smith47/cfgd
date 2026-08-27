@@ -1903,19 +1903,20 @@ fn normalize_for_snapshot_skips_empty_path_keys() {
 
 #[test]
 fn posixify_os_error_text_collapses_linux_form() {
-    let s = "file error: io error on /tmp/foo: File exists (os error 17)";
+    let s = "io error on /tmp/foo: File exists (os error 17)";
     assert_eq!(
         posixify_os_error_text(s),
-        "file error: io error on /tmp/foo: <os error>"
+        "io error on /tmp/foo: <os error>"
     );
 }
 
 #[test]
 fn posixify_os_error_text_collapses_windows_form() {
-    let s = "file error: io error on /tmp/foo: Cannot create a file when that file already exists. (os error 183)";
+    let s =
+        "io error on /tmp/foo: Cannot create a file when that file already exists. (os error 183)";
     assert_eq!(
         posixify_os_error_text(s),
-        "file error: io error on /tmp/foo: <os error>"
+        "io error on /tmp/foo: <os error>"
     );
 }
 

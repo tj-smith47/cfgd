@@ -16,24 +16,30 @@ fn join_quoted_posix(paths: &[PathBuf]) -> String {
         .join(", ")
 }
 
-// Top-level variants print `"<category>: <inner>"` because `{0}` expands the
+// A LABELLED variant prints `"<category>: <inner>"` because `{0}` expands the
 // inner error's Display once. `main.rs` formats with `{}`, which emits this
 // single-layer message. Do NOT switch `main.rs` to `{:#}` — that also walks
-// `source()` (via `#[from]`) and would duplicate the inner text. The
-// Composition variant uses `#[source]` (not `#[from]`) because a manual
-// `From<CompositionError>` impl exists for error-context wrapping.
+// `source()` (via `#[from]`) and would duplicate the inner text.
+//
+// A variant is labelled only when the label is LOAD-BEARING for some member of
+// its inner enum: a sentence that already names its own subject reads perfectly
+// without one, and on an action row — which carries its own ✗ and its own
+// subject — the label is a third layer saying nothing. `CfgdError::kind()` is
+// what a `-o json` consumer routes on, so nothing structured depends on the
+// prose label. Every variant's verdict and its reason are pinned by
+// `no_error_a_row_renders_opens_on_a_category_label` below.
 #[derive(Debug, thiserror::Error)]
 pub enum CfgdError {
     #[error("config error: {0}")]
     Config(#[from] ConfigError),
 
-    #[error("file error: {0}")]
+    #[error(transparent)]
     File(#[from] FileError),
 
-    #[error("package error: {0}")]
+    #[error(transparent)]
     Package(#[from] PackageError),
 
-    #[error("secret error: {0}")]
+    #[error(transparent)]
     Secret(#[from] SecretError),
 
     #[error("state error: {0}")]
@@ -48,13 +54,13 @@ pub enum CfgdError {
     #[error(transparent)]
     Source(#[from] SourceError),
 
-    #[error("composition error: {0}")]
-    Composition(#[source] Box<CompositionError>),
+    #[error(transparent)]
+    Composition(Box<CompositionError>),
 
     #[error("upgrade error: {0}")]
     Upgrade(#[from] UpgradeError),
 
-    #[error("module error: {0}")]
+    #[error(transparent)]
     Module(#[from] ModuleError),
 
     #[error("generate error: {0}")]
@@ -63,10 +69,10 @@ pub enum CfgdError {
     #[error("oci error: {0}")]
     Oci(#[from] OciError),
 
-    #[error("skill error: {0}")]
+    #[error(transparent)]
     Skill(#[from] SkillError),
 
-    #[error("backup error: {0}")]
+    #[error(transparent)]
     Backup(#[from] BackupError),
 
     #[error("io error: {0}")]
@@ -285,7 +291,13 @@ pub enum PackageError {
         source: std::io::Error,
     },
 
-    #[error("{manager} bootstrap failed: {message}")]
+    // The message says what happened and names the manager it happened to, so
+    // the variant adds no label of its own: `provision cargo via apt (rustc)`
+    // already wears the ✗ and the subject, and `package error: cargo bootstrap
+    // failed: cargo not on PATH …` said cargo three times and "bootstrap"
+    // twice for one failure. The word was wrong as often as it was redundant —
+    // a declared route runs no cascade at all.
+    #[error("{message}")]
     BootstrapFailed { manager: String, message: String },
 
     // The manager is not registered at all — no phase can provision a name
@@ -993,6 +1005,144 @@ pub enum OciError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No error a row renders opens on a category label.
+    ///
+    /// `✗ provision cargo via apt — package error: cargo bootstrap failed:
+    /// cargo still not available after bootstrap` stacked three layers on one
+    /// failure: the glyph already said failed, the row's subject already said
+    /// cargo, and "package error" is a domain a `-o json` consumer reads off
+    /// `CfgdError::kind()` rather than off the prose. A label earns its place
+    /// only when it is LOAD-BEARING for some member of its inner enum — a
+    /// sentence that does not name its own subject.
+    ///
+    /// The verdict is a judgment, not a predicate a scan can compute, so the
+    /// table below IS the judgment: a new `CfgdError` variant fails this test
+    /// until it is classified here, with the reason a labelled one keeps its
+    /// label, and the source is checked against the verdict either way.
+    #[test]
+    fn no_error_a_row_renders_opens_on_a_category_label() {
+        // (variant, label if the label is load-bearing, why)
+        let verdicts: &[(&str, Option<&str>, &str)] = &[
+            (
+                "Config",
+                Some("config error"),
+                "`key '{key}' not found` names no config, and says so in its own comment",
+            ),
+            ("File", None, "every variant names a path or a target"),
+            (
+                "Package",
+                None,
+                "every variant names its manager, its dependency or its own cause",
+            ),
+            (
+                "Secret",
+                None,
+                "every variant names sops, a provider, a path or a reference",
+            ),
+            (
+                "State",
+                Some("state error"),
+                "`migration failed: {message}` names no state",
+            ),
+            (
+                "Daemon",
+                Some("daemon error"),
+                "`service error` / `watch error` name no daemon",
+            ),
+            ("Source", None, "every variant names the source"),
+            (
+                "Composition",
+                None,
+                "every variant names the source or the resource",
+            ),
+            (
+                "Upgrade",
+                Some("upgrade error"),
+                "`download failed` / `version parse error` name no upgrade",
+            ),
+            ("Module", None, "every variant names the module or the url"),
+            (
+                "Generate",
+                Some("generate error"),
+                "`validation failed: {message}` names no generation",
+            ),
+            (
+                "Oci",
+                Some("oci error"),
+                "`archive error` / `build error` / `signing error` name no artifact",
+            ),
+            (
+                "Skill",
+                None,
+                "every variant names the provider or the skill file",
+            ),
+            ("Backup", None, "every variant opens `backup '{name}':`"),
+            (
+                "Io",
+                Some("io error"),
+                "the inner is `std::io::Error`, whose Display names no subject at all",
+            ),
+        ];
+
+        let src = include_str!("mod.rs");
+        let start = src
+            .find("pub enum CfgdError {")
+            .expect("CfgdError is declared in this file");
+        let body = &src[start..start + src[start..].find("\n}\n").expect("the enum closes")];
+
+        let mut seen = Vec::new();
+        let mut pending: Option<&str> = None;
+        for line in body.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("#[error(") {
+                pending = Some(if rest.starts_with("transparent") {
+                    ""
+                } else {
+                    rest
+                });
+                continue;
+            }
+            let Some(attr) = pending else { continue };
+            let Some(name) = trimmed.split('(').next().filter(|n| !n.is_empty()) else {
+                continue;
+            };
+            pending = None;
+            let (_, label, why) = verdicts.iter().find(|(v, _, _)| *v == name).unwrap_or_else(
+                || {
+                    panic!(
+                        "`CfgdError::{name}` is unclassified: decide whether its inner sentences \
+                         name their own subject, then add it to this table"
+                    )
+                },
+            );
+            match label {
+                None => assert!(
+                    attr.is_empty(),
+                    "`CfgdError::{name}` is classified transparent ({why}) but its source \
+                     still carries a label: {attr}"
+                ),
+                Some(label) => assert!(
+                    attr.starts_with(&format!("\"{label}: ")),
+                    "`CfgdError::{name}` keeps its label ({why}) but its source spells it {attr}"
+                ),
+            }
+            seen.push(name);
+        }
+        assert_eq!(
+            seen.len(),
+            verdicts.len(),
+            "the walk read every variant, found {seen:?}"
+        );
+
+        // The row the whole rule is about, end to end.
+        let rendered = CfgdError::from(PackageError::BootstrapFailed {
+            manager: "cargo".into(),
+            message: "cargo not on PATH after apt installed rustc".into(),
+        })
+        .to_string();
+        assert_eq!(rendered, "cargo not on PATH after apt installed rustc");
+    }
 
     /// Table-driven: every `From<SubError> for CfgdError` variant in one test.
     #[test]
