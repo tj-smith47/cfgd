@@ -436,7 +436,7 @@ pub(super) fn collect_caveats(
 /// token the phase tree uses. Silent (opens nothing) when every group is
 /// empty, so a run that produced no caveats prints nothing extra.
 ///
-/// Both note slots deduplicate by BODY across the whole section, the first
+/// Both note slots deduplicate by MESSAGE across the whole section, the first
 /// occurrence keeping it; a group left holding nothing but repeats opens no
 /// heading. A render fold only — the `-o json` payload keeps every note under
 /// its own owner.
@@ -465,7 +465,7 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
     // inside one owner's caveat group, where it reads as a remark about that
     // owner rather than as the run's closing instruction.
     let mut next_steps: Vec<String> = Vec::new();
-    // Both note slots deduplicate by BODY, across the whole report. A caveat
+    // Both note slots deduplicate by MESSAGE, across the whole report. A caveat
     // states a fact about the MACHINE — brew put its completions in one
     // directory, once — and a run that provisions a manager in
     // `Prerequisites` and uses it again in `Packages` files that one fact
@@ -475,25 +475,31 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
     // keeps it, so the note stays under the owner that produced it earliest
     // and the phase order still reads top to bottom. A render fold only: the
     // `-o json` payload keeps every note under its own owner.
+    //
+    // The MESSAGE, never the composed body: `collect_caveats` re-tags every
+    // note with the SUBJECT of the action that produced it, so two copies of
+    // one machine fact carry `[brew install gum]` and `[provision brew via
+    // curl]` and no two tagged notes on a real run ever compare equal. Keyed
+    // on the body the fold could only ever fire in a test that bypassed the
+    // attribution — which is exactly what it did, while the hero printed
+    // `Bash completion has been installed to` twice.
     let mut reported: Vec<String> = Vec::new();
     {
         let mut section = None;
         for (owner, notes) in groups {
             for note in notes.iter().filter(|n| n.hint) {
-                let body = note.body();
-                if !next_steps.contains(&body) {
-                    next_steps.push(body);
+                if !next_steps.iter().any(|s| s == &note.message) {
+                    next_steps.push(note.message.clone());
                 }
             }
             let mut reports: Vec<&ActionNote> = notes
                 .iter()
                 .filter(|n| !n.hint)
                 .filter(|n| {
-                    let body = n.body();
-                    if reported.contains(&body) {
+                    if reported.contains(&n.message) {
                         return false;
                     }
-                    reported.push(body);
+                    reported.push(n.message.clone());
                     true
                 })
                 .collect();
