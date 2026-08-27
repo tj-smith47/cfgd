@@ -17089,6 +17089,66 @@ fn core_production_sources() -> Vec<(std::path::PathBuf, String)> {
         .collect()
 }
 
+/// A running label is written as a bare present participle, with no trailing
+/// ellipsis — the animated frame beside it is already saying "in progress".
+///
+/// This used to be enforced by STRIPPING a trailing `…`/`...` inside
+/// `compose_in_flight_subject`, which could not tell a caller's decoration from
+/// a marker the renderer itself produced: `condense_script_label` appends `…`
+/// to say the script has more lines, and the strip ate it, so a hook ran under
+/// `postApply: if command -v pipx >/dev/null 2>&1; then` — a shell fragment
+/// ending on a dangling `then` — and the settled row a second later put the
+/// marker back. The rule is about what a call site WRITES, so it is enforced
+/// where the literal is written.
+#[test]
+fn no_in_flight_label_carries_a_trailing_ellipsis() {
+    let entry_points = [
+        ".spinner(",
+        ".progress_bar(",
+        ".set_message(",
+        ".output_window(",
+        ".output_window_at(",
+        ".narrate(",
+        ".narrate_silent(",
+    ];
+    let mut offenders: Vec<String> = Vec::new();
+    let mut scanned = 0usize;
+    for (path, production) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        for (n, line) in production.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || !entry_points.iter().any(|e| code.contains(e)) {
+                continue;
+            }
+            scanned += 1;
+            // The label is the first string literal on the call line; a label
+            // built elsewhere is pinned by whatever produced it.
+            let Some(open) = code.find('"') else { continue };
+            let Some(close) = code[open + 1..].find('"') else {
+                continue;
+            };
+            let literal = &code[open + 1..open + 1 + close];
+            if literal.ends_with('…') || literal.ends_with("...") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+            }
+        }
+    }
+    assert!(
+        scanned >= 40,
+        "the walk found only {scanned} in-flight labels, so a green run proves \
+         nothing — re-check the entry-point list before lowering this floor"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a running label is a bare participle: the spinner frame beside it \
+         already says the work is in progress, and nothing downstream edits the \
+         subject any more:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// A `tracing` event never restates a `Printer` line, and on the apply path the
 /// cost of one that does is not merely a duplicate: at the default `warn`
 /// filter the event lands at column 0 in the middle of the phase tree, wearing

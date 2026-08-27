@@ -56,19 +56,26 @@ pub(super) fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> Str
 /// Compose an in-flight subject for a spinner, progress bar, or output
 /// window. Every constructor and `set_message` across this module (plus
 /// `LiveRow::window` and `Printer::output_window_at`) funnels its caller's
-/// text through this instead of a bare `.into()`, so "a running subject is a
-/// bare present participle, no trailing ellipsis" is enforced once instead of
-/// at every spinner call site in the workspace — a literal `"..."` or `…`
-/// left in a caller's format string becomes inert rather than doubled.
+/// text through this instead of a bare `.into()`.
 ///
-/// It is also where a live-bar label meets [`super::cursor_safe`], for the same
+/// **It does not edit the subject.** "A running subject is a bare present
+/// participle, no trailing ellipsis" is a rule about what a call site WRITES,
+/// and it is enforced where the literal is written
+/// (`no_in_flight_label_carries_a_trailing_ellipsis`), not by stripping the
+/// last character of whatever arrives here. Stripping could not tell a
+/// caller's decoration from a marker the renderer itself produced:
+/// [`super::condense_script_label`] appends `…` to say THE SCRIPT HAS MORE
+/// LINES, and the strip ate it — so a `postApply` hook ran under
+/// `postApply: if command -v pipx >/dev/null 2>&1; then`, a shell fragment
+/// ending on a dangling `then` that reads as a mangled script, and the settled
+/// row that replaced it a second later put the marker back. One action, two
+/// spellings, exactly what [`crate::reconciler::action_display_subject`]
+/// exists to prevent.
+///
+/// It IS where a live-bar label meets [`super::cursor_safe`], for the same
 /// reason every permanent status subject does and because the label carries
 /// the same text: a module's own `run:` body, a registry URL, an OCI
-/// reference, a source name. Folding here rather than at the paint covers
-/// every producer by construction and costs one fold per label SET, not one
-/// per repaint — indicatif redraws from the message it was handed. The fold
-/// runs BEFORE the ellipsis strip, so a trailing `…` hidden behind an escape
-/// sequence is still the trailing character when the strip looks.
+/// reference, a source name.
 ///
 /// The label's own COAT goes on last, after the fold, for the ordering
 /// [`super::cursor_safe`] forbids reversing — see [`paint_in_flight_label`]. Every
@@ -77,15 +84,7 @@ pub(super) fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> Str
 /// renders the same bytes it always did.
 pub(super) fn compose_in_flight_subject(theme: &Theme, text: impl Into<String>) -> String {
     let text = super::cursor_safe(&text.into());
-    let trimmed = text.trim_end();
-    let stripped = trimmed
-        .strip_suffix('…')
-        .or_else(|| trimmed.strip_suffix("..."));
-    let body = match stripped {
-        Some(base) => base.trim_end(),
-        None => text.as_str(),
-    };
-    paint_in_flight_label(theme, body)
+    paint_in_flight_label(theme, text.trim_end())
 }
 
 /// A live label's renderer-owned styling: the text in `theme.info` — the slot
@@ -574,30 +573,41 @@ mod tests {
     }
 
     #[test]
-    fn compose_in_flight_subject_strips_a_trailing_ellipsis_char() {
+    fn a_truncation_ellipsis_survives_the_in_flight_compose() {
+        // Both arms of the marker: the body has further lines, and the first
+        // line is itself too long. Neither may be edited on its way to a
+        // running row — the marker is what says the script continues.
+        let more_lines = super::super::condense_script_label("echo one\necho two");
+        assert!(
+            more_lines.ends_with('…'),
+            "the fixture must actually be truncated: {more_lines}"
+        );
         assert_eq!(
-            compose_in_flight_subject(&Theme::default(), "Cloning…"),
-            "Cloning"
+            compose_in_flight_subject(&Theme::default(), more_lines.clone()),
+            more_lines,
+            "a running row spells the action the same way the settled row will"
+        );
+        let over_length = super::super::condense_script_label(&"x".repeat(400));
+        assert!(over_length.ends_with('…'), "{over_length}");
+        assert_eq!(
+            compose_in_flight_subject(&Theme::default(), over_length.clone()),
+            over_length
         );
     }
 
+    /// The rule the strip used to enforce at runtime, stated as an equality: a
+    /// call site writes a bare participle, and whatever it writes is what
+    /// paints.
     #[test]
-    fn compose_in_flight_subject_strips_a_trailing_literal_dots() {
+    fn compose_in_flight_subject_leaves_a_participle_untouched() {
         assert_eq!(
-            compose_in_flight_subject(&Theme::default(), "Cloning..."),
-            "Cloning"
-        );
-    }
-
-    #[test]
-    fn compose_in_flight_subject_strips_trailing_whitespace_around_the_marker() {
-        assert_eq!(
-            compose_in_flight_subject(&Theme::default(), "Cloning ... "),
+            compose_in_flight_subject(&Theme::default(), "Cloning"),
             "Cloning"
         );
         assert_eq!(
-            compose_in_flight_subject(&Theme::default(), "Cloning …  "),
-            "Cloning"
+            compose_in_flight_subject(&Theme::default(), "Cloning  "),
+            "Cloning",
+            "trailing whitespace is still trimmed — it is layout, not content"
         );
     }
 
@@ -610,33 +620,11 @@ mod tests {
     }
 
     #[test]
-    fn compose_in_flight_subject_on_nothing_but_the_marker_yields_empty() {
-        // A caller that hands in only "..."/"…" gets back "". No production
-        // call site does this — every in-flight subject names a verb — but
-        // the composer's contract must be pinned regardless of who calls it.
-        assert_eq!(compose_in_flight_subject(&Theme::default(), "..."), "");
-        assert_eq!(compose_in_flight_subject(&Theme::default(), "…"), "");
-    }
-
-    #[test]
-    fn compose_in_flight_subject_strips_only_one_trailing_marker() {
-        // A doubled marker ("Cloning……" / "Cloning......") is not a shape any
-        // caller produces, and the composer's contract is "strip the trailing
-        // marker", not "strip every trailing dot" — a second stacked marker,
-        // or a lone ".." that is not the three-dot ellipsis, is left in place
-        // rather than guessed at.
-        assert_eq!(
-            compose_in_flight_subject(&Theme::default(), "Cloning……"),
-            "Cloning…"
-        );
-        assert_eq!(
-            compose_in_flight_subject(&Theme::default(), "Cloning......"),
-            "Cloning..."
-        );
-        assert_eq!(
-            compose_in_flight_subject(&Theme::default(), "Cloning.."),
-            "Cloning.."
-        );
+    fn compose_in_flight_subject_on_an_empty_label_yields_empty() {
+        // The one edit the composer still makes is trimming layout whitespace,
+        // so a label that is nothing but whitespace has no body to paint.
+        assert_eq!(compose_in_flight_subject(&Theme::default(), "   "), "");
+        assert_eq!(compose_in_flight_subject(&Theme::default(), ""), "");
     }
 
     /// The label takes `theme.info` — the slot the animated frame beside it is
@@ -647,7 +635,7 @@ mod tests {
     fn an_in_flight_label_is_painted_with_the_frames_own_slot() {
         let theme = Theme::from_preset("dracula").with_colors(true);
         assert_eq!(
-            compose_in_flight_subject(&theme, "Cloning…"),
+            compose_in_flight_subject(&theme, "Cloning"),
             theme.info.apply_to("Cloning").to_string()
         );
     }
@@ -769,17 +757,34 @@ mod tests {
     #[test]
     fn the_composed_label_is_what_the_bar_paints() {
         let (printer, buf) = super::super::Printer::for_test_with_live_bars();
-        let sp = printer.spinner("Fetching source:acme…");
+        let sp = printer.spinner("Fetching source:acme");
         let painted = crate::test_helpers::captured_text(&buf);
         assert!(
             painted.contains("Fetching source:acme"),
             "the bar is not painting the composed label: {painted:?}"
         );
-        assert!(
-            !painted.contains('…'),
-            "the ellipsis strip did not survive the paint: {painted:?}"
-        );
         sp.finish_silent();
+    }
+
+    /// The end of the chain the seam above only pins one link of: a script
+    /// window really does paint the truncation marker, so the running row and
+    /// the row that replaces it spell one action one way.
+    #[test]
+    fn a_script_window_paints_the_truncation_marker_it_was_given() {
+        let (printer, buf) = super::super::Printer::for_test_with_live_bars();
+        let label = super::super::condense_script_label(
+            "if command -v pipx >/dev/null 2>&1; then\n  pipx upgrade-all\nfi",
+        );
+        assert!(label.ends_with('…'), "the fixture is truncated: {label}");
+        {
+            let _window = printer.output_window(&label);
+        }
+        let painted = crate::test_helpers::captured_text(&buf);
+        assert!(
+            painted.contains(&label),
+            "the running row must spell the action the settled row will: \
+             wanted {label:?} in {painted:?}"
+        );
     }
 
     #[test]
