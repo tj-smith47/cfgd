@@ -3227,6 +3227,7 @@ fn resolved_package(manager: &str, name: &str) -> cfgd_core::modules::ResolvedPa
         canonical_name: name.to_string(),
         resolved_name: name.to_string(),
         manager: manager.to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,

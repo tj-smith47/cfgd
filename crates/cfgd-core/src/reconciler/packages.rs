@@ -110,6 +110,10 @@ pub(super) struct ModuleInstallContext<'x> {
     /// makes the snapshot current: a bootstrap has been collected before
     /// anything that could observe its directories is dispatched.
     pub(super) path_dirs: &'x [String],
+    /// Managers a node of THIS run has already put on the machine, so a module
+    /// entry naming one of them as a PACKAGE is not installed a second time by
+    /// another manager: see `super::Reconciler::provisioned`.
+    pub(super) provisioned: &'x [String],
 }
 
 /// One package action's whole execution environment, holding no `&Reconciler`.
@@ -835,8 +839,12 @@ impl<'x> PackageExec<'x> {
 
                 if let Some(pm) = pm {
                     let cx = self.cx();
+                    let survivors: Vec<&crate::modules::ResolvedPackage> = pkgs
+                        .iter()
+                        .filter(|pkg| !provisioned_this_run(mcx.provisioned, pkg))
+                        .collect();
                     let pending: Vec<String> = match self.installed_now(pm.as_ref(), &cx) {
-                        Some(installed) => pkgs
+                        Some(installed) => survivors
                             .iter()
                             .filter(|pkg| {
                                 super::Reconciler::package_survives_elision(
@@ -847,7 +855,10 @@ impl<'x> PackageExec<'x> {
                             })
                             .map(|pkg| pkg.resolved_name.clone())
                             .collect(),
-                        None => pkg_names.clone(),
+                        None => survivors
+                            .iter()
+                            .map(|pkg| pkg.resolved_name.clone())
+                            .collect(),
                     };
                     installed = Some(pending.len());
                     if !pending.is_empty() {
@@ -871,6 +882,27 @@ impl<'x> PackageExec<'x> {
             None => run,
         })
     }
+}
+
+/// Whether a manager node of THIS run already delivered the canonical tool
+/// this entry names, making the entry's own install a second copy of it.
+///
+/// The elision `super::Reconciler::package_survives_elision` cannot make: that
+/// one asks the entry's OWN manager what it holds, and a tool the run
+/// provisioned through a different manager — brew's npm beside an apt entry —
+/// is invisible to apt's listing. Keyed on the canonical name's FAMILY, the
+/// same unit a lane and every other exclusion check agree on.
+///
+/// An entry whose author NAMED the manager is never elided here: a declared
+/// route provisions through that very manager (`declared_manager_routes`), so
+/// its own listing reports the tool and the ordinary elision applies. This
+/// arm exists for the entry that declared nothing, where cfgd chose both the
+/// cascade and the entry's manager and is the only party able to notice it
+/// chose twice.
+fn provisioned_this_run(provisioned: &[String], pkg: &crate::modules::ResolvedPackage) -> bool {
+    provisioned
+        .iter()
+        .any(|m| crate::manager_family(m) == crate::manager_family(&pkg.canonical_name))
 }
 
 /// The REGISTERED name of the manager an action's work drives. `None` for an

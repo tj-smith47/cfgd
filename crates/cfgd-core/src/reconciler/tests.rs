@@ -841,6 +841,7 @@ fn plan_multiple_modules_in_dependency_order() {
                 canonical_name: "nodejs".to_string(),
                 resolved_name: "nodejs".to_string(),
                 manager: "apt".to_string(),
+                manager_declared: false,
                 version: Some("18.19.0".to_string()),
                 script: None,
                 creates: None,
@@ -869,6 +870,7 @@ fn plan_multiple_modules_in_dependency_order() {
                 canonical_name: "neovim".to_string(),
                 resolved_name: "neovim".to_string(),
                 manager: "brew".to_string(),
+                manager_declared: false,
                 version: Some("0.10.2".to_string()),
                 script: None,
                 creates: None,
@@ -948,6 +950,7 @@ fn plan_package_actions_order_ties_by_manager_name_every_run() {
                 canonical_name: "typescript".to_string(),
                 resolved_name: "typescript".to_string(),
                 manager: "npm".to_string(),
+                manager_declared: false,
                 version: None,
                 script: None,
                 creates: None,
@@ -959,6 +962,7 @@ fn plan_package_actions_order_ties_by_manager_name_every_run() {
                 canonical_name: "ripgrep".to_string(),
                 resolved_name: "ripgrep".to_string(),
                 manager: "cargo".to_string(),
+                manager_declared: false,
                 version: None,
                 script: None,
                 creates: None,
@@ -1032,6 +1036,7 @@ fn plan_routes_module_work_to_the_phase_of_its_kind() {
             canonical_name: "neovim".to_string(),
             resolved_name: "neovim".to_string(),
             manager: "brew".to_string(),
+            manager_declared: false,
             version: Some("0.10.2".to_string()),
             script: None,
             creates: None,
@@ -1136,6 +1141,7 @@ fn resolved_module_with_package(name: &str, pkg: &str, manager: &str) -> Resolve
             canonical_name: pkg.to_string(),
             resolved_name: pkg.to_string(),
             manager: manager.to_string(),
+            manager_declared: false,
             version: None,
             script: None,
             creates: None,
@@ -1263,6 +1269,7 @@ fn format_module_plan_items_packages() {
                         canonical_name: "neovim".to_string(),
                         resolved_name: "neovim".to_string(),
                         manager: "brew".to_string(),
+                        manager_declared: false,
                         version: Some("0.10.2".to_string()),
                         script: None,
                         creates: None,
@@ -1274,6 +1281,7 @@ fn format_module_plan_items_packages() {
                         canonical_name: "fd".to_string(),
                         resolved_name: "fd-find".to_string(),
                         manager: "apt".to_string(),
+                        manager_declared: false,
                         version: Some("8.7.0".to_string()),
                         script: None,
                         creates: None,
@@ -1359,6 +1367,7 @@ fn format_module_action_description() {
                 canonical_name: "neovim".to_string(),
                 resolved_name: "neovim".to_string(),
                 manager: "brew".to_string(),
+                manager_declared: false,
                 version: Some("0.10.2".to_string()),
                 script: None,
                 creates: None,
@@ -1534,6 +1543,7 @@ fn plan_hash_includes_module_actions() {
                         canonical_name: "neovim".to_string(),
                         resolved_name: "neovim".to_string(),
                         manager: "brew".to_string(),
+                        manager_declared: false,
                         version: Some("0.10.2".to_string()),
                         script: None,
                         creates: None,
@@ -1626,6 +1636,7 @@ fn verify_routes_through_package_identity_for_name_remapping_manager() {
             canonical_name: "2fa".to_string(),
             resolved_name: "rsc.io/2fa".to_string(),
             manager: "go".to_string(),
+            manager_declared: false,
             version: None,
             script: None,
             creates: None,
@@ -1684,6 +1695,7 @@ fn verify_module_script_packages_not_false_drift() {
             canonical_name: "rustup".to_string(),
             resolved_name: "rustup".to_string(),
             manager: "script".to_string(),
+            manager_declared: false,
             version: None,
             script: Some("curl -sSf https://sh.rustup.rs | sh".into()),
             creates: None,
@@ -1735,6 +1747,7 @@ fn module_one_pkg(name: &str, manager: &str, pkg: &str) -> ResolvedModule {
         canonical_name: pkg.to_string(),
         resolved_name: pkg.to_string(),
         manager: manager.to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
@@ -1950,6 +1963,7 @@ fn plan_module_with_script_packages() {
             canonical_name: "rustup".to_string(),
             resolved_name: "rustup".to_string(),
             manager: "script".to_string(),
+            manager_declared: false,
             version: None,
             script: Some("curl -sSf https://sh.rustup.rs | sh".into()),
             creates: None,
@@ -2022,6 +2036,7 @@ fn format_module_plan_script_packages() {
                     canonical_name: "rustup".to_string(),
                     resolved_name: "rustup".to_string(),
                     manager: "script".to_string(),
+                    manager_declared: false,
                     version: None,
                     script: Some("install-rustup.sh".into()),
                     creates: None,
@@ -9551,6 +9566,7 @@ fn apply_module_install_packages_calls_manager() {
             canonical_name: "neovim".to_string(),
             resolved_name: "neovim".to_string(),
             manager: "brew".to_string(),
+            manager_declared: false,
             version: None,
             script: None,
             creates: None,
@@ -9585,6 +9601,7 @@ fn apply_module_install_packages_calls_manager() {
                         canonical_name: "neovim".to_string(),
                         resolved_name: "neovim".to_string(),
                         manager: "brew".to_string(),
+                        manager_declared: false,
                         version: None,
                         script: None,
                         creates: None,
@@ -10372,6 +10389,7 @@ fn apply_module_install_packages_provisions_manager_when_needed() {
             canonical_name: "jq".to_string(),
             resolved_name: "jq".to_string(),
             manager: "brew".to_string(),
+            manager_declared: false,
             version: None,
             script: None,
             creates: None,
@@ -10412,6 +10430,7 @@ fn apply_module_install_packages_provisions_manager_when_needed() {
                             canonical_name: "jq".to_string(),
                             resolved_name: "jq".to_string(),
                             manager: "brew".to_string(),
+                            manager_declared: false,
                             version: None,
                             script: None,
                             creates: None,
@@ -10501,6 +10520,7 @@ fn a_package_a_prerequisite_landed_is_not_installed_again_by_the_packages_phase(
         canonical_name: "npm".to_string(),
         resolved_name: "npm".to_string(),
         manager: "sys".to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
@@ -10636,6 +10656,7 @@ fn an_install_that_landed_fewer_than_it_named_says_so_on_its_row() {
         canonical_name: name.to_string(),
         resolved_name: name.to_string(),
         manager: "sys".to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
@@ -10760,6 +10781,7 @@ fn an_install_that_landed_everything_it_named_states_no_count() {
                     canonical_name: "jq".to_string(),
                     resolved_name: "jq".to_string(),
                     manager: "brew".to_string(),
+                    manager_declared: false,
                     version: None,
                     script: None,
                     creates: None,
@@ -10771,6 +10793,7 @@ fn an_install_that_landed_everything_it_named_states_no_count() {
                     canonical_name: "fd".to_string(),
                     resolved_name: "fd".to_string(),
                     manager: "brew".to_string(),
+                    manager_declared: false,
                     version: None,
                     script: None,
                     creates: None,
@@ -10794,6 +10817,163 @@ fn an_install_that_landed_everything_it_named_states_no_count() {
 /// A tool the module declares as a PACKAGE is provisioned by the module's own
 /// route, not by cfgd's default cascade.
 ///
+/// The coherence half of the route predicate: with no declaration there is no
+/// route, so the manager's own cascade provisions the tool — and the module's
+/// entry for that same tool, sitting under whatever manager cfgd defaulted it
+/// to, must not then install a SECOND copy through that manager.
+///
+/// `package_survives_elision` cannot catch it: it asks the entry's OWN manager
+/// what it holds, and `alt`'s listing does not know about the `tool` that the
+/// cascade just landed. Two copies of one toolchain with `PATH` order deciding
+/// is exactly what the route feature exists to prevent, so the elision keys on
+/// the tool the provision DELIVERED rather than on who delivered it.
+#[test]
+fn a_tool_this_run_provisioned_is_not_installed_again_by_a_module_entry() {
+    let alt_installs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tool_installs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("alt")
+            .recording_installs(std::sync::Arc::clone(&alt_installs)),
+    ));
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "sys",
+    )));
+    // Absent, and its OWN cascade is what puts it on the machine.
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("tool")
+            .without_index()
+            .unavailable()
+            .bootstrappable_via("sys")
+            .bootstrap_succeeds()
+            .recording_installs(std::sync::Arc::clone(&tool_installs)),
+    ));
+
+    let pkg = |canonical: &str, manager: &str| ResolvedPackage {
+        canonical_name: canonical.to_string(),
+        resolved_name: canonical.to_string(),
+        manager: manager.to_string(),
+        // A bare `- name: tool`: no `prefer`, no `aliases`, so `alt` is cfgd's
+        // own platform default rather than anything the module said.
+        manager_declared: false,
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+        min_version: None,
+    };
+    let defaulted_tool = pkg("tool", "alt");
+    let widget = pkg("widget", "tool");
+
+    let module_action = |packages: Vec<ResolvedPackage>| {
+        Action::Module(ModuleAction {
+            module_name: "tools".to_string(),
+            kind: ModuleActionKind::InstallPackages { resolved: packages },
+            origin: None,
+        })
+    };
+    let routed = vec![
+        (
+            PhaseName::Packages,
+            module_action(vec![defaulted_tool.clone()]),
+        ),
+        (PhaseName::Packages, module_action(vec![widget.clone()])),
+    ];
+    let nodes = super::plan_managers(&registry, &[], &routed);
+    let provision = nodes
+        .iter()
+        .find_map(|a| match a {
+            Action::Manager(ManagerAction::Provision {
+                manager,
+                via,
+                declared,
+                ..
+            }) if manager == "tool" => Some((via.clone(), declared.clone())),
+            _ => None,
+        })
+        .expect("the absent manager is provisioned");
+    assert_eq!(
+        provision,
+        ("sys".to_string(), None),
+        "a defaulted manager mints no route, so the cascade provisions the tool"
+    );
+
+    let modules = vec![ResolvedModule {
+        name: "tools".to_string(),
+        packages: vec![defaulted_tool.clone(), widget.clone()],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(PhaseName::Prerequisites, &Owner::profile("test"), nodes),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![
+                    module_action(vec![defaulted_tool]),
+                    module_action(vec![widget]),
+                ],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+
+    assert_eq!(
+        result.status,
+        ApplyStatus::Success,
+        "{:?}",
+        result
+            .action_results
+            .iter()
+            .map(|r| (r.description.clone(), r.error.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        alt_installs.lock().unwrap().is_empty(),
+        "the module entry cfgd defaulted onto `alt` must not land a second copy: {:?}",
+        alt_installs.lock().unwrap()
+    );
+    assert_eq!(
+        tool_installs.lock().unwrap().as_slice(),
+        [vec!["widget".to_string()]],
+        "the provisioned manager still installs what needed it"
+    );
+}
+
 /// The hero recording's second shape: `Prerequisites` ran `provision cargo via
 /// rustup` and `provision npm, pipx via apt` while the module declared `pipx`
 /// with `prefer: [brew, apt]` and `cargo` with `aliases: {brew: rust, apt:
@@ -10836,10 +11016,11 @@ fn a_tool_a_module_declares_is_provisioned_by_the_modules_own_route() {
             .recording_installs(std::sync::Arc::clone(&tool_installs)),
     ));
 
-    let pkg = |canonical: &str, resolved: &str, manager: &str| ResolvedPackage {
+    let pkg = |canonical: &str, resolved: &str, manager: &str, declared: bool| ResolvedPackage {
         canonical_name: canonical.to_string(),
         resolved_name: resolved.to_string(),
         manager: manager.to_string(),
+        manager_declared: declared,
         version: None,
         script: None,
         creates: None,
@@ -10848,9 +11029,11 @@ fn a_tool_a_module_declares_is_provisioned_by_the_modules_own_route() {
         min_version: None,
     };
     // `widget` is why cfgd needs `tool` as a MANAGER at all; the `tool` entry
-    // beside it is the module's statement about where that tool comes from.
-    let declared_tool = pkg("tool", "tool-alias", "alt");
-    let widget = pkg("widget", "widget", "tool");
+    // beside it is the module's statement about where that tool comes from —
+    // `prefer: [alt]` with `aliases: {alt: tool-alias}`, which is what
+    // `manager_declared` records and what makes this entry a route at all.
+    let declared_tool = pkg("tool", "tool-alias", "alt", true);
+    let widget = pkg("widget", "widget", "tool", false);
 
     let module_action = |packages: Vec<ResolvedPackage>| {
         Action::Module(ModuleAction {
@@ -11105,6 +11288,7 @@ fn plan_modules_platform_skipped_emits_single_skip_and_no_other_actions() {
             canonical_name: "rectangle".to_string(),
             resolved_name: "rectangle".to_string(),
             manager: "brew".to_string(),
+            manager_declared: false,
             version: None,
             script: None,
             creates: None,
@@ -11984,6 +12168,7 @@ fn format_action_description_module_install_multiple_packages() {
                     canonical_name: "neovim".to_string(),
                     resolved_name: "neovim".to_string(),
                     manager: "brew".to_string(),
+                    manager_declared: false,
                     version: None,
                     script: None,
                     creates: None,
@@ -11995,6 +12180,7 @@ fn format_action_description_module_install_multiple_packages() {
                     canonical_name: "ripgrep".to_string(),
                     resolved_name: "ripgrep".to_string(),
                     manager: "brew".to_string(),
+                    manager_declared: false,
                     version: None,
                     script: None,
                     creates: None,
@@ -14410,6 +14596,7 @@ fn format_action_description_module_alias_canonical_mismatch() {
                 canonical_name: "fd".into(),
                 resolved_name: "fd-find".into(),
                 manager: "apt".into(),
+                manager_declared: false,
                 version: None,
                 script: None,
                 creates: None,
@@ -15275,6 +15462,7 @@ fn brew_install_fixture() -> (Vec<ResolvedModule>, ModuleAction) {
         canonical_name: "ripgrep".to_string(),
         resolved_name: "ripgrep".to_string(),
         manager: "brew".to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
@@ -15917,6 +16105,7 @@ fn brew_and_npm_module_fixture() -> Vec<ResolvedModule> {
         canonical_name: "ripgrep".to_string(),
         resolved_name: "ripgrep".to_string(),
         manager: "brew".to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
@@ -15928,6 +16117,7 @@ fn brew_and_npm_module_fixture() -> Vec<ResolvedModule> {
         canonical_name: "prettier".to_string(),
         resolved_name: "prettier".to_string(),
         manager: "npm".to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
@@ -16340,6 +16530,7 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
             canonical_name: "anything".to_string(),
             resolved_name: "anything".to_string(),
             manager: "no-such-manager".to_string(),
+            manager_declared: false,
             version: None,
             script: None,
             creates: None,
@@ -16374,6 +16565,7 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
                         canonical_name: "anything".to_string(),
                         resolved_name: "anything".to_string(),
                         manager: "no-such-manager".to_string(),
+                        manager_declared: false,
                         version: None,
                         script: None,
                         creates: None,
@@ -16458,6 +16650,7 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
                             canonical_name: "pkg-a".to_string(),
                             resolved_name: "pkg-a".to_string(),
                             manager: "script".to_string(),
+                            manager_declared: false,
                             version: None,
                             script: Some(format!("touch {}", marker_a.display())),
                             creates: None,
@@ -16469,6 +16662,7 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
                             canonical_name: "pkg-b".to_string(),
                             resolved_name: "pkg-b".to_string(),
                             manager: "script".to_string(),
+                            manager_declared: false,
                             version: None,
                             script: Some(format!("touch {}", marker_b.display())),
                             creates: None,
@@ -16544,6 +16738,7 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
                         canonical_name: "broken".to_string(),
                         resolved_name: "broken".to_string(),
                         manager: "script".to_string(),
+                        manager_declared: false,
                         version: None,
                         script: Some("exit 3".to_string()),
                         creates: None,
@@ -16626,6 +16821,7 @@ fn run_guarded_script_install(
                         canonical_name: "guarded-pkg".to_string(),
                         resolved_name: "guarded-pkg".to_string(),
                         manager: "script".to_string(),
+                        manager_declared: false,
                         version: None,
                         script: Some(format!("touch {}", marker.display())),
                         creates,
@@ -17122,6 +17318,7 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
                 canonical_name: "p1".to_string(),
                 resolved_name: "p1".to_string(),
                 manager: "unknown-mgr".to_string(),
+                manager_declared: false,
                 version: None,
                 script: None,
                 creates: None,
@@ -17133,6 +17330,7 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
                 canonical_name: "p2".to_string(),
                 resolved_name: "p2".to_string(),
                 manager: "brew".to_string(),
+                manager_declared: false,
                 version: None,
                 script: None,
                 creates: None,
@@ -17144,6 +17342,7 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
                 canonical_name: "p3".to_string(),
                 resolved_name: "p3".to_string(),
                 manager: "apt".to_string(),
+                manager_declared: false,
                 version: None,
                 script: None,
                 creates: None,
@@ -18713,6 +18912,7 @@ fn dedup_rp(name: &str, manager: &str) -> ResolvedPackage {
         canonical_name: name.to_string(),
         resolved_name: name.to_string(),
         manager: manager.to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
@@ -20121,6 +20321,7 @@ fn owner_resolved_package(manager: &str, package: &str) -> ResolvedPackage {
         canonical_name: package.to_string(),
         resolved_name: package.to_string(),
         manager: manager.to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
@@ -24605,6 +24806,7 @@ fn unpriced_package(manager: &str, name: &str) -> crate::modules::ResolvedPackag
         canonical_name: name.to_string(),
         resolved_name: name.to_string(),
         manager: manager.to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
@@ -25122,6 +25324,7 @@ fn module_tap_installs_order_before_formula_installs() {
         canonical_name: "acme/tools".to_string(),
         resolved_name: "acme/tools".to_string(),
         manager: "brew-tap".to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,

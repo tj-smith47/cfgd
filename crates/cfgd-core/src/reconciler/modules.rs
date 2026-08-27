@@ -320,6 +320,7 @@ impl<'a> super::Reconciler<'a> {
                         shell_override,
                         abort,
                         path_dirs: &super::all_recorded_path_dirs(self.state),
+                        provisioned: &self.provisioned.borrow(),
                     },
                 );
                 self.persist_bootstraps(exec.take_bootstrapped());

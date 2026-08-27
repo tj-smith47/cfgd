@@ -1151,6 +1151,7 @@ impl<'a> super::Reconciler<'a> {
                 // Taken before the dispatch opens, since `settle` below keeps
                 // writing to the list while these lanes run.
                 let unprovisioned = self.unprovisioned.borrow().clone();
+                let provisioned = self.provisioned.borrow().clone();
                 let run = super::lanes::LaneRun {
                     printer,
                     apply_id,
@@ -1164,6 +1165,7 @@ impl<'a> super::Reconciler<'a> {
                     plan_index_base,
                     action_depth: phase_section.as_ref().map_or(0, |s| s.depth + 1),
                     unprovisioned: &unprovisioned,
+                    provisioned: &provisioned,
                 };
                 let mut tree = super::live_tree::PhaseTree::new(
                     printer,
@@ -2012,6 +2014,18 @@ impl<'a> super::Reconciler<'a> {
                 {
                     // tracing-ok: the journal row could not be closed; the action's own line is settled either way
                     tracing::warn!("failed to record journal completion: {e}");
+                }
+                // The mirror of the failure arm's record below: a manager this
+                // run PUT on the machine, so a later phase can tell a tool it
+                // delivered from one that was already here. See
+                // `Reconciler::provisioned`.
+                if let Action::Manager(node) = action {
+                    let mut landed = self.provisioned.borrow_mut();
+                    for manager in node.provisioned_managers() {
+                        if !landed.iter().any(|m| m == manager) {
+                            landed.push(manager.to_string());
+                        }
+                    }
                 }
                 (
                     run.description,

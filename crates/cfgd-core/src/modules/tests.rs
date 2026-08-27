@@ -374,6 +374,60 @@ fn resolve_package_alias_applied() {
     assert_eq!(result.manager, "apt");
 }
 
+/// Who chose the manager, recorded where the declaration is in scope.
+///
+/// A `prefer` list makes every candidate the author's own, an `aliases` key
+/// names one manager specifically, and an entry carrying neither lands on
+/// cfgd's platform default — a choice this crate made, which
+/// `declared_manager_routes` must not read as a statement by the module.
+#[test]
+fn resolve_package_records_whether_the_author_named_the_manager() {
+    let apt = MockManager::new("apt")
+        .with_package("fd-find", "8.7.0")
+        .with_package("ripgrep", "14.1.0");
+    let managers = make_manager_map(&[("apt", &apt)]);
+    let platform = linux_ubuntu_platform();
+
+    let resolve = |entry: ModulePackageEntry| {
+        resolve_package(&entry, "test", &platform, &managers)
+            .unwrap()
+            .unwrap()
+    };
+
+    let defaulted = resolve(ModulePackageEntry {
+        name: "ripgrep".into(),
+        ..Default::default()
+    });
+    assert_eq!(defaulted.manager, "apt");
+    assert!(
+        !defaulted.manager_declared,
+        "apt is this platform's native manager, not something the module said"
+    );
+
+    let preferred = resolve(ModulePackageEntry {
+        name: "ripgrep".into(),
+        prefer: vec!["apt".into()],
+        ..Default::default()
+    });
+    assert!(
+        preferred.manager_declared,
+        "every candidate of a `prefer` list is one the author wrote"
+    );
+
+    let aliased = resolve(ModulePackageEntry {
+        name: "fd".into(),
+        aliases: [("apt".to_string(), "fd-find".to_string())]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    });
+    assert_eq!(aliased.resolved_name, "fd-find");
+    assert!(
+        aliased.manager_declared,
+        "an `aliases` key names the manager it is keyed on"
+    );
+}
+
 #[test]
 fn resolve_package_alias_winget() {
     let winget = MockManager::new("winget").with_package("Microsoft.VisualStudioCode", "1.85.0");
@@ -4481,6 +4535,7 @@ fn priceable_package(manager: &str, name: &str) -> ResolvedPackage {
         canonical_name: name.to_string(),
         resolved_name: name.to_string(),
         manager: manager.to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,

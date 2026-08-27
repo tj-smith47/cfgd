@@ -78,6 +78,26 @@ pub struct ResolvedPackage {
     /// Idempotency guard: run the install script only if this command exits
     /// NON-zero. Only carried for a `prefer: [script]` install.
     pub unless: Option<String>,
+    /// Whether the module AUTHOR named the manager this entry resolved to.
+    ///
+    /// `true` when the entry carries a `prefer` list (every candidate then
+    /// comes from what the author wrote) or an `aliases` key for the manager
+    /// resolution picked. `false` for an entry that named neither: the manager
+    /// is then cfgd's own platform default, a choice this crate made and not a
+    /// statement by anyone.
+    ///
+    /// Recorded HERE because the declaration is only in scope at the resolver;
+    /// a second walk over the spec to re-derive it is how the two halves drift.
+    /// Its one consumer is `reconciler::managers::declared_manager_routes`,
+    /// which may only route a provision through a manager the author named —
+    /// a defaulted `- name: npm` on a Debian host otherwise became
+    /// `provision npm via apt`, pulling apt's whole node toolchain in place of
+    /// the brew cascade `plan_managers` documents npm as preferring.
+    ///
+    /// Not serialized: it is a planner input, and the declaration itself is
+    /// already in the module's own spec.
+    #[serde(skip)]
+    pub manager_declared: bool,
     /// The declared `minVersion` floor, carried through resolution.
     ///
     /// Resolution checks it against what the manager currently OFFERS, which
