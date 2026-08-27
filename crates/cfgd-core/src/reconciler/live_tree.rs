@@ -14,7 +14,7 @@
 //!     ✓ refresh apt index                    (9.5s) ← settled, in place
 //!     ⠹ provision brew via homebrew installer       ← running
 //!         ==> Downloading and installing Homebrew…  ← its output window
-//!     ○ provision pipx via apt · waiting on apt     ← blocked, in its own row
+//!     ○ provision pipx via apt — waiting on apt     ← blocked, in its own row
 //! ```
 //!
 //! Four rules hold it together, and every one of them exists because the
@@ -74,9 +74,14 @@ pub(super) struct Wait<'p> {
     /// The blocked action, or `None` for a line standing for the whole group —
     /// the tier barrier holds every action a group has, and says so once.
     pub(super) action: Option<&'p Action>,
-    /// The whole sentence, composed by the scheduler that knows what is in the
-    /// way.
+    /// What is held: the blocked action's own display subject, or — for a
+    /// group line, which has no action of its own — the reason itself.
     pub(super) subject: String,
+    /// Why it is held, composed by the scheduler that knows what is in the
+    /// way. The row's DETAIL slot: a withheld role mutes the subject and
+    /// brightens this, so the half the reader is looking for is the bright
+    /// one. `None` on a group line, whose whole row is its reason.
+    pub(super) reason: Option<String>,
 }
 
 /// What the scheduler is holding back, and which groups can still grow.
@@ -242,11 +247,11 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
             match wait.action {
                 Some(action) => {
                     let (gi, ri) = self.row_for(wait.owner, Some(action));
-                    self.paint_pending(gi, ri, &wait.subject);
+                    self.paint_pending(gi, ri, &wait.subject, wait.reason.as_deref());
                 }
                 None => {
                     let (gi, ri) = self.row_for(wait.owner, None);
-                    self.paint_pending(gi, ri, &wait.subject);
+                    self.paint_pending(gi, ri, &wait.subject, wait.reason.as_deref());
                 }
             }
         }
@@ -629,7 +634,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
     }
 
     /// Draw a pending row, if the live region has room for one.
-    fn paint_pending(&mut self, gi: usize, ri: usize, subject: &str) {
+    fn paint_pending(&mut self, gi: usize, ri: usize, subject: &str, detail: Option<&str>) {
         if !matches!(self.groups[gi].rows[ri].state, RowState::Pending) {
             return;
         }
@@ -648,7 +653,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
                 &RowStatus {
                     role: Role::Pending,
                     subject,
-                    detail: None,
+                    detail,
                     detail_muted: false,
                     duration: None,
                 },
@@ -873,6 +878,58 @@ mod tests {
         );
     }
 
+    /// A wait row's REASON is the bright half, and its subject the dim one.
+    ///
+    /// The withholding emphasis (`renderer::action_subject_style` /
+    /// `action_detail_is_muted`) is decided per SLOT, so a row that fuses
+    /// `<subject> · <reason>` into the subject alone gets the whole line
+    /// dimmed — the half the reader is scanning for included. Every other
+    /// wait-line test reads ANSI-stripped text and so cannot see it; this one
+    /// paints in a colour-carrying theme through the live painter, the one
+    /// surface a wait row is ever drawn by.
+    #[test]
+    fn a_wait_rows_reason_is_the_bright_half_of_its_row() {
+        use crate::output::Theme;
+
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let (printer, buf) = Printer::for_test_with_live_bars_themed(theme.clone());
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let blocked = install("brew-cask", "firefox");
+
+        let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30);
+        tree.waiting(&Held {
+            waits: vec![Wait {
+                owner: &managers,
+                action: Some(&blocked),
+                subject: "brew-cask install firefox".to_string(),
+                reason: Some("waiting on brew".to_string()),
+            }],
+            pending_owners: vec![managers.token()],
+        });
+
+        // raw-capture-ok: the claim IS which escapes each half carries
+        let painted = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        // The subject slot is padded to the alignment column INSIDE its style
+        // span, so the claim is about what opens each half, not about a whole
+        // styled string.
+        let dim = theme.muted.apply_to("X").to_string();
+        let (dim_open, dim_close) = dim.split_once('X').unwrap_or_default();
+        assert!(!dim_open.is_empty(), "the theme must carry colour");
+        assert!(
+            painted.contains(&format!("{dim_open}brew-cask install firefox")),
+            "a withheld row holds its subject back: {painted:?}"
+        );
+        // The reason lands AFTER the subject's dim span closes, unstyled and
+        // behind the renderer's own separator. Fused into the subject it sits
+        // inside that span, dimmed, behind a ` \u{b7} ` the renderer never
+        // wrote — which is exactly what this spelling refuses.
+        assert!(
+            painted.contains(&format!("{dim_close} \u{2014} waiting on brew")),
+            "a withheld row's reason is the information on it, and renders bright: {painted:?}"
+        );
+    }
+
     #[test]
     fn a_wait_row_names_the_blocked_action_and_becomes_that_actions_row() {
         // Two claims that are one claim: the row a blocked action waits in is
@@ -891,15 +948,16 @@ mod tests {
             waits: vec![Wait {
                 owner: &managers,
                 action: Some(&blocked),
-                subject: "brew-cask install firefox · waiting on brew".to_string(),
+                subject: "brew-cask install firefox".to_string(),
+                reason: Some("waiting on brew".to_string()),
             }],
             pending_owners: vec![managers.token()],
         });
 
         let waiting = drawn(&buf);
         assert!(
-            waiting.contains("brew-cask install firefox · waiting on brew"),
-            "the wait row must name what is blocked: {waiting:?}"
+            waiting.contains("brew-cask install firefox") && waiting.contains("— waiting on brew"),
+            "the wait row must name what is blocked and why, in its two slots: {waiting:?}"
         );
 
         lane.finish();
@@ -939,7 +997,8 @@ mod tests {
             waits: vec![Wait {
                 owner: &managers,
                 action: Some(&blocked),
-                subject: "brew-cask install firefox · waiting on brew".to_string(),
+                subject: "brew-cask install firefox".to_string(),
+                reason: Some("waiting on brew".to_string()),
             }],
             pending_owners: vec![managers.token()],
         });
@@ -1409,6 +1468,7 @@ mod tests {
                 owner: &base,
                 action: None,
                 subject: "waiting on modules".to_string(),
+                reason: None,
             }],
             pending_owners: vec![base.token(), nvim.token()],
         });
@@ -1568,7 +1628,8 @@ mod tests {
             waits: vec![Wait {
                 owner: &nvim,
                 action: Some(&blocked),
-                subject: "brew install neovim · waiting on apt".to_string(),
+                subject: "brew install neovim".to_string(),
+                reason: Some("waiting on apt".to_string()),
             }],
             pending_owners: vec![nvim.token()],
         });
@@ -1620,7 +1681,8 @@ mod tests {
             waits: vec![Wait {
                 owner: &managers,
                 action: Some(&action),
-                subject: "brew install neovim · waiting on brew".to_string(),
+                subject: "brew install neovim".to_string(),
+                reason: Some("waiting on brew".to_string()),
             }],
             pending_owners: vec![managers.token()],
         });
