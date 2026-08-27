@@ -11558,6 +11558,12 @@ spec:
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial(daemon_log)]
     async fn a_watch_event_a_pull_explains_stays_off_the_info_stream() {
+        // A relative name no other test emits: `daemon_log` is a process-global
+        // capture and `serial(daemon_log)` excludes only the tests that READ
+        // it, so a sibling in the unnamed group logging the same relative path
+        // satisfied this needle and failed the assertion for work this test
+        // never did.
+        const REL: &str = "modules/nvim/pull-echo-only.lua";
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -11569,14 +11575,14 @@ spec:
             &mut HashMap::new(),
             &mut echoes,
             StdDuration::from_millis(500),
-            tmp.path().join("modules/nvim/init.lua"),
+            tmp.path().join(REL),
         )
         .await
         .unwrap();
 
         let logs = daemon_log();
         assert!(
-            !logs.contains("watch: config changed"),
+            !logs.contains(&format!("watch: config changed {REL}")),
             "a pull's own rewrite is folded into the pull: {logs}"
         );
     }
