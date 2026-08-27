@@ -9,7 +9,9 @@ use crate::providers::{
 };
 
 use super::env_engine::ManagerPathDir;
-use super::types::{Action, ManagerAction, ModuleAction, ModuleActionKind, PhaseName, Plan};
+use super::types::{
+    Action, DeclaredProvision, ManagerAction, ModuleAction, ModuleActionKind, PhaseName, Plan,
+};
 
 /// The manager name a module package carries when its "install" is an inline
 /// script rather than a manager command. It names no registry entry.
@@ -19,8 +21,13 @@ const SCRIPT_SENTINEL: &str = "script";
 enum MemberState {
     /// Present already — refresh its index.
     Present,
-    /// Absent, provisioned by the method its own cascade resolved to.
-    Provision { via: String },
+    /// Absent, provisioned by the method its own cascade resolved to — or,
+    /// when a module declares the same tool as a package, by the route that
+    /// entry's `prefer`/`aliases` chain resolved to.
+    Provision {
+        via: String,
+        declared: Option<DeclaredProvision>,
+    },
     /// Absent and unprovisionable on this host, with the cause named.
     Refused { reason: String },
 }
@@ -53,6 +60,55 @@ struct Graph {
     needs: BTreeMap<String, Vec<String>>,
     /// Manager -> the manager its cascade installs through.
     prefers: BTreeMap<String, String>,
+}
+
+/// The tools a module declares as PACKAGES that cfgd also needs as MANAGERS,
+/// keyed on the canonical name the module wrote.
+///
+/// cfgd bootstraps `pipx`, `cargo`, `npm`, `go` and `gem` by its own default
+/// route while a module is free to declare any of them as an ordinary package
+/// with a `prefer` list and per-manager `aliases`. Left to disagree, the two
+/// put two copies of one toolchain on the machine and let `PATH` order pick
+/// the winner. The module's entry is the more specific statement, so the
+/// provision resolves through it and the `Packages` phase then elides the
+/// entry through the predicate it already has.
+///
+/// Only a MODULE entry qualifies: `prefer`/`aliases` are a `spec.packages`
+/// module-entry grammar, and a profile-level `spec.packages.<manager>` list
+/// names the manager's own package name (`rustc`), which carries no canonical
+/// tool to match a manager against.
+fn declared_manager_routes(
+    module_routed: &[(PhaseName, Action)],
+) -> BTreeMap<String, DeclaredProvision> {
+    let mut routes = BTreeMap::new();
+    for (_, action) in module_routed {
+        let Action::Module(ModuleAction {
+            kind: ModuleActionKind::InstallPackages { resolved },
+            ..
+        }) = action
+        else {
+            continue;
+        };
+        for pkg in resolved {
+            // An inline script names no registry entry, so there is no
+            // installer to route a provision through.
+            if pkg.manager == SCRIPT_SENTINEL {
+                continue;
+            }
+            // A manager cannot install itself: `cargo install cargo` needs the
+            // cargo the provision is there to deliver.
+            if crate::manager_family(&pkg.manager) == crate::manager_family(&pkg.canonical_name) {
+                continue;
+            }
+            routes
+                .entry(pkg.canonical_name.clone())
+                .or_insert_with(|| DeclaredProvision {
+                    installer: pkg.manager.clone(),
+                    package: pkg.resolved_name.clone(),
+                });
+        }
+    }
+    routes
 }
 
 /// Plan the manager nodes for this run.
@@ -100,6 +156,9 @@ pub fn plan_managers(
     let installer = prerequisite_installer(registry).map(|pm| pm.name().to_string());
 
     let mut queue: VecDeque<String> = wanted_managers(registry, package_actions, module_routed);
+    // Read once, from the resolution that already applied every `prefer` and
+    // `aliases` the module wrote.
+    let declared = declared_manager_routes(module_routed);
 
     let mut graph = Graph::default();
     while let Some(name) = queue.pop_front() {
@@ -114,6 +173,27 @@ pub fn plan_managers(
         if pm.is_available() {
             graph.members.insert(name, MemberState::Present);
             continue;
+        }
+        // The module's own route to this tool outranks cfgd's default cascade,
+        // and reaches every manager alike — including one whose own bootstrap
+        // has a single arm (`cargo` installs through rustup and nothing else),
+        // which is exactly the case a per-manager table would have missed. The
+        // node still verifies the manager afterwards, so a route that installs
+        // something else entirely fails here rather than in `Packages`.
+        if let Some(route) = declared.get(&name) {
+            let installer = node_manager(registry, &route.installer).to_string();
+            if find_manager(registry, &installer).is_some() {
+                graph.prefers.insert(name.clone(), installer.clone());
+                queue.push_back(installer);
+                graph.members.insert(
+                    name,
+                    MemberState::Provision {
+                        via: route.installer.clone(),
+                        declared: Some(route.clone()),
+                    },
+                );
+                continue;
+            }
         }
         // No cascade at all on this platform (apt on macOS, winget on Linux).
         // There is no cfgd decision to render: the manager was never a
@@ -166,9 +246,13 @@ pub fn plan_managers(
             graph.prefers.insert(name.clone(), preferred.clone());
             queue.push_back(preferred);
         }
-        graph
-            .members
-            .insert(name, MemberState::Provision { via: plan.method });
+        graph.members.insert(
+            name,
+            MemberState::Provision {
+                via: plan.method,
+                declared: None,
+            },
+        );
     }
 
     refuse_provisions_with_no_usable_installer(&mut graph);
@@ -341,7 +425,7 @@ fn build_actions(
     }
 
     let mut provisions: Vec<Provisioning<'_>> = Vec::new();
-    for (manager, via) in provision_order(graph) {
+    for (manager, via, declared) in provision_order(graph) {
         let mut depends_on: Vec<String> = graph
             .needs
             .get(manager)
@@ -357,6 +441,7 @@ fn build_actions(
         provisions.push(Provisioning {
             manager,
             via,
+            declared,
             depends_on,
         });
     }
@@ -605,6 +690,7 @@ pub fn restrict_provision_batches(plan: &mut Plan, phase: &PhaseName, selector: 
 struct Provisioning<'g> {
     manager: &'g str,
     via: &'g str,
+    declared: Option<&'g DeclaredProvision>,
     depends_on: Vec<String>,
 }
 
@@ -641,7 +727,11 @@ fn batch_provisions<'g>(
     // Leading a batch keeps the leader's own node id, so a depended-on manager
     // may lead. Joining one dissolves the member's node, so it may not join.
     let can_lead = |p: &Provisioning<'_>| {
-        find_manager(registry, p.via).is_some()
+        // A declared route installs the module's own package name; a batch
+        // installs `mediated_packages`, which are the manager's. They are not
+        // the same command, so a declared provision neither leads nor joins.
+        p.declared.is_none()
+            && find_manager(registry, p.via).is_some()
             && find_manager(registry, p.manager)
                 .and_then(|pm| pm.mediated_packages(p.via))
                 .is_some_and(|pkgs| !pkgs.is_empty())
@@ -675,6 +765,7 @@ fn batch_provisions<'g>(
         actions.push(Action::Manager(ManagerAction::Provision {
             manager: provisioning.manager.to_string(),
             via: provisioning.via.to_string(),
+            declared: provisioning.declared.cloned(),
             batched: Vec::new(),
             depends_on: provisioning.depends_on,
         }));
@@ -682,28 +773,34 @@ fn batch_provisions<'g>(
     actions
 }
 
+/// One scheduled provision: the manager, the method it runs, and the module's
+/// declared route when one decided that method.
+type Scheduled<'g> = (&'g str, &'g str, Option<&'g DeclaredProvision>);
+
 /// The provisions in dependency order, each with the method it runs — read from
 /// the same lookup that classified it, so a provision naming no method is not
 /// representable. A manager whose cascade installs through another provisioned
 /// manager follows it. Ties break by name, so the order is a function of the
 /// host rather than of iteration.
-fn provision_order(graph: &Graph) -> Vec<(&str, &str)> {
-    let mut pending: Vec<(&str, &str)> = graph
+fn provision_order(graph: &Graph) -> Vec<Scheduled<'_>> {
+    let mut pending: Vec<Scheduled<'_>> = graph
         .members
         .iter()
         .filter_map(|(name, state)| match state {
-            MemberState::Provision { via } => Some((name.as_str(), via.as_str())),
+            MemberState::Provision { via, declared } => {
+                Some((name.as_str(), via.as_str(), declared.as_ref()))
+            }
             MemberState::Present | MemberState::Refused { .. } => None,
         })
         .collect();
-    let mut ordered: Vec<(&str, &str)> = Vec::with_capacity(pending.len());
+    let mut ordered: Vec<Scheduled<'_>> = Vec::with_capacity(pending.len());
     while !pending.is_empty() {
-        let ready: Vec<(&str, &str)> = pending
+        let ready: Vec<Scheduled<'_>> = pending
             .iter()
             .copied()
-            .filter(|(name, _)| {
+            .filter(|(name, _, _)| {
                 graph.prefers.get(*name).is_none_or(|preferred| {
-                    !pending.iter().any(|(pending, _)| pending == preferred)
+                    !pending.iter().any(|(pending, _, _)| pending == preferred)
                 })
             })
             .collect();
@@ -760,9 +857,18 @@ pub(super) fn fold_provision_path_dirs<'a>(
 ) -> Vec<ManagerPathDir> {
     let mut dirs = recorded;
     for action in actions {
-        let Action::Manager(node @ ManagerAction::Provision { .. }) = action else {
+        let Action::Manager(node @ ManagerAction::Provision { declared, .. }) = action else {
             continue;
         };
+        // A node running the module's declared route runs no cascade, so the
+        // cascade's directories are not the ones this install creates: apt's
+        // rustc lands on the system PATH, and folding rustup's `~/.cargo/bin`
+        // in would name a directory nothing on this host populates. What the
+        // installer really made is recorded by `record_created_path_dirs` as
+        // the install finishes.
+        if declared.is_some() {
+            continue;
+        }
         // Every manager the node provisions, not only the one it is named
         // for: a batched member's directories land on this host exactly as
         // the leader's do, and an env file missing them is a binary cfgd
@@ -1728,6 +1834,7 @@ mod tests {
         let pipx_provision = Action::Manager(ManagerAction::Provision {
             manager: "pipx".to_string(),
             via: "pipx installer".to_string(),
+            declared: None,
             batched: vec![],
             depends_on: vec![ManagerAction::prereq_node("curl")],
         });
@@ -1758,6 +1865,7 @@ mod tests {
         Action::Manager(ManagerAction::Provision {
             manager: manager.to_string(),
             via: via.to_string(),
+            declared: None,
             batched: batched.iter().map(|m| (*m).to_string()).collect(),
             depends_on: Vec::new(),
         })
@@ -1857,6 +1965,7 @@ mod tests {
         let pnpm = Action::Manager(ManagerAction::Provision {
             manager: "pnpm".to_string(),
             via: "npm".to_string(),
+            declared: None,
             batched: Vec::new(),
             depends_on: vec![ManagerAction::provision_node("npm")],
         });

@@ -10241,6 +10241,7 @@ fn action_type_str_manager_variants() {
         super::action_type_str(&Action::Manager(ManagerAction::Provision {
             manager: "brew".to_string(),
             via: "homebrew installer".to_string(),
+            declared: None,
             batched: vec![],
             depends_on: vec![],
         })),
@@ -20715,6 +20716,7 @@ fn action_path_manager_provision() {
     let action = reconciler::Action::Manager(reconciler::ManagerAction::Provision {
         manager: "brew".into(),
         via: "homebrew installer".into(),
+        declared: None,
         batched: vec![],
         depends_on: vec![],
     });

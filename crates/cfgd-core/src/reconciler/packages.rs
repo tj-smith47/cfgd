@@ -528,7 +528,7 @@ impl<'x> PackageExec<'x> {
                     changed = false;
                 }
             }
-            ManagerAction::Provision { via, .. } => {
+            ManagerAction::Provision { via, declared, .. } => {
                 let members = action.provisioned_managers();
                 // An earlier node may have provisioned one already. What the
                 // node promises is an available manager, not a second run of
@@ -540,19 +540,34 @@ impl<'x> PackageExec<'x> {
                         pending.push(*name);
                     }
                 }
-                let outcome = match pending.as_slice() {
-                    [] => Ok(()),
+                let outcome = match (declared, pending.as_slice()) {
+                    (_, []) => Ok(()),
+                    // The module's own entry for this tool: install exactly
+                    // what it declared, through the manager its `prefer` chain
+                    // picked and under the name its `aliases` gave it there.
+                    // The manager's own cascade is not consulted at all — that
+                    // is the point: running both is what left two toolchains
+                    // on the machine with `PATH` order deciding. A declared
+                    // route is never batched, so this arm speaks for one
+                    // manager.
+                    (Some(route), _) => self
+                        .install_recording_created(
+                            lookup(&route.installer)?.as_ref(),
+                            std::slice::from_ref(&route.package),
+                            &cx,
+                        )
+                        .map(|_| ()),
                     // A batch of one is the solo path exactly: its own cascade,
                     // its own fallback arm, its own error words. The merged
                     // command below is only reached when merging is what the
                     // line promised.
-                    [one] => {
+                    (None, [one]) => {
                         // The method travels into the bootstrap so the cascade
                         // runs the mediator the line named — which is also the
                         // mediator whose lane this action holds.
                         lookup(one)?.bootstrap(&cx.for_provision(via))
                     }
-                    many => self.provision_batch(many, via),
+                    (None, many) => self.provision_batch(many, via),
                 };
                 // Before the outcome is propagated, and whatever it was: a
                 // cascade that failed at its last step may still have put the
@@ -566,7 +581,13 @@ impl<'x> PackageExec<'x> {
                 outcome?;
                 for name in &members {
                     let pm = lookup(name)?;
-                    self.record_bootstrap(pm.as_ref(), via);
+                    // Only a cascade declares where it lands. A declared route
+                    // is an ordinary install by another manager, which puts the
+                    // tool wherever that manager puts things — already on PATH,
+                    // or recorded by the install's own `created_path_dirs`.
+                    if declared.is_none() {
+                        self.record_bootstrap(pm.as_ref(), via);
+                    }
                     if !pm.is_available() {
                         return Err(crate::errors::PackageError::BootstrapFailed {
                             manager: (*name).to_string(),

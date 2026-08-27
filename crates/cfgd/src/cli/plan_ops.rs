@@ -1401,6 +1401,7 @@ pub(in crate::cli) fn filter_plan(
                             reconciler::ManagerAction::Provision {
                                 manager: first.clone(),
                                 via: via.clone(),
+                                declared: None,
                                 batched: rest.to_vec(),
                                 depends_on: depends_on.clone(),
                             },

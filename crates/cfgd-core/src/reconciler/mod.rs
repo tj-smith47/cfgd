@@ -76,10 +76,10 @@ pub use run::{
 };
 pub use sidecar::{CFGD_BACKUP_SUFFIX, SidecarOutcome, backup_file, cfgd_backup_path};
 pub use types::{
-    Action, ActionResult, ApplyResult, CFGD_GROUP_ORDER, EnvAction, MANAGERS_GROUP, ManagerAction,
-    ModuleAction, ModuleActionKind, Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName,
-    Plan, ReconcileContext, RollbackResult, ScriptAction, ScriptPhase, SystemAction, Tier,
-    attempted_count,
+    Action, ActionResult, ApplyResult, CFGD_GROUP_ORDER, DeclaredProvision, EnvAction,
+    MANAGERS_GROUP, ManagerAction, ModuleAction, ModuleActionKind, Owner, OwnerGroup, OwnerKind,
+    Phase, PhaseFilter, PhaseName, Plan, ReconcileContext, RollbackResult, ScriptAction,
+    ScriptPhase, SystemAction, Tier, attempted_count,
 };
 pub use verify::{MergedEnvItems, VerifyResult, env_verify_results, verify};
 

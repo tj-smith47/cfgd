@@ -6453,6 +6453,7 @@ fn a_manager_nodes_description_parses_back_to_the_id_it_is_recorded_under() {
         Action::Manager(ManagerAction::Provision {
             manager: "npm".to_string(),
             via: "brew".to_string(),
+            declared: None,
             batched: vec![],
             depends_on: vec![ManagerAction::refresh_node("brew")],
         }),
@@ -7605,6 +7606,7 @@ fn apply_manager_provision_makes_manager_available() {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "snap".to_string(),
                 via: "stub".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -7648,6 +7650,7 @@ fn a_provisioned_manager_appears_in_the_registrys_next_availability_sweep() {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "snap".to_string(),
                 via: "stub".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -7829,6 +7832,7 @@ fn apply_manager_provision_unknown_manager_errors() {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "nonexistent".to_string(),
                 via: "stub".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -7865,6 +7869,7 @@ fn an_unprovisioned_managers_install_names_a_recovery_that_holds_off_a_filter() 
                 vec![Action::Manager(ManagerAction::Provision {
                     manager: "stub".to_string(),
                     via: "mock".to_string(),
+                    declared: None,
                     batched: vec![],
                     depends_on: vec![],
                 })],
@@ -10319,6 +10324,7 @@ fn a_package_a_prerequisite_landed_is_not_installed_again_by_the_packages_phase(
                 vec![Action::Manager(ManagerAction::Provision {
                     manager: "npm".to_string(),
                     via: "sys".to_string(),
+                    declared: None,
                     batched: vec!["pipx".to_string()],
                     depends_on: Vec::new(),
                 })],
@@ -10377,6 +10383,187 @@ fn a_package_a_prerequisite_landed_is_not_installed_again_by_the_packages_phase(
             .iter()
             .any(|r| r.changed && r.description.starts_with("module:tools:")),
         "nothing marks the module changed, so its postApply hooks do not re-run"
+    );
+}
+
+/// A tool the module declares as a PACKAGE is provisioned by the module's own
+/// route, not by cfgd's default cascade.
+///
+/// The hero recording's second shape: `Prerequisites` ran `provision cargo via
+/// rustup` and `provision npm, pipx via apt` while the module declared `pipx`
+/// with `prefer: [brew, apt]` and `cargo` with `aliases: {brew: rust, apt:
+/// rustc}`. cfgd needed those MANAGERS to satisfy other entries and bootstrapped
+/// them by its own default route without ever reading the module's entry for
+/// the same tool, so the machine ended with two pipx and two cargo toolchains
+/// and `PATH` order decided which one every later command meant.
+/// `package_survives_elision` cannot catch it: it is asked against ONE
+/// manager's listing, and brew's listing does not know about apt's pipx.
+///
+/// The module's entry is the more specific statement, so the provision resolves
+/// through its `prefer`/`aliases` chain and the `Packages` phase then elides the
+/// entry through the predicate it already has. Here `tool` is declared under
+/// `alt` as `tool-alias` while its own cascade would install it via `sys`.
+#[test]
+fn a_tool_a_module_declares_is_provisioned_by_the_modules_own_route() {
+    let alt_installs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sys_installs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tool_installs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let provisioned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("alt")
+            .recording_installs(std::sync::Arc::clone(&alt_installs))
+            .raising(std::sync::Arc::clone(&provisioned)),
+    ));
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("sys")
+            .recording_installs(std::sync::Arc::clone(&sys_installs)),
+    ));
+    // Absent, and its own cascade installs it through `sys` — the default route
+    // this fixture proves is not taken.
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("tool")
+            .without_index()
+            .bootstrappable_via("sys")
+            .mediated_by("sys", &["tool"])
+            .available_when(std::sync::Arc::clone(&provisioned))
+            .recording_installs(std::sync::Arc::clone(&tool_installs)),
+    ));
+
+    let pkg = |canonical: &str, resolved: &str, manager: &str| ResolvedPackage {
+        canonical_name: canonical.to_string(),
+        resolved_name: resolved.to_string(),
+        manager: manager.to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+        min_version: None,
+    };
+    // `widget` is why cfgd needs `tool` as a MANAGER at all; the `tool` entry
+    // beside it is the module's statement about where that tool comes from.
+    let declared_tool = pkg("tool", "tool-alias", "alt");
+    let widget = pkg("widget", "widget", "tool");
+
+    let module_action = |packages: Vec<ResolvedPackage>| {
+        Action::Module(ModuleAction {
+            module_name: "tools".to_string(),
+            kind: ModuleActionKind::InstallPackages { resolved: packages },
+            origin: None,
+        })
+    };
+    let routed = vec![
+        (
+            PhaseName::Packages,
+            module_action(vec![declared_tool.clone()]),
+        ),
+        (PhaseName::Packages, module_action(vec![widget.clone()])),
+    ];
+
+    let nodes = super::plan_managers(&registry, &[], &routed);
+    let provision = nodes
+        .iter()
+        .find_map(|a| match a {
+            Action::Manager(node @ ManagerAction::Provision { manager, .. })
+                if manager == "tool" =>
+            {
+                Some(node)
+            }
+            _ => None,
+        })
+        .expect("the absent manager is provisioned");
+    let ManagerAction::Provision { via, declared, .. } = provision else {
+        panic!("expected a provision node");
+    };
+    assert_eq!(
+        via, "alt",
+        "the module's `prefer` chain picks the installer"
+    );
+    assert_eq!(
+        declared
+            .as_ref()
+            .map(|d| (d.installer.as_str(), d.package.as_str())),
+        Some(("alt", "tool-alias")),
+        "and its `aliases` map picks the name that installer knows it by"
+    );
+
+    let modules = vec![ResolvedModule {
+        name: "tools".to_string(),
+        packages: vec![declared_tool.clone(), widget.clone()],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(PhaseName::Prerequisites, &Owner::profile("test"), nodes),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![
+                    module_action(vec![declared_tool]),
+                    module_action(vec![widget]),
+                ],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert_eq!(
+        alt_installs.lock().unwrap().as_slice(),
+        [vec!["tool-alias".to_string()]],
+        "the tool is installed exactly once, by the manager the module named"
+    );
+    assert!(
+        sys_installs.lock().unwrap().is_empty(),
+        "the default cascade never runs: two installers is two toolchains"
+    );
+    assert_eq!(
+        tool_installs.lock().unwrap().as_slice(),
+        [vec!["widget".to_string()]],
+        "the provisioned manager still installs what needed it"
+    );
+    let declared_entry = result
+        .action_results
+        .iter()
+        .find(|r| r.description == "module:tools:packages:tool-alias")
+        .expect("the declared entry settles a result");
+    assert!(
+        !declared_entry.changed && declared_entry.skipped,
+        "the `Packages` phase elides the entry the provision already landed: {declared_entry:?}"
     );
 }
 
@@ -11481,6 +11668,7 @@ fn format_action_description_manager_provision() {
     let action = Action::Manager(ManagerAction::Provision {
         manager: "brew".to_string(),
         via: "homebrew installer".to_string(),
+        declared: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -13627,6 +13815,7 @@ fn format_plan_items_manager_provision() {
         vec![Action::Manager(ManagerAction::Provision {
             manager: "brew".into(),
             via: "curl | bash".into(),
+            declared: None,
             batched: vec![],
             depends_on: vec![],
         })],
@@ -14340,6 +14529,7 @@ fn provision_only_plan(manager: &str, via: &str) -> Plan {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: manager.to_string(),
                 via: via.to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -17018,6 +17208,7 @@ fn action_matches_phase_filter_table() {
     let brew_provision = Action::Manager(ManagerAction::Provision {
         manager: "brew".to_string(),
         via: "curl".to_string(),
+        declared: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -19670,6 +19861,7 @@ fn managers_group_is_built_at_rank_one() {
             Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -19744,6 +19936,7 @@ fn apply_manager_provision_is_skipped_when_already_available() {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -19778,6 +19971,7 @@ fn action_index_is_the_plan_position_not_the_dispatch_counter() {
                 vec![Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    declared: None,
                     batched: vec![],
                     depends_on: vec![],
                 })],
@@ -21152,6 +21346,7 @@ fn retain_actions_drops_the_groups_it_empties() {
             Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -21282,6 +21477,7 @@ fn retain_groups_keeps_the_surviving_owners_in_sort_key_order() {
             Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -21403,6 +21599,7 @@ fn provision_node(manager: &str, via: &str, depends_on: &[String]) -> Action {
     Action::Manager(ManagerAction::Provision {
         manager: manager.to_string(),
         via: via.to_string(),
+        declared: None,
         batched: vec![],
         depends_on: depends_on.to_vec(),
     })
@@ -22036,6 +22233,7 @@ fn manager_action_renders_in_cfgd_managers_group() {
         Action::Manager(ManagerAction::Provision {
             manager: "brew".to_string(),
             via: "homebrew installer".to_string(),
+            declared: None,
             batched: vec![],
             depends_on: vec![],
         }),
@@ -22079,6 +22277,7 @@ fn manager_action_group_is_display_only() {
     let action = Action::Manager(ManagerAction::Provision {
         manager: "brew".to_string(),
         via: "homebrew installer".to_string(),
+        declared: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -23343,6 +23542,7 @@ fn a_provisions_planned_via_reaches_the_bootstrap_that_executes_it() {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "npm".to_string(),
                 via: "apt".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
