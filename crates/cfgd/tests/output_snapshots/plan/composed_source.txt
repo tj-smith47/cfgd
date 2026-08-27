@@ -9,7 +9,7 @@ Plan
 
 Phase: Prerequisites
   cfgd:env
-    - write <HOME>/.cfgd.env — 1 var
+    - write <HOME>/.cfgd.env                 — 1 var
     - inject source line into <HOME>/.bashrc
 
 ◉ 2 actions planned
