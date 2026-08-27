@@ -92,7 +92,15 @@ fn init_from_a_local_repo_names_the_destination_once() {
         index.add_path(Path::new("cfgd.yaml")).unwrap();
         index.write().unwrap();
         let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
-        let sig = git2::Signature::now("cfgd test", "test@cfgd.local").unwrap();
+        // A fixed signature time, because the clone row now names the commit
+        // it landed on: `Signature::now` would mint a different id every run
+        // and the golden would be unpinnable.
+        let sig = git2::Signature::new(
+            "cfgd test",
+            "test@cfgd.local",
+            &git2::Time::new(1_700_000_000, 0),
+        )
+        .unwrap();
         repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
             .unwrap();
     }
