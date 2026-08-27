@@ -408,14 +408,23 @@ pub(super) fn emit_action_line(
 /// second `Caveats` heading for the same `kind:name` token — a module
 /// installing through more than one package manager gets one `module:<name>`
 /// group carrying every manager's notes, in the order they were collected.
-fn collect_caveats(
+pub(super) fn collect_caveats(
     caveats: &mut Vec<(Owner, Vec<ActionNote>)>,
     owner: &Owner,
+    subject: &str,
     notes: Vec<ActionNote>,
 ) {
     if notes.is_empty() {
         return;
     }
+    // The section groups by OWNER, so the action's own line — the only thing
+    // naming what a manager spoke about — is gone by the time a caveat renders.
+    // Re-tagged here, the one place the note and the action that produced it
+    // are both in scope.
+    let notes: Vec<ActionNote> = notes
+        .into_iter()
+        .map(|note| note.attributed_to(subject))
+        .collect();
     match caveats.iter_mut().find(|(existing, _)| existing == owner) {
         Some((_, group)) => group.extend(notes),
         None => caveats.push((owner.clone(), notes)),
@@ -1186,11 +1195,21 @@ impl<'a> super::Reconciler<'a> {
                         });
                         match settled.outcome {
                             Some(outcome) if settles_in_place => {
-                                collect_caveats(&mut caveats, owner, outcome.notes.clone());
+                                collect_caveats(
+                                    &mut caveats,
+                                    owner,
+                                    &outcome.subject,
+                                    outcome.notes.clone(),
+                                );
                                 Some(outcome)
                             }
                             Some(outcome) => {
-                                collect_caveats(&mut caveats, owner, outcome.notes.clone());
+                                collect_caveats(
+                                    &mut caveats,
+                                    owner,
+                                    &outcome.subject,
+                                    outcome.notes.clone(),
+                                );
                                 recorded.insert(action_key(action), outcome);
                                 None
                             }
@@ -1204,7 +1223,7 @@ impl<'a> super::Reconciler<'a> {
                                     settled.notes.is_empty(),
                                     "a self-reporting action reached a lane carrying notes"
                                 );
-                                collect_caveats(&mut caveats, owner, settled.notes);
+                                collect_caveats(&mut caveats, owner, &settled.desc, settled.notes);
                                 None
                             }
                         }
@@ -1389,7 +1408,7 @@ impl<'a> super::Reconciler<'a> {
                         // emitted. Their notes still flow to the run-wide
                         // `caveats` collector rather than attaching here.
                         None => {
-                            collect_caveats(&mut caveats, owner, settled.notes);
+                            collect_caveats(&mut caveats, owner, &desc, settled.notes);
                         }
                         // `PhaseName::Modules` opens no block: its only actions
                         // are platform-gated skips, which the header's
@@ -1398,7 +1417,12 @@ impl<'a> super::Reconciler<'a> {
                             if let Some(section) = owner_section.as_ref() {
                                 emit_action_line(printer, section, &outcome);
                             }
-                            collect_caveats(&mut caveats, owner, outcome.notes.clone());
+                            collect_caveats(
+                                &mut caveats,
+                                owner,
+                                &outcome.subject,
+                                outcome.notes.clone(),
+                            );
                         }
                     }
 
