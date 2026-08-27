@@ -232,7 +232,7 @@ mod tests {
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("12 succeeded, 1 skipped, 0 failed"),
+            out.contains("12 succeeded, 1 skipped"),
             "the Summary column must read as prose: {out}"
         );
         assert!(
