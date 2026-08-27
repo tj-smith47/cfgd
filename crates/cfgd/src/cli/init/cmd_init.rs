@@ -952,6 +952,7 @@ pub(super) fn check_prerequisites(printer: &Printer) -> bool {
         if cfg!(target_os = "macos") {
             printer.hint("Install with `xcode-select --install`");
         } else {
+            // install-verb-ok: advice for a human, not an install cfgd emits
             printer.hint("Install with `sudo apt install git` (or your package manager)");
         }
         return false;

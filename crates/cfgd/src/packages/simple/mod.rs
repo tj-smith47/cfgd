@@ -264,6 +264,21 @@ impl PackageManager for SimpleManager {
 
 // --- SimpleManager constructors ---
 
+/// The `SimpleManager` a family name resolves to, for a caller that needs the
+/// family's own command spellings rather than a live provider.
+pub(super) fn simple_manager(name: &str) -> Option<SimpleManager> {
+    Some(match name {
+        "apt" => apt_manager(),
+        "dnf" => dnf_manager(),
+        "yum" => yum_manager(),
+        "apk" => apk_manager(),
+        "pacman" => pacman_manager(),
+        "zypper" => zypper_manager(),
+        "pkg" => pkg_manager(),
+        _ => return None,
+    })
+}
+
 pub(super) fn apt_manager() -> SimpleManager {
     SimpleManager {
         mgr_name: "apt",
