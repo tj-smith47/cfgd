@@ -5443,6 +5443,114 @@ fn apply_partial_when_some_actions_fail() {
     assert_eq!(last.status, ApplyStatus::Partial);
 }
 
+/// A failed action that RAN is timed like a successful one.
+///
+/// The row slot measures what RAN, not what succeeded — the rule the success
+/// arm states for itself, which the failure arm never reached. The failed row
+/// was the one line in its phase with no elapsed suffix while being, in the
+/// take that found this, the second most expensive action in the phase: the
+/// run's `(N.Ns wall)` total exceeded the sum of its visible rows with nothing
+/// on screen to account for the difference.
+///
+/// The two failure shapes that ran NOTHING keep their silence: a `Refuse` node
+/// IS the refusal, and a dependent the coordinator swept was never dispatched.
+#[test]
+fn a_failed_action_that_ran_is_timed_like_a_successful_one() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(FailingPackageManager::new("apt")));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::cfgd("managers"),
+                vec![Action::Manager(ManagerAction::Refuse {
+                    manager: "brew".to_string(),
+                    reason: "no installer on this host".to_string(),
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Package(PackageAction::Install {
+                    manager: "apt".to_string(),
+                    packages: vec!["curl".to_string()],
+                    origin: "local".to_string(),
+                })],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    let (printer, buf) = Printer::for_test();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+    let captured = crate::test_helpers::captured_text(&buf);
+
+    let install = captured
+        .lines()
+        .find(|l| l.contains("apt install curl"))
+        .unwrap_or_else(|| panic!("the failed install has a row:\n{captured}"));
+    assert!(
+        install.contains("s)"),
+        "a failed action that ran carries its elapsed like any other row: {install:?}"
+    );
+    let refused = captured
+        .lines()
+        .find(|l| l.contains("cannot provision brew"))
+        .unwrap_or_else(|| panic!("the refusal has a row:\n{captured}"));
+    assert!(
+        !refused.contains("s)"),
+        "a refusal runs no command, so it measures nothing: {refused:?}"
+    );
+
+    // The other never-ran shape: a dependent the coordinator swept when the
+    // node it waited on failed. It arrives with `Duration::ZERO`, which the
+    // duration floor would print as `(<0.1s)` — a measurement of an action
+    // that was never dispatched.
+    let swept = Action::Package(PackageAction::Install {
+        manager: "apt".to_string(),
+        packages: vec!["curl".to_string()],
+        origin: "local".to_string(),
+    });
+    assert!(
+        !super::apply::failed_action_ran(
+            &swept,
+            &crate::errors::PackageError::DependencyFailed {
+                dependency: "provision brew via curl".to_string(),
+            }
+            .into()
+        ),
+        "a swept dependent never ran, whatever elapsed the collector hands it"
+    );
+    assert!(
+        super::apply::failed_action_ran(
+            &swept,
+            &crate::errors::PackageError::InstallFailed {
+                manager: "apt".to_string(),
+                message: "simulated install failure".to_string(),
+            }
+            .into()
+        ),
+        "the same action failing on its own command DID run"
+    );
+}
+
 #[test]
 fn apply_failed_when_all_actions_fail() {
     let state = test_state();
