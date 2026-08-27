@@ -5694,3 +5694,65 @@ mod cmd_init_apply_orchestration {
         drop(home);
     }
 }
+
+/// Every row `init` prints about a config checkout spells its revision the one
+/// way. Three of the four already read `checkout_detail`; the clone row built
+/// its own detail and put a bare `27d1d2046c0a` in the slot every other detail
+/// of the run fills with a named unit — and it is the only one of the four a
+/// first-run user ever sees, so the bare spelling is the one in the GIF.
+#[test]
+fn every_checkout_row_spells_its_revision_through_the_one_derivation() {
+    assert_eq!(
+        super::source::commit_detail("27d1d2046c0a"),
+        "at 27d1d2046c0a",
+        "`short_commit` owns the FORM; this owns the spelling"
+    );
+    assert!(
+        super::source::checkout_detail(std::path::Path::new("/nonexistent")).is_none(),
+        "a directory that is no checkout renders no revision at all"
+    );
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/init");
+    let mut offenders: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("the init tree is readable") {
+        let path = entry.expect("readable entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs")
+            || path.file_name().and_then(|f| f.to_str()) == Some("tests.rs")
+        {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path).expect("readable source");
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains("checkout_facts(") || line.contains("fn checkout_facts(") {
+                continue;
+            }
+            // The one derivation is allowed to read the raw pair; anything else
+            // holding it must hand the revision to `commit_detail`.
+            let enclosing = lines[..n]
+                .iter()
+                .rev()
+                .find_map(|l| {
+                    l.trim()
+                        .strip_prefix("fn ")
+                        .or(l.trim().strip_prefix("pub(super) fn "))
+                })
+                .unwrap_or("")
+                .to_string();
+            if enclosing.starts_with("checkout_detail") {
+                continue;
+            }
+            let window = lines[n..(n + 4).min(lines.len())].join(" ");
+            if window.contains("commit_detail(") {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a row naming a checkout takes its revision spelling from \
+         `commit_detail`, never a bare hash:\n{}",
+        offenders.join("\n")
+    );
+}

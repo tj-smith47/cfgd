@@ -108,11 +108,27 @@ fn checkout_facts(dir: &Path) -> (Option<String>, Option<String>) {
 /// a row about one renders exactly as it always has.
 pub(super) fn checkout_detail(dir: &Path) -> Option<String> {
     match checkout_facts(dir) {
-        (Some(url), Some(commit)) => Some(format!("{url} at {commit}")),
+        (Some(url), Some(commit)) => Some(format!("{url} {}", commit_detail(&commit))),
         (Some(url), None) => Some(url),
-        (None, Some(commit)) => Some(format!("at {commit}")),
+        (None, Some(commit)) => Some(commit_detail(&commit)),
         (None, None) => None,
     }
+}
+
+/// The revision half of a checkout detail, spelled once: `at <commit>`.
+///
+/// `short_commit` owns a commit's display FORM; nothing owned its SPELLING,
+/// and the gap let the clone row put a bare `27d1d2046c0a` in the same slot,
+/// after the same em dash, in the same dim style as every other detail the run
+/// prints — each of which names its unit (`3 vars, 3 aliases`, `6 files`,
+/// `8 of 12 packages`). Nothing there names the hex token a commit, and a
+/// second `cfgd init` reports the same fact about the same directory in the
+/// other shape.
+///
+/// A commit rendered into a named table COLUMN takes neither: the header is
+/// its noun.
+pub(super) fn commit_detail(commit: &str) -> String {
+    format!("at {commit}")
 }
 
 /// Clone a remote repo into the target directory.
@@ -142,8 +158,10 @@ pub(super) fn clone_into(
         Role::Ok,
         format!("Cloned {url} into {}", target_dir.posix()),
     );
+    // The subject already carries the URL, so this arm cannot take
+    // `checkout_detail` wholesale — only its revision spelling.
     if let Some(commit) = checkout_facts(target_dir).1 {
-        row = row.detail(commit);
+        row = row.detail(commit_detail(&commit));
     }
     drop(row);
 
