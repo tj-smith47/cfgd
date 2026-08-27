@@ -298,7 +298,12 @@ impl Printer {
         let multi =
             indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
         (
-            Self::live_capture(multi, Arc::new(StringSink(buf.clone())), Verbosity::Normal),
+            Self::live_capture(
+                multi,
+                Arc::new(StringSink(buf.clone())),
+                Verbosity::Normal,
+                Theme::default().with_colors(false),
+            ),
             buf,
         )
     }
@@ -313,13 +318,30 @@ impl Printer {
     /// constructor builds a bar-less renderer, where routing never happens and
     /// the question cannot be asked.
     pub fn for_test_with_live_bars() -> (Self, Arc<Mutex<String>>) {
+        Self::for_test_with_live_bars_themed(Theme::default().with_colors(false))
+    }
+
+    /// The same capture painting in a THEME that carries colour, for a claim
+    /// about the escapes a LIVE row emits — which of a row's two slots the
+    /// live painter dims is decided inside `LiveRow::set_action_status`, and
+    /// no bar-less capture reaches it.
+    ///
+    /// The colour decision is the theme's, exactly as production makes it, so
+    /// this is the same constructor rather than a fourth kind: where indicatif
+    /// draws is unchanged.
+    pub fn for_test_with_live_bars_themed(theme: Theme) -> (Self, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
         let multi =
             indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::term_like(
                 Box::new(RecordingTerm { drawn: buf.clone() }),
             ));
         (
-            Self::live_capture(multi, Arc::new(StringSink(buf.clone())), Verbosity::Normal),
+            Self::live_capture(
+                multi,
+                Arc::new(StringSink(buf.clone())),
+                Verbosity::Normal,
+                theme,
+            ),
             buf,
         )
     }
@@ -364,7 +386,12 @@ impl Printer {
             indicatif::ProgressDrawTarget::term_like(Box::new(term.clone())),
         );
         (
-            Self::live_capture(multi, Arc::new(TermSink(term.clone())), verbosity),
+            Self::live_capture(
+                multi,
+                Arc::new(TermSink(term.clone())),
+                verbosity,
+                Theme::default().with_colors(false),
+            ),
             LiveScreen(term),
         )
     }
@@ -378,12 +405,13 @@ impl Printer {
         multi: indicatif::MultiProgress,
         sink: Arc<dyn Writer>,
         verbosity: Verbosity,
+        theme: Theme,
     ) -> Self {
         Printer {
             // Stamped explicitly, like every theme a Printer renders through:
             // the field below and the theme must never be able to disagree.
             renderer: Arc::new(Renderer::with_bars(
-                Theme::default().with_colors(false),
+                theme,
                 verbosity,
                 multi.clone(),
                 sink.clone(),

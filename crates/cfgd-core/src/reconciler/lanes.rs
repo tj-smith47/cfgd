@@ -276,23 +276,27 @@ struct Slot<'p> {
     state: SlotState,
 }
 
-/// The ONE wait-line grammar: `<head> · waiting on <thing>`.
+/// The ONE wait-line reason: `waiting on <thing>`.
 ///
 /// One sentence for every cardinality — the tier in flight for a blocked
 /// group, the family lane for a blocked package action, the node ahead of it
 /// for a blocked manager node — because they are the same statement at
 /// different levels and reading them side by side is the point.
 ///
-/// The head is what is being held: the blocked action's own display subject,
-/// in the row that action will start in. It is omitted entirely for a line
-/// standing for a whole GROUP, whose heading sits directly above it and is
-/// already the head — a group line naming its owner would print the same token
-/// twice, one line apart.
-fn wait_subject(head: Option<&str>, thing: &str) -> String {
-    match head {
-        Some(head) => format!("{head} · waiting on {thing}"),
-        None => format!("waiting on {thing}"),
-    }
+/// It is a REASON, so it fills the row's detail slot, beside the blocked
+/// action's own display subject in the subject slot. Fused into one string it
+/// was one slot, and a withheld role deliberately mutes the subject and
+/// brightens the detail (`renderer::action_subject_style` /
+/// `action_detail_is_muted`) — so the half a reader is looking for rendered
+/// muted, and the ` · ` glue stood where the renderer's own ` — ` belonged.
+///
+/// A line standing for a whole GROUP has no subject to hold back: its heading
+/// sits directly above it and is already the head, and a row naming its owner
+/// would print the same token twice one line apart. That row carries the
+/// reason in the subject slot, an empty subject beside a detail rendering as a
+/// leading em-dash.
+fn wait_reason(thing: &str) -> String {
+    format!("waiting on {thing}")
 }
 
 /// The tier currently in flight, given each tier's count of actions that have
@@ -345,7 +349,7 @@ fn tier_waits<'g>(groups: &[GroupWait<'g>], in_flight: Option<Tier>) -> Vec<(&'g
     groups
         .iter()
         .filter(|g| g.pending && g.tier > in_flight)
-        .map(|g| (g.owner, wait_subject(None, word)))
+        .map(|g| (g.owner, wait_reason(word)))
         .collect()
 }
 
@@ -1262,6 +1266,7 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
             owner,
             action: None,
             subject,
+            reason: None,
         })
         .collect();
 
@@ -1331,7 +1336,8 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
         rows.push(Wait {
             owner: slot.owner,
             action: Some(slot.action),
-            subject: wait_subject(Some(&action_display_subject(slot.action).to_string()), &on),
+            subject: action_display_subject(slot.action).to_string(),
+            reason: Some(wait_reason(&on)),
         });
     }
     Held {
@@ -1538,12 +1544,12 @@ mod tests {
         // sentence at two levels; they are built by one function so they
         // cannot drift apart.
         assert_eq!(
-            wait_subject(Some("apt install git"), "apt"),
-            "apt install git · waiting on apt",
-            "the blocked-action cardinality names what is held"
+            wait_reason("apt"),
+            "waiting on apt",
+            "the blocked-action cardinality names what it is held by"
         );
         assert_eq!(
-            wait_subject(None, Tier::Modules.wait_word().unwrap_or_default()),
+            wait_reason(Tier::Modules.wait_word().unwrap_or_default()),
             "waiting on modules",
             "the blocked-group cardinality is headed by the group's own heading"
         );
@@ -1587,16 +1593,26 @@ mod tests {
         })
     }
 
+    /// One wait row as the tree paints it: the two slots joined by the
+    /// renderer's own separator, so an expectation reads as a screen line
+    /// while the row itself stays split.
+    fn painted(w: &Wait<'_>) -> String {
+        match &w.reason {
+            Some(reason) => format!("{} \u{2014} {reason}", w.subject),
+            None => w.subject.clone(),
+        }
+    }
+
     /// Every wait line, in the order the tree would draw new rows in.
     fn lines(held: &Held<'_>) -> Vec<String> {
-        held.waits.iter().map(|w| w.subject.clone()).collect()
+        held.waits.iter().map(painted).collect()
     }
 
     /// Every wait line paired with the group whose heading it sits under.
     fn rows(held: &Held<'_>) -> Vec<(String, String)> {
         held.waits
             .iter()
-            .map(|w| (w.owner.token(), w.subject.clone()))
+            .map(|w| (w.owner.token(), painted(w)))
             .collect()
     }
 
@@ -1780,7 +1796,7 @@ mod tests {
         assert!(
             rows(&held).contains(&(
                 "module:nvim".to_string(),
-                "brew install neovim · waiting on brew".to_string()
+                "brew install neovim — waiting on brew".to_string()
             )),
             "a source-held install says what its family is waiting on: {:?}",
             rows(&held)
@@ -1815,7 +1831,7 @@ mod tests {
         assert!(
             rows(&held).contains(&(
                 "profile:work".to_string(),
-                "brew-tap install acme/tools · waiting on brew".to_string()
+                "brew-tap install acme/tools — waiting on brew".to_string()
             )),
             "the tier filter does not hide a barrier-crossing tap: {:?}",
             rows(&held)
@@ -1859,7 +1875,7 @@ mod tests {
             rows(&held),
             vec![(
                 "module:nvim".to_string(),
-                "apt install git · waiting on apt".to_string()
+                "apt install git — waiting on apt".to_string()
             )]
         );
     }
@@ -1882,7 +1898,7 @@ mod tests {
 
         assert_eq!(
             lines(&held),
-            vec!["brew-cask install firefox · waiting on brew"]
+            vec!["brew-cask install firefox — waiting on brew"]
         );
     }
 
@@ -1913,9 +1929,9 @@ mod tests {
         assert_eq!(
             lines(&held),
             vec![
-                "brew-tap install homebrew/cask-fonts · waiting on brew",
-                "brew-cask install firefox · waiting on brew",
-                "apt install git · waiting on apt",
+                "brew-tap install homebrew/cask-fonts — waiting on brew",
+                "brew-cask install firefox — waiting on brew",
+                "apt install git — waiting on apt",
             ]
         );
     }
@@ -2040,8 +2056,8 @@ mod tests {
         assert_eq!(
             lines(&held),
             vec![
-                "provision pipx via brew · waiting on brew",
-                "provision poetry via pipx · waiting on pipx",
+                "provision pipx via brew — waiting on brew",
+                "provision poetry via pipx — waiting on pipx",
             ],
             "a node held by an edge is in the live region for the whole of its wait"
         );
@@ -2093,7 +2109,7 @@ mod tests {
         let held = held(&slots, &groups, &HashMap::new(), &busy(&[]));
 
         assert!(
-            lines(&held).contains(&"provision poetry via pipx · waiting on pipx".to_string()),
+            lines(&held).contains(&"provision poetry via pipx — waiting on pipx".to_string()),
             "{:?}",
             lines(&held)
         );
@@ -2127,7 +2143,7 @@ mod tests {
 
         assert_eq!(
             lines(&held),
-            vec!["provision brew via curl · waiting on curl"]
+            vec!["provision brew via curl — waiting on curl"]
         );
     }
 
@@ -2156,7 +2172,7 @@ mod tests {
 
         assert_eq!(
             lines(&held),
-            vec!["provision brew-cask via brew · waiting on brew"],
+            vec!["provision brew-cask via brew — waiting on brew"],
             "one blocker, one line"
         );
     }
@@ -2211,7 +2227,7 @@ mod tests {
 
         assert_eq!(
             lines(&held(&slots, &groups, &deps, &busy(&["apt"]))),
-            vec!["apt install git · waiting on apt"]
+            vec!["apt install git — waiting on apt"]
         );
 
         slots[0].state = SlotState::Done;
