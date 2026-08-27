@@ -10767,6 +10767,188 @@ fn an_install_that_landed_fewer_than_it_named_says_so_on_its_row() {
     );
 }
 
+/// A provision that found its manager already there says so, and does not
+/// claim a green tick for work it did not do.
+///
+/// The executor half of `provisioned_managers_summary`: the count is the
+/// executor's own re-read, carried out on `ActionRun::installed` the way the
+/// package arm's is, and a node whose members were all available already ran
+/// nothing — the run's own `Prerequisites` phase, or an earlier node, may have
+/// delivered one between the plan being priced and the node being dispatched.
+#[test]
+fn a_provision_whose_manager_was_already_delivered_states_the_count_that_says_so() {
+    let provisioned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sys_installs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("sys")
+            .recording_installs(std::sync::Arc::clone(&sys_installs)),
+    ));
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("tool")
+            .without_index()
+            .bootstrappable_via("sys")
+            .mediated_by("sys", &["tool"])
+            .available_when(std::sync::Arc::clone(&provisioned)),
+    ));
+
+    let widget = ResolvedPackage {
+        canonical_name: "widget".to_string(),
+        resolved_name: "widget".to_string(),
+        manager: "tool".to_string(),
+        manager_declared: false,
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+        min_version: None,
+    };
+    let install = Action::Module(ModuleAction {
+        module_name: "tools".to_string(),
+        kind: ModuleActionKind::InstallPackages {
+            resolved: vec![widget],
+        },
+        origin: None,
+    });
+    let nodes = super::plan_managers(&registry, &[], &[(PhaseName::Packages, install)]);
+    let node_id = nodes
+        .iter()
+        .find_map(|a| match a {
+            Action::Manager(node @ ManagerAction::Provision { .. }) => Some(node.node_id()),
+            _ => None,
+        })
+        .expect("the absent manager is provisioned");
+
+    // Between the plan being priced and the node being dispatched, something
+    // else put the manager on the machine.
+    provisioned.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("test"),
+            nodes,
+        )],
+        warnings: vec![],
+    };
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+
+    assert!(
+        sys_installs.lock().unwrap().is_empty(),
+        "the manager was already there, so its installer never ran"
+    );
+    let settled = result
+        .action_results
+        .iter()
+        .find(|r| r.description == node_id)
+        .expect("the provision settles a result");
+    assert_eq!(
+        settled.installed,
+        Some(0),
+        "the re-read the row is worded from reaches the result: {settled:?}"
+    );
+    assert!(
+        !settled.changed && settled.skipped,
+        "a node that ran nothing changed nothing: {settled:?}"
+    );
+}
+
+/// Every manager node states the fact it produced, or states why it cannot.
+///
+/// A provision that landed hundreds of packages reported only its elapsed
+/// time, one row below package installs that do say what they produced —
+/// `action_produced_detail` had arms for env, files and packages alone. The
+/// count is the executor's own re-read, carried out on `ActionRun::installed`
+/// exactly as the package arm's is: a node promises an AVAILABLE manager, and
+/// an earlier node or the `Prerequisites` phase may already have delivered one
+/// of the managers it names.
+///
+/// Every variant is bound with no `..`, so a new manager node is classified
+/// here before this file compiles.
+#[test]
+fn every_manager_node_states_what_it_produced() {
+    use super::types::{DeclaredProvision, ManagerAction};
+
+    let batch = ManagerAction::Provision {
+        manager: "cargo".to_string(),
+        via: "apt".to_string(),
+        declared: None,
+        batched: vec!["npm".to_string()],
+        depends_on: Vec::new(),
+    };
+    let solo = ManagerAction::Provision {
+        manager: "npm".to_string(),
+        via: "apt".to_string(),
+        declared: Some(DeclaredProvision {
+            installer: "apt".to_string(),
+            package: "npm".to_string(),
+        }),
+        batched: Vec::new(),
+        depends_on: Vec::new(),
+    };
+    let batch = Action::Manager(batch);
+    assert_eq!(
+        super::action_produced_detail(&batch, Some(1)).as_deref(),
+        Some("1 of 2 managers"),
+        "a node that landed fewer managers than it named says how many"
+    );
+    assert_eq!(
+        super::action_produced_detail(&batch, Some(2)),
+        None,
+        "a node that landed every manager it named would only restate its subject"
+    );
+    assert_eq!(
+        super::action_produced_detail(&batch, None),
+        None,
+        "a preview has not run, so it has no count of its own to state"
+    );
+    assert_eq!(
+        super::action_produced_detail(&Action::Manager(solo), Some(0)).as_deref(),
+        Some("0 of 1 manager"),
+        "a node whose one manager was already there states the count that says so"
+    );
+    for action in [
+        ManagerAction::RefreshIndex {
+            manager: "apt".to_string(),
+        },
+        ManagerAction::Prerequisite {
+            tool: "curl".to_string(),
+            installer: "apt".to_string(),
+            required_by: vec!["brew".to_string()],
+            depends_on: Vec::new(),
+        },
+        ManagerAction::Refuse {
+            manager: "brew".to_string(),
+            reason: "unsupported host".to_string(),
+        },
+    ] {
+        let node = Action::Manager(action);
+        assert_eq!(
+            super::action_produced_detail(&node, Some(1)),
+            None,
+            "a node that installs exactly what its subject names has no count to add: {node:?}"
+        );
+    }
+}
+
 /// A run that installs everything it named states no count: the subject
 /// already lists every entry, so a trailing `— 2 packages` could only restate
 /// the row. The deploy arm's own rule, at the threshold a package subject sits

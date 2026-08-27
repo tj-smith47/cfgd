@@ -163,6 +163,35 @@ fn installed_packages_summary(action: &Action, installed: Option<usize>) -> Opti
         .map(|landed| format!("{landed} of {} packages", planned))
 }
 
+/// What a provision actually had to install, for the detail beside its own
+/// line: `provision cargo, npm via apt — 1 of 2 managers`.
+///
+/// A provision node promises an AVAILABLE manager, not a second run of an
+/// installer that is minutes of work and idempotent for nobody — so an earlier
+/// node, or the `Prerequisites` phase, may have already delivered one of the
+/// managers this node names. The subject stays the planned set in both trees
+/// (it is one string across the preview bullet, the alignment column and the
+/// executed row), so the count is the only seam that can say the run landed
+/// fewer, and it is the executor's own re-read carried out on
+/// [`ActionRun::installed`] exactly as the package arm's is.
+///
+/// No count when the node landed everything it named: its subject already
+/// names every manager it provisions, so a trailing `— 2 managers` could only
+/// restate the row. The same rule the two arms above state for their own
+/// subjects.
+fn provisioned_managers_summary(action: &Action, installed: Option<usize>) -> Option<String> {
+    let Action::Manager(node @ ManagerAction::Provision { .. }) = action else {
+        return None;
+    };
+    let planned = node.provisioned_managers().len();
+    installed.filter(|landed| *landed < planned).map(|landed| {
+        format!(
+            "{landed} of {planned} {}",
+            crate::plural_noun(planned, "manager")
+        )
+    })
+}
+
 /// The fact an action PRODUCES, worded for the detail slot of its own row —
 /// the ONE producer both trees read, so the plan's bullet and the apply's
 /// status line state the same count one beat apart, and `-o json`'s plan
@@ -177,6 +206,7 @@ pub fn action_produced_detail(action: &Action, installed: Option<usize>) -> Opti
     env_write_summary(action)
         .or_else(|| deploy_files_summary(action))
         .or_else(|| installed_packages_summary(action, installed))
+        .or_else(|| provisioned_managers_summary(action, installed))
 }
 
 /// A planned action that is a no-op by construction. Its subject already states
@@ -2119,8 +2149,12 @@ impl<'a> super::Reconciler<'a> {
             not_attempted,
             // Only when the run landed FEWER than it named: the description
             // beside it is the planned set, so an equal count restates it.
-            installed: installed
-                .filter(|_| installed_packages_summary(action, installed).is_some()),
+            // Judged by the same producers the row's detail is worded from, so
+            // a count `-o json` carries is one the report also states.
+            installed: installed.filter(|_| {
+                installed_packages_summary(action, installed).is_some()
+                    || provisioned_managers_summary(action, installed).is_some()
+            }),
         });
 
         if action_reports_its_own_status(action) {

@@ -1374,6 +1374,12 @@ mod tests {
     fn force_kill_process_signals_sigkill() {
         // Spawn a SIGTERM-trapping child, force_kill_process it, assert it exits
         // with SIGKILL (signal 9).
+        //
+        // The spawn resolves `sh` off the process-global `PATH`, so it is a
+        // successful resolution and takes the read guard: a concurrent test
+        // emptying `PATH` to drive a not-found branch otherwise fails this one
+        // with `NotFound` on a claim that has nothing to do with lookup.
+        let _path = crate::test_helpers::path_env_read_guard();
         let mut child = std::process::Command::new("sh")
             .arg("-c")
             .arg("trap '' TERM; sleep 30")
