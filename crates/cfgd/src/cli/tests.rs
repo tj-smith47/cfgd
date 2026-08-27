@@ -17228,6 +17228,88 @@ fn every_provider_note_takes_its_role_from_whether_the_reader_must_act() {
         "Re-login",
         "You ",
     ];
+    let mut judged = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for call in provider_note_calls() {
+        let ProviderNoteCall {
+            where_,
+            role,
+            message: literal,
+            ..
+        } = &call;
+        // The role a CONSTRUCTOR names is its own name; only a `report` call
+        // chooses one for a message.
+        if call.entry != ".report(" {
+            continue;
+        }
+        if role == "Ok" {
+            offenders.push(format!(
+                "{where_}: Role::Ok — a note under a settled row never claims a second ✓; a side report is Role::Info"
+            ));
+            continue;
+        }
+        // A bare interpolation carries its words elsewhere.
+        if literal.trim_start().starts_with('{') {
+            continue;
+        }
+        judged += 1;
+        let lower = literal.to_lowercase();
+        let degraded = DEGRADED.iter().any(|m| lower.contains(m));
+        let report = REPORT_OPENERS.iter().any(|o| literal.starts_with(o));
+        let instruction = INSTRUCTION_OPENERS.iter().any(|o| literal.starts_with(o));
+        if instruction {
+            offenders.push(format!(
+                "{where_}: {literal:?} instructs the reader — route it through `next_step`, not `report`"
+            ));
+        } else if role == "Info" && degraded {
+            offenders.push(format!(
+                "{where_}: {literal:?} is a degraded outcome reported as Role::Info"
+            ));
+        } else if role == "Warn" && report && !degraded {
+            offenders.push(format!(
+                "{where_}: {literal:?} reports work done, but warns about it"
+            ));
+        }
+    }
+    assert!(
+        judged >= 30,
+        "the walk must reach the provider population, judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every provider note's role answers one question — must the reader act?:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// One `.report(...)` call site a provider writes, as the walk reads it.
+struct ProviderNoteCall {
+    where_: String,
+    /// Which entry point wrote the note — `.report(` takes its role as an
+    /// argument, the `ActionNote` constructors name it.
+    entry: &'static str,
+    role: String,
+    /// The tag literal the call site writes, or `None` for an untagged context
+    /// or a tag bound to a variable — which its own producer pins.
+    tag: Option<String>,
+    /// The first string literal of the message argument.
+    message: String,
+}
+
+/// Every note a provider emits, read off the production sources ONCE: the two
+/// rules judging them (the role a body earns, and whether a body repeats its
+/// own tag) read the same call sites, so neither can drift into its own idea of
+/// what the population is.
+fn provider_note_calls() -> Vec<ProviderNoteCall> {
+    /// The first string literal in `args`, and what follows it.
+    fn leading_literal(args: &str) -> Option<(&str, &str)> {
+        let rest = args.trim_start();
+        let rest = rest.strip_prefix("format!(").unwrap_or(rest).trim_start();
+        let body = rest.strip_prefix('"')?;
+        let end = body.find('"')?;
+        Some((&body[..end], &body[end + 1..]))
+    }
+
     let providers_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let sources: Vec<(std::path::PathBuf, String)> = ["packages", "system"]
         .iter()
@@ -17248,90 +17330,127 @@ fn every_provider_note_takes_its_role_from_whether_the_reader_must_act() {
         })
         .collect();
 
-    /// The first string literal in `args`, and what follows it.
-    fn leading_literal(args: &str) -> Option<(&str, &str)> {
-        let rest = args.trim_start();
-        let rest = rest.strip_prefix("format!(").unwrap_or(rest).trim_start();
-        let body = rest.strip_prefix('"')?;
-        let end = body.find('"')?;
-        Some((&body[..end], &body[end + 1..]))
-    }
-
-    let mut judged = 0usize;
-    let mut offenders: Vec<String> = Vec::new();
+    let mut calls = Vec::new();
     for (path, body) in &sources {
         // A package manager's report carries its tag between the role and
         // the message; a configurator's does not.
         let tagged = path.components().any(|c| c.as_os_str() == "packages");
-        let mut rest = body.as_str();
-        while let Some(at) = rest.find(".report(") {
-            let call = &rest[at + ".report(".len()..];
-            let line = body.len() - rest.len() + at;
-            let line_no = body[..line].lines().count();
-            let head: String = call.chars().take(400).collect();
-            let head = head.split_whitespace().collect::<Vec<_>>().join(" ");
-            rest = &rest[at + ".report(".len()..];
-            let Some(role) = head
-                .strip_prefix("Role::")
-                .and_then(|r| r.split(',').next())
-            else {
-                continue;
-            };
-            let where_ = format!("{}:{}", path.display(), line_no);
-            if role == "Ok" {
-                offenders.push(format!(
-                    "{where_}: Role::Ok — a note under a settled row never claims a second ✓; a side report is Role::Info"
-                ));
-                continue;
-            }
-            let mut args = head[head.find(',').map_or(0, |i| i + 1)..].trim_start();
-            if tagged {
-                // Past the tag, literal or bound.
-                args = match leading_literal(args) {
-                    Some((_, after)) => after,
-                    None => &args[args.find(',').map_or(args.len(), |i| i + 1)..],
+        for (entry, named_role) in [
+            (".report(", None),
+            ("ActionNote::warn(", Some("Warn")),
+            ("ActionNote::info(", Some("Info")),
+        ] {
+            let mut rest = body.as_str();
+            while let Some(at) = rest.find(entry) {
+                let call = &rest[at + entry.len()..];
+                let line = body.len() - rest.len() + at;
+                let line_no = body[..line].lines().count();
+                let head: String = call.chars().take(400).collect();
+                let head = head.split_whitespace().collect::<Vec<_>>().join(" ");
+                rest = &rest[at + entry.len()..];
+                // A constructor names its role; `report` takes it as the first
+                // argument.
+                let Some(role) = named_role.or_else(|| {
+                    head.strip_prefix("Role::")
+                        .and_then(|r| r.split(',').next())
+                }) else {
+                    continue;
                 };
-                args = args
-                    .trim_start()
-                    .strip_prefix(',')
-                    .unwrap_or(args)
-                    .trim_start();
-            }
-            let Some((literal, _)) = leading_literal(args) else {
-                continue;
-            };
-            // A bare interpolation carries its words elsewhere.
-            if literal.trim_start().starts_with('{') {
-                continue;
-            }
-            judged += 1;
-            let lower = literal.to_lowercase();
-            let degraded = DEGRADED.iter().any(|m| lower.contains(m));
-            let report = REPORT_OPENERS.iter().any(|o| literal.starts_with(o));
-            let instruction = INSTRUCTION_OPENERS.iter().any(|o| literal.starts_with(o));
-            if instruction {
-                offenders.push(format!(
-                    "{where_}: {literal:?} instructs the reader — route it through `next_step`, not `report`"
-                ));
-            } else if role == "Info" && degraded {
-                offenders.push(format!(
-                    "{where_}: {literal:?} is a degraded outcome reported as Role::Info"
-                ));
-            } else if role == "Warn" && report && !degraded {
-                offenders.push(format!(
-                    "{where_}: {literal:?} reports work done, but warns about it"
-                ));
+                let where_ = format!("{}:{}", path.display(), line_no);
+                let mut args = if named_role.is_some() {
+                    head.as_str()
+                } else {
+                    head[head.find(',').map_or(0, |i| i + 1)..].trim_start()
+                };
+                let mut tag = None;
+                if tagged || named_role.is_some() {
+                    // Past the tag, literal or bound.
+                    args = match leading_literal(args) {
+                        Some((literal, after)) => {
+                            tag = Some(literal.to_string());
+                            after
+                        }
+                        None => &args[args.find(',').map_or(args.len(), |i| i + 1)..],
+                    };
+                    args = args
+                        .trim_start()
+                        .strip_prefix(',')
+                        .unwrap_or(args)
+                        .trim_start();
+                }
+                let Some((literal, _)) = leading_literal(args) else {
+                    continue;
+                };
+                calls.push(ProviderNoteCall {
+                    where_,
+                    entry,
+                    role: role.to_string(),
+                    tag,
+                    message: literal.to_string(),
+                });
             }
         }
     }
+    calls
+}
+
+/// A tagged note's body never opens on its own tag.
+///
+/// `ActionNote::body` composes `[{tag}] {message}` AROUND the tag, so a message
+/// opening on it prints the same fact twice in one row: the settled Caveats
+/// block read `⚠ [npm] npm has no writable global prefix` beside two siblings
+/// naming their speaker once. cfgd already de-doubles every CAPTURED body
+/// (`npm_warn_parts` strips npm's own `npm warn <code>`, `strip_caveat_self_tag`
+/// the pip/pipx `WARNING:`) and already owns the rule in the abstract for the
+/// sibling composition (`system_key_doubling_error`); the AUTHORED half is what
+/// this walk holds.
+///
+/// The verdict comes from `note_tag_doubling_error` itself, so the walk and the
+/// `debug_assert` inside `NoteSink::report_tagged` cannot disagree about what
+/// counts as a doubling.
+#[test]
+fn no_provider_note_repeats_its_own_tag() {
+    let mut judged = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    let mut tagged_sites: Vec<String> = Vec::new();
+    for call in provider_note_calls() {
+        let Some(tag) = &call.tag else { continue };
+        if call.message.trim_start().starts_with('{') {
+            continue;
+        }
+        judged += 1;
+        tagged_sites.push(call.where_.clone());
+        if let Some(error) = cfgd_core::providers::note_tag_doubling_error(tag, &call.message) {
+            offenders.push(format!("{}: {error}", call.where_));
+        }
+    }
     assert!(
-        judged >= 30,
-        "the walk must reach the provider population, judged {judged}"
+        judged >= 3,
+        "the walk no longer reaches the tagged provider notes — it judged {judged}"
+    );
+    // The historical violator, by name: a parser change that stops seeing the
+    // site this rule was written for makes the walk vacuous without failing.
+    assert!(
+        tagged_sites.iter().any(|w| w.contains("packages/npm.rs")),
+        "the walk no longer reaches npm's prefix fallback, the note the rule was \
+         written for: {tagged_sites:?}"
     );
     assert!(
         offenders.is_empty(),
-        "every provider note's role answers one question — must the reader act?:\n{}",
+        "a note's tag says who spoke; the body must not say it again:\n{}",
         offenders.join("\n")
+    );
+    // Anti-vacuity: the rule really does catch the shape this walk exists for.
+    assert!(
+        cfgd_core::providers::note_tag_doubling_error("npm", "npm has no writable global prefix")
+            .is_some(),
+        "the doubling rule stopped recognising its own instance"
+    );
+    // And really does leave a mid-sentence mention alone.
+    assert!(
+        cfgd_core::providers::note_tag_doubling_error("brew", "curl could not install brew")
+            .is_none(),
+        "a tag named mid-sentence is information, not a stutter"
     );
 }
 

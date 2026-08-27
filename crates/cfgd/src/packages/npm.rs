@@ -683,11 +683,13 @@ impl PackageManager for NpmManager {
             // env layer runs. `Warn`, not `Info`: the configured prefix was
             // refused and the install went somewhere else, which is a
             // degraded fallback whatever the packages did afterwards.
+            // The tag already says npm; a body opening on it would print the
+            // same fact twice (`[npm] npm has no writable …`).
             cx.report(
                 Role::Warn,
                 "npm",
                 format!(
-                    "npm has no writable global prefix; installing into {}",
+                    "no writable global prefix; installing into {}",
                     prefix.display(), // native-ok: human-facing terminal notice, not a persisted key
                 ),
             );

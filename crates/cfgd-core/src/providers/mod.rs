@@ -340,6 +340,39 @@ impl<'a> PackageContext<'a> {
     }
 }
 
+/// The diagnostic for a note body that repeats its own tag, or `None` when the
+/// body is well-formed.
+///
+/// [`ActionNote::body`] composes `[{tag}] {message}` AROUND the tag, so a
+/// message opening on the tag prints the same fact twice in one row:
+/// `⚠ [npm] npm has no writable global prefix`. The tag's whole job is to say
+/// who spoke, and two of the three caveats in a settled block naming their
+/// speaker once while the third names it twice reads as though the prefix were
+/// part of the captured tool output rather than cfgd's own structure — the
+/// confusion the tag exists to remove. The twin of
+/// [`crate::reconciler::system_key_doubling_error`], which states the
+/// same rule for the other name-prefixed composition.
+///
+/// Judged on the OPENING word only: `report_abandoned_step`'s
+/// `"{method} could not install {manager}"` names the manager mid-sentence as
+/// the object of a different verb, which is information rather than a stutter.
+pub fn note_tag_doubling_error(tag: &str, message: &str) -> Option<String> {
+    fn opening(text: &str) -> String {
+        text.split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches([':', ',', '.'])
+            .to_lowercase()
+    }
+    let tag_head = opening(tag);
+    (!tag_head.is_empty() && opening(message) == tag_head).then(|| {
+        format!(
+            "note body `{message}` opens on its own tag `{tag}`; \
+             `[{tag}] {message}` prints the same fact twice"
+        )
+    })
+}
+
 /// A narration line a provider emitted while one action ran — a brew caveat, an
 /// npm warning, the unit a systemd configurator reloaded. Part of the provider
 /// contract rather than of any one provider, because the reconciler is what
@@ -513,6 +546,17 @@ impl NoteSink {
         if message.trim().is_empty() {
             return;
         }
+        // The AUTHORED half of the population: every body reaching here is a
+        // cfgd `format!`, so a doubling is a wording defect rather than a
+        // tool's own choice of words. The captured half is held one layer out,
+        // by `npm_warn_parts` / `strip_caveat_self_tag`, and is deliberately
+        // not asserted on — cfgd does not panic over somebody else's string.
+        debug_assert!(
+            tag.is_none_or(|t| note_tag_doubling_error(t, &message).is_none()),
+            "{}",
+            tag.and_then(|t| note_tag_doubling_error(t, &message))
+                .unwrap_or_default()
+        );
         if self.collecting {
             self.push(ActionNote {
                 tag: tag.map(str::to_string),
