@@ -1,7 +1,7 @@
 use crate::AbortFlag;
 use crate::PathDisplayExt;
 use crate::config::{LOCAL_LAYER, ResolvedProfile, ScriptShell};
-use crate::errors::{ConfigError, Result};
+use crate::errors::{CfgdError, ConfigError, PackageError, Result};
 use crate::modules::ResolvedModule;
 use crate::output::{OwnerLabel, Printer, Role, SectionGuard, collapse_to_subject_line};
 use crate::state::ApplyStatus;
@@ -199,6 +199,34 @@ fn declared_noop_role(action: &Action) -> Option<Role> {
         }) => Some(Role::Skipped),
         _ => None,
     }
+}
+
+/// What a FAILED action's row shows in the elapsed slot: whether it ran.
+///
+/// The row slot measures what RAN, not what succeeded — the same rule the
+/// success arm states for itself, where a threshold would make the suffix's
+/// absence ambiguous between "fast" and "not measured". A failed `apt-get
+/// install rustc` fetched and unpacked a whole dependency closure; untimed, it
+/// left the run's `(N.Ns wall)` total exceeding the sum of its visible rows
+/// with nothing on screen to account for the difference.
+///
+/// Two failure shapes genuinely ran nothing and stay untimed. A `Refuse` node
+/// IS the refusal — it runs no command by construction — and a dependent the
+/// coordinator swept was never dispatched at all. Both are asked HERE rather
+/// than inferred from a near-zero `elapsed`, which the duration floor would
+/// render as `(<0.1s)` and so state as a measurement.
+struct FailureDisplay {
+    detail: String,
+    continue_on_err: bool,
+    ran: bool,
+}
+
+pub(super) fn failed_action_ran(action: &Action, error: &CfgdError) -> bool {
+    !matches!(action, Action::Manager(ManagerAction::Refuse { .. }))
+        && !matches!(
+            error,
+            CfgdError::Package(PackageError::DependencyFailed { .. })
+        )
 }
 
 /// The role a SUCCESSFUL action's line settles at.
@@ -1905,7 +1933,7 @@ impl<'a> super::Reconciler<'a> {
         } = input;
         // Set by the `Err` arm below so the tree renders the failure on
         // the action's own line instead of a bespoke one above it.
-        let mut failure_detail: Option<(String, bool)> = None;
+        let mut failure_detail: Option<FailureDisplay> = None;
 
         // The copies an adopting action took, rendered as that action's own
         // detail rather than as a status line above it — on the failure row as
@@ -1947,7 +1975,11 @@ impl<'a> super::Reconciler<'a> {
                     false
                 };
 
-                failure_detail = Some((collapse_to_subject_line(&e), continue_on_err));
+                failure_detail = Some(FailureDisplay {
+                    detail: collapse_to_subject_line(&e),
+                    continue_on_err,
+                    ran: failed_action_ran(action, &e),
+                });
                 if let Some(jid) = journal_id
                     && let Err(je) = self.state.journal_fail(jid, finished, &e.to_string())
                 {
@@ -2008,7 +2040,11 @@ impl<'a> super::Reconciler<'a> {
             .cloned()
             .unwrap_or_else(|| condense_action_desc_for_display(action, &desc));
         let outcome = match &failure_detail {
-            Some((message, continue_on_err)) => ActionOutcome {
+            Some(FailureDisplay {
+                detail: message,
+                continue_on_err,
+                ran,
+            }) => ActionOutcome {
                 subject,
                 role: if *continue_on_err {
                     Role::Warn
@@ -2027,7 +2063,7 @@ impl<'a> super::Reconciler<'a> {
                     sidecar_detail,
                 ),
                 detail_muted: false,
-                duration: None,
+                duration: ran.then_some(elapsed),
                 notes,
                 body,
             },
