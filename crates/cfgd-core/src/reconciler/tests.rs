@@ -23780,6 +23780,101 @@ fn a_lone_next_step_opens_no_caveats_heading() {
     );
 }
 
+/// A caveat states a fact about the MACHINE, and a run that provisions a
+/// manager in `Prerequisites` and uses it again in `Packages` files that one
+/// fact under two owners. The section printed the byte-identical
+/// `[brew] Bash completion has been installed to: …` twice, once under
+/// `cfgd:managers` and once under `module:nvim`, reading as though brew had
+/// installed completions twice to the same path.
+#[test]
+fn a_caveat_body_renders_once_per_report() {
+    let body = "[brew] Bash completion has been installed to /home/linuxbrew/etc";
+    let note = || {
+        crate::providers::ActionNote::info(
+            "brew",
+            "Bash completion has been installed to /home/linuxbrew/etc",
+        )
+    };
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    crate::reconciler::render_caveats(
+        &printer,
+        &[
+            (Owner::cfgd("managers"), vec![note()]),
+            (
+                Owner::module("nvim"),
+                // The repeat, plus a note only this owner produced: the group
+                // must still open for the second, and drop only the first.
+                vec![
+                    crate::providers::ActionNote::warn("npm", "no writable global prefix"),
+                    note(),
+                ],
+            ),
+            // Every note this owner holds is a repeat, so it opens no heading.
+            (Owner::profile("work"), vec![note()]),
+        ],
+    );
+    drop(printer);
+    let out = crate::output::strip_ansi(&cap.human());
+    assert_eq!(
+        out.matches(body).count(),
+        1,
+        "one machine-level fact, one line: {out}"
+    );
+    assert!(
+        out.contains("cfgd:managers") && out.contains("module:nvim"),
+        "the owner that produced it FIRST keeps it, and a group with a note of \
+         its own still opens: {out}"
+    );
+    assert!(
+        !out.contains("profile:work"),
+        "an owner whose every note was a repeat opens no group: {out}"
+    );
+    assert!(
+        out.contains("no writable global prefix"),
+        "a distinct note is untouched: {out}"
+    );
+}
+
+/// The report half and the hint half are two slots on one section, and for a
+/// while only the hint half deduplicated. Walk both, so they cannot diverge
+/// again: the same body, filed under two owners, renders once whichever slot
+/// carries it.
+#[test]
+fn every_caveat_slot_dedupes_by_body() {
+    type NoteBuilder = fn(&str) -> crate::providers::ActionNote;
+    let slots: [(&str, NoteBuilder); 3] = [
+        ("hint", |m| crate::providers::ActionNote::next_step(m)),
+        ("report/warn", |m| {
+            crate::providers::ActionNote::untagged(crate::output::Role::Warn, m)
+        }),
+        ("report/info", |m| {
+            crate::providers::ActionNote::untagged(crate::output::Role::Info, m)
+        }),
+    ];
+    for (slot, build) in slots {
+        let message = "one fact about this machine";
+        let (printer, cap) = crate::output::Printer::for_test_doc();
+        crate::reconciler::render_caveats(
+            &printer,
+            &[
+                (Owner::cfgd("managers"), vec![build(message)]),
+                (Owner::module("nvim"), vec![build(message)]),
+                // Twice within ONE group as well: the snapshot-bridge caller
+                // hands `render_caveats` a single group, so it can only ever
+                // duplicate this way.
+                (Owner::profile("work"), vec![build(message), build(message)]),
+            ],
+        );
+        drop(printer);
+        let out = crate::output::strip_ansi(&cap.human());
+        assert_eq!(
+            out.matches(message).count(),
+            1,
+            "the {slot} slot printed the same body more than once: {out}"
+        );
+    }
+}
+
 /// A configurator that narrates from `apply`, the way every real one does while
 /// it walks the keys it is setting.
 struct NarratingConfigurator;

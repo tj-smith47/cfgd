@@ -427,6 +427,11 @@ fn collect_caveats(
 /// token the phase tree uses. Silent (opens nothing) when every group is
 /// empty, so a run that produced no caveats prints nothing extra.
 ///
+/// Both note slots deduplicate by BODY across the whole section, the first
+/// occurrence keeping it; a group left holding nothing but repeats opens no
+/// heading. A render fold only — the `-o json` payload keeps every note under
+/// its own owner.
+///
 /// Groups render in the order given — deciding THAT order (informational
 /// groups first, `cfgd:env`'s re-source reminder last, since it is the one
 /// thing the reader must still do) is the caller's job, and
@@ -451,6 +456,17 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
     // inside one owner's caveat group, where it reads as a remark about that
     // owner rather than as the run's closing instruction.
     let mut next_steps: Vec<String> = Vec::new();
+    // Both note slots deduplicate by BODY, across the whole report. A caveat
+    // states a fact about the MACHINE — brew put its completions in one
+    // directory, once — and a run that provisions a manager in
+    // `Prerequisites` and uses it again in `Packages` files that one fact
+    // under two owners, so the section printed it twice with nothing but the
+    // owner heading to distinguish the copies. Attributing a machine-level
+    // fact to an owner is what produces the duplicate; the first occurrence
+    // keeps it, so the note stays under the owner that produced it earliest
+    // and the phase order still reads top to bottom. A render fold only: the
+    // `-o json` payload keeps every note under its own owner.
+    let mut reported: Vec<String> = Vec::new();
     {
         let mut section = None;
         for (owner, notes) in groups {
@@ -460,7 +476,21 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
                     next_steps.push(body);
                 }
             }
-            let mut reports: Vec<&ActionNote> = notes.iter().filter(|n| !n.hint).collect();
+            let mut reports: Vec<&ActionNote> = notes
+                .iter()
+                .filter(|n| !n.hint)
+                .filter(|n| {
+                    let body = n.body();
+                    if reported.contains(&body) {
+                        return false;
+                    }
+                    reported.push(body);
+                    true
+                })
+                .collect();
+            // Every report this group held was a repeat, so it opens no
+            // heading: an owner label over nothing reads as a group whose
+            // contents went missing.
             if reports.is_empty() {
                 continue;
             }
