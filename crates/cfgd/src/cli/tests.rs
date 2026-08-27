@@ -29394,3 +29394,152 @@ fn every_bootstrap_failure_names_what_it_installed() {
         offenders.join("\n")
     );
 }
+
+/// A row's VERDICT leads its detail; the counts it reports are a parenthetical
+/// under it, never a clause comma-joined after them.
+///
+/// `status`'s Modules headline read `24 packages, 6 files, 7 scripts, Synced`,
+/// which is one grammar for two different kinds of fact: three counted
+/// inventory clauses and then a health word in the same comma list, so the
+/// verdict parses as a fourth inventory item. It also puts the one word the
+/// reader is scanning a column of modules FOR — `Failed`, `Drifted` — last on
+/// the line and least prominent, behind three numbers that are the same on a
+/// healthy module and a broken one. Every other surface rendering a
+/// `*_status_display` word already gives it a slot of its own: a
+/// `KvPair::role_valued("Status", …)` row (`status <module>`, `module show`,
+/// `source show`) or a table cell (`module list`, `backup list`), where the
+/// key or the header is what says the word is a verdict. A detail slot has no
+/// header, so the ORDER is what has to say it.
+///
+/// The source half walks both crates for the shape rather than the one call
+/// site: a detail literal ending on a verdict binding after a comma is the
+/// thing being made unwritable, whichever surface writes it next.
+#[test]
+fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
+    use cfgd_core::output::{Printer, Verbosity};
+
+    // Every stored token `module_status_display` answers over, so a new word
+    // is walked the moment it is added.
+    let stored = ["installed", "error", "", "something-else"];
+    let output = super::status::StatusOutput {
+        last_apply: None,
+        drift: Vec::new(),
+        sources: Vec::new(),
+        pending_decisions: Vec::new(),
+        modules: stored
+            .iter()
+            .enumerate()
+            .map(|(i, s)| super::status::ModuleStatusEntry {
+                name: format!("m{i}"),
+                packages: 2,
+                files: 3,
+                scripts: 4,
+                status: (*s).to_string(),
+                declared: Default::default(),
+            })
+            .collect(),
+        managed_resources: Vec::new(),
+        warnings: Vec::new(),
+        classification_degraded: false,
+        classification_degraded_code: None,
+        classification_degraded_reason: None,
+        drift_checked_live: false,
+        last_scan_at: None,
+    };
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    printer.emit(super::status::build_fleet_status_doc(
+        &output,
+        &[],
+        std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+        "default",
+        "2026-05-12T14:30:25Z",
+        &Default::default(),
+    ));
+    drop(printer);
+    let rendered = cfgd_core::test_helpers::captured_text(&buf);
+
+    for (i, s) in stored.iter().enumerate() {
+        let (word, _) = cfgd_core::state::module_status_display(s, false);
+        let row = rendered
+            .lines()
+            .find(|l| l.contains(&format!("module:m{i}")))
+            .unwrap_or_else(|| panic!("module:m{i} has no row in:\n{rendered}"));
+        let detail = row
+            .split_once(" \u{2014} ")
+            .unwrap_or_else(|| panic!("row carries no detail: {row}"))
+            .1;
+        assert!(
+            detail.starts_with(word),
+            "the verdict leads the detail, `{row}` puts it behind its counts"
+        );
+        assert!(
+            detail.ends_with("(2 packages, 3 files, 4 scripts)"),
+            "the counts are the verdict's parenthetical: {row}"
+        );
+    }
+
+    // The shape, across both crates: a detail literal whose last placeholder
+    // follows a comma and names a verdict.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let verdict_named = |ident: &str| {
+        let ident = ident.trim_start_matches('&');
+        ["state", "status", "verdict", "word"]
+            .iter()
+            .any(|n| ident.contains(n))
+    };
+    let mut seen = 0usize;
+    let mut offenders = Vec::new();
+    let mut stack = vec![
+        root.join("crates/cfgd-core/src"),
+        root.join("crates/cfgd/src"),
+    ];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n != "tests") {
+                    stack.push(path);
+                }
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs")
+                || path.file_name().is_some_and(|n| n == "tests.rs")
+            {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let mut from = 0usize;
+            while let Some(at) = body[from..].find(".detail(format!(\"") {
+                let open = from + at + ".detail(format!(\"".len();
+                from = open;
+                let Some(end) = body[open..].find('"') else {
+                    continue;
+                };
+                let literal = &body[open..open + end];
+                seen += 1;
+                let Some(tail) = literal.rsplit_once(", {") else {
+                    continue;
+                };
+                // The placeholder itself, minus any format spec.
+                let Some(placeholder) = tail.1.strip_suffix('}') else {
+                    continue;
+                };
+                let ident = placeholder.split(&[':', '?'][..]).next().unwrap_or("");
+                if !ident.is_empty() && verdict_named(ident) {
+                    offenders.push(format!("{}: {literal}", path.display()));
+                }
+            }
+        }
+    }
+    assert!(seen >= 10, "the walk found detail literals, found {seen}");
+    assert!(
+        offenders.is_empty(),
+        "a verdict leads its detail, never trails a count list:\n{}",
+        offenders.join("\n")
+    );
+}

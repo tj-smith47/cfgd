@@ -23,6 +23,6 @@ Pending Decisions (1 item)
   → Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
 
 Modules
-  ✓ module:shell-config — 0 packages, 4 files, 0 scripts, Synced
+  ✓ module:shell-config — Synced (0 packages, 4 files, 0 scripts)
 
 → `cfgd diff` checks the live machine; `cfgd status --scan` records the result

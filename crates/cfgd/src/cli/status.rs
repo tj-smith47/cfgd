@@ -708,8 +708,13 @@ pub fn build_fleet_status_doc(
             // Subject is the owner token, exactly as the tree that applied the
             // module heads its group; the counts and the state are what the
             // line reports about it.
+            //
+            // The verdict LEADS and the inventory is parenthesised under it:
+            // comma-joined onto the end, `Synced` read as a fourth inventory
+            // item, and `Failed` — the one word the reader is scanning for —
+            // landed last and least prominent behind three counts.
             s.status_with(role, OwnerLabel::new("module", &m.name).plain(), |f| {
-                f.detail(format!("{summary}, {state_word}"))
+                f.detail(format!("{state_word} ({summary})"))
             })
         })
     });
@@ -2324,15 +2329,15 @@ mod tests {
         let out = cfgd_core::test_helpers::captured_text(&buf);
 
         assert!(
-            out.contains("1 package, 1 file, 1 script,"),
+            out.contains("Synced (1 package, 1 file, 1 script)"),
             "a single package, file and script must read singular: {out}"
         );
         assert!(
-            out.contains("3 packages, 12 files, 7 scripts,"),
+            out.contains("Synced (3 packages, 12 files, 7 scripts)"),
             "many must stay plural: {out}"
         );
         assert!(
-            out.contains("0 packages, 0 files, 0 scripts,"),
+            out.contains("Synced (0 packages, 0 files, 0 scripts)"),
             "zero keeps the plural: {out}"
         );
     }

@@ -550,15 +550,17 @@ spec:
 
 ```
 Modules
-  ✓ module:nvim — 3 packages, 12 files, 2 scripts, Synced
-  ✓ module:tmux — 1 package, 1 file, 0 scripts, Synced
-  ○ module:git  — 0 packages, 0 files, 0 scripts, NotApplied
+  ✓ module:nvim — Synced (3 packages, 12 files, 2 scripts)
+  ✓ module:tmux — Synced (1 package, 1 file, 0 scripts)
+  ○ module:git  — NotApplied (0 packages, 0 files, 0 scripts)
 ```
 
 The counts are one slot per module-owned kind the `Managed Resources` table
 below lists (`package`, `file`, `script`), taken from the rows that table
 paints rather than from the module's declaration, so the summary line and the
-rows under it cannot disagree.
+rows under it cannot disagree. The verdict leads and the counts are its
+parenthetical: a `Failed` or `Drifted` module reads as one at the head of the
+line rather than behind three numbers a healthy module carries too.
 
 Each line is headed by the module's owner token: the same `module:<name>` the
 plan and apply trees head that module's group with.
