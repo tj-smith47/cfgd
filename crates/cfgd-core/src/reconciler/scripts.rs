@@ -3,7 +3,7 @@ use std::io::IsTerminal;
 use crate::PathDisplayExt;
 use crate::config::{ScriptEntry, ScriptShell};
 use crate::errors::{CfgdError, ConfigError, Result};
-use crate::output::{OutputWindow, Printer, Role, collapse_to_subject_line, condense_script_label};
+use crate::output::{OutputWindow, Printer, Role, condense_script_label};
 
 use super::format::DisplaySubject;
 use super::types::{ReconcileContext, ScriptPhase};
@@ -582,7 +582,9 @@ pub(crate) fn execute_script_with_tty(
     if !st.reported() {
         match &out {
             Ok(_) => st.finish_ok(started.elapsed()),
-            Err(e) => st.finish_fail(&collapse_to_subject_line(e), None),
+            // A failed hook's message carries the script's own captured output,
+            // the same shape a failed package command's does.
+            Err(e) => st.finish_fail(&crate::output::captured_output_detail(e), None),
         }
     }
     out

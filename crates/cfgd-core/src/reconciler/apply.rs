@@ -3,7 +3,7 @@ use crate::PathDisplayExt;
 use crate::config::{LOCAL_LAYER, ResolvedProfile, ScriptShell};
 use crate::errors::{CfgdError, ConfigError, PackageError, Result};
 use crate::modules::ResolvedModule;
-use crate::output::{OwnerLabel, Printer, Role, SectionGuard, collapse_to_subject_line};
+use crate::output::{OwnerLabel, Printer, Role, SectionGuard};
 use crate::state::ApplyStatus;
 use crate::to_posix_string;
 
@@ -2014,7 +2014,11 @@ impl<'a> super::Reconciler<'a> {
                 };
 
                 failure_detail = Some(FailureDisplay {
-                    detail: collapse_to_subject_line(&e),
+                    // The DETAIL fold, not the subject one: a failed command's
+                    // message carries the child's own lines, and the renderer
+                    // already lays them out as indented continuations. Flattening
+                    // them here spent the row's ` — ` separator once per line.
+                    detail: crate::output::captured_output_detail(&e),
                     continue_on_err,
                     ran: failed_action_ran(action, &e),
                 });

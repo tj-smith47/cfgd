@@ -225,6 +225,7 @@ The **30-second memo convention** and the exclusion a TTL guard needs are in `ut
 - `terminate_process(pid)` — SIGTERM / TerminateProcess.
 - `exit_status_reason(status)` — the ONE rendering of why a child ended; never `status.code().unwrap_or(-1)`, which names an impossible code while hiding the signal that explains it.
 - `stdout_lossy_trimmed(output)` / `stderr_lossy_trimmed(output)` — trimmed lossy-UTF8 capture.
+- `output::captured_output_detail(msg)` — the ONE fold from a message carrying a CHILD's captured output into a rendered DETAIL slot: bounded at `window::VISIBLE_LINES` (the same tail the live window showed while the command ran), elided from the MIDDLE so the head that names the failure and the tail that diagnoses it both survive, and kept as LINES because `compose_status` already lays a detail's continuations out. `collapse_to_subject_line` is its one-physical-row twin and takes the same bound — a slot that must be one row cannot become forty screens of `Downloaded <crate>`. Both are DISPLAY-only: `journal_fail`, `ActionResult.error` and the `-o json` payload keep the full text. A package manager's stderr reaches either of them only through `packages::shared::command_failure_reason`; `command_failure_reason_is_the_only_place_a_managers_stderr_becomes_a_message` walks `packages/` and hatches a PARSE with its reason.
 - `is_root()` — euid==0 / `IsUserAnAdmin()`.
 - `hostname_string()` — system hostname; `"unknown"` on failure.
 - `tracing_env_filter(default)` — `EnvFilter` from the environment with a fallback.

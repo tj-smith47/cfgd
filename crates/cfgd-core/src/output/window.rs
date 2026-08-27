@@ -35,8 +35,10 @@ use super::spinner::Spinner;
 use super::status_builder::StatusBuilder;
 use super::{Role, Verbosity};
 
-/// Lines of tail kept on screen under the spinner.
-const VISIBLE_LINES: usize = 5;
+/// Lines of tail kept on screen under the spinner, and the same ceiling every
+/// captured-output fold in [`super`] bounds a rendered slot to: what the reader
+/// watched live is what the settled row keeps.
+pub(super) const VISIBLE_LINES: usize = 5;
 
 /// Strip child ANSI, collapse any in-place rewrite to what it settled on, then
 /// render a control byte that still survived as visible `\xNN`.

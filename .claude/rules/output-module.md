@@ -162,6 +162,8 @@ Two other policies exist and are not interchangeable with it: a PRE-APPROVAL sur
 
 A subject that is *genuinely* multi-line — a brew caveat is two sentences — may carry `\n`; the renderer lays those out as continuations indented to the marker column. Never hand-roll that indent: a `\n` continuation must look identical to a soft-wrapped one.
 
+**A DETAIL takes `cfgd_core::output::captured_output_detail(err)` instead.** Same bound, no flattening: the row's ` — ` is the subject/detail separator, so spending it again between a child's own lines renders an error chain as `Caused by: — failed to download …`. Both folds cap at the live window's own `VISIBLE_LINES` and elide from the middle, keeping the head that names the failure and the tail that diagnoses it — `cargo install` writes forty `Downloaded <crate>` lines to stderr before its one real sentence, and an uncapped fold put twenty-one physical lines in one action row and pushed the run's own header off the screen. Display-only: the journal, `ActionResult.error` and `-o json` keep the full text.
+
 For a user-authored script body landing in a subject, route through `cfgd_core::output::condense_script_label(body)` instead — a lossy, DISPLAY-only summary. Never use it for:
 
 - **persisted / machine-matched strings** (a resource-id, journal `resource_id`, `ActionResult.description`, a `-o json` field) — they stay byte-identical to the raw body.
