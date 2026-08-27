@@ -36,6 +36,9 @@ pub fn cmd_profile_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Res
         Doc::new()
             // verdict-row-ok: a validation verdict, not an act cfgd performed
             .status(Role::Ok, format!("Profile '{}' is valid", name))
+            .hint(crate::cli::success_next_step(
+                crate::cli::Mutation::ProfileUpdated,
+            ))
             .with_data(serde_json::json!({
                 "name": name,
                 "valid": true,

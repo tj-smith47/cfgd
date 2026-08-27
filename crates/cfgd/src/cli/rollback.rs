@@ -180,10 +180,18 @@ pub fn cmd_rollback(
 /// Sole place the Rollback final Role/subject is decided. Inline emits at
 /// every callsite would fork the rule; route through this helper instead.
 pub fn build_rollback_doc(output: &RollbackOutput) -> Doc {
-    let (role, subject) = if output.files_restored == 0 && output.files_removed == 0 {
-        (Role::Info, "No files were changed during rollback")
-    } else {
-        (Role::Ok, "Rolled back")
-    };
-    Doc::new().status(role, subject).with_data(output)
+    if output.files_restored == 0 && output.files_removed == 0 {
+        return Doc::new()
+            .status(Role::Info, "No files were changed during rollback")
+            .with_data(output);
+    }
+    // A rollback is the one mutation that moves the MACHINE away from the
+    // declared config, so it closes on the command that reads the divergence
+    // it just created — never on the apply, which would undo it.
+    Doc::new()
+        .status(Role::Ok, "Rolled back")
+        .hint(crate::cli::success_next_step(
+            crate::cli::Mutation::RolledBack,
+        ))
+        .with_data(output)
 }

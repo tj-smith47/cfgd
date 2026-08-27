@@ -513,6 +513,9 @@ pub fn cmd_profile_update(
                     cfgd_core::pluralize(changes as usize, "change")
                 ),
             )
+            .hint(crate::cli::success_next_step(
+                crate::cli::Mutation::ProfileUpdated,
+            ))
             .with_data(serde_json::json!({
                 "name": name,
                 "changes": changes,

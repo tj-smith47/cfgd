@@ -6,3 +6,5 @@ Phase: Files
   ✓ 1 file restored from backup
 
 ✓ Rolled back
+
+→ Run `cfgd diff` to see how the machine now differs from your config

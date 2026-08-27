@@ -159,20 +159,43 @@ pub(in crate::cli) enum Mutation<'a> {
     /// `module keys rotate` replaced the pair in `dir`; `resigned` is whether
     /// it re-signed the artifacts it was given.
     KeysRotated { dir: &'a str, resigned: bool },
+    /// `profile create` scaffolded a profile nothing has switched to.
+    ProfileCreated { name: &'a str },
+    /// `profile update` / `profile edit` changed a composition the machine may
+    /// already be running.
+    ProfileUpdated,
+    /// `profile switch` pointed `spec.profile` at another composition.
+    ProfileSwitched,
+    /// `secret init` wrote the age key and `.sops.yaml`; nothing is encrypted
+    /// yet.
+    SecretsInitialized,
+    /// `secret encrypt` encrypted a file no profile references yet.
+    SecretEncrypted,
+    /// `secret edit` changed the plaintext behind a secret the composition may
+    /// already deploy.
+    SecretEdited,
+    /// `rollback` restored the machine to an earlier apply, which is the one
+    /// mutation that moves the MACHINE away from the config rather than the
+    /// config towards the machine — so its next step reads the divergence it
+    /// just created, and never `cfgd apply`, which would undo it.
+    RolledBack,
 }
 
-/// The next step a mutating `source` or `module` verb closes on when it
-/// SUCCEEDS — one composer for both families, so a verb cannot drift from its
-/// siblings hint by hint.
+/// The next step a mutating `source`, `module`, `profile`, `secret` or
+/// `rollback` verb closes on when it SUCCEEDS — one composer for every family,
+/// so a verb cannot drift from its siblings hint by hint.
 ///
 /// `source update --require-signed-commits` ended on `√ Updated 1 source` and
 /// the prompt, on the one command in the take whose effect is on the next
 /// fetch, while every other mutating beat said what to type next; `module
 /// push` ended on `√ Signed artifact with cosign` and the operator hand-typed
-/// the `kubectl apply` that `--apply` performs. A trust edit points at `cfgd
-/// sync`, where the demand is met; every edit to the COMPOSITION points at the
-/// preview and the apply that settle it; a verb that produced an ARTIFACT
-/// somebody else consumes names the consumer.
+/// the `kubectl apply` that `--apply` performs; `profile update` ended on
+/// `√ 3 changes written` — the one composition verb `module create`'s own hint
+/// routes the reader INTO — and taught nothing about how those changes reach
+/// the machine. A trust edit points at `cfgd sync`, where the demand is met;
+/// every edit to the COMPOSITION points at the preview and the apply that
+/// settle it; a verb that produced an ARTIFACT somebody else consumes names the
+/// consumer; a verb that moved the MACHINE names what now reads the difference.
 pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> String {
     match mutation {
         Mutation::SourceUpdated {
@@ -188,7 +211,22 @@ pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> String {
         | Mutation::SourceReprioritized
         | Mutation::ModuleUpdated
         | Mutation::ModuleLocked
-        | Mutation::ModulePulled { name: None } => MSG_RUN_APPLY.to_string(),
+        | Mutation::ModulePulled { name: None }
+        | Mutation::ProfileUpdated
+        | Mutation::ProfileSwitched
+        | Mutation::SecretEdited => MSG_RUN_APPLY.to_string(),
+        Mutation::ProfileCreated { name } => {
+            format!("Activate it with `cfgd profile switch {name}`")
+        }
+        Mutation::SecretsInitialized => {
+            "Encrypt a file with `cfgd secret encrypt <file>`".to_string()
+        }
+        Mutation::SecretEncrypted => {
+            "Reference it with `cfgd profile update <profile> --secret <file>:<target>`".to_string()
+        }
+        Mutation::RolledBack => {
+            "Run `cfgd diff` to see how the machine now differs from your config".to_string()
+        }
         Mutation::ModuleCreated { name } => {
             format!("Add it to a profile with `cfgd profile update <profile> --module {name}`")
         }

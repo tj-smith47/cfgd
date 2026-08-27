@@ -15522,6 +15522,56 @@ fn mutating_module_verbs() -> Vec<(
     ]
 }
 
+/// The mutating `profile` verbs: the file under `src/cli/profile` each renders
+/// its verdict from, and — for a verb that genuinely ENDS a workflow — why no
+/// command comes next. One verb per file, so the file is the unit the walk
+/// reads, exactly as it is for the `source` family.
+fn mutating_profile_verbs() -> Vec<(&'static str, &'static str, Option<&'static str>)> {
+    vec![
+        ("create", "create.rs", None),
+        ("update", "update.rs", None),
+        ("edit", "edit.rs", None),
+        ("switch", "switch.rs", None),
+        (
+            "delete",
+            "delete.rs",
+            Some("a profile that is gone declares nothing left to apply"),
+        ),
+        (
+            "migrate",
+            "migrate.rs",
+            Some(
+                "relocates profile files into the canonical layout without changing what any profile declares, so the machine is already converged; its failure arm hints the retry",
+            ),
+        ),
+    ]
+}
+
+/// The mutating `secret` verbs, all four in one file, so each is read from its
+/// own handler body the way the `module` family is.
+fn mutating_secret_verbs() -> Vec<(&'static str, &'static str, Option<&'static str>)> {
+    vec![
+        ("init", "cmd_secret_init", None),
+        ("encrypt", "cmd_secret_encrypt", None),
+        (
+            "decrypt",
+            "cmd_secret_decrypt",
+            Some(
+                "writes the plaintext to stdout for the reader's own pipeline; what happens to it is outside cfgd",
+            ),
+        ),
+        ("edit", "cmd_secret_edit", None),
+    ]
+}
+
+fn cli_file_body(relative: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/cli")
+        .join(relative);
+    let body = std::fs::read_to_string(&path).expect("the verb's source file is checked out");
+    production_body(&body)
+}
+
 /// Every mutating `source` and `module` verb closes its SUCCESS path on a next
 /// step, from the ONE composer (`success_next_step`) both families share.
 /// `source update` hinted only on its failure arm and `source remove` never;
@@ -15529,9 +15579,32 @@ fn mutating_module_verbs() -> Vec<(
 /// somebody else — closed on nothing while the demo's next beat hand-typed the
 /// `kubectl apply` that `push --apply` performs. A verb that genuinely ends a
 /// workflow is hatched in the walk's own table, with its reason.
+///
+/// The population is every family that MUTATES, not the two that were noticed
+/// first: `profile update` closed on `√ 3 changes written` and the prompt —
+/// the one composition verb `Mutation::ModuleCreated`'s own hint routes the
+/// reader into — while `profile edit`'s exact twin `module edit` was already
+/// covered, and `secret` and `rollback` carried no hint at all. A new
+/// `profile`, `secret` or `module` subcommand trips here by not being in its
+/// family's table.
 #[test]
 fn every_mutating_verb_closes_on_a_next_step() {
     let mut offenders = Vec::new();
+    let judge = |offenders: &mut Vec<String>,
+                 where_: String,
+                 verb: String,
+                 terminal: Option<&'static str>,
+                 closes: bool| {
+        match (terminal, closes) {
+        (None, false) => offenders.push(format!(
+            "{where_}: `{verb}` closes without `success_next_step`"
+        )),
+        (Some(why), true) => offenders.push(format!(
+            "{where_}: `{verb}` is hatched as terminal ({why}) yet closes on a next step — drop the hatch"
+        )),
+        _ => {}
+    }
+    };
     for (verb, file, _) in mutating_source_verbs() {
         let lines = source_verb_body(file);
         if !lines.iter().any(|l| l.contains("success_next_step(")) {
@@ -15562,6 +15635,54 @@ fn every_mutating_verb_closes_on_a_next_step() {
         }
     }
     assert_eq!(judged, 15, "the walk no longer reaches the `module` family");
+
+    let mut profile_judged = 0usize;
+    for (verb, file, terminal) in mutating_profile_verbs() {
+        let body = cli_file_body(&format!("profile/{file}"));
+        profile_judged += 1;
+        judge(
+            &mut offenders,
+            format!("profile/{file}"),
+            format!("profile {verb}"),
+            terminal,
+            body.contains("success_next_step("),
+        );
+    }
+    assert_eq!(
+        profile_judged, 6,
+        "the walk no longer reaches the `profile` family"
+    );
+
+    let secret_body = cli_file_body("secret.rs");
+    let secret_lines: Vec<&str> = secret_body.lines().collect();
+    let mut secret_judged = 0usize;
+    for (verb, handler, terminal) in mutating_secret_verbs() {
+        let handler_body = fn_body(&secret_lines, handler)
+            .unwrap_or_else(|| panic!("secret.rs declares `{handler}`"));
+        secret_judged += 1;
+        judge(
+            &mut offenders,
+            "secret.rs".to_string(),
+            format!("secret {verb}"),
+            terminal,
+            handler_body.contains("success_next_step("),
+        );
+    }
+    assert_eq!(
+        secret_judged, 4,
+        "the walk no longer reaches the `secret` family"
+    );
+
+    // `rollback` is a family of one, and its verdict is composed by
+    // `build_rollback_doc` rather than by the handler, so the file is the unit.
+    judge(
+        &mut offenders,
+        "rollback.rs".to_string(),
+        "rollback".to_string(),
+        None,
+        cli_file_body("rollback.rs").contains("success_next_step("),
+    );
+
     assert!(
         offenders.is_empty(),
         "a mutating verb's success path says what to do next:\n{}",
@@ -15836,6 +15957,19 @@ fn every_composed_next_step_names_a_command() {
             },
             &["cfgd module keys rotate"],
         ),
+        (
+            Mutation::ProfileCreated { name: "dev" },
+            &["cfgd profile create"],
+        ),
+        (
+            Mutation::ProfileUpdated,
+            &["cfgd profile update", "cfgd profile edit"],
+        ),
+        (Mutation::ProfileSwitched, &["cfgd profile switch"]),
+        (Mutation::SecretsInitialized, &["cfgd secret init"]),
+        (Mutation::SecretEncrypted, &["cfgd secret encrypt"]),
+        (Mutation::SecretEdited, &["cfgd secret edit"]),
+        (Mutation::RolledBack, &["cfgd rollback"]),
     ];
     let source = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
@@ -15855,7 +15989,7 @@ fn every_composed_next_step_names_a_command() {
         })
         .count();
     assert_eq!(
-        declared, 15,
+        declared, 22,
         "a new Mutation variant is walked here with every shape it can take"
     );
     for (mutation, own_verbs) in mutations {
