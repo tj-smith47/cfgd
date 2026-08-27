@@ -137,7 +137,6 @@ impl<'p> LiveRow<'p> {
                 &self.renderer,
                 "{spinner} {msg}",
             ));
-            self.bar.enable_steady_tick(super::spinner::SPINNER_TICK);
         }
         let mut spinner = Spinner {
             renderer: self.renderer.clone(),
@@ -158,6 +157,12 @@ impl<'p> LiveRow<'p> {
         // second time, whose fold strips the coat the first one put on and
         // pays for the whole label again to arrive back where it started.
         spinner.set_composed_message(subject.clone());
+        // The tick is the LAST call of the setup: `build_live_row` handed this
+        // bar over holding no message, and an animation started before the
+        // subject is in paints a lone glyph on an empty line.
+        if !self.bar.is_hidden() {
+            super::spinner::start_spinner_animation(&self.bar);
+        }
         OutputWindow::borrowed(spinner, subject)
     }
 
@@ -499,6 +504,59 @@ mod tests {
             positions.windows(2).all(|w| w[0] < w[1]),
             "rows drawn out of order: {drawn:?}"
         );
+    }
+
+    #[test]
+    fn a_running_row_never_animates_before_it_has_a_subject() {
+        // The animated template is `{spinner} {msg}` and the bar
+        // `build_live_row` hands over holds no message, so a tick started
+        // ahead of the subject paints a lone glyph on an empty line — a status
+        // row naming no work. `start_spinner_animation` is the ordering seam:
+        // it asserts the message is in, so reaching the end of `window` at all
+        // is the pin.
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let row = printer.live_row_at(2);
+        let window = row.window("install ripgrep");
+        assert!(
+            row.bar.message().contains("install ripgrep"),
+            "the row animated before its subject went in: {:?}",
+            row.bar.message()
+        );
+        window.release();
+
+        // Anti-vacuity: the guard really does refuse the inverted order, so
+        // the test above is not passing on an assertion that never runs.
+        let bare = IndProgressBar::new_spinner();
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::super::spinner::start_spinner_animation(&bare);
+        }))
+        .is_err();
+        std::panic::set_hook(previous);
+        assert!(refused, "a messageless bar was allowed to start animating");
+    }
+
+    #[test]
+    fn the_live_region_never_draws_a_spinner_frame_on_a_line_of_its_own() {
+        // The emulated screen is the only capture that sees a line the region
+        // drew and never erased, which is where the lone glyph appeared.
+        let (printer, screen) = Printer::for_test_live_terminal(24, 120);
+        let row = printer.live_row_at(2);
+        let window = row.window("install ripgrep");
+        let held = screen.contents();
+        window.release();
+        row.retire();
+        for line in held.lines() {
+            let bare = super::super::strip_ansi(line);
+            let rest: String = super::super::spinner::SPINNER_FRAMES
+                .iter()
+                .fold(bare.to_string(), |acc, frame| acc.replace(frame, ""));
+            assert!(
+                bare.trim().is_empty() || !rest.trim().is_empty(),
+                "the region drew a spinner frame with nothing after it: {held:?}"
+            );
+        }
     }
 
     #[test]

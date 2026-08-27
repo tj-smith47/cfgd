@@ -456,6 +456,10 @@ fn indented_template(body: &str) -> String {
     format!("{{prefix}}{body}")
 }
 
+/// The frames a spinner cycles through, unpainted. Named so a test asserting
+/// about what the region drew reads the same glyphs the renderer paints.
+pub(super) const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 /// The animated frames a spinner cycles, painted by the theme. Shared with
 /// [`super::live_row::LiveRow`], whose running state is the same animation on a
 /// line it owns for longer than one step.
@@ -463,8 +467,7 @@ fn indented_template(body: &str) -> String {
 /// `body` is the template WITHOUT its leading `{prefix}` — see
 /// [`indented_template`].
 pub(super) fn spinner_style(renderer: &Renderer, body: &str) -> ProgressStyle {
-    let frames_raw = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let styled: Vec<String> = frames_raw
+    let styled: Vec<String> = SPINNER_FRAMES
         .iter()
         .map(|f| renderer.theme.info.apply_to(f).to_string())
         .collect();
@@ -485,6 +488,23 @@ pub(super) fn plain_style(body: &str) -> ProgressStyle {
 /// How often a spinner redraws its animation.
 pub(super) const SPINNER_TICK: Duration = Duration::from_millis(80);
 
+/// Start a bar's animation. **The LAST call of any spinner setup.**
+///
+/// A steady tick redraws from a background thread, so it animates whatever the
+/// bar holds at the instant it is enabled. The animated template is
+/// `{spinner} {msg}`, so a tick started before the message is in paints a lone
+/// glyph on an otherwise empty line — a status row that names no work. A bar's
+/// message goes in before its animation starts; the counterpart rule on the
+/// settle side is [`super::live_row::LiveRow::set_status`], which disables the
+/// tick before it repaints.
+pub(super) fn start_spinner_animation(bar: &IndProgressBar) {
+    debug_assert!(
+        !bar.message().is_empty(),
+        "a spinner's message goes in before its animation starts",
+    );
+    bar.enable_steady_tick(SPINNER_TICK);
+}
+
 /// Build a styled spinner ProgressBar attached to a MultiProgress.
 pub(crate) fn build_spinner(
     multi: &indicatif::MultiProgress,
@@ -497,7 +517,7 @@ pub(crate) fn build_spinner(
     pb.set_style(spinner_style(renderer, "{spinner} {msg}"));
     set_bar_depth(&pb, depth);
     pb.set_message(message.to_string());
-    pb.enable_steady_tick(SPINNER_TICK);
+    start_spinner_animation(&pb);
     (pb, live)
 }
 
