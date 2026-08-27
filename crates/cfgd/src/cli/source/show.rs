@@ -406,6 +406,10 @@ fn profile_is_absent(err: &cfgd_core::errors::CfgdError) -> bool {
     )
 }
 
+// Every row here is `<kind>: <name>` — `brew formula: jq`, `env: EDITOR` — so
+// the subject NAMES a declared kind rather than reporting an outcome, and the
+// kinds are spelled the way the schema spells them.
+// name-row-ok: the subject is a `spec.packages` schema key, not a verb
 fn append_policy_items(mut s: SectionBuilder, items: &PolicyItems) -> SectionBuilder {
     if let Some(ref pkgs) = items.packages {
         if let Some(ref brew) = pkgs.brew {

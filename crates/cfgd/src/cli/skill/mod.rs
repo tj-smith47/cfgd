@@ -422,7 +422,7 @@ pub fn cmd_skill_list(printer: &Printer, global: bool) -> anyhow::Result<()> {
     let heading = format!("Installed skills ({} scope)", scope_word(scope));
     let doc = if installed.is_empty() {
         Doc::new().section(heading, |sec| {
-            sec.status_with(Role::Info, "no skills installed".to_string(), |f| f)
+            sec.status_with(Role::Info, "No skills installed".to_string(), |f| f)
         })
     } else {
         Doc::new().section(heading, |mut sec| {

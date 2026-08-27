@@ -1,4 +1,4 @@
-◉ pinned registry.example.com/myapp/server:abc123 → registry.example.com/myapp/server@sha256:3a7b9c4d0000000000000000000000000000000000000000000000000000abcd
+◉ Pinned registry.example.com/myapp/server:abc123 → registry.example.com/myapp/server@sha256:3a7b9c4d0000000000000000000000000000000000000000000000000000abcd
 apiVersion: v1
 kind: Pod
 metadata:

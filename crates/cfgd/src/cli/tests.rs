@@ -13523,9 +13523,49 @@ fn every_result_line_is_sentence_case() {
             }
         }
     };
-    sweep(&cli, "Role::Ok,");
-    sweep(&cli, "Role::Warn,");
-    sweep(&cli, "Role::Fail,");
+    // Every role a RESULT line can carry, over every source that is not a
+    // run's body. The two pins partition the population: a subject slot inside
+    // `reconciler/` or `backup/` is a body row and belongs to
+    // `every_action_row_subject_opens_on_a_lowercase_verb`; everything else
+    // reports an outcome and belongs here. Judged by neither, a lowercase
+    // `Role::Info` row sat beside sentence-case siblings with nothing to say
+    // it was on the wrong side of a split nobody had written down.
+    let is_run_body = |path: &std::path::Path| {
+        let p = path.to_string_lossy().replace('\\', "/");
+        p.contains("/reconciler/") || p.contains("/backup/")
+    };
+    let core = core_production_sources();
+    let (bodies, outside): (Vec<_>, Vec<_>) = core
+        .iter()
+        .cloned()
+        .partition(|(path, _)| is_run_body(path));
+    // The witness that the split is a PARTITION and not two overlapping
+    // opinions: every core source lands on exactly one side, and each side has
+    // members. A third predicate added to either sweep would drop files out of
+    // both, which is the state that let a lowercase result line ship.
+    assert_eq!(
+        bodies.len() + outside.len(),
+        core.len(),
+        "the two grammars must partition cfgd-core's sources, not sample them"
+    );
+    assert!(
+        !bodies.is_empty() && !outside.is_empty(),
+        "each side of the split must have members, got {} body / {} outside",
+        bodies.len(),
+        outside.len()
+    );
+    let outside_runs: Vec<(std::path::PathBuf, String)> =
+        cli.iter().cloned().chain(outside).collect();
+    for role in [
+        "Role::Ok,",
+        "Role::Warn,",
+        "Role::Fail,",
+        "Role::Info,",
+        "Role::Skipped,",
+        "Role::Pending,",
+    ] {
+        sweep(&outside_runs, role);
+    }
     sweep(&both, ".finish_ok(");
     sweep(&both, ".finish_warn(");
     sweep(&both, ".finish_fail(");

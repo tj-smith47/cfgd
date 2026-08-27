@@ -299,7 +299,7 @@ pub fn run_source_update(
                             Ok(false) => {
                                 source_sec.status_simple(
                                     Role::Info,
-                                    "skipped (permission changes rejected)",
+                                    "Skipped (permission changes rejected)",
                                 );
                                 entries.push(UpdateEntry {
                                     name: source.name.clone(),
@@ -310,7 +310,7 @@ pub fn run_source_update(
                                 false
                             }
                             Err(_) => {
-                                source_sec.status_simple(Role::Info, "skipped (prompt cancelled)");
+                                source_sec.status_simple(Role::Info, "Skipped (prompt cancelled)");
                                 entries.push(UpdateEntry {
                                     name: source.name.clone(),
                                     status: "cancelled".into(),

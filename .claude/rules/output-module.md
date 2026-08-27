@@ -61,7 +61,7 @@ Eight conventions, each with a walk-the-population pin that fails on the next me
 
 | Rule | Shape | Pin |
 |---|---|---|
-| A result line is **sentence case, past-tense verb first, count after** | `✓ Accepted 1 item`, `✓ Subscribed`, `✓ Installed daemon service` — never `Daemon service installed`, never Title Case | `every_result_line_is_sentence_case` |
+| A result line is **sentence case, past-tense verb first, count after** | `✓ Accepted 1 item`, `✓ Subscribed`, `✓ Installed daemon service` — never `Daemon service installed`, never Title Case. The counterpart grammar is a run BODY row's (lowercase imperative, below); the two pins **partition** the sources — a subject slot under `reconciler/` or `backup/` is a body row, everything else in both crates is a result line | `every_result_line_is_sentence_case` |
 | A message naming a command **quotes it in backticks** | ``Run `cfgd decide accept <resource>` to answer`` — never `'cfgd …'`; covers hints, errors and clap `///` help, in both crates | `every_command_a_message_names_is_quoted_in_backticks` |
 | The **up-to-date verdict is not a command's to word** | every no-actions verdict settles through `reconciler::nothing_to_do_verdict(pending)`, which answers `Role::Pending` + `Nothing to apply — N decisions pending` whenever something is withheld | `no_command_words_the_up_to_date_verdict_for_itself`, `a_pending_decision_denies_the_up_to_date_verdict_on_every_verdict_surface` |
 | A **rendered label is Title Case**, whichever slot holds it | a kv key, a `KvPair`, a row tuple and a table header all read `Last Sync` / `Drift Count` — never `Reconcile interval` two rows above a Title Case column. Small words stay lowercase off the front (`Signing with`); a label NAMING a thing (a `spec.packages` path, a tool's own name) keeps that spelling under a `// name-row-ok:` marker | `every_rendered_label_is_title_case` |
@@ -84,6 +84,18 @@ Five conventions about the SHAPE of a settled row, each with a walk-the-populati
 | A **run's total is wall-clock and says so; a row's span never does** | the closing rollup composes its elapsed through `StatusBuilder::wall_duration` → `Elapsed::wall`, rendering ` (278.2s wall)`; every action row, spinner finish and command window takes `.duration` → `Elapsed::row`, ` (23.8s)`. Package and provisioner lanes run concurrently, so a column of row spans legitimately sums to more than the total — the word is what tells a reader adding them up why | `a_wall_clock_total_says_wall_and_a_row_span_does_not` (`output/renderer/status.rs`), `the_closing_line_holds_one_em_dash_and_one_trailing_parenthetical` (`reconciler/run/tests.rs`); the snapshot normalizer keeps the word (`normalize_snapshot_durations_keeps_the_wall_clock_word`) |
 | An **action row's subject opens on a lowercase verb** | `create ~/.zshrc`, `brew install jq`, `run preApply script`, `snapshot notes.md.<stamp>`, `restore ~/notes.md from notes.md.<stamp>` — the row names WORK and the glyph says how it went. The sentence-case, past-tense grammar is the closing line's (`✓ Restore complete`), never a body row's: `backup restore` wrote `Restored from …` into the slot `backup run` writes `snapshot …` into, and the sentence-case pin would have rewarded it. Two verbs of one command mint their subjects side by side (`backup::snapshot_subject` / `restore_subject`); a subject opening on a proper noun takes a `// name-row-ok:` marker | `every_action_row_subject_opens_on_a_lowercase_verb` (`crates/cfgd/src/cli/tests.rs`) — walks every subject slot in `reconciler/` and `backup/`, following `let` bindings and producer functions to the literal |
 | A **duration slot never renders a zero** | anything the one-decimal form would round to `0.0` renders ` (<0.1s)` — a sub-tick action DID run, and `(0.0s)` says it took no time. One composer (`renderer::status::duration_text`) feeds the action suffix, the spinner finish and the rollup total alike | `a_sub_tick_duration_renders_the_floor_and_never_a_zero`, `every_duration_slot_composes_through_the_one_trailer` (`output/renderer/status.rs`) |
+
+### The grammar split, stated once
+
+Three grammars share one screen, and which one a string takes is decided by WHAT the string is, never by which surface prints it:
+
+| Kind | Grammar | Example |
+|---|---|---|
+| **Body row of a run** — previewed by the plan and settled by the apply, ONE string in both slots | lowercase imperative | `create ~/.zshrc`, `provision npm via apt (rustc)` |
+| **Result line** — an outcome reported once, never previewed | sentence case, past-tense verb first | `✓ Installed daemon service`, `✓ Cloned repository` |
+| **Provider note** — a `.report(` body under a settled row | a sentence, or the command as it was run | `Updated /etc/environment`, `systemctl restart foo` |
+
+Headings are not in any of the three: a heading is a Title Case label (`every_rendered_label_is_title_case`). A note echoing a command keeps the command's own spelling, which is why the note population is judged by `every_provider_note_takes_its_role_from_whether_the_reader_must_act` on its ROLE and not on its case.
 
 Both snapshot normalizers know the floor's spelling (`util/paths.rs::duration_span`, `output/test_capture.rs::strip_spinner_duration`), so a golden stays host-stable across it.
 
