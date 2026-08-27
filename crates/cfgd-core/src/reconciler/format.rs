@@ -607,12 +607,7 @@ fn format_module_action_body(action: &ModuleAction) -> String {
             // PRODUCES and so is the row's detail (`deploy_files_summary`),
             // the slot the sibling env-write row already puts its counts in.
             let targets: Vec<String> = files.iter().map(|f| f.target.display_posix()).collect();
-            let shown = if targets.len() <= 3 {
-                targets.join(", ")
-            } else {
-                targets[..2].join(", ")
-            };
-            format!("deploy {shown}")
+            format!("deploy {}", elided_list(&targets, 2))
         }
         ModuleActionKind::RunScript { script, phase } => {
             // Raw body: this same string feeds both `ApplyRun::preview`
@@ -627,6 +622,27 @@ fn format_module_action_body(action: &ModuleAction) -> String {
             format!("skip: {reason}")
         }
     }
+}
+
+/// Join `items`, naming at most `keep` of them and saying how many were left
+/// out (`a, b, +4 more`).
+///
+/// The marker is not decoration: this string is the action's subject in every
+/// tree AND `PlanActionOutput.description` in `-o json`, so a silent cut left
+/// `deploy …/init.lua, …/lazy-lock.json — 6 files` reading as two deploys that
+/// produced six files, beside sibling rows naming all twelve of their own
+/// operands, and left a structured consumer with no way to know the list was
+/// short. A list short enough to state in full carries no marker, having
+/// elided nothing.
+///
+/// The ONE elision in this file: every other subject builder names every
+/// operand it holds, which is what `every_elided_operand_list_says_so` walks
+/// the module-action kinds to keep true.
+fn elided_list(items: &[String], keep: usize) -> String {
+    if items.len() <= keep + 1 {
+        return items.join(", ");
+    }
+    format!("{}, +{} more", items[..keep].join(", "), items.len() - keep)
 }
 
 /// Prefixes whose `format_action_description`/`execute_script` output has a
@@ -697,8 +713,96 @@ pub(super) fn parse_package_description(desc: &str) -> Option<(String, String, V
 
 #[cfg(test)]
 mod tests {
-    use super::super::types::{DeclaredProvision, ManagerAction};
-    use super::{format_manager_action_item, parse_package_description};
+    use super::super::types::{DeclaredProvision, ManagerAction, ModuleAction, ModuleActionKind};
+    use super::{
+        elided_list, format_manager_action_item, format_module_action_item,
+        parse_package_description,
+    };
+
+    /// The elision marker `elided_list` mints, as a reader sees it.
+    const ELIDED: &str = " more";
+
+    /// A subject that cuts its operand list SAYS it cut it.
+    ///
+    /// The one string is the plan preview bullet, the alignment column, the
+    /// executed row AND `PlanActionOutput.description`, so a silent cut is a
+    /// silent cut in all four: `deploy …/init.lua, …/lazy-lock.json — 6 files`
+    /// read as two deploys producing six files, beside sibling rows naming all
+    /// twelve of their own operands, and a structured consumer had no way to
+    /// tell the list was short.
+    ///
+    /// Every `ModuleActionKind` is walked, each with more operands than any
+    /// builder here keeps, and each must either name all of them or say how
+    /// many it left out. Bound with no `..`, so a new kind is classified before
+    /// this file compiles.
+    #[test]
+    fn every_elided_operand_list_says_so() {
+        let file = |target: &str| crate::modules::ResolvedFile {
+            source: std::path::PathBuf::from("src"),
+            target: std::path::PathBuf::from(target),
+            is_git_source: false,
+            strategy: None,
+            encryption: None,
+            permissions: None,
+            patch: None,
+        };
+        let pkg = |name: &str| crate::modules::ResolvedPackage {
+            canonical_name: name.to_string(),
+            resolved_name: name.to_string(),
+            manager: "brew".to_string(),
+            manager_declared: false,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: None,
+        };
+        let names = ["a", "b", "c", "d", "e", "f"];
+        let kinds = [
+            ModuleActionKind::InstallPackages {
+                resolved: names.iter().map(|n| pkg(n)).collect(),
+            },
+            ModuleActionKind::DeployFiles {
+                files: names.iter().map(|n| file(n)).collect(),
+                declared_total: names.len(),
+            },
+            ModuleActionKind::RunScript {
+                script: crate::config::ScriptEntry::Simple(names.join(" && ")),
+                phase: crate::reconciler::ScriptPhase::PostApply,
+            },
+            ModuleActionKind::Skip {
+                reason: names.join(", "),
+            },
+        ];
+        for kind in kinds {
+            let subject = format_module_action_item(&ModuleAction::local("m", kind));
+            let named = names.iter().filter(|n| subject.contains(**n)).count();
+            assert!(
+                named == names.len() || subject.contains(ELIDED),
+                "a subject that names only {named} of {} operands must say so: {subject}",
+                names.len()
+            );
+        }
+    }
+
+    /// A list short enough to state in full elided nothing, so it says nothing.
+    #[test]
+    fn a_list_that_fits_carries_no_elision_marker() {
+        let items: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(elided_list(&items, 2), "a, b, c");
+        assert_eq!(elided_list(&items[..1], 2), "a");
+        assert_eq!(
+            elided_list(
+                &["a", "b", "c", "d"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>(),
+                2
+            ),
+            "a, b, +2 more"
+        );
+    }
 
     /// The operands a manager action holds — every name the subject has to
     /// account for. Bound field by field with no `..`, so a new field on any
