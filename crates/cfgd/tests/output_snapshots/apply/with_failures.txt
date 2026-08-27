@@ -9,6 +9,6 @@ Phase: Files
     ✓ create <TARGET_OK>     (XXs)
     ✗ create <TARGET_FAIL> — io error on <CONFIG_DIR>/blocker: <os error> (XXs)
 
-⚠ Apply partial — 1 of 2 applied
+⚠ Apply partial — 1 of 2 applied (XXs wall)
 ✓ 1 action succeeded
-1 action failed (XXs wall)
+✗ 1 action failed

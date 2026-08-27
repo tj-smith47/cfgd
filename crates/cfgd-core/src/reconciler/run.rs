@@ -1197,8 +1197,14 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
                 )),
             ),
             (Role::Ok, outcome_counts(tally), None),
+            // `Role::Fail`, not `Role::Accent`: these are status lines in a
+            // status block, and `Accent` reserves no glyph column. The failure
+            // count hung one column left of the two lines above it — the only
+            // unmarked line in a report where every failed action row carries
+            // a red glyph — so the bad news read as a stray fragment of the
+            // green line above it.
             (
-                Role::Accent,
+                Role::Fail,
                 format!("{} failed", pluralize(tally.failed, "action")),
                 None,
             ),
@@ -1258,8 +1264,11 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
 /// The run's closing rollup: one or two status lines naming what happened, plus
 /// the shortfall line when fewer actions ran than the run set out to do.
 ///
-/// `elapsed` lands on the LAST line emitted, so a `Partial` run wears it on its
-/// failure line and a short run wears it on the shortfall.
+/// `elapsed` lands on the FIRST line — the one that NAMES the run. The wall
+/// total is the whole run's, so hanging it off whichever line happened to be
+/// last fused it to that line's own count: a `Partial` run read
+/// `2 actions failed (274.0s wall)`, which says the two failures burned four
+/// and a half minutes.
 pub fn render_run_rollup(
     tally: &RunTally,
     title: RunTitle,
@@ -1278,10 +1287,9 @@ pub fn render_run_rollup(
             None,
         ));
     }
-    let last = lines.len().saturating_sub(1);
     for (index, (role, subject, detail)) in lines.into_iter().enumerate() {
         match elapsed {
-            Some(d) if index == last => {
+            Some(d) if index == 0 => {
                 printer
                     .status(role, subject)
                     .detail_opt(detail.as_deref())
