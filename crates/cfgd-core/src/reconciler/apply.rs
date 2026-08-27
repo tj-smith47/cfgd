@@ -129,14 +129,54 @@ fn deploy_files_summary(action: &Action) -> Option<String> {
     }
 }
 
+/// What a package install actually landed, for the detail beside its own line:
+/// `apt install ripgrep, fd-find — 1 of 2 packages`.
+///
+/// The subject stays the PLANNED set in every tree ([`action_display_subject`]
+/// is one string across the preview bullet, the alignment column and the
+/// executed row) and so does the recorded description, which is a wire
+/// contract. What the executed row alone can differ on is the COUNT, and it
+/// only learns it at execute time: the `Prerequisites` phase installs packages,
+/// so an install re-reads the machine and drops every entry that is already
+/// there. `installed` is that re-read's answer, carried out of the executor on
+/// [`ActionRun`]; `None` is a preview, which has no answer yet.
+///
+/// No plain count on a full install, unlike the deploy arm's `> 3` case: a
+/// package subject names every entry it installs — neither
+/// `format_module_action_body` nor `format_plan_item` truncates one — so a
+/// trailing `— 6 packages` could only ever restate the row. That is the same
+/// rule the deploy arm states for a subject of three targets or fewer; only
+/// the threshold differs, because only the deploy subject elides.
+///
+/// [`action_display_subject`]: super::format::action_display_subject
+fn installed_packages_summary(action: &Action, installed: Option<usize>) -> Option<String> {
+    let planned = match action {
+        Action::Package(PackageAction::Install { packages, .. }) => packages.len(),
+        Action::Module(ModuleAction {
+            kind: ModuleActionKind::InstallPackages { resolved },
+            ..
+        }) => resolved.len(),
+        _ => return None,
+    };
+    installed
+        .filter(|landed| *landed < planned)
+        .map(|landed| format!("{landed} of {} packages", planned))
+}
+
 /// The fact an action PRODUCES, worded for the detail slot of its own row —
 /// the ONE producer both trees read, so the plan's bullet and the apply's
 /// status line state the same count one beat apart, and `-o json`'s plan
 /// payload carries it as `detail` rather than folded into `description`.
 ///
+/// `installed` is the one fact a preview cannot supply: how many of the
+/// entries an install NAMED it still had to land. A plan passes `None` and gets
+/// the same detail it always did.
+///
 /// `None` for an action that produces nothing worth a count.
-pub fn action_produced_detail(action: &Action) -> Option<String> {
-    env_write_summary(action).or_else(|| deploy_files_summary(action))
+pub fn action_produced_detail(action: &Action, installed: Option<usize>) -> Option<String> {
+    env_write_summary(action)
+        .or_else(|| deploy_files_summary(action))
+        .or_else(|| installed_packages_summary(action, installed))
 }
 
 /// A planned action that is a no-op by construction. Its subject already states
@@ -206,14 +246,28 @@ pub(super) struct ActionRun {
     pub changed: bool,
     /// A script action's captured output.
     pub script_output: Option<String>,
+    /// How many of the entries the action NAMED it actually put on the
+    /// machine, for an action whose executed set is narrower than its planned
+    /// one and only knows by how much once it has run. `None` for every action
+    /// that installs nothing and for a preview, which has not run yet.
+    pub installed: Option<usize>,
 }
 
 impl ActionRun {
-    fn new(description: String, changed: bool) -> Self {
+    pub(super) fn new(description: String, changed: bool) -> Self {
         Self {
             description,
             changed,
             script_output: None,
+            installed: None,
+        }
+    }
+
+    /// The same run, carrying the count the executor re-read off the machine.
+    pub(super) fn installed(self, installed: usize) -> Self {
+        Self {
+            installed: Some(installed),
+            ..self
         }
     }
 }
@@ -657,6 +711,7 @@ fn merge_env_result(results: &mut Vec<ActionResult>, description: String, change
         // changed nothing is a no-op, whichever late input triggered it.
         skipped: !changed,
         not_attempted: None,
+        installed: None,
     });
 }
 
@@ -1056,9 +1111,7 @@ impl<'a> super::Reconciler<'a> {
                         let settled = self.settle_action(SettleInput {
                             action,
                             journal_id: collected.journal_id,
-                            result: collected
-                                .result
-                                .map(|(desc, changed)| ActionRun::new(desc, changed)),
+                            result: collected.result,
                             // A lane runs package and manager actions, neither
                             // of which adopts a file.
                             sidecars: Vec::new(),
@@ -1444,6 +1497,7 @@ impl<'a> super::Reconciler<'a> {
                                 changed: false,
                                 skipped: false,
                                 not_attempted: None,
+                                installed: None,
                             });
                         }
                     }
@@ -1496,6 +1550,7 @@ impl<'a> super::Reconciler<'a> {
                             // settles no role for it and this record invents none.
                             skipped: false,
                             not_attempted: None,
+                            installed: None,
                         });
                     }
                     Err(e) => {
@@ -1509,6 +1564,7 @@ impl<'a> super::Reconciler<'a> {
                             changed: false,
                             skipped: false,
                             not_attempted: None,
+                            installed: None,
                         });
                         if !continue_on_err {
                             return Err(e);
@@ -1575,6 +1631,7 @@ impl<'a> super::Reconciler<'a> {
                                 changed,
                                 skipped: false,
                                 not_attempted: None,
+                                installed: None,
                             });
                         }
                         Err(e) => {
@@ -1592,6 +1649,7 @@ impl<'a> super::Reconciler<'a> {
                                 changed: false,
                                 skipped: false,
                                 not_attempted: None,
+                                installed: None,
                             });
                             if !continue_on_err {
                                 return Err(e);
@@ -1853,7 +1911,7 @@ impl<'a> super::Reconciler<'a> {
         // detail rather than as a status line above it — on the failure row as
         // much as the success one, since the copy was taken either way.
         let sidecar_detail = sidecar_detail(&sidecars);
-        let (desc, success, action_changed, error, should_abort) = match result {
+        let (desc, success, action_changed, installed, error, should_abort) = match result {
             Ok(run) => {
                 if let Some(jid) = journal_id
                     && let Err(e) = self.state.journal_complete(
@@ -1865,7 +1923,14 @@ impl<'a> super::Reconciler<'a> {
                 {
                     tracing::warn!("failed to record journal completion: {e}");
                 }
-                (run.description, true, run.changed, None, false)
+                (
+                    run.description,
+                    true,
+                    run.changed,
+                    run.installed,
+                    None,
+                    false,
+                )
             }
             Err(e) => {
                 let desc = format_action_description(action);
@@ -1888,7 +1953,14 @@ impl<'a> super::Reconciler<'a> {
                 {
                     tracing::warn!("failed to record journal failure: {je}");
                 }
-                (desc, false, false, Some(e.to_string()), !continue_on_err)
+                (
+                    desc,
+                    false,
+                    false,
+                    None,
+                    Some(e.to_string()),
+                    !continue_on_err,
+                )
             }
         };
 
@@ -1915,6 +1987,10 @@ impl<'a> super::Reconciler<'a> {
                 && !action_reports_its_own_status(action)
                 && settled_success_role(action, action_changed) == Role::Skipped,
             not_attempted,
+            // Only when the run landed FEWER than it named: the description
+            // beside it is the planned set, so an equal count restates it.
+            installed: installed
+                .filter(|_| installed_packages_summary(action, installed).is_some()),
         });
 
         if action_reports_its_own_status(action) {
@@ -1965,7 +2041,7 @@ impl<'a> super::Reconciler<'a> {
                         "unchanged".to_string()
                     })
                 } else {
-                    action_produced_detail(action)
+                    action_produced_detail(action, installed)
                 };
                 // Every action that DID something is timed, however briefly: a
                 // threshold makes the suffix's absence ambiguous between "fast"
@@ -2020,9 +2096,7 @@ impl<'a> super::Reconciler<'a> {
             Action::System(sys) => self
                 .apply_system_action(sys, &resolved.merged, module_actions, printer, notes)
                 .map(|d| ActionRun::new(d, true)),
-            Action::Package(pkg) => self
-                .apply_package_action(pkg, printer, notes)
-                .map(|(d, c)| ActionRun::new(d, c)),
+            Action::Package(pkg) => self.apply_package_action(pkg, printer, notes),
             Action::File(file) => self
                 .apply_file_action(file, resolved.profile_name(), config_dir, printer, sidecars)
                 .map(|d| ActionRun::new(d, true)),
@@ -2043,24 +2117,20 @@ impl<'a> super::Reconciler<'a> {
                     script_output: output,
                     ..ActionRun::new(d, c)
                 }),
-            Action::Module(module) => self
-                .apply_module_action(
-                    module,
-                    config_dir,
-                    printer,
-                    apply_id,
-                    context,
-                    resolved,
-                    module_actions,
-                    shell_override,
-                    abort,
-                    notes,
-                    sidecars,
-                )
-                .map(|(d, c)| ActionRun::new(d, c)),
-            Action::Manager(manager) => self
-                .apply_manager_action(manager, printer, notes)
-                .map(|(desc, changed)| ActionRun::new(desc, changed)),
+            Action::Module(module) => self.apply_module_action(
+                module,
+                config_dir,
+                printer,
+                apply_id,
+                context,
+                resolved,
+                module_actions,
+                shell_override,
+                abort,
+                notes,
+                sidecars,
+            ),
+            Action::Manager(manager) => self.apply_manager_action(manager, printer, notes),
             Action::Env(env) => Self::apply_env_action(env, printer, notes).map(|d| {
                 let changed = !env_result_unchanged(&d);
                 ActionRun::new(d, changed)

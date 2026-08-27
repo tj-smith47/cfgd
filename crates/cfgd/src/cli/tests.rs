@@ -16005,6 +16005,48 @@ fn every_produced_count_is_an_action_rows_detail() {
         "a count a step produces lives in its row's detail:\n{}",
         offenders.join("\n")
     );
+
+    // The catalogue half: every kind whose executed work can be NARROWER than
+    // the subject it named has an arm in `action_produced_detail`, and each
+    // states its shortfall the same way. A new such kind is added here beside
+    // the others, or its row goes on claiming work it did not do.
+    use cfgd_core::reconciler::{Action, ModuleAction, ModuleActionKind, action_produced_detail};
+    let deploy = Action::Module(ModuleAction {
+        module_name: "nvim".to_string(),
+        kind: ModuleActionKind::DeployFiles {
+            files: vec![cfgd_core::modules::ResolvedFile {
+                source: "init.lua".into(),
+                target: "~/.config/nvim/init.lua".into(),
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+                permissions: None,
+                patch: None,
+            }],
+            declared_total: 6,
+        },
+        origin: None,
+    });
+    let install = Action::Package(cfgd_core::providers::PackageAction::Install {
+        manager: "apt".to_string(),
+        packages: vec!["ripgrep".to_string(), "fd-find".to_string()],
+        origin: "local".to_string(),
+    });
+    assert_eq!(
+        action_produced_detail(&deploy, None).as_deref(),
+        Some("1 of 6 files"),
+        "a deploy states its shortfall from the action alone"
+    );
+    assert_eq!(
+        action_produced_detail(&install, Some(1)).as_deref(),
+        Some("1 of 2 packages"),
+        "an install states its shortfall from the count the executor re-read"
+    );
+    assert_eq!(
+        action_produced_detail(&install, None),
+        None,
+        "a preview has no executed count, so it qualifies nothing"
+    );
 }
 
 /// Whether `literal` ends on a parenthetical whose body is `{…} <noun>` or

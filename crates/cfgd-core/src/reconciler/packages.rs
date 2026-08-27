@@ -9,6 +9,7 @@ use crate::providers::{
     NoteSink, PackageAction, PackageContext, PackageManager, PackageStateStore, ProviderRegistry,
 };
 
+use super::apply::ActionRun;
 use super::scripts::{
     MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, build_module_script_env, execute_script,
     script_default_workdir,
@@ -407,10 +408,13 @@ impl<'x> PackageExec<'x> {
 
     /// Apply one profile-owned package action.
     ///
-    /// The `bool` is whether the action CHANGED anything: an install whose every
-    /// entry an earlier phase already landed ran and did nothing, which is a
-    /// skip rather than a success.
-    pub(super) fn apply_package_action(&self, action: &PackageAction) -> Result<(String, bool)> {
+    /// [`ActionRun::changed`] is whether the action CHANGED anything: an install
+    /// whose every entry an earlier phase already landed ran and did nothing,
+    /// which is a skip rather than a success. [`ActionRun::installed`] is HOW
+    /// MANY of the entries it named it had to land — the fact the executed row
+    /// states as `1 of 2 packages`, and the one thing about this action a
+    /// preview cannot know.
+    pub(super) fn apply_package_action(&self, action: &PackageAction) -> Result<ActionRun> {
         let cx = self.cx();
         match action {
             PackageAction::Install {
@@ -440,10 +444,11 @@ impl<'x> PackageExec<'x> {
                         // resources.
                         let identities: Vec<String> =
                             packages.iter().map(|p| pm.package_identity(p)).collect();
-                        return Ok((
+                        return Ok(ActionRun::new(
                             format!("package:{}:install:{}", manager, identities.join(",")),
                             changed,
-                        ));
+                        )
+                        .installed(pending.len()));
                     }
                 }
                 Err(self.package_manager_missing_error(manager))
@@ -461,7 +466,11 @@ impl<'x> PackageExec<'x> {
                         // uninstall has already deleted what it deleted.
                         crate::invalidate_command_resolution();
                         removed?;
-                        return Ok((
+                        // Every name it listed was handed to the manager: cfgd
+                        // narrows nothing on the way out, so the row's subject
+                        // and its work are the same set and there is no count
+                        // to qualify.
+                        return Ok(ActionRun::new(
                             format!("package:{}:uninstall:{}", manager, packages.join(",")),
                             true,
                         ));
@@ -471,7 +480,9 @@ impl<'x> PackageExec<'x> {
             }
             // A planned skip ran nothing by construction, so it neither counts
             // as a change nor triggers the onChange scripts a change gates.
-            PackageAction::Skip { manager, .. } => Ok((format!("package:{}:skip", manager), false)),
+            PackageAction::Skip { manager, .. } => {
+                Ok(ActionRun::new(format!("package:{}:skip", manager), false))
+            }
         }
     }
 
@@ -482,7 +493,7 @@ impl<'x> PackageExec<'x> {
     /// installed carries a fresh index. The description returned is the node's
     /// own id, so the journal row and the DAG edge naming it are the same
     /// string.
-    pub(super) fn apply_manager_action(&self, action: &ManagerAction) -> Result<(String, bool)> {
+    pub(super) fn apply_manager_action(&self, action: &ManagerAction) -> Result<ActionRun> {
         let cx = self.cx();
         // A provision's manager is by definition not available yet, so the
         // lookup spans every registered manager rather than the available ones.
@@ -615,16 +626,21 @@ impl<'x> PackageExec<'x> {
                 .into());
             }
         }
-        Ok((action.node_id(), changed))
+        Ok(ActionRun::new(action.node_id(), changed))
     }
 
     /// Apply one module-owned `InstallPackages` action.
+    ///
+    /// [`ActionRun::installed`] carries how many of the module's declared
+    /// entries this run had to land, which the re-read below can narrow below
+    /// what the subject names. A `prefer: [script]` install has no count: its
+    /// subject names one entry and the script's own guards decide.
     pub(super) fn install_module_packages(
         &self,
         action: &ModuleAction,
         pkgs: &[crate::modules::ResolvedPackage],
         mcx: &ModuleInstallContext<'_>,
-    ) -> Result<(String, bool)> {
+    ) -> Result<ActionRun> {
         // Packages in each InstallPackages action are already grouped by
         // manager in plan_modules(), so just collect names and install.
         let pkg_names: Vec<String> = pkgs.iter().map(|p| p.resolved_name.clone()).collect();
@@ -651,6 +667,10 @@ impl<'x> PackageExec<'x> {
         // below; an action left with nothing to install ran and changed
         // nothing, which is a skip.
         let mut manager_changed = false;
+        // `None` until a manager-backed install re-reads the machine: the
+        // script path narrows nothing, and neither does an action whose
+        // manager is not registered here.
+        let mut installed: Option<usize> = None;
 
         if let Some(first) = pkgs.first() {
             if first.manager == "script" {
@@ -763,6 +783,7 @@ impl<'x> PackageExec<'x> {
                             .collect(),
                         None => pkg_names.clone(),
                     };
+                    installed = Some(pending.len());
                     if !pending.is_empty() {
                         self.install_recording_created(pm.as_ref(), &pending, &cx)?;
                         manager_changed = true;
@@ -771,14 +792,18 @@ impl<'x> PackageExec<'x> {
             }
         }
 
-        Ok((
+        let run = ActionRun::new(
             format!(
                 "module:{}:packages:{}",
                 action.module_name,
                 pkg_names.join(",")
             ),
             script_changed || manager_changed,
-        ))
+        );
+        Ok(match installed {
+            Some(landed) => run.installed(landed),
+            None => run,
+        })
     }
 }
 
@@ -820,7 +845,7 @@ impl super::Reconciler<'_> {
         action: &PackageAction,
         printer: &Printer,
         notes: &NoteSink,
-    ) -> Result<(String, bool)> {
+    ) -> Result<ActionRun> {
         let exec = PackageExec::new(self.registry, self.state, printer, notes);
         let result = exec.apply_package_action(action);
         self.persist_bootstraps(exec.take_bootstrapped());
@@ -832,7 +857,7 @@ impl super::Reconciler<'_> {
         action: &ManagerAction,
         printer: &Printer,
         notes: &NoteSink,
-    ) -> Result<(String, bool)> {
+    ) -> Result<ActionRun> {
         let exec = PackageExec::new(self.registry, self.state, printer, notes);
         let result = exec.apply_manager_action(action);
         self.persist_bootstraps(exec.take_bootstrapped());

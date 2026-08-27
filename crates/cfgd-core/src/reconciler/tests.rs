@@ -636,6 +636,7 @@ fn apply_result_counts() {
                 changed: true,
                 skipped: false,
                 not_attempted: None,
+                installed: None,
             },
             ActionResult {
                 phase: "files".to_string(),
@@ -645,6 +646,7 @@ fn apply_result_counts() {
                 changed: false,
                 skipped: false,
                 not_attempted: None,
+                installed: None,
             },
         ],
         status: ApplyStatus::Partial,
@@ -7286,7 +7288,7 @@ fn format_module_action_item_deploy_truncates_many_files() {
         "the count is the row's detail, never the subject's trailer: {item}"
     );
     assert_eq!(
-        super::action_produced_detail(&Action::Module(action)).as_deref(),
+        super::action_produced_detail(&Action::Module(action), None).as_deref(),
         Some("5 files")
     );
 }
@@ -10384,6 +10386,200 @@ fn a_package_a_prerequisite_landed_is_not_installed_again_by_the_packages_phase(
             .any(|r| r.changed && r.description.starts_with("module:tools:")),
         "nothing marks the module changed, so its postApply hooks do not re-run"
     );
+}
+
+/// The RENDER half of the same finding: a row that installed fewer entries
+/// than it named says so.
+///
+/// `e916beb6` fixed the machine and left the report — the executed row still
+/// carried the PLANNED list, so a `✓` asserted an install of every package it
+/// named while the manager had only been asked for one of them. The subject
+/// stays the planned list on purpose (one string across the preview bullet,
+/// the alignment column and the executed row) and so does the recorded
+/// description, which is a wire contract; the shortfall belongs in the DETAIL,
+/// the slot `deploy …/init.lua — 1 of 6 files` already states its own in.
+#[test]
+fn an_install_that_landed_fewer_than_it_named_says_so_on_its_row() {
+    let installs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let provisioned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("sys")
+            .recording_installs(std::sync::Arc::clone(&installs))
+            .raising(std::sync::Arc::clone(&provisioned)),
+    ));
+    for mediated in ["npm", "pipx"] {
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new(mediated)
+                .mediated_by("sys", &[mediated])
+                .available_when(std::sync::Arc::clone(&provisioned)),
+        ));
+    }
+
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    // Two entries under the system manager: `npm` is the one the provision's
+    // own `sys install npm pipx` lands, `jq` is the one still to do.
+    let declared = |name: &str| ResolvedPackage {
+        canonical_name: name.to_string(),
+        resolved_name: name.to_string(),
+        manager: "sys".to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+        min_version: None,
+    };
+    let modules = vec![ResolvedModule {
+        name: "tools".to_string(),
+        packages: vec![declared("npm"), declared("jq")],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::profile("test"),
+                vec![Action::Manager(ManagerAction::Provision {
+                    manager: "npm".to_string(),
+                    via: "sys".to_string(),
+                    declared: None,
+                    batched: vec!["pipx".to_string()],
+                    depends_on: Vec::new(),
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Module(ModuleAction {
+                    module_name: "tools".to_string(),
+                    kind: ModuleActionKind::InstallPackages {
+                        resolved: vec![declared("npm"), declared("jq")],
+                    },
+                    origin: None,
+                })],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    // Normal verbosity: the row under test is a `Role::Ok`, which `Quiet`
+    // suppresses.
+    let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert_eq!(
+        installs.lock().unwrap().as_slice(),
+        [
+            vec!["npm".to_string(), "pipx".to_string()],
+            vec!["jq".to_string()]
+        ],
+        "the manager is asked only for the entry the provision did not land"
+    );
+
+    let rendered = crate::test_helpers::captured_text(&buf);
+    // The alignment column pads between the two halves, so the assertion reads
+    // the row rather than one substring of it.
+    let row = rendered
+        .lines()
+        .find(|l| l.contains("sys install"))
+        .unwrap_or_default();
+    assert!(
+        row.contains("✓ sys install npm, jq") && row.contains("— 1 of 2 packages"),
+        "the row names the planned set and states what it landed: {rendered}"
+    );
+
+    let packages = result
+        .action_results
+        .iter()
+        .find(|r| r.description.starts_with("module:tools:packages:"))
+        .expect("the module's package action settles a result");
+    assert_eq!(
+        packages.description, "module:tools:packages:npm,jq",
+        "the recorded description keeps the planned set — it is the wire contract"
+    );
+    assert_eq!(
+        packages.installed,
+        Some(1),
+        "`-o json` carries the landed count beside the planned set: {packages:?}"
+    );
+}
+
+/// A run that installs everything it named states no count: the subject
+/// already lists every entry, so a trailing `— 2 packages` could only restate
+/// the row. The deploy arm's own rule, at the threshold a package subject sits
+/// permanently below — it never elides.
+#[test]
+fn an_install_that_landed_everything_it_named_states_no_count() {
+    let action = Action::Module(ModuleAction {
+        module_name: "tools".to_string(),
+        kind: ModuleActionKind::InstallPackages {
+            resolved: vec![
+                ResolvedPackage {
+                    canonical_name: "jq".to_string(),
+                    resolved_name: "jq".to_string(),
+                    manager: "brew".to_string(),
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    min_version: None,
+                },
+                ResolvedPackage {
+                    canonical_name: "fd".to_string(),
+                    resolved_name: "fd".to_string(),
+                    manager: "brew".to_string(),
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    min_version: None,
+                },
+            ],
+        },
+        origin: None,
+    });
+    assert_eq!(super::action_produced_detail(&action, Some(2)), None);
+    assert_eq!(
+        super::action_produced_detail(&action, Some(1)).as_deref(),
+        Some("1 of 2 packages")
+    );
+    // A preview has not run, so it has no count of its own to state.
+    assert_eq!(super::action_produced_detail(&action, None), None);
 }
 
 /// A tool the module declares as a PACKAGE is provisioned by the module's own
@@ -13960,7 +14156,10 @@ fn format_module_action_item_deploy_many_files_truncates() {
         "two targets, and the count left to the detail, got: {}",
         items[0]
     );
-    let details: Vec<Option<String>> = phase.actions().map(super::action_produced_detail).collect();
+    let details: Vec<Option<String>> = phase
+        .actions()
+        .map(|a| super::action_produced_detail(a, None))
+        .collect();
     assert_eq!(details, vec![Some("5 files".to_string())]);
 }
 
@@ -14892,7 +15091,7 @@ fn run_brew_module_action(path_dirs: &[&str]) -> crate::state::StateStore {
     let (modules, action) = brew_install_fixture();
     let printer = test_printer();
 
-    let (desc, changed) = reconciler
+    let run = reconciler
         .apply_module_action(
             &action,
             Path::new("."),
@@ -14908,8 +15107,9 @@ fn run_brew_module_action(path_dirs: &[&str]) -> crate::state::StateStore {
         )
         .expect("module action must succeed");
     assert!(
-        changed,
-        "a manager-backed install counts as changed: {desc}"
+        run.changed,
+        "a manager-backed install counts as changed: {}",
+        run.description
     );
     state
 }
@@ -24210,7 +24410,7 @@ fn a_deployed_file_matching_its_source_is_elided_and_the_subset_names_itself() {
     );
     let details: Vec<String> = files_phase
         .actions()
-        .filter_map(super::action_produced_detail)
+        .filter_map(|a| super::action_produced_detail(a, None))
         .collect();
     assert_eq!(
         details,

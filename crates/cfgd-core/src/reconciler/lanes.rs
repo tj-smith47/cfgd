@@ -139,7 +139,7 @@ impl<'a, 'p, 'g> LaneCollector<'a, 'p, 'g> {
 /// One finished action, as the coordinator collected it.
 pub(super) struct LaneCollected {
     pub(super) journal_id: Option<i64>,
-    pub(super) result: Result<(String, bool)>,
+    pub(super) result: Result<super::apply::ActionRun>,
     pub(super) elapsed: Duration,
     pub(super) notes: Vec<ActionNote>,
     /// The lane's captured child output. Empty whenever a live window already
@@ -167,7 +167,7 @@ enum LaneMessage {
 
 struct LaneFinished {
     slot: usize,
-    result: Result<(String, bool)>,
+    result: Result<super::apply::ActionRun>,
     elapsed: Duration,
     notes: Vec<ActionNote>,
     body: Vec<String>,
@@ -1332,7 +1332,7 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
 
 /// What a worker hands back.
 struct LaneWorkerResult {
-    result: Result<(String, bool)>,
+    result: Result<super::apply::ActionRun>,
     elapsed: Duration,
     notes: Vec<ActionNote>,
     bootstrapped: Vec<super::packages::BootstrapRecord>,
@@ -1386,7 +1386,10 @@ fn run_one_action(
         // The dispatched set holds only package and manager work by
         // construction (`phase_for_module_kind` routes module work, and the
         // caller partitions the phase), so this arm exists for totality.
-        other => Ok((format_action_description(other), false)),
+        other => Ok(super::apply::ActionRun::new(
+            format_action_description(other),
+            false,
+        )),
     }));
     let result = match executed {
         Ok(result) => result,

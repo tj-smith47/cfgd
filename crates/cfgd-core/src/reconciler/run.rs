@@ -973,7 +973,7 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
                         .detail(reason);
                 } else if let Some(marker) = &subject.marker {
                     owner_section.bullet_marker(marker.clone(), subject.body.clone());
-                } else if let Some(detail) = super::action_produced_detail(action) {
+                } else if let Some(detail) = super::action_produced_detail(action, None) {
                     // The same detail the apply's row will carry: what the
                     // step produces is stated beside the subject, never
                     // baked into it.

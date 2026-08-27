@@ -88,6 +88,7 @@ fn action_result(success: bool) -> ActionResult {
         changed: true,
         skipped: false,
         not_attempted: None,
+        installed: None,
     }
 }
 
@@ -511,6 +512,7 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
         changed: false,
         skipped: false,
         not_attempted: Some(crate::NO_SESSION_MANAGER.to_string()),
+        installed: None,
     });
 
     let tally = result.tally();

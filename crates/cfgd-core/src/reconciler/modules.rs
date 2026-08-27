@@ -296,7 +296,7 @@ impl<'a> super::Reconciler<'a> {
         abort: &crate::AbortFlag,
         notes: &crate::providers::NoteSink,
         sidecars: &mut Vec<super::sidecar::SidecarOutcome>,
-    ) -> Result<(String, bool)> {
+    ) -> Result<super::apply::ActionRun> {
         // Find the resolved module to obtain its dir and declared env vars.
         let resolved_mod = module_actions.iter().find(|m| m.name == action.module_name);
         let module_dir = resolved_mod.map(|m| m.dir.clone());
@@ -468,7 +468,7 @@ impl<'a> super::Reconciler<'a> {
                     self.record_module_file(action, &target, strategy, apply_id)?;
                 }
 
-                Ok((
+                Ok(super::apply::ActionRun::new(
                     super::format::module_files_description(&action.module_name, *declared_total),
                     deployed_any,
                 ))
@@ -520,12 +520,18 @@ impl<'a> super::Reconciler<'a> {
                     },
                 )?;
 
-                Ok((format!("module:{}:script", action.module_name), changed))
+                Ok(super::apply::ActionRun::new(
+                    format!("module:{}:script", action.module_name),
+                    changed,
+                ))
             }
             ModuleActionKind::Skip { reason: _ } => {
                 // A planned skip did nothing this run, so it must not count as
                 // changed and must not fire the module's onChange hooks.
-                Ok((format!("module:{}:skip", action.module_name), false))
+                Ok(super::apply::ActionRun::new(
+                    format!("module:{}:skip", action.module_name),
+                    false,
+                ))
             }
         }
     }
