@@ -934,7 +934,10 @@ impl<'a> super::Reconciler<'a> {
                 packages.retain(|pkg| Self::package_survives_elision(mgr, &installed, pkg));
             }
             Err(e) => {
-                tracing::warn!(
+                // The apply-side twin's reasoning, on the plan side: a warn
+                // here lands at column 0 inside `cfgd plan`'s own tree and
+                // restates the row the planner is composing.
+                tracing::debug!(
                     manager = mgr.name(),
                     error = %e,
                     "cannot read installed packages; planning the module's declared set in full"

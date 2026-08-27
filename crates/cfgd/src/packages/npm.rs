@@ -165,6 +165,7 @@ fn persisted_npm_prefix_decision_with(
         Ok(Some(record)) => record,
         Ok(None) => return None,
         Err(e) => {
+            // tracing-ok: a state read that degrades to re-resolving; no row states it
             tracing::warn!(error = %e, "cannot read persisted npm prefix");
             return None;
         }
@@ -209,6 +210,7 @@ fn persist_npm_prefix_decision(state: &dyn PackageStateStore, decision: &NpmPref
         &cfgd_core::to_posix_fs_key(prefix),
         decision.is_fallback,
     ) {
+        // tracing-ok: the write half of the same cache
         tracing::warn!(error = %e, "cannot persist resolved npm prefix");
     }
 }
@@ -538,6 +540,7 @@ pub(super) fn npm_path_dirs_for(elevated: bool) -> Vec<String> {
         }) => vec![cfgd_core::to_posix_string(npm_bin_dir(&prefix))],
         Ok(NpmPrefixDecision { prefix: None, .. }) => Vec::new(),
         Err(e) => {
+            // tracing-ok: the PATH contribution degrades to empty; the writable-prefix caveat is a different fact and is reported
             tracing::warn!(error = %e, "cannot resolve npm's global prefix for PATH");
             Vec::new()
         }
@@ -551,6 +554,7 @@ fn npm_prefix_for_path(state: &dyn PackageStateStore) -> Option<NpmPrefixDecisio
     match resolve_npm_prefix(state) {
         Ok(decision) => Some(decision),
         Err(e) => {
+            // tracing-ok: the PATH contribution degrades to empty; the writable-prefix caveat is a different fact and is reported
             tracing::warn!(error = %e, "cannot resolve npm's global prefix for PATH");
             None
         }

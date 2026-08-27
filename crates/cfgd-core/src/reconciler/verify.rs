@@ -24,6 +24,7 @@ pub(super) fn record_drift_or_warn(
     source: &str,
 ) {
     if let Err(e) = state.record_drift(resource_type, resource_id, expected, actual, source) {
+        // tracing-ok: the drift ROW could not be stored; the finding itself is reported by the caller that found it
         tracing::warn!(
             error = %e,
             resource_type = %resource_type,

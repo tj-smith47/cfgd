@@ -42,6 +42,7 @@ fn info_bin_env(manager: &str) -> &'static str {
                 false,
                 "query_version_info called with unknown manager {other:?}; CFGD_*_BIN seam silently bypassed"
             );
+            // tracing-ok: an internal seam gap beside its own debug_assert; nothing user-facing
             tracing::warn!(
                 manager = other,
                 "query_version_info: no CFGD_*_BIN seam registered; falling through to PATH"

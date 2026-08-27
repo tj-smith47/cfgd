@@ -47,6 +47,7 @@ pub(super) fn generate_env_file_content(
     }
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
+            // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
             continue;
         }
@@ -63,6 +64,7 @@ pub(super) fn generate_env_file_content(
     }
     for alias in aliases {
         if crate::validate_alias_name(&alias.name).is_err() {
+            // tracing-ok: an alias the user declared under a name no shell can carry; same omission
             tracing::warn!("skipping alias with unsafe name: {}", alias.name);
             continue;
         }
@@ -102,6 +104,7 @@ pub(super) fn generate_fish_env_content(
     }
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
+            // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
             continue;
         }
@@ -124,6 +127,7 @@ pub(super) fn generate_fish_env_content(
     }
     for alias in aliases {
         if crate::validate_alias_name(&alias.name).is_err() {
+            // tracing-ok: an alias the user declared under a name no shell can carry; same omission
             tracing::warn!("skipping alias with unsafe name: {}", alias.name);
             continue;
         }
@@ -159,6 +163,7 @@ pub(super) fn generate_powershell_env_content(
     }
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
+            // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
             continue;
         }
@@ -190,6 +195,7 @@ pub(super) fn generate_powershell_env_content(
     }
     for alias in aliases {
         if crate::validate_alias_name(&alias.name).is_err() {
+            // tracing-ok: an alias the user declared under a name no shell can carry; same omission
             tracing::warn!("skipping alias with unsafe name: {}", alias.name);
             continue;
         }
@@ -391,6 +397,7 @@ pub(super) fn read_managed_baseline(path: &std::path::Path) -> Option<String> {
         Ok(bytes) => match String::from_utf8(bytes) {
             Ok(text) => Some(text),
             Err(_) => {
+                // tracing-ok: the file cfgd itself wrote is damaged; the regeneration below is the recovery and prints nothing
                 tracing::warn!(
                     path = %path.posix(),
                     "cfgd-generated env file is not valid UTF-8; regenerating it",
@@ -400,6 +407,7 @@ pub(super) fn read_managed_baseline(path: &std::path::Path) -> Option<String> {
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
+            // tracing-ok: same, for an unreadable baseline
             tracing::warn!(
                 path = %path.posix(),
                 error = %e,

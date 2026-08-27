@@ -73,6 +73,7 @@ pub(super) fn recorded_managed_env_files(state: &StateStore) -> Vec<String> {
             .map(|r| r.resource_id)
             .collect(),
         Err(e) => {
+            // tracing-ok: a state read that degrades to an empty set; nothing printed asks about it
             tracing::warn!("cannot read managed env resources: {e}");
             Vec::new()
         }
@@ -105,6 +106,7 @@ fn collect_recorded_path_dirs(
         // Losing the records degrades to the pre-bootstrap state (no PATH entry)
         // rather than failing the plan outright.
         Err(e) => {
+            // tracing-ok: same, degrading to the pre-bootstrap PATH
             tracing::warn!("cannot read bootstrapped PATH directories: {e}");
             return Vec::new();
         }

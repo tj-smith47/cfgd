@@ -17089,6 +17089,75 @@ fn core_production_sources() -> Vec<(std::path::PathBuf, String)> {
         .collect()
 }
 
+/// A `tracing` event never restates a `Printer` line, and on the apply path the
+/// cost of one that does is not merely a duplicate: at the default `warn`
+/// filter the event lands at column 0 in the middle of the phase tree, wearing
+/// a wall-clock stamp, a level word and `key="value"` grammar, and it wraps
+/// mid-word because nothing indents it. One did — its `error =` payload was
+/// byte-for-byte the row two lines below it — and it sat in the scrollback for
+/// the last two minutes of a recorded run.
+///
+/// `audit.sh` gates `tracing::info!` only, so this is the same `// tracing-ok:`
+/// hatch applied to the two levels that DO reach a user: every `warn!` /
+/// `error!` under the reconciler and the package managers states its reason for
+/// existing beside the printed report, or is demoted to `debug!`.
+#[test]
+fn no_apply_path_warn_restates_a_printer_line() {
+    let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut package_files = walk_rust_files(&packages_dir);
+    package_files.sort();
+    let sources: Vec<(std::path::PathBuf, String)> = core_production_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            let p = path.to_string_lossy().replace('\\', "/");
+            p.contains("/reconciler/")
+        })
+        .chain(
+            package_files
+                .into_iter()
+                .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+                .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+                .filter_map(|path| {
+                    let body = std::fs::read_to_string(&path).ok()?;
+                    Some((path, production_body(&body)))
+                }),
+        )
+        .collect();
+    assert!(
+        sources.len() >= 20,
+        "the walk found almost nothing, so it is passing vacuously: {}",
+        sources.len()
+    );
+    let mut offenders: Vec<String> = Vec::new();
+    let mut scanned = 0usize;
+    for (path, production) in sources {
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if !(code.starts_with("tracing::warn!") || code.starts_with("tracing::error!")) {
+                continue;
+            }
+            scanned += 1;
+            let marked = n > 0 && lines[n - 1].trim_start().starts_with("// tracing-ok:");
+            if !marked {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+            }
+        }
+    }
+    assert!(
+        scanned >= 25,
+        "the population shrank to {scanned} events, so a green run no longer \
+         proves anything — re-check the walk before lowering this floor"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a `warn!`/`error!` on the apply path reaches the user at the default \
+         filter, unindented and outside the report — demote it to `debug!` or \
+         say why it is not a restatement with `// tracing-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// A yes/no fact renders through `cfgd_core::yes_no`, which is what keeps `-`
 /// meaning exactly one thing: NOT KNOWN. The inline ternary this forbids is how
 /// `Active` came to spell a false as `-`, making an answered question look the

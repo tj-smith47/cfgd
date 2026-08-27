@@ -444,7 +444,13 @@ impl<'x> PackageExec<'x> {
         match cx.installed_for(pm) {
             Ok(installed) => Some(installed),
             Err(e) => {
-                tracing::warn!(
+                // debug!, not warn!: at the default filter a warn lands at
+                // column 0 in the middle of the phase tree, wearing a wall
+                // clock and `key="value"` grammar, and its `error =` payload is
+                // byte-for-byte the row this action is about to settle with.
+                // The row names the manager too, so the only field left here
+                // that the report does not already carry is the level.
+                tracing::debug!(
                     manager = pm.name(),
                     error = %e,
                     "cannot re-read installed packages; installing the planned set in full"
@@ -939,6 +945,7 @@ impl super::Reconciler<'_> {
                     .add_bootstrapped_path_dirs(&record.manager, &record.dirs),
             };
             if let Err(e) = written {
+                // tracing-ok: a state write nothing printed; the bootstrap itself already settled its own row
                 tracing::warn!(
                     "cannot record PATH directories for bootstrapped {}: {e}",
                     record.manager

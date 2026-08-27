@@ -869,6 +869,7 @@ pub(super) fn generate_environment_d_content(env: &[EnvVar]) -> String {
     let mut lines = vec![ENV_FILE_HEADER.to_string()];
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
+            // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
             continue;
         }
