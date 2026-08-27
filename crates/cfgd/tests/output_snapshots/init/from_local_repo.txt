@@ -2,7 +2,7 @@ Initialize cfgd
   ◐ Cloning <SOURCE_DIR>
     Cloning into '<TARGET_DIR>'...
     done.
-  ✓ Cloned to <TARGET_DIR>
+  ✓ Cloned <SOURCE_DIR> into <TARGET_DIR> — a3ede269a02d
 
 Next Steps
   cfgd module create <name>  — create a module

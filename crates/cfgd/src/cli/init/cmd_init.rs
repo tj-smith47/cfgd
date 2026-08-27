@@ -95,10 +95,14 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // When --from is used, resolve_from handles the "already initialized" case
     // and the clone creates cfgd.yaml — skip this check so we reach the apply step
     if target_dir.join(cfgd_core::config::CONFIG_FILENAME).exists() && !from_used {
-        printer.status_simple(
+        let mut row = printer.status(
             Role::Info,
             format!("Already initialized at {}", target_dir.posix()),
         );
+        if let Some(detail) = super::source::checkout_detail(&target_dir) {
+            row = row.detail(detail);
+        }
+        drop(row);
         let output = InitOutput {
             target_dir: target_dir.display().to_string(),
         };

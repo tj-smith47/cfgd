@@ -824,8 +824,14 @@ fn clone_into_skips_if_already_cloned() {
     drop(printer);
     let output = cap.human();
     assert!(
-        output.contains("already exists"),
-        "should report repo already exists, got: {output}"
+        output.contains("Skipped clone into"),
+        "should report the clone was skipped, got: {output}"
+    );
+    // A bare `.git` directory is no repository, so neither fact can be read and
+    // the row says only what it knows — it never invents the requested URL.
+    assert!(
+        !output.contains("https://example.com/nonexistent"),
+        "the skip arm must not echo the URL it did not clone, got: {output}"
     );
 }
 
@@ -2221,8 +2227,81 @@ fn clone_into_skips_existing_git_dir() {
     drop(printer);
     let output = cap.human();
     assert!(
-        output.contains("already exists"),
-        "should report repo already exists, got: {output}"
+        output.contains("Skipped clone into"),
+        "should report the clone was skipped, got: {output}"
+    );
+}
+
+/// The surface that MINTS the checkout every later surface reports on names
+/// which origin it is, and at which revision — on the arm that creates it AND
+/// on the arms that find one already there. `Cloned to <dir>` named only the
+/// directory cfgd itself had chosen, so the one row about where the machine's
+/// config comes from carried no fact the reader could not have predicted; and
+/// its sibling `Repository already exists at <dir>, skipping clone` reported on
+/// a directory that may hold an entirely different remote without ever saying
+/// which.
+#[test]
+fn every_checkout_creating_verb_names_its_source_and_revision() {
+    let dir = tempfile::tempdir().unwrap();
+    let origin = dir.path().join("origin");
+    let repo = git2::Repository::init(&origin).unwrap();
+    std::fs::write(
+        origin.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1
+",
+    )
+    .unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
+    index.write().unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let sig = git2::Signature::now("t", "t@example.com").unwrap();
+    let head = repo
+        .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+        .unwrap()
+        .to_string();
+    let short = cfgd_core::short_commit(&head).to_string();
+    let url = origin.display().to_string();
+
+    let target = dir.path().join("clone");
+    let (printer, cap) = Printer::for_test_doc();
+    clone_into(&target, &url, "master", &printer).unwrap();
+    drop(printer);
+    let created = cap.human();
+    assert!(
+        created.contains(&url) && created.contains(&short),
+        "the creating row names its origin and its revision, got: {created}"
+    );
+
+    // The same checkout, found rather than made: the facts come off the
+    // repository that is really there, not off the argument.
+    let (printer, cap) = Printer::for_test_doc();
+    clone_into(
+        &target,
+        "https://example.com/some-other-repo.git",
+        "master",
+        &printer,
+    )
+    .unwrap();
+    drop(printer);
+    let found = cap.human();
+    assert!(
+        found.contains(&url) && found.contains(&short),
+        "the found row names the checkout's own origin and revision, got: {found}"
+    );
+    assert!(
+        !found.contains("some-other-repo"),
+        "the found row must not echo the URL it did not clone, got: {found}"
+    );
+
+    // And the third arm, which declines even to look at `--from`.
+    let (printer, cap) = Printer::for_test_doc();
+    super::source::resolve_from(&url, Some(&target), "master", &printer).unwrap();
+    drop(printer);
+    let initialized = cap.human();
+    assert!(
+        initialized.contains("Already initialized at") && initialized.contains(&short),
+        "an already-initialized directory names the revision it holds, got: {initialized}"
     );
 }
 

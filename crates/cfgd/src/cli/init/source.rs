@@ -49,10 +49,14 @@ pub(crate) fn resolve_from(
             std::fs::create_dir_all(&dest)?;
             clone_into(&dest, from, branch, printer)?;
         } else {
-            printer.status_simple(
+            let mut row = printer.status(
                 Role::Info,
                 format!("Already initialized at {}", dest.posix()),
             );
+            if let Some(detail) = checkout_detail(&dest) {
+                row = row.detail(detail);
+            }
+            drop(row);
         }
         Ok(dest)
     } else {
@@ -67,6 +71,50 @@ pub(crate) fn resolve_from(
     }
 }
 
+/// The origin URL and HEAD commit a checkout is really at.
+///
+/// Read off the repository rather than taken from the caller's argument: the
+/// rows below report on a directory somebody else may have populated, and
+/// echoing the requested URL there would state as fact the one thing those rows
+/// cannot know. Either half answers `None` when it cannot be read.
+fn checkout_facts(dir: &Path) -> (Option<String>, Option<String>) {
+    let Ok(repo) = git2::Repository::open(dir) else {
+        return (None, None);
+    };
+    let origin = repo
+        .find_remote("origin")
+        .ok()
+        .and_then(|remote| remote.url().ok().map(str::to_string));
+    let commit = repo
+        .head()
+        .ok()
+        .and_then(|head| head.peel_to_commit().ok())
+        .map(|commit| commit.id().to_string())
+        .map(|id| cfgd_core::short_commit(&id).to_string());
+    (origin, commit)
+}
+
+/// The detail slot of any row naming a config directory `init` did not create
+/// on this run: which origin, at which revision.
+///
+/// `init` is the surface that MINTS the checkout every later surface reports
+/// on, and it is the only one that runs before there is any state to read the
+/// answer back out of. A row naming only the directory cfgd picked tells the
+/// reader where the files went and nothing about which repository, or which
+/// revision of it, the machine is about to reconcile from — and on the
+/// already-populated arms that directory may hold a different remote entirely.
+///
+/// `None` for a directory that is no checkout at all (a scaffolded config), so
+/// a row about one renders exactly as it always has.
+pub(super) fn checkout_detail(dir: &Path) -> Option<String> {
+    match checkout_facts(dir) {
+        (Some(url), Some(commit)) => Some(format!("{url} at {commit}")),
+        (Some(url), None) => Some(url),
+        (None, Some(commit)) => Some(format!("at {commit}")),
+        (None, None) => None,
+    }
+}
+
 /// Clone a remote repo into the target directory.
 pub(super) fn clone_into(
     target_dir: &Path,
@@ -74,23 +122,30 @@ pub(super) fn clone_into(
     branch: &str,
     printer: &Printer,
 ) -> anyhow::Result<()> {
-    // If target already has .git, it's already cloned — nothing to do. Named
-    // here because this is the one row the clone path prints about it.
+    // Named here because this is the one row the clone path prints about it.
     if target_dir.join(".git").exists() {
-        printer.status_simple(
+        let mut row = printer.status(
             Role::Info,
-            format!(
-                "Repository already exists at {}, skipping clone",
-                target_dir.posix()
-            ),
+            format!("Skipped clone into {}", target_dir.posix()),
         );
+        if let Some(detail) = checkout_detail(target_dir) {
+            row = row.detail(detail);
+        }
+        drop(row);
         return Ok(());
     }
 
     cfgd_core::sources::git_clone_with_fallback(url, target_dir, printer)
         .map_err(|e| anyhow::anyhow!("Clone failed: {}", e))?;
 
-    printer.status_simple(Role::Ok, format!("Cloned to {}", target_dir.posix()));
+    let mut row = printer.status(
+        Role::Ok,
+        format!("Cloned {url} into {}", target_dir.posix()),
+    );
+    if let Some(commit) = checkout_facts(target_dir).1 {
+        row = row.detail(commit);
+    }
+    drop(row);
 
     // Checkout the requested branch if HEAD isn't already on it.
     // git clone checks out the remote's default branch; if the user asked for
