@@ -8,12 +8,12 @@ Docs        docs/spec/profile.md#fields
 
 Fields (under spec)
   aliases   <[]ShellAlias>
-    command    <string> (required)
-    name       <string> (required)
+    command    <string>   (required)
+    name       <string>   (required)
     platforms  <[]string>
   backups   <[]BackupSpec>
     destination  <string>
-    name         <string> (required)
+    name         <string>        (required)
     namePattern  <string>
     postBackup   <[]ScriptEntry>
       string  <string>
@@ -23,7 +23,7 @@ Fields (under spec)
         idleTimeout      <string>
         interactive      <boolean>
         onlyIf           <string>
-        run              <string> (required)
+        run              <string>      (required)
         shell            <ScriptShell>
           enum: sh, bash, zsh, pwsh, cmd, auto
         timeout          <string>
@@ -37,7 +37,7 @@ Fields (under spec)
         idleTimeout      <string>
         interactive      <boolean>
         onlyIf           <string>
-        run              <string> (required)
+        run              <string>      (required)
         shell            <ScriptShell>
           enum: sh, bash, zsh, pwsh, cmd, auto
         timeout          <string>
@@ -45,17 +45,17 @@ Fields (under spec)
         workdir          <string>
     retention    <integer>
     schedule     <string>
-    source       <string> (required)
+    source       <string>        (required)
   env       <[]EnvVar>
-    name       <string> (required)
+    name       <string>   (required)
     platforms  <[]string>
-    value      <string> (required)
+    value      <string>   (required)
   envScope  <EnvScope>
     enum: All, Login, Interactive
   files     <FilesSpec>
     managed      <[]ManagedFileSpec>
       encryption   <EncryptionSpec>
-        backend  <string> (required)
+        backend  <string>         (required)
         mode     <EncryptionMode>
           enum: InRepo, Always
       patch        <PatchSpec>
@@ -68,7 +68,7 @@ Fields (under spec)
       source       <string>
       strategy     <FileStrategy>
         enum: Symlink, Copy, Template, Hardlink, Patch
-      target       <string> (required)
+      target       <string>         (required)
     permissions  <object>
   inherits  <[]string>
   modules   <[]string>
@@ -87,12 +87,12 @@ Fields (under spec)
       packages  <[]string>
     chocolatey  <[]string>
     custom      <[]CustomManagerSpec>
-      check          <string> (required)
-      install        <string> (required)
-      listInstalled  <string> (required)
-      name           <string> (required)
+      check          <string>   (required)
+      install        <string>   (required)
+      listInstalled  <string>   (required)
+      name           <string>   (required)
       packages       <[]string>
-      uninstall      <string> (required)
+      uninstall      <string>   (required)
       update         <string>
     dnf         <[]string>
     flatpak     <FlatpakSpec>
@@ -122,7 +122,7 @@ Fields (under spec)
         idleTimeout      <string>
         interactive      <boolean>
         onlyIf           <string>
-        run              <string> (required)
+        run              <string>      (required)
         shell            <ScriptShell>
           enum: sh, bash, zsh, pwsh, cmd, auto
         timeout          <string>
@@ -136,7 +136,7 @@ Fields (under spec)
         idleTimeout      <string>
         interactive      <boolean>
         onlyIf           <string>
-        run              <string> (required)
+        run              <string>      (required)
         shell            <ScriptShell>
           enum: sh, bash, zsh, pwsh, cmd, auto
         timeout          <string>
@@ -150,7 +150,7 @@ Fields (under spec)
         idleTimeout      <string>
         interactive      <boolean>
         onlyIf           <string>
-        run              <string> (required)
+        run              <string>      (required)
         shell            <ScriptShell>
           enum: sh, bash, zsh, pwsh, cmd, auto
         timeout          <string>
@@ -164,7 +164,7 @@ Fields (under spec)
         idleTimeout      <string>
         interactive      <boolean>
         onlyIf           <string>
-        run              <string> (required)
+        run              <string>      (required)
         shell            <ScriptShell>
           enum: sh, bash, zsh, pwsh, cmd, auto
         timeout          <string>
@@ -178,7 +178,7 @@ Fields (under spec)
         idleTimeout      <string>
         interactive      <boolean>
         onlyIf           <string>
-        run              <string> (required)
+        run              <string>      (required)
         shell            <ScriptShell>
           enum: sh, bash, zsh, pwsh, cmd, auto
         timeout          <string>
@@ -192,7 +192,7 @@ Fields (under spec)
         idleTimeout      <string>
         interactive      <boolean>
         onlyIf           <string>
-        run              <string> (required)
+        run              <string>      (required)
         shell            <ScriptShell>
           enum: sh, bash, zsh, pwsh, cmd, auto
         timeout          <string>
@@ -201,7 +201,7 @@ Fields (under spec)
   secrets   <[]SecretSpec>
     backend   <string>
     envs      <[]string>
-    source    <string> (required)
+    source    <string>   (required)
     target    <string>
     template  <string>
   system    <object>
