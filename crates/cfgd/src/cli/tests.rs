@@ -28557,6 +28557,90 @@ fn walk_rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     out
 }
 
+/// A package-manager install verb is a fact the FAMILY owns. `cfgd module
+/// export` wrote its own `apt-get install -y --no-install-recommends` while the
+/// apply path ran apt's declared `install_cmd` (`apt-get install -y`), so one
+/// `module.yaml` resolved two different package sets depending on which of
+/// cfgd's own commands you asked — the export's whole job being to reproduce
+/// what the apply produces.
+///
+/// The walk lives here rather than beside the managers because this is where
+/// the source-walking pins and their file walker already are; the population it
+/// covers is the binary crate's whole `src/`.
+#[test]
+fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() {
+    // The install verbs of every `SimpleManager` family, as a literal would
+    // spell one. `pacman -S` and `apk add` carry no `install` word at all,
+    // which is why this is a table rather than a search for "install".
+    const INSTALL_VERBS: &[&str] = &[
+        "apt-get install",
+        "apt install",
+        "dnf install",
+        "yum install",
+        "zypper install",
+        "pacman -S",
+        "apk add",
+        "pkg install",
+    ];
+    // The ONE file allowed to spell them: the constructor table they are the
+    // declaration of. Everything else composes, or hatches with a reason.
+    const MARKER: &str = "install-verb-ok:";
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let declaration = src.join("packages").join("simple").join("mod.rs");
+
+    let mut files = walk_rust_files(&src);
+    files.sort();
+    let mut offenders = Vec::new();
+    for path in files {
+        if path == declaration || path.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            // An install verb aimed at a HUMAN — advice for a tool cfgd cannot
+            // install for them — is not an install cfgd emits, and says so.
+            let hatched = line.contains(MARKER)
+                || n.checked_sub(1)
+                    .and_then(|prev| lines.get(prev))
+                    .is_some_and(|prev| {
+                        prev.trim_start().starts_with("//") && prev.contains(MARKER)
+                    });
+            if hatched {
+                continue;
+            }
+            for verb in INSTALL_VERBS {
+                if line.contains(verb) {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "an install verb belongs to its manager family, not to a call site — \
+         compose through `packages::manager_install_script`:\n{}",
+        offenders.join("\n")
+    );
+
+    // Anti-vacuity, and the contract the export reads: the composed script IS
+    // the family's declared commands, sudo stripped for a container build.
+    let script = crate::packages::manager_install_script("apt", &["curl".to_string()])
+        .expect("apt is a data-driven family");
+    assert_eq!(script.update.as_deref(), Some("apt-get update"));
+    assert_eq!(script.install, "apt-get install -y curl");
+    assert!(
+        crate::packages::manager_install_script("brew", &[]).is_none(),
+        "only the data-driven system families answer here"
+    );
+}
+
 /// A command renders its output under ONE section, named for the command, and
 /// never a second section named for the verb its own title already spent.
 ///

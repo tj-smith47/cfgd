@@ -584,6 +584,35 @@ pub fn remove_package(
     Ok(removed)
 }
 
+/// How a `SimpleManager` family installs a package list, for a surface that
+/// EMITS the commands rather than running them.
+///
+/// `cfgd module export` wrote its own `apt-get install -y --no-install-recommends`
+/// while the apply path ran the family's `install_cmd` (`apt-get install -y`), so
+/// one `module.yaml` resolved two different package sets depending on which of
+/// cfgd's own commands you asked. The family owns HOW it installs; a surface that
+/// emits an install composes from here, and a hand-written install verb in a
+/// `format!` is the bug this exists to make unwritable.
+///
+/// `sudo` is stripped (`SimpleManager::display_cmd`): the consumers are container
+/// build scripts, which already run as root.
+pub struct ManagerInstallScript {
+    /// The index refresh the family declares, if it has one.
+    pub update: Option<String>,
+    /// The install itself, with `packages` appended.
+    pub install: String,
+}
+
+/// [`ManagerInstallScript`] for a family name, or `None` for a manager that is
+/// not one of the data-driven system families.
+pub fn manager_install_script(manager: &str, packages: &[String]) -> Option<ManagerInstallScript> {
+    let mgr = simple::simple_manager(manager)?;
+    Some(ManagerInstallScript {
+        update: mgr.update_cmd.map(|cmd| mgr.display_cmd(cmd, &[])),
+        install: mgr.display_cmd(mgr.install_cmd, packages),
+    })
+}
+
 /// Build the default provider registry with all workstation package managers.
 pub fn all_package_managers() -> Vec<Box<dyn PackageManager>> {
     vec![
