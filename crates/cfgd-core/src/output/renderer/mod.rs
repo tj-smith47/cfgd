@@ -1050,17 +1050,28 @@ impl Renderer {
             return;
         }
         let subject = finalize_subject(&self.theme, text, marker, None, None);
-        // The dash is structure, the text is content: muting it gives a run of
-        // bullets a scan column instead of leaving every character on the
-        // line at the terminal's default with nothing to read against. A
-        // detail joins after the same em-dash a status row's does, muted the
-        // way a produced count is on the apply tree.
-        let mut body = format!("{}{}", self.theme.muted.apply_to("- "), subject);
-        if let Some(detail) = detail {
-            body.push_str(" — ");
-            body.push_str(&self.theme.muted.apply_to(cursor_safe(detail)).to_string());
-        }
+        let detail = detail.map(|d| self.theme.muted.apply_to(cursor_safe(d)).to_string());
         self.emit_with(w, |e| {
+            // The dash is structure, the text is content: muting it gives a run
+            // of bullets a scan column instead of leaving every character on
+            // the line at the terminal's default with nothing to read against.
+            // A detail joins after the same em-dash a status row's does, muted
+            // the way a produced count is on the apply tree — and, like a status
+            // row's, padded to the column the report claimed, so a bullet's dash
+            // and a status row's land at one x position.
+            let padded = detail
+                .as_ref()
+                .and_then(|_| e.bullet_column(depth))
+                .and_then(|column| status::pad_subject(&subject, column, true));
+            let mut body = format!(
+                "{}{}",
+                e.theme.muted.apply_to("- "),
+                padded.as_deref().unwrap_or(&subject)
+            );
+            if let Some(detail) = &detail {
+                body.push_str(" — ");
+                body.push_str(detail);
+            }
             e.flush_section_headers();
             e.open_top_group(TopGroup::Bullet);
             e.push_line(depth, &body);

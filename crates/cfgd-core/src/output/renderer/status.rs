@@ -293,6 +293,28 @@ pub(crate) fn live_group_column(wrap_cols: Option<usize>, depth: usize, column: 
 }
 
 impl Emitting<'_> {
+    /// The column a BULLET's trailing detail pads its subject to — the same
+    /// answer [`Self::route_status`] gets for a status row at this depth, so
+    /// the two row shapes of one tree land their em-dashes at one x position.
+    ///
+    /// `render_plan_tree` claims a report column and then renders its
+    /// produced-detail rows as bullets; before this, `render_bullet` glued the
+    /// detail straight onto the subject and ignored the claim, so a preview's
+    /// `write ~/.cfgd.env — 3 vars` sat at one column and the pre-skipped row
+    /// one owner group below it at another, and neither matched the apply's.
+    /// `None` outside any aligned group, or where the group cannot afford the
+    /// column — the same three answers a status row gets.
+    pub(crate) fn bullet_column(&self, depth: usize) -> Option<usize> {
+        let top = self.state.section_stack.last()?;
+        if depth <= top.header_depth {
+            return None;
+        }
+        // `- ` is exactly as wide as a glyph and its space, so a bullet's
+        // allowance is the status row's.
+        let column = live_group_column(self.wrap_cols, depth, top.live_column?);
+        (column > 0).then_some(column)
+    }
+
     /// Route one status emission: into the innermost open section's
     /// pending-statuses buffer (so subjects can be right-padded to a common
     /// column once the set is known), out now against a pre-computed live

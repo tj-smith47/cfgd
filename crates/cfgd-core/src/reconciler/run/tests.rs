@@ -891,6 +891,86 @@ fn report_align_width_spans_every_phase() {
     );
 }
 
+/// `render_plan_tree` claims the report column and then renders a produced
+/// count as a BULLET's trailing detail, so the bullet has to pad to the same
+/// column a status row does — otherwise a report whose two row shapes are
+/// interleaved puts its em-dashes in two places, and neither matches the apply
+/// that settles the same actions a beat later.
+#[test]
+fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
+    let write_env = Action::Env(super::super::types::EnvAction::WriteEnvFile {
+        path: PathBuf::from("/home/u/.cfgd.env"),
+        content: String::new(),
+        vars: 3,
+        aliases: 3,
+    });
+    let subject = action_display_subject(&write_env).body.clone();
+    let detail = super::super::action_produced_detail(&write_env, None)
+        .expect("a write of 3 vars and 3 aliases states what it produced");
+    // A far longer sibling in the SAME report, so the column the short row
+    // pads to is one its own width would never have produced.
+    let plan = plan_of(vec![phase(
+        PhaseName::Prerequisites,
+        vec![
+            write_env,
+            install(
+                "apt",
+                &["a-very-long-package-name-indeed", "and-another-one"],
+            ),
+        ],
+    )]);
+    let width = report_align_width(&plan, None);
+
+    let dash_column = |render: &dyn Fn(&Printer)| -> usize {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        render(&printer);
+        drop(printer);
+        let out = crate::test_helpers::captured_text(&buf);
+        let line = out
+            .lines()
+            .find(|l| l.contains(&subject) && l.contains(" — "))
+            .unwrap_or_else(|| panic!("no detail-bearing row for {subject:?} in:\n{out}"))
+            .to_string();
+        crate::output::measure_width(
+            line.split_once(" — ")
+                .unwrap_or_else(|| panic!("row carries the detail separator: {line:?}"))
+                .0,
+        )
+    };
+
+    let previewed = dash_column(&|printer| render_plan_tree(&plan, None, printer));
+    // The apply's arm: the same action, settled through the writer every
+    // executed line commits, under a report that claimed the same column.
+    let settled = dash_column(&|printer| {
+        let _column = printer.report_column(width);
+        let phase_section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let owner = phase_section.section_owner(&OwnerLabel::new("cfgd", "env"));
+        owner.live_column(width);
+        super::super::apply::emit_action_line(
+            printer,
+            &owner,
+            &super::super::apply::ActionOutcome::for_test_settled(
+                &subject,
+                crate::output::Role::Ok,
+                &detail,
+            ),
+        );
+    });
+
+    assert_eq!(
+        previewed, settled,
+        "a produced count must land at the report's one column on both trees"
+    );
+    // Anti-vacuity: the row really was padded, rather than both trees gluing
+    // the detail straight onto a subject that happened to be equally short.
+    assert!(
+        previewed > crate::output::measure_width(&subject),
+        "the short subject pads out to the report column ({previewed} vs its own \
+         width {}), not to its own end",
+        crate::output::measure_width(&subject)
+    );
+}
+
 /// A phase the filter empties prints no row, so it cannot widen the column the
 /// rows that DO print pad to.
 #[test]
@@ -1753,7 +1833,7 @@ fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
             files,
         },
     ));
-    let env = Action::Env(crate::reconciler::EnvAction::WriteEnvFile {
+    let env = Action::Env(super::super::types::EnvAction::WriteEnvFile {
         path: PathBuf::from("/home/u/.cfgd.env"),
         content: String::new(),
         vars: 3,
@@ -1767,7 +1847,14 @@ fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
     let (printer, cap) = Printer::for_test_doc();
     render_plan_tree(&plan, None, &printer);
     drop(printer);
-    let out = crate::output::strip_ansi(&cap.human());
+    // Padding collapsed: a bullet's detail pads out to the report's one column
+    // (`every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column`),
+    // and the claim here is about which SLOT the count sits in.
+    let out = crate::output::strip_ansi(&cap.human())
+        .split('\n')
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
         out.contains("- deploy /home/u/.f0, /home/u/.f1 — 5 files"),
         "the count sits after the em-dash, beside the subject: {out}"

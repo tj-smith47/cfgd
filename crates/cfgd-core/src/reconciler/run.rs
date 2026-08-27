@@ -1114,6 +1114,14 @@ pub fn align_width_of<'s>(labels: impl Iterator<Item = &'s str>) -> usize {
 /// field against a column nothing reaches. Filtered the way the trees are, and
 /// over [`PhaseCoverage::Rendered`], because a phase that prints no block
 /// cannot widen a column no row of it occupies.
+///
+/// One column for BOTH row shapes the plan tree prints, not just its status
+/// rows: a produced count renders as a bullet's trailing detail
+/// (`- write ~/.cfgd.env — 3 vars, 3 aliases`), and `- ` is exactly as wide as
+/// a glyph and its space, so the bullet pads to the claimed column through
+/// `Emitting::bullet_column` the way a status row does through `route_status`.
+/// Ignoring the claim on the bullet put a preview's em-dashes in two places
+/// and neither at the apply's.
 pub fn report_align_width(plan: &Plan, filter: Option<&PhaseFilter>) -> usize {
     let items: Vec<String> = in_scope_tree(plan, filter, PhaseCoverage::Rendered)
         .iter()
