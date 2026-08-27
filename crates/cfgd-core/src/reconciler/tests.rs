@@ -23956,27 +23956,36 @@ impl PackageManager for NotePushingManager {
 /// `extract_caveats` tags every note with the manager (`[brew]`), and the
 /// closing section then groups by OWNER — so the action line, the only thing
 /// naming what brew spoke ABOUT, is gone by the time the note renders. A
-/// `profile:base` installing nine formulae stacked several `[brew]` bodies with
-/// nothing tying any of them to a package, and "Bash completion has been
-/// installed to" is a body several formulae emit verbatim: the section's
-/// body-dedup then dropped the second one entirely.
+/// `profile:base` installing nine formulae stacked several `[brew]` bodies
+/// with nothing tying any of them to a package.
+///
+/// The section's fold is by MESSAGE, so the attribution the subject supplies
+/// cannot defeat it: two actions saying different things keep both lines and
+/// each names its own action, while two actions repeating ONE machine fact
+/// keep one line, under the subject that said it first.
 #[test]
 fn every_caveat_names_the_subject_that_produced_it() {
-    // The worst case: one owner, one manager, two actions, the SAME body.
     let owner = Owner::profile("base");
-    let body = "Bash completion has been installed to: /opt/brew/etc";
+    let repeated = "Bash completion has been installed to: /opt/brew/etc";
     let mut caveats: Vec<(Owner, Vec<crate::providers::ActionNote>)> = Vec::new();
     crate::reconciler::apply::collect_caveats(
         &mut caveats,
         &owner,
         "brew install gum",
-        vec![crate::providers::ActionNote::info("brew", body)],
+        vec![
+            crate::providers::ActionNote::info("brew", repeated),
+            crate::providers::ActionNote::info("brew", "gum needs a TTY to render"),
+        ],
     );
+    // The SAME machine fact, from a second action of the same manager.
     crate::reconciler::apply::collect_caveats(
         &mut caveats,
         &owner,
         "brew install fzf",
-        vec![crate::providers::ActionNote::info("brew", body)],
+        vec![
+            crate::providers::ActionNote::info("brew", repeated),
+            crate::providers::ActionNote::info("brew", "fzf key bindings are in /opt/brew/opt"),
+        ],
     );
     // An untagged note carries no tag precisely because its owner group already
     // identifies it, so re-tagging must leave it alone.
@@ -24003,12 +24012,19 @@ fn every_caveat_names_the_subject_that_produced_it() {
         !out.contains("[brew] "),
         "no caveat is left tagged with the manager alone: {out}"
     );
-    // The dedup is by BODY, so two indistinguishable notes were one line before
-    // this: the second formula's caveat vanished under the first's.
+    assert!(
+        out.contains("[brew install gum] gum needs a TTY")
+            && out.contains("[brew install fzf] fzf key bindings"),
+        "two actions with things of their own to say keep both lines: {out}"
+    );
     assert_eq!(
-        out.matches(body).count(),
-        2,
-        "two actions that said the same thing keep both lines: {out}"
+        out.matches(repeated).count(),
+        1,
+        "one machine-level fact, one line, however many actions restated it: {out}"
+    );
+    assert!(
+        out.contains(&format!("[brew install gum] {repeated}")),
+        "and it keeps the attribution of the action that said it first: {out}"
     );
     assert!(
         out.contains("Updated /etc/shells") && !out.contains("[set shell"),
@@ -24143,42 +24159,55 @@ fn a_lone_next_step_opens_no_caveats_heading() {
 /// A caveat states a fact about the MACHINE, and a run that provisions a
 /// manager in `Prerequisites` and uses it again in `Packages` files that one
 /// fact under two owners. The section printed the byte-identical
-/// `[brew] Bash completion has been installed to: …` twice, once under
+/// `Bash completion has been installed to: …` twice, once under
 /// `cfgd:managers` and once under `module:nvim`, reading as though brew had
 /// installed completions twice to the same path.
+///
+/// Driven through `collect_caveats`, the real path: it re-tags every note with
+/// the SUBJECT of the action that produced it, so a fold keyed on the composed
+/// body could never fire on a run — the two copies carry two subjects — and
+/// passed only in a test that assembled the groups by hand.
 #[test]
-fn a_caveat_body_renders_once_per_report() {
-    let body = "[brew] Bash completion has been installed to /home/linuxbrew/etc";
-    let note = || {
-        crate::providers::ActionNote::info(
-            "brew",
-            "Bash completion has been installed to /home/linuxbrew/etc",
-        )
-    };
-    let (printer, cap) = crate::output::Printer::for_test_doc();
-    crate::reconciler::render_caveats(
-        &printer,
-        &[
-            (Owner::cfgd("managers"), vec![note()]),
-            (
-                Owner::module("nvim"),
-                // The repeat, plus a note only this owner produced: the group
-                // must still open for the second, and drop only the first.
-                vec![
-                    crate::providers::ActionNote::warn("npm", "no writable global prefix"),
-                    note(),
-                ],
-            ),
-            // Every note this owner holds is a repeat, so it opens no heading.
-            (Owner::profile("work"), vec![note()]),
+fn a_caveat_message_renders_once_per_report() {
+    let message = "Bash completion has been installed to /home/linuxbrew/etc";
+    let mut caveats: Vec<(Owner, Vec<crate::providers::ActionNote>)> = Vec::new();
+    crate::reconciler::apply::collect_caveats(
+        &mut caveats,
+        &Owner::cfgd("managers"),
+        "provision brew via curl",
+        vec![crate::providers::ActionNote::info("brew", message)],
+    );
+    crate::reconciler::apply::collect_caveats(
+        &mut caveats,
+        &Owner::module("nvim"),
+        "brew install neovim",
+        // The repeat, plus a note only this owner produced: the group must
+        // still open for the second, and drop only the first.
+        vec![
+            crate::providers::ActionNote::warn("npm", "no writable global prefix"),
+            crate::providers::ActionNote::info("brew", message),
         ],
     );
+    // Every note this owner holds is a repeat, so it opens no heading.
+    crate::reconciler::apply::collect_caveats(
+        &mut caveats,
+        &Owner::profile("work"),
+        "brew install fzf",
+        vec![crate::providers::ActionNote::info("brew", message)],
+    );
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    crate::reconciler::render_caveats(&printer, &caveats);
     drop(printer);
     let out = crate::output::strip_ansi(&cap.human());
     assert_eq!(
-        out.matches(body).count(),
+        out.matches(message).count(),
         1,
         "one machine-level fact, one line: {out}"
+    );
+    assert!(
+        out.contains("[provision brew via curl] "),
+        "the action that produced it FIRST keeps it: {out}"
     );
     assert!(
         out.contains("cfgd:managers") && out.contains("module:nvim"),
@@ -24197,12 +24226,13 @@ fn a_caveat_body_renders_once_per_report() {
 
 /// The report half and the hint half are two slots on one section, and for a
 /// while only the hint half deduplicated. Walk both, so they cannot diverge
-/// again: the same body, filed under two owners, renders once whichever slot
-/// carries it.
+/// again: the same message, filed under two owners, renders once whichever
+/// slot carries it — and the report slots go through `collect_caveats`, so the
+/// per-action attribution is in the way of the fold exactly as it is on a run.
 #[test]
-fn every_caveat_slot_dedupes_by_body() {
+fn every_caveat_slot_dedupes_by_message() {
     type NoteBuilder = fn(&str) -> crate::providers::ActionNote;
-    let slots: [(&str, NoteBuilder); 3] = [
+    let slots: [(&str, NoteBuilder); 4] = [
         ("hint", |m| crate::providers::ActionNote::next_step(m)),
         ("report/warn", |m| {
             crate::providers::ActionNote::untagged(crate::output::Role::Warn, m)
@@ -24210,27 +24240,42 @@ fn every_caveat_slot_dedupes_by_body() {
         ("report/info", |m| {
             crate::providers::ActionNote::untagged(crate::output::Role::Info, m)
         }),
+        ("report/tagged", |m| {
+            crate::providers::ActionNote::info("brew", m)
+        }),
     ];
     for (slot, build) in slots {
         let message = "one fact about this machine";
-        let (printer, cap) = crate::output::Printer::for_test_doc();
-        crate::reconciler::render_caveats(
-            &printer,
-            &[
-                (Owner::cfgd("managers"), vec![build(message)]),
-                (Owner::module("nvim"), vec![build(message)]),
-                // Twice within ONE group as well: the snapshot-bridge caller
-                // hands `render_caveats` a single group, so it can only ever
-                // duplicate this way.
-                (Owner::profile("work"), vec![build(message), build(message)]),
-            ],
+        let mut caveats: Vec<(Owner, Vec<crate::providers::ActionNote>)> = Vec::new();
+        crate::reconciler::apply::collect_caveats(
+            &mut caveats,
+            &Owner::cfgd("managers"),
+            "provision brew via curl",
+            vec![build(message)],
         );
+        crate::reconciler::apply::collect_caveats(
+            &mut caveats,
+            &Owner::module("nvim"),
+            "brew install neovim",
+            vec![build(message)],
+        );
+        // Twice within ONE group as well: the snapshot-bridge caller hands
+        // `render_caveats` a single group, so it can only ever duplicate this
+        // way — and two actions of one owner is the other way.
+        crate::reconciler::apply::collect_caveats(
+            &mut caveats,
+            &Owner::profile("work"),
+            "brew install fzf",
+            vec![build(message), build(message)],
+        );
+        let (printer, cap) = crate::output::Printer::for_test_doc();
+        crate::reconciler::render_caveats(&printer, &caveats);
         drop(printer);
         let out = crate::output::strip_ansi(&cap.human());
         assert_eq!(
             out.matches(message).count(),
             1,
-            "the {slot} slot printed the same body more than once: {out}"
+            "the {slot} slot printed the same message more than once: {out}"
         );
     }
 }
