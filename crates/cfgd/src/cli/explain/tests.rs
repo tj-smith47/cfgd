@@ -645,7 +645,7 @@ Explain: profile.spec.packages.brew <BrewSpec>
 
 Fields
   casks     <[]string> — Homebrew casks (GUI applications) to install.
-  file      <string>   — Path to a Brewfile to apply instead of (or alongside) the lists below.
+  file      <string>   — Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.
   formulae  <[]string> — Homebrew formulae (CLI packages) to install.
   taps      <[]string> — Third-party taps to add before installing formulae/casks.
 ";
@@ -876,4 +876,63 @@ fn hand_authored_teamconfig_tree_matches_the_crossplane_xrd() {
     }
     let schema = find_schema("teamconfig").expect("TeamConfig is explainable");
     compare("spec", spec, &schema.fields);
+}
+
+/// No description `explain` renders points at a POSITION on the screen.
+///
+/// The renderer sorts a level alphabetically (`sorted_by_name`), so a doc
+/// comment written against declaration order describes a layout the reader is
+/// not looking at: `file … instead of (or alongside) the lists below` sat
+/// UNDER the `casks` row it claimed to precede. Three sibling references were
+/// correct only by luck of the alphabet, which is not a property a rustdoc
+/// edit can preserve.
+///
+/// The walk is every field of every kind `explain` can render, at every depth,
+/// so a new positional word is caught wherever it is authored — a local config
+/// struct, a CRD spec, or the hand-authored TeamConfig tree. A field names its
+/// siblings instead; the ordering is then the renderer's business alone.
+#[test]
+fn no_explain_description_names_a_position_on_the_screen() {
+    /// The words that place a claim on the SCREEN. Flagged only where the
+    /// word closes its phrase (`the lists below.`, `no override below`) —
+    /// `a version below this` compares two values and names no row.
+    const POSITIONAL: &[&str] = &["below", "above", "preceding", "succeeding"];
+
+    /// Whether `text` uses one of those words as a position rather than as a
+    /// comparison: the word ends the clause it sits in.
+    fn names_a_position(text: &str) -> bool {
+        let lower = text.to_lowercase();
+        POSITIONAL.iter().any(|word| {
+            lower.match_indices(word).any(|(at, _)| {
+                let before_is_boundary = at == 0
+                    || !lower[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_alphanumeric());
+                let after = lower[at + word.len()..].trim_start_matches([' ', '`']);
+                before_is_boundary && after.chars().next().is_none_or(|c| ".,;:)".contains(c))
+            })
+        })
+    }
+
+    fn walk(path: &str, fields: &[FieldNode], found: &mut Vec<String>) {
+        for f in fields {
+            let here = format!("{path}.{}", f.name);
+            if names_a_position(&f.description) {
+                found.push(format!("{here}: {}", f.description));
+            }
+            walk(&here, &f.children, found);
+            walk(&here, &f.variants, found);
+        }
+    }
+
+    let mut found = Vec::new();
+    for schema in all_schemas() {
+        walk(&schema.name, &schema.fields, &mut found);
+    }
+    assert!(
+        found.is_empty(),
+        "a description points at a rendered position, which the alphabetical \
+         sort does not guarantee — name the sibling fields instead: {found:#?}"
+    );
 }

@@ -470,7 +470,7 @@
               "type": "[]string"
             },
             {
-              "description": "Path to a Brewfile to apply instead of (or alongside) the lists below.",
+              "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.",
               "name": "file",
               "required": false,
               "type": "string"
@@ -497,7 +497,7 @@
         {
           "children": [
             {
-              "description": "Path to a `Cargo.toml` whose binaries to install instead of the list below.",
+              "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`.",
               "name": "file",
               "required": false,
               "type": "string"

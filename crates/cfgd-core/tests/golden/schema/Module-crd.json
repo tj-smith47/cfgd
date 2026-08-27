@@ -130,7 +130,7 @@
       "description": "An entry in a Module's package list with optional per-platform overrides.",
       "properties": {
         "name": {
-          "description": "Default package name, used on every platform with no override below.",
+          "description": "Default package name, used on every platform `platforms` names no override for.",
           "type": "string"
         },
         "platforms": {

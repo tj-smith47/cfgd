@@ -216,7 +216,7 @@
             "type": "[]string"
           },
           {
-            "description": "Manager preference order for this package, overriding the profile's default manager priority (e.g. `[brew, apt]`, or `[script]` to force the install script below).",
+            "description": "Manager preference order for this package, overriding the profile's default manager priority (e.g. `[brew, apt]`, or `[script]` to force this entry's own `script`).",
             "name": "prefer",
             "required": false,
             "type": "[]string"
@@ -1290,7 +1290,7 @@
                 "type": "[]string"
               },
               {
-                "description": "Path to a Brewfile to apply instead of (or alongside) the lists below.",
+                "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.",
                 "name": "file",
                 "required": false,
                 "type": "string"
@@ -1317,7 +1317,7 @@
           {
             "children": [
               {
-                "description": "Path to a `Cargo.toml` whose binaries to install instead of the list below.",
+                "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`.",
                 "name": "file",
                 "required": false,
                 "type": "string"
@@ -2418,7 +2418,7 @@
                         "type": "[]string"
                       },
                       {
-                        "description": "Path to a Brewfile to apply instead of (or alongside) the lists below.",
+                        "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.",
                         "name": "file",
                         "required": false,
                         "type": "string"
@@ -2445,7 +2445,7 @@
                   {
                     "children": [
                       {
-                        "description": "Path to a `Cargo.toml` whose binaries to install instead of the list below.",
+                        "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`.",
                         "name": "file",
                         "required": false,
                         "type": "string"
@@ -2915,7 +2915,7 @@
                         "type": "[]string"
                       },
                       {
-                        "description": "Path to a Brewfile to apply instead of (or alongside) the lists below.",
+                        "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.",
                         "name": "file",
                         "required": false,
                         "type": "string"
@@ -2942,7 +2942,7 @@
                   {
                     "children": [
                       {
-                        "description": "Path to a `Cargo.toml` whose binaries to install instead of the list below.",
+                        "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`.",
                         "name": "file",
                         "required": false,
                         "type": "string"
@@ -3412,7 +3412,7 @@
                         "type": "[]string"
                       },
                       {
-                        "description": "Path to a Brewfile to apply instead of (or alongside) the lists below.",
+                        "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.",
                         "name": "file",
                         "required": false,
                         "type": "string"
@@ -3439,7 +3439,7 @@
                   {
                     "children": [
                       {
-                        "description": "Path to a `Cargo.toml` whose binaries to install instead of the list below.",
+                        "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`.",
                         "name": "file",
                         "required": false,
                         "type": "string"
@@ -3909,7 +3909,7 @@
                         "type": "[]string"
                       },
                       {
-                        "description": "Path to a Brewfile to apply instead of (or alongside) the lists below.",
+                        "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.",
                         "name": "file",
                         "required": false,
                         "type": "string"
@@ -3936,7 +3936,7 @@
                   {
                     "children": [
                       {
-                        "description": "Path to a `Cargo.toml` whose binaries to install instead of the list below.",
+                        "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`.",
                         "name": "file",
                         "required": false,
                         "type": "string"
@@ -5713,7 +5713,7 @@
       {
         "children": [
           {
-            "description": "Default package name, used on every platform with no override below.",
+            "description": "Default package name, used on every platform `platforms` names no override for.",
             "name": "name",
             "required": true,
             "type": "string"
