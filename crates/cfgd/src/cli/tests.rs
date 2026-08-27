@@ -28594,3 +28594,166 @@ fn every_catalog_sourced_sources_column_can_be_absent() {
         );
     }
 }
+
+/// Every `BootstrapFailed` message names something besides the manager it is
+/// about.
+///
+/// The variant is the one `PackageError` whose sentence is built by its
+/// CALLERS rather than by the command that failed, which is why it is the one
+/// that can be built with no operand at all. `cargo still not available after
+/// bootstrap` asserted a post-condition and named nothing the run did: not the
+/// installer that ran, not the package it landed, not even which cascade was
+/// meant. A reader given that sentence looks for a cfgd bug, because the
+/// sentence describes cfgd failing rather than the machine answering.
+///
+/// The walk fails a `format!` whose every placeholder is the manager's own
+/// name. A message that is a plain literal reporting a CONDITION (`no
+/// installation method available`) is out of class: it states a cause, and has
+/// no operand to drop.
+#[test]
+fn every_bootstrap_failure_names_what_it_installed() {
+    /// The struct-literal body after `BootstrapFailed {`, brace-matched with
+    /// string literals and line comments skipped — a `format!("{name} …")`
+    /// carries braces of its own, and a naive depth count closes on them.
+    fn literal_body(src: &str, open: usize) -> Option<&str> {
+        let bytes = src.as_bytes();
+        let mut depth = 0usize;
+        let mut i = open;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => {
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != b'"' {
+                        i += if bytes[i] == b'\\' { 2 } else { 1 };
+                    }
+                }
+                b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                    while i < bytes.len() && bytes[i] != b'\n' {
+                        i += 1;
+                    }
+                    continue;
+                }
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&src[open + 1..i]);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// The leading identifier of a field's expression — `(*name).to_string()`
+    /// and `manager_name.into()` both name their binding, and a literal
+    /// (`"brew".into()`) names none.
+    fn root_ident(expr: &str) -> Option<String> {
+        let ident: String = expr
+            .trim()
+            .trim_start_matches(['(', '*', '&'])
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        (!ident.is_empty() && !ident.starts_with(|c: char| c.is_ascii_digit())).then_some(ident)
+    }
+
+    /// Whether this site's `message` is a `format!` every placeholder of which
+    /// is the manager's own name — an absence asserted with no operand.
+    fn names_only_the_manager(fields: &str) -> bool {
+        let Some(message) = fields.split_once("message:").map(|(_, m)| m) else {
+            return false;
+        };
+        // A message that is not a `format!` reports a condition and has no
+        // operand slot to leave empty.
+        if !message.trim_start().starts_with("format!") {
+            return false;
+        }
+        let manager = fields
+            .split_once("manager:")
+            .and_then(|(_, m)| m.split_once(','))
+            .and_then(|(expr, _)| root_ident(expr));
+        // A positional `{}` carries a value this scan cannot name, and it is
+        // never the manager: the manager is spelled inline wherever it appears.
+        let mut placeholders = Vec::new();
+        let mut rest = message;
+        while let Some(at) = rest.find('{') {
+            rest = &rest[at + 1..];
+            let Some(end) = rest.find('}') else { break };
+            placeholders.push(rest[..end].trim().to_string());
+            rest = &rest[end..];
+        }
+        !placeholders.is_empty()
+            && placeholders
+                .iter()
+                .all(|p| root_ident(p).is_some_and(|ident| Some(&ident) == manager.as_ref()))
+    }
+
+    // The shape this walk exists to catch, as it stood before the fix — so a
+    // green run is the detector answering rather than the scan finding nothing.
+    assert!(
+        names_only_the_manager(
+            r#"manager: (*name).to_string(), message: format!("{name} still not available after bootstrap"),"#
+        ),
+        "the detector must catch the message this walk was written for"
+    );
+    assert!(
+        !names_only_the_manager(
+            r#"manager: (*name).to_string(), message: format!("{name} not on PATH after {} installed {}", route.installer, route.package),"#
+        ),
+        "a message naming the installer and the package is what the walk asks for"
+    );
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = Vec::new();
+    let mut stack = vec![
+        root.join("crates/cfgd-core/src"),
+        root.join("crates/cfgd/src"),
+    ];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n != "tests") {
+                    stack.push(p);
+                }
+            } else if p.extension().is_some_and(|e| e == "rs")
+                && p.file_name().is_some_and(|n| n != "tests.rs")
+                && let Ok(body) = std::fs::read_to_string(&p)
+            {
+                files.push((p, production_body(&body)));
+            }
+        }
+    }
+
+    let mut seen = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in &files {
+        let mut from = 0usize;
+        while let Some(hit) = body[from..].find("BootstrapFailed {") {
+            let open = from + hit + "BootstrapFailed ".len();
+            from = open + 1;
+            let Some(fields) = literal_body(body, open) else {
+                continue;
+            };
+            seen += 1;
+            if names_only_the_manager(fields) {
+                offenders.push(format!("{}: {}", path.display(), fields.trim()));
+            }
+        }
+    }
+    assert!(
+        seen >= 15,
+        "the walk found the construction sites, found {seen}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a bootstrap failure asserts an absence and names nothing that was tried:\n{}",
+        offenders.join("\n")
+    );
+}

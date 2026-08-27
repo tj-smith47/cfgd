@@ -2476,7 +2476,7 @@ mod tests {
                     journal_id: None,
                     result: Err(PackageError::BootstrapFailed {
                         manager: "brew".to_string(),
-                        message: "brew still not available after bootstrap".to_string(),
+                        message: "brew still not on PATH after the curl bootstrap".to_string(),
                     }
                     .into()),
                     elapsed: Duration::ZERO,
