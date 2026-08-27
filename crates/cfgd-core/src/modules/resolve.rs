@@ -39,7 +39,7 @@ pub fn resolve_package(
     managers: &HashMap<String, &dyn PackageManager>,
 ) -> Result<Option<ResolvedPackage>> {
     // Platform filter: skip entirely if platforms is non-empty and doesn't match
-    if !platform.matches_any(&entry.platforms) {
+    if !crate::platform::PlatformGated::applies_to(entry, platform) {
         return Ok(None);
     }
 
@@ -370,7 +370,9 @@ pub fn resolve_modules(
     // package/file resolution runs.
     let skipped: HashSet<&str> = order
         .iter()
-        .filter(|name| !platform.matches_any(&all_modules[*name].spec.platforms))
+        .filter(|name| {
+            !crate::platform::PlatformGated::applies_to(&all_modules[*name].spec, platform)
+        })
         .map(|name| name.as_str())
         .collect();
 
@@ -425,8 +427,15 @@ pub fn resolve_modules(
                 name: name.clone(),
                 packages,
                 files,
-                env: module.spec.env.clone(),
-                aliases: module.spec.aliases.clone(),
+                // Filtered here, beside the package filter above: a gated
+                // entry is not part of this host's desired state, so it
+                // reaches no surface rather than reaching them annotated.
+                env: crate::platform::applicable_here(&module.spec.env, platform)
+                    .cloned()
+                    .collect(),
+                aliases: crate::platform::applicable_here(&module.spec.aliases, platform)
+                    .cloned()
+                    .collect(),
                 system: module.spec.system.clone(),
                 pre_apply_scripts,
                 post_apply_scripts,

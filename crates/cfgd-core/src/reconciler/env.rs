@@ -329,6 +329,7 @@ impl<'a> super::Reconciler<'a> {
             merged.push(crate::config::EnvVar {
                 name: name.clone(),
                 value: value.clone(),
+                platforms: vec![],
             });
         }
 
@@ -504,6 +505,7 @@ impl<'a> super::Reconciler<'a> {
         let placeholder = [crate::config::EnvVar {
             name: "CFGD_MANAGED_ENV".to_string(),
             value: String::new(),
+            platforms: vec![],
         }];
         let neutral = format!("{}\n", super::env_files::ENV_FILE_HEADER);
         let targets = env_targets(
@@ -624,6 +626,7 @@ mod tests {
         EnvVar {
             name: name.to_string(),
             value: value.to_string(),
+            platforms: vec![],
         }
     }
 
@@ -637,6 +640,7 @@ mod tests {
         let catn = ShellAlias {
             name: "catn".to_string(),
             command: "cat -n".to_string(),
+            platforms: vec![],
         };
         let dirs = [ManagerPathDir::new("brew", "/opt/homebrew/bin")];
         let owners = {
@@ -692,6 +696,7 @@ mod tests {
         let catn = ShellAlias {
             name: "catn".to_string(),
             command: "cat -n".to_string(),
+            platforms: vec![],
         };
         let dirs = [ManagerPathDir::new("brew", "/opt/homebrew/bin")];
         let owners = {
@@ -770,6 +775,7 @@ mod tests {
         let catn = ShellAlias {
             name: "catn".to_string(),
             command: "cat -n".to_string(),
+            platforms: vec![],
         };
         let baseline = ps(std::slice::from_ref(&foo), &[], &[]);
         let desired = ps(std::slice::from_ref(&foo), std::slice::from_ref(&catn), &[]);

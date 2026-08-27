@@ -1,6 +1,10 @@
 use crate::config;
 
 /// Parse a `KEY=VALUE` string into an `EnvVar`.
+///
+/// The entry is UNGATED: `--env` writes a declaration that applies everywhere,
+/// and `platforms:` is declared in the YAML. A CLI flag that gated an entry
+/// would have to name the tags in the same token as the value.
 pub fn parse_env_var(input: &str) -> std::result::Result<config::EnvVar, String> {
     let (key, value) = input
         .split_once('=')
@@ -9,6 +13,7 @@ pub fn parse_env_var(input: &str) -> std::result::Result<config::EnvVar, String>
     Ok(config::EnvVar {
         name: key.to_string(),
         value: value.to_string(),
+        platforms: vec![],
     })
 }
 
@@ -132,6 +137,8 @@ pub fn validate_alias_name(name: &str) -> std::result::Result<(), String> {
 }
 
 /// Parse a `name=command` string into a `ShellAlias`.
+///
+/// Ungated for the same reason [`parse_env_var`]'s entry is.
 pub fn parse_alias(input: &str) -> std::result::Result<config::ShellAlias, String> {
     let (name, command) = input
         .split_once('=')
@@ -140,6 +147,7 @@ pub fn parse_alias(input: &str) -> std::result::Result<config::ShellAlias, Strin
     Ok(config::ShellAlias {
         name: name.to_string(),
         command: command.to_string(),
+        platforms: vec![],
     })
 }
 

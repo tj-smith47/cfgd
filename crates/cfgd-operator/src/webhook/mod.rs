@@ -581,6 +581,14 @@ fn build_injection_patches(
             }));
 
             for env_var in &spec.env {
+                // A pod is a Linux container: the webhook can answer an `os`
+                // tag and nothing else, so an entry gated to anything but
+                // `linux` is not injected rather than injected regardless.
+                if !env_var.platforms.is_empty()
+                    && !env_var.platforms.iter().any(|tag| tag == "linux")
+                {
+                    continue;
+                }
                 if env_var.append {
                     patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
                         path: ptr(&format!("/spec/containers/{i}/env/-")),

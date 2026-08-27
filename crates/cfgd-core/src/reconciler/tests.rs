@@ -2397,10 +2397,12 @@ fn generate_env_file_quoted_and_unquoted() {
         crate::config::EnvVar {
             name: "EDITOR".into(),
             value: "nvim".into(),
+            platforms: vec![],
         },
         crate::config::EnvVar {
             name: "PATH".into(),
             value: "/usr/local/bin:$PATH".into(),
+            platforms: vec![],
         },
     ];
     let content = super::generate_env_file_content(
@@ -2421,10 +2423,12 @@ fn generate_fish_env_splits_path() {
         crate::config::EnvVar {
             name: "EDITOR".into(),
             value: "nvim".into(),
+            platforms: vec![],
         },
         crate::config::EnvVar {
             name: "PATH".into(),
             value: "/usr/local/bin:/home/user/.cargo/bin:$PATH".into(),
+            platforms: vec![],
         },
     ];
     let content = super::generate_fish_env_content(
@@ -2452,10 +2456,12 @@ fn generate_env_files_expand_leading_tilde() {
             crate::config::EnvVar {
                 name: "CLIFT_DIR".into(),
                 value: "~/.local/share/clift".into(),
+                platforms: vec![],
             },
             crate::config::EnvVar {
                 name: "PATH".into(),
                 value: "~/bin:/usr/bin".into(),
+                platforms: vec![],
             },
         ];
         let bash = super::generate_env_file_content(
@@ -2507,6 +2513,7 @@ fn generate_fish_path_keeps_colon_containing_home_intact() {
         let env = vec![crate::config::EnvVar {
             name: "PATH".into(),
             value: "~/bin:/usr/bin".into(),
+            platforms: vec![],
         }];
         let fish = super::generate_fish_env_content(
             &env,
@@ -2544,6 +2551,7 @@ fn plan_env_module_wins_on_conflict() {
     let profile_env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "vim".into(),
+        platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
         name: "nvim".into(),
@@ -2552,6 +2560,7 @@ fn plan_env_module_wins_on_conflict() {
         env: vec![crate::config::EnvVar {
             name: "EDITOR".into(),
             value: "nvim".into(),
+            platforms: vec![],
         }],
         aliases: vec![],
         post_apply_scripts: vec![],
@@ -2592,6 +2601,7 @@ fn plan_env_generates_file_matching_expected() {
     let env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
 
     // Write the expected content to a temp file to simulate "already applied"
@@ -2626,15 +2636,18 @@ fn generate_env_file_with_aliases() {
     let env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
     let aliases = vec![
         crate::config::ShellAlias {
             name: "vim".into(),
             command: "nvim".into(),
+            platforms: vec![],
         },
         crate::config::ShellAlias {
             name: "ll".into(),
             command: "ls -la".into(),
+            platforms: vec![],
         },
     ];
     let content = super::generate_env_file_content(&env, &aliases, None, &Default::default());
@@ -2648,10 +2661,12 @@ fn generate_fish_env_with_aliases() {
     let env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
     let aliases = vec![crate::config::ShellAlias {
         name: "vim".into(),
         command: "nvim".into(),
+        platforms: vec![],
     }];
     let content = super::generate_fish_env_content(&env, &aliases, None, &Default::default());
     assert!(content.contains("set -gx EDITOR 'nvim'"));
@@ -2663,6 +2678,7 @@ fn plan_env_aliases_only() {
     let aliases = vec![crate::config::ShellAlias {
         name: "vim".into(),
         command: "nvim".into(),
+        platforms: vec![],
     }];
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
@@ -2689,6 +2705,7 @@ fn plan_env_module_alias_wins_on_conflict() {
     let profile_aliases = vec![crate::config::ShellAlias {
         name: "vim".into(),
         command: "vi".into(),
+        platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
         name: "nvim".into(),
@@ -2698,6 +2715,7 @@ fn plan_env_module_alias_wins_on_conflict() {
         aliases: vec![crate::config::ShellAlias {
             name: "vim".into(),
             command: "nvim".into(),
+            platforms: vec![],
         }],
         post_apply_scripts: vec![],
         pre_apply_scripts: Vec::new(),
@@ -2746,6 +2764,7 @@ fn generate_env_file_alias_escapes_quotes() {
     let aliases = vec![crate::config::ShellAlias {
         name: "greet".into(),
         command: "echo \"hello world\"".into(),
+        platforms: vec![],
     }];
     let content = super::generate_env_file_content(&[], &aliases, None, &Default::default());
     assert!(content.contains("alias greet=\"echo \\\"hello world\\\"\""));
@@ -2848,6 +2867,7 @@ fn plan_env_secret_envs_appear_in_generated_content() {
     let regular_env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
     let secret_envs = vec![("GITHUB_TOKEN".to_string(), "ghp_abc123".to_string())];
     let tmp = tempfile::tempdir().unwrap();
@@ -2903,6 +2923,7 @@ fn rc_conflict_env_different_value_warns() {
     let env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
     let warnings = super::detect_rc_env_conflicts(&rc, &env, &[]);
     assert_eq!(warnings.len(), 1);
@@ -2922,6 +2943,7 @@ fn rc_conflict_env_same_value_no_warning() {
     let env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
     let warnings = super::detect_rc_env_conflicts(&rc, &env, &[]);
     assert!(warnings.is_empty());
@@ -2939,6 +2961,7 @@ fn rc_conflict_alias_different_value_warns() {
     let aliases = vec![crate::config::ShellAlias {
         name: "vim".into(),
         command: "nvim".into(),
+        platforms: vec![],
     }];
     let warnings = super::detect_rc_env_conflicts(&rc, &[], &aliases);
     assert_eq!(warnings.len(), 1);
@@ -2958,6 +2981,7 @@ fn rc_conflict_after_source_line_no_warning() {
     let env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
     let warnings = super::detect_rc_env_conflicts(&rc, &env, &[]);
     assert!(warnings.is_empty());
@@ -2971,10 +2995,12 @@ fn rc_conflict_no_source_line_all_before() {
     let env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
     let aliases = vec![crate::config::ShellAlias {
         name: "vim".into(),
         command: "nvim".into(),
+        platforms: vec![],
     }];
     let warnings = super::detect_rc_env_conflicts(&rc, &env, &aliases);
     assert_eq!(warnings.len(), 2);
@@ -2987,6 +3013,7 @@ fn rc_conflict_nonexistent_file_no_warnings() {
         &[crate::config::EnvVar {
             name: "FOO".into(),
             value: "bar".into(),
+            platforms: vec![],
         }],
         &[],
     );
@@ -3009,10 +3036,12 @@ fn generate_powershell_env_basic() {
         crate::config::EnvVar {
             name: "EDITOR".into(),
             value: "code".into(),
+            platforms: vec![],
         },
         crate::config::EnvVar {
             name: "PATH".into(),
             value: r"C:\Users\user\.cargo\bin;$env:PATH".into(),
+            platforms: vec![],
         },
     ];
     let content = super::generate_powershell_env_content(
@@ -3033,10 +3062,12 @@ fn generate_powershell_env_with_aliases() {
         crate::config::ShellAlias {
             name: "g".into(),
             command: "git".into(),
+            platforms: vec![],
         },
         crate::config::ShellAlias {
             name: "ll".into(),
             command: "Get-ChildItem -Force".into(),
+            platforms: vec![],
         },
     ];
     let content = super::generate_powershell_env_content(&[], &aliases, None, &Default::default());
@@ -3050,6 +3081,7 @@ fn generate_powershell_env_escapes_quotes() {
     let env = vec![crate::config::EnvVar {
         name: "GREETING".into(),
         value: r#"say "hello""#.into(),
+        platforms: vec![],
     }];
     let content = super::generate_powershell_env_content(&env, &[], None, &Default::default());
     // No $env: reference, so single-quoted (PS single quotes don't need escaping except ')
@@ -3700,10 +3732,12 @@ fn apply_env_write_env_file_to_tempdir() {
         crate::config::EnvVar {
             name: "EDITOR".into(),
             value: "nvim".into(),
+            platforms: vec![],
         },
         crate::config::EnvVar {
             name: "CARGO_HOME".into(),
             value: "/home/user/.cargo".into(),
+            platforms: vec![],
         },
     ];
     let content = super::generate_env_file_content(&env, &[], None, &Default::default());
@@ -3736,6 +3770,7 @@ fn apply_env_write_skips_when_content_matches() {
     let env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
     let content = super::generate_env_file_content(&env, &[], None, &Default::default());
 
@@ -4569,10 +4604,12 @@ fn apply_env_write_with_aliases_produces_correct_file() {
     let env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
     let aliases = vec![crate::config::ShellAlias {
         name: "ll".into(),
         command: "ls -la".into(),
+        platforms: vec![],
     }];
     let content = super::generate_env_file_content(&env, &aliases, None, &Default::default());
 
@@ -7497,10 +7534,12 @@ fn merge_module_env_aliases_merges_correctly() {
     let profile_env = vec![crate::config::EnvVar {
         name: "A".into(),
         value: "1".into(),
+        platforms: vec![],
     }];
     let profile_aliases = vec![crate::config::ShellAlias {
         name: "g".into(),
         command: "git".into(),
+        platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
         name: "mod1".into(),
@@ -7510,15 +7549,18 @@ fn merge_module_env_aliases_merges_correctly() {
             crate::config::EnvVar {
                 name: "A".into(),
                 value: "2".into(),
+                platforms: vec![],
             },
             crate::config::EnvVar {
                 name: "B".into(),
                 value: "3".into(),
+                platforms: vec![],
             },
         ],
         aliases: vec![crate::config::ShellAlias {
             name: "g".into(),
             command: "git status".into(),
+            platforms: vec![],
         }],
         post_apply_scripts: vec![],
         pre_apply_scripts: vec![],
@@ -7553,6 +7595,7 @@ fn generate_powershell_env_escapes_single_quotes() {
     let env = vec![crate::config::EnvVar {
         name: "MSG".into(),
         value: "it's a test".into(),
+        platforms: vec![],
     }];
     let content = super::generate_powershell_env_content(&env, &[], None, &Default::default());
     // Single quotes in values are doubled in PS
@@ -7564,6 +7607,7 @@ fn generate_fish_env_escapes_single_quotes() {
     let env = vec![crate::config::EnvVar {
         name: "MSG".into(),
         value: "it's a test".into(),
+        platforms: vec![],
     }];
     let content = super::generate_fish_env_content(&env, &[], None, &Default::default());
     assert!(content.contains("set -gx MSG 'it\\'s a test'"));
@@ -11503,15 +11547,18 @@ fn generate_fish_env_content_basic() {
         crate::config::EnvVar {
             name: "EDITOR".into(),
             value: "nvim".into(),
+            platforms: vec![],
         },
         crate::config::EnvVar {
             name: "CARGO_HOME".into(),
             value: "/home/user/.cargo".into(),
+            platforms: vec![],
         },
     ];
     let aliases = vec![crate::config::ShellAlias {
         name: "g".into(),
         command: "git".into(),
+        platforms: vec![],
     }];
     let content = super::generate_fish_env_content(&env, &aliases, None, &Default::default());
     assert!(content.starts_with("# managed by cfgd"));
@@ -11525,6 +11572,7 @@ fn generate_powershell_env_content_with_env_ref() {
     let env = vec![crate::config::EnvVar {
         name: "MY_PATH".into(),
         value: r"C:\tools;$env:PATH".into(),
+        platforms: vec![],
     }];
     let content = super::generate_powershell_env_content(&env, &[], None, &Default::default());
     // Contains $env: so should be double-quoted
@@ -11541,6 +11589,7 @@ fn generate_powershell_env_function_alias() {
     let aliases = vec![crate::config::ShellAlias {
         name: "ll".into(),
         command: "Get-ChildItem -Force".into(),
+        platforms: vec![],
     }];
     let content = super::generate_powershell_env_content(&[], &aliases, None, &Default::default());
     assert!(content.contains("function ll {"));
@@ -11553,6 +11602,7 @@ fn generate_fish_env_path_splitting() {
     let env = vec![crate::config::EnvVar {
         name: "PATH".into(),
         value: "/usr/bin:/usr/local/bin:$PATH".into(),
+        platforms: vec![],
     }];
     let content = super::generate_fish_env_content(
         &env,
@@ -12193,10 +12243,12 @@ fn env_verify_results_reports_matching_alias_and_env_var_as_current() {
     let env = vec![EnvVar {
         name: "EDITOR".to_string(),
         value: "nvim".to_string(),
+        platforms: vec![],
     }];
     let aliases = vec![ShellAlias {
         name: "ll".to_string(),
         command: "ls -la".to_string(),
+        platforms: vec![],
     }];
 
     // Seed the primary managed file exactly as `apply` would generate it, so
@@ -12237,10 +12289,12 @@ fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouc
     let env = vec![EnvVar {
         name: "EDITOR".to_string(),
         value: "nvim".to_string(),
+        platforms: vec![],
     }];
     let aliases = vec![ShellAlias {
         name: "ll".to_string(),
         command: "ls -la".to_string(),
+        platforms: vec![],
     }];
 
     // Generate the real baseline, then hand-edit only the alias's command —
@@ -12257,6 +12311,7 @@ fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouc
     let hand_edited = ShellAlias {
         name: "ll".to_string(),
         command: "ls -lah".to_string(),
+        platforms: vec![],
     };
     let hand_edited_line =
         super::env_files::primary_alias_line(&hand_edited, platform, &Default::default())
@@ -12307,6 +12362,7 @@ fn verify_env_persists_drift_for_a_hand_edited_alias() {
     let aliases = vec![ShellAlias {
         name: "ll".to_string(),
         command: "ls -la".to_string(),
+        platforms: vec![],
     }];
     let (path, content) = primary_managed_env_target(tmp_home.path(), &[], &aliases);
     let platform = EnvPlatform::current();
@@ -12316,6 +12372,7 @@ fn verify_env_persists_drift_for_a_hand_edited_alias() {
     let hand_edited = ShellAlias {
         name: "ll".to_string(),
         command: "ls -lah".to_string(),
+        platforms: vec![],
     };
     let hand_edited_line =
         super::env_files::primary_alias_line(&hand_edited, platform, &Default::default())
@@ -12370,11 +12427,13 @@ fn verify_env_never_persists_the_declared_value_only_the_opaque_marker() {
     let env = vec![EnvVar {
         name: "API_TOKEN".to_string(),
         value: "sk-super-secret-value".to_string(),
+        platforms: vec![],
     }];
     let aliases = vec![ShellAlias {
         name: "deploy".to_string(),
         command: "curl -H 'Authorization: Bearer sk-super-secret-value' https://example.com"
             .to_string(),
+        platforms: vec![],
     }];
     // The primary managed file (whichever dialect this platform writes)
     // exists but carries neither declared line — an absent file is left to
@@ -12452,10 +12511,12 @@ fn a_drifted_env_row_shows_the_line_the_file_holds_against_the_declared_one() {
     let declared = vec![EnvVar {
         name: "EDITOR".to_string(),
         value: "nvim".to_string(),
+        platforms: vec![],
     }];
     let edited = vec![EnvVar {
         name: "EDITOR".to_string(),
         value: "emacs".to_string(),
+        platforms: vec![],
     }];
     // Both lines come from production's own renderer rather than a POSIX
     // literal, so the fixture holds whatever dialect this platform writes.
@@ -12495,10 +12556,12 @@ fn one_merged_env_view_answers_every_row_of_a_report() {
     let env = vec![EnvVar {
         name: "EDITOR".to_string(),
         value: "nvim".to_string(),
+        platforms: vec![],
     }];
     let aliases = vec![ShellAlias {
         name: "ll".to_string(),
         command: "ls -lah".to_string(),
+        platforms: vec![],
     }];
     let view = super::verify::MergedEnvItems::new(&env, &aliases, &Default::default(), &[], &[]);
 
@@ -12531,6 +12594,7 @@ fn an_env_item_the_file_does_not_hold_reads_as_the_shared_absence_word() {
     let declared = vec![EnvVar {
         name: "EDITOR".to_string(),
         value: "nvim".to_string(),
+        platforms: vec![],
     }];
     let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
     std::fs::write(path, format!("{ENV_FILE_HEADER}\n")).unwrap();
@@ -12577,6 +12641,7 @@ fn an_unreadable_managed_env_file_recomputes_nothing_rather_than_claiming_absenc
     let declared = vec![EnvVar {
         name: "EDITOR".to_string(),
         value: "nvim".to_string(),
+        platforms: vec![],
     }];
     let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
     std::fs::write(&path, format!("{ENV_FILE_HEADER}\n")).unwrap();
@@ -12618,10 +12683,12 @@ fn a_successful_env_apply_resolves_the_per_item_rows_it_converged() {
     resolved.merged.env = vec![EnvVar {
         name: "EDITOR".to_string(),
         value: "nvim".to_string(),
+        platforms: vec![],
     }];
     resolved.merged.aliases = vec![ShellAlias {
         name: "ll".to_string(),
         command: "ls -la".to_string(),
+        platforms: vec![],
     }];
     resolved.merged.env_scope = EnvScope::Interactive;
 
@@ -12703,10 +12770,12 @@ fn merge_module_env_aliases_combines_profile_and_modules() {
     let profile_env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "vim".into(),
+        platforms: vec![],
     }];
     let profile_aliases = vec![crate::config::ShellAlias {
         name: "g".into(),
         command: "git".into(),
+        platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
         name: "test".to_string(),
@@ -12715,10 +12784,12 @@ fn merge_module_env_aliases_combines_profile_and_modules() {
         env: vec![crate::config::EnvVar {
             name: "PAGER".into(),
             value: "less".into(),
+            platforms: vec![],
         }],
         aliases: vec![crate::config::ShellAlias {
             name: "ll".into(),
             command: "ls -la".into(),
+            platforms: vec![],
         }],
         post_apply_scripts: vec![],
         pre_apply_scripts: Vec::new(),
@@ -12754,6 +12825,7 @@ fn merge_module_env_aliases_module_overrides_profile() {
     let profile_env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "vim".into(),
+        platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
         name: "test".to_string(),
@@ -12762,6 +12834,7 @@ fn merge_module_env_aliases_module_overrides_profile() {
         env: vec![crate::config::EnvVar {
             name: "EDITOR".into(),
             value: "nvim".into(),
+            platforms: vec![],
         }],
         aliases: vec![],
         post_apply_scripts: vec![],
@@ -15662,24 +15735,29 @@ fn every_managed_env_file_counts_its_own_lines() {
         EnvVar {
             name: "EDITOR".to_string(),
             value: "nvim".to_string(),
+            platforms: vec![],
         },
         EnvVar {
             name: "PAGER".to_string(),
             value: "less".to_string(),
+            platforms: vec![],
         },
         EnvVar {
             name: "BAD NAME".to_string(),
             value: "x".to_string(),
+            platforms: vec![],
         },
     ];
     let aliases = vec![
         ShellAlias {
             name: "v".to_string(),
             command: "nvim".to_string(),
+            platforms: vec![],
         },
         ShellAlias {
             name: "bad name".to_string(),
             command: "true".to_string(),
+            platforms: vec![],
         },
     ];
     let counts: std::collections::HashMap<String, (usize, usize)> = env_targets(
@@ -15978,6 +16056,7 @@ fn apply_reports_one_result_per_env_surface_when_env_and_bootstrap_coincide() {
     resolved.merged.env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
     // The default `EnvScope::All` also plans a live-session refresh, and this
     // test applies unfiltered — that action shells out to the developer's real
@@ -16095,6 +16174,7 @@ fn plan_env_all_scope_appends_a_live_session_refresh_after_the_file_surfaces() {
     resolved.merged.env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
     resolved.merged.env_scope = crate::config::EnvScope::All;
 
@@ -16942,6 +17022,7 @@ fn apply_resolve_env_action_collects_secret_into_env_actions() {
     resolved.merged.env.push(crate::config::EnvVar {
         name: "API_TOKEN".to_string(),
         value: String::new(),
+        platforms: vec![],
     });
     // Under the default `EnvScope::All` the secret-env regeneration also plans a
     // live-session refresh, which would publish the resolved secret into the
@@ -18232,6 +18313,7 @@ fn one_env() -> Vec<EnvVar> {
     vec![EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }]
 }
 
@@ -18459,10 +18541,12 @@ fn environment_d_content_is_key_value_not_shell() {
         EnvVar {
             name: "EDITOR".into(),
             value: "nvim".into(),
+            platforms: vec![],
         },
         EnvVar {
             name: "PATH".into(),
             value: "/usr/bin:/bin".into(),
+            platforms: vec![],
         },
     ];
     let content = generate_environment_d_content(&env);
@@ -18480,6 +18564,7 @@ fn environment_d_content_quotes_a_value_carrying_a_newline() {
         // Unquoted, the newline ends the assignment and the tail stands as a
         // second one — systemd would put LD_PRELOAD in the user's session.
         value: "a\nLD_PRELOAD=/evil.so".into(),
+        platforms: vec![],
     }];
     let content = generate_environment_d_content(&env);
     assert!(
@@ -18494,6 +18579,7 @@ fn environment_d_content_re_supplies_an_embedded_quote() {
     let env = vec![EnvVar {
         name: "Q".into(),
         value: "it's".into(),
+        platforms: vec![],
     }];
     let content = generate_environment_d_content(&env);
     assert!(
@@ -18507,6 +18593,7 @@ fn environment_d_content_skips_unsafe_names() {
     let env = vec![EnvVar {
         name: "BAD NAME".into(),
         value: "x".into(),
+        platforms: vec![],
     }];
     let content = generate_environment_d_content(&env);
     assert!(!content.contains("BAD NAME"));
@@ -19489,6 +19576,7 @@ fn reconciler_env_surfaces_resolve_against_the_home_it_was_built_with() {
     let env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
 
     let actions = reconciler
@@ -25147,6 +25235,7 @@ fn an_env_declaring_module_with_converged_files_still_runs_hooks() {
     module.env.push(crate::config::EnvVar {
         name: "FOO".to_string(),
         value: "bar".to_string(),
+        platforms: vec![],
     });
 
     let plan = plan_modules_recorded(vec![module], &[("shellrc", &tgt.join("rc"))]);
@@ -25201,6 +25290,7 @@ fn a_converged_env_declaring_modules_hooks_are_deferred_not_dropped() {
     module.env.push(crate::config::EnvVar {
         name: "FOO".to_string(),
         value: "bar".to_string(),
+        platforms: vec![],
     });
     let (actions, gated) = reconciler.plan_modules(
         std::slice::from_ref(&module),
@@ -25246,10 +25336,12 @@ fn a_converged_env_surface_plans_no_env_actions() {
     let env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
     let aliases = vec![crate::config::ShellAlias {
         name: "v".into(),
         command: "nvim".into(),
+        platforms: vec![],
     }];
     let plan = || {
         Reconciler::plan_env_with_home(
@@ -25322,6 +25414,7 @@ fn a_converged_env_declaring_module_goes_fully_quiet_once_the_surface_converges(
         module.env.push(crate::config::EnvVar {
             name: "FOO".to_string(),
             value: "bar".to_string(),
+            platforms: vec![],
         });
         module
     };
@@ -25435,6 +25528,7 @@ impl EnvHookGateFixture {
         module.env.push(crate::config::EnvVar {
             name: "FOO".to_string(),
             value: foo_value.to_string(),
+            platforms: vec![],
         });
         module
     }
@@ -25497,6 +25591,7 @@ fn another_layers_env_change_does_not_revive_a_converged_modules_hooks() {
     resolved.merged.aliases.push(crate::config::ShellAlias {
         name: "catn".to_string(),
         command: "cat -n".to_string(),
+        platforms: vec![],
     });
     let plan = reconciler
         .plan(
@@ -25611,6 +25706,7 @@ fn a_modules_own_env_entry_deletion_revives_its_hooks() {
     with_bar.env.push(crate::config::EnvVar {
         name: "BAR".to_string(),
         value: "baz".to_string(),
+        platforms: vec![],
     });
     fx.converge_env(&reconciler, &resolved, with_bar);
 
@@ -25655,6 +25751,7 @@ fn a_profile_layer_deleting_its_alias_revives_converged_modules_hooks() {
     resolved.merged.aliases.push(crate::config::ShellAlias {
         name: "catn".to_string(),
         command: "cat -n".to_string(),
+        platforms: vec![],
     });
     fx.converge_env(&reconciler, &resolved, fx.module("bar"));
 
@@ -25696,6 +25793,7 @@ fn a_script_and_env_module_keeps_its_hooks_unconditionally() {
     module.env.push(crate::config::EnvVar {
         name: "FOO".to_string(),
         value: "bar".to_string(),
+        platforms: vec![],
     });
 
     let (actions, gated) = reconciler.plan_modules(
@@ -25921,6 +26019,7 @@ fn every_generated_env_line_names_the_owner_that_declared_it() {
                     .map(|(n, v)| crate::config::EnvVar {
                         name: n.into(),
                         value: v.into(),
+                        platforms: vec![],
                     })
                     .collect(),
                 aliases: aliases
@@ -25928,6 +26027,7 @@ fn every_generated_env_line_names_the_owner_that_declared_it() {
                     .map(|(n, c)| crate::config::ShellAlias {
                         name: n.into(),
                         command: c.into(),
+                        platforms: vec![],
                     })
                     .collect(),
                 ..Default::default()
@@ -25946,10 +26046,12 @@ fn every_generated_env_line_names_the_owner_that_declared_it() {
     module.env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
     module.aliases = vec![crate::config::ShellAlias {
         name: "v".into(),
         command: "nvim".into(),
+        platforms: vec![],
     }];
 
     let (env, aliases, origins) = super::merge_module_env_aliases(
@@ -26047,6 +26149,105 @@ fn every_generated_env_line_names_the_owner_that_declared_it() {
     }
 }
 
+/// The `PATH` declarations that survive on a host CONCATENATE, and the one line
+/// they fold into names every layer that contributed to it. Keeping only the
+/// last one is what made a per-platform `PATH` entry unusable: the gated
+/// declaration and the common one both apply on the machine that matches both,
+/// and last-writer-wins silently discarded whichever came first.
+#[test]
+#[serial_test::serial]
+fn every_surviving_path_declaration_reaches_the_one_generated_line() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+
+    let layer = |name: &str, path: &str| crate::config::ProfileLayer {
+        source: crate::config::LOCAL_LAYER.to_string(),
+        profile_name: name.to_string(),
+        priority: 1000,
+        policy: crate::config::LayerPolicy::Local,
+        spec: crate::config::ProfileSpec {
+            env: vec![crate::config::EnvVar {
+                name: "PATH".into(),
+                value: path.into(),
+                platforms: vec![],
+            }],
+            ..Default::default()
+        },
+    };
+    let merged = crate::config::merge_layers(&[
+        layer("base", "$HOME/.local/bin:$PATH"),
+        layer("work", "$HOME/go/bin:$PATH"),
+    ]);
+    assert_eq!(
+        merged.env.iter().filter(|e| e.name == "PATH").count(),
+        1,
+        "the fold leaves one PATH entry, which is what `fold_path_line`'s single lookup reads"
+    );
+
+    let mut module = crate::test_helpers::make_resolved_module("nvim");
+    module.env = vec![crate::config::EnvVar {
+        name: "PATH".into(),
+        value: "$HOME/.cargo/bin:$PATH".into(),
+        platforms: vec![],
+    }];
+
+    let (env, aliases, origins) = super::merge_module_env_aliases(
+        &merged.env,
+        &merged.aliases,
+        &merged.entry_owners,
+        std::slice::from_ref(&module),
+    );
+    assert_eq!(
+        env.iter().filter(|e| e.name == "PATH").count(),
+        1,
+        "a module's PATH joins the profile's rather than replacing it"
+    );
+
+    let path_dirs = vec![ManagerPathDir::new(
+        "brew",
+        "/home/linuxbrew/.linuxbrew/bin",
+    )];
+    let folded = super::env_engine::primary_folded_path(
+        &env,
+        &path_dirs,
+        &origins,
+        tmp_home.path(),
+        super::env_engine::EnvPlatform::Linux,
+    )
+    .expect("a declared PATH folds into a line");
+    let content = super::generate_env_file_content(&env, &aliases, Some(&folded), &origins);
+
+    let line = content
+        .lines()
+        .find(|l| l.contains("PATH="))
+        .unwrap_or_else(|| panic!("one PATH line: {content}"));
+    assert_eq!(
+        content.lines().filter(|l| l.contains("PATH=")).count(),
+        1,
+        "one variable, one assignment: {content}"
+    );
+    assert!(
+        line.contains("$HOME/.local/bin:$HOME/go/bin:$HOME/.cargo/bin:"),
+        "every declaration contributes, in declaration order: {line}"
+    );
+    assert_eq!(
+        line.matches("$PATH").count(),
+        1,
+        "the ambient reference is written once: {line}"
+    );
+    // The comment names every contributing LAYER, not just the last writer —
+    // a single owner on a value three layers built would credit one of them
+    // for directories the others put there.
+    for owner in [
+        "profile:base",
+        "profile:work",
+        "module:nvim",
+        "manager:brew",
+    ] {
+        assert!(line.contains(owner), "the comment names {owner}: {line}");
+    }
+}
+
 /// The provenance comment is part of the line `verify` matches, so a file
 /// written with it must read back as current rather than as permanent drift.
 /// Every owner kind is on the file at once — profile layer, module and the
@@ -26062,6 +26263,7 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
     let profile_env = vec![crate::config::EnvVar {
         name: "PAGER".into(),
         value: "less".into(),
+        platforms: vec![],
     }];
     let layer_owners = {
         let mut o = crate::config::EntryOwners::default();
@@ -26074,10 +26276,12 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
     module.env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
         value: "nvim".into(),
+        platforms: vec![],
     }];
     module.aliases = vec![crate::config::ShellAlias {
         name: "v".into(),
         command: "nvim".into(),
+        platforms: vec![],
     }];
     let modules = vec![module];
 

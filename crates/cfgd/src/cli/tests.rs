@@ -23737,6 +23737,7 @@ fn count_policy_items_counts_files_env_and_system_independently() {
         env: vec![EnvVar {
             name: "FOO".to_string(),
             value: "bar".to_string(),
+            platforms: vec![],
         }],
         system,
         ..Default::default()
@@ -23776,6 +23777,7 @@ fn count_policy_items_sums_packages_files_env_and_system() {
         env: vec![cfgd_core::config::EnvVar {
             name: "X".to_string(),
             value: "1".to_string(),
+            platforms: vec![],
         }],
         system,
         ..Default::default()
@@ -23792,6 +23794,7 @@ fn count_policy_items_packages_none_does_not_panic() {
         env: vec![cfgd_core::config::EnvVar {
             name: "X".to_string(),
             value: "1".to_string(),
+            platforms: vec![],
         }],
         ..Default::default()
     };

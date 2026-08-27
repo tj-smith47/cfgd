@@ -522,6 +522,7 @@ fn build_patches_with_env_vars() {
                 name: "EDITOR".to_string(),
                 value: "vim".to_string(),
                 append: false,
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -577,6 +578,7 @@ fn build_patches_with_append_env_var() {
                 name: "PATH".to_string(),
                 value: "/cfgd-modules/tools/bin".to_string(),
                 append: true,
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -1235,6 +1237,7 @@ fn build_patches_multiple_modules_with_env_vars() {
                     name: "MOD_A_PATH".to_string(),
                     value: "/cfgd-modules/mod-a/bin".to_string(),
                     append: false,
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1248,11 +1251,13 @@ fn build_patches_multiple_modules_with_env_vars() {
                         name: "MOD_B_HOME".to_string(),
                         value: "/cfgd-modules/mod-b".to_string(),
                         append: false,
+                        platforms: vec![],
                     },
                     crate::crds::ModuleEnvVar {
                         name: "PATH".to_string(),
                         value: "/cfgd-modules/mod-b/bin".to_string(),
                         append: true,
+                        platforms: vec![],
                     },
                 ],
                 ..Default::default()
@@ -1343,6 +1348,7 @@ fn build_patches_multiple_containers_with_env() {
                 name: "CONFIG".to_string(),
                 value: "/cfgd-modules/shared/config".to_string(),
                 append: false,
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -1938,5 +1944,56 @@ fn load_private_key_malformed_pem_block_returns_parse_error() {
     assert!(
         err.contains("malformed.key"),
         "error must include the offending path: {err}"
+    );
+}
+
+/// A Module's env entry can carry the same `platforms:` gate a local
+/// `spec.env[]` entry does, and the injecting webhook honours it rather than
+/// advertising a field it ignores. A pod is a Linux container: the only tag the
+/// webhook can answer is `linux`, so an entry gated to anything else is not
+/// injected.
+#[test]
+fn build_patches_skips_an_env_entry_gated_off_a_linux_container() {
+    let pod = serde_json::json!({
+        "spec": {
+            "containers": [
+                {"name": "app", "image": "busybox"}
+            ],
+            "volumes": []
+        }
+    });
+    let entry = |name: &str, platforms: &[&str]| crate::crds::ModuleEnvVar {
+        name: name.to_string(),
+        value: "/cfgd-modules/mod/bin".to_string(),
+        append: false,
+        platforms: platforms.iter().map(|t| t.to_string()).collect(),
+    };
+    let modules = vec![(
+        "mod".to_string(),
+        "1.0".to_string(),
+        ModuleSpec {
+            env: vec![
+                entry("UNGATED", &[]),
+                entry("LINUX_ONLY", &["linux"]),
+                entry("LINUX_AMONG_OTHERS", &["macos", "linux"]),
+                entry("MAC_ONLY", &["macos"]),
+                // A distro or arch tag is not something a pod can answer, so an
+                // entry gated on one alone is withheld rather than guessed at.
+                entry("UBUNTU_ONLY", &["ubuntu"]),
+            ],
+            ..Default::default()
+        },
+    )];
+    let patch_json = serde_json::to_string(&build_injection_patches(&pod, &modules)).unwrap();
+    assert!(patch_json.contains("UNGATED"), "{patch_json}");
+    assert!(patch_json.contains("LINUX_ONLY"), "{patch_json}");
+    assert!(patch_json.contains("LINUX_AMONG_OTHERS"), "{patch_json}");
+    assert!(
+        !patch_json.contains("MAC_ONLY"),
+        "an entry gated off Linux must not be injected: {patch_json}"
+    );
+    assert!(
+        !patch_json.contains("UBUNTU_ONLY"),
+        "a tag the webhook cannot answer withholds the entry: {patch_json}"
     );
 }

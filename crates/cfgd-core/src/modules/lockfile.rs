@@ -333,6 +333,15 @@ pub fn load_all_modules(
     Ok(modules)
 }
 
+/// A declared value with its own `platforms:` gate named after it, so a spec
+/// diff shows a gate that moved rather than reporting an unchanged value.
+fn gated(value: &str, entry: &impl crate::platform::PlatformGated) -> String {
+    match entry.platform_annotation() {
+        Some(tags) => format!("{value} ({tags})"),
+        None => value.to_string(),
+    }
+}
+
 /// Diff two module specs, returning a human-readable summary of changes.
 ///
 /// Each entry carries the [`Role`] the caller renders it with — `Ok` for an
@@ -414,59 +423,61 @@ pub fn diff_module_specs(
     // every new terminal, so it belongs on the approval surface next to a
     // post-apply script. Iterated in declaration order rather than through a
     // set difference so the approval output is stable between runs.
-    let old_env: HashMap<&str, &str> = old
+    // Compared on the DECLARED value, gate included: a `platforms:` list that
+    // moved changes which machines take the entry, which is a change to the
+    // module the approver is being asked to accept.
+    let old_env: HashMap<&str, String> = old
         .spec
         .env
         .iter()
-        .map(|e| (e.name.as_str(), e.value.as_str()))
+        .map(|e| (e.name.as_str(), gated(&e.value, e)))
         .collect();
-    let new_env: HashMap<&str, &str> = new
+    let new_env: HashMap<&str, String> = new
         .spec
         .env
         .iter()
-        .map(|e| (e.name.as_str(), e.value.as_str()))
+        .map(|e| (e.name.as_str(), gated(&e.value, e)))
         .collect();
     for ev in &new.spec.env {
+        let value = gated(&ev.value, ev);
         match old_env.get(ev.name.as_str()) {
-            None => changes.push((Role::Ok, format!("env added: {}={}", ev.name, ev.value))),
-            Some(prev) if *prev != ev.value.as_str() => changes.push((
+            None => changes.push((Role::Ok, format!("env added: {}={}", ev.name, value))),
+            Some(prev) if *prev != value => changes.push((
                 Role::Warn,
-                format!("env '{}': {} {} {}", ev.name, prev, arrow, ev.value),
+                format!("env '{}': {} {} {}", ev.name, prev, arrow, value),
             )),
             Some(_) => {}
         }
     }
     for ev in &old.spec.env {
         if !new_env.contains_key(ev.name.as_str()) {
-            changes.push((Role::Fail, format!("env removed: {}={}", ev.name, ev.value)));
+            changes.push((
+                Role::Fail,
+                format!("env removed: {}={}", ev.name, gated(&ev.value, ev)),
+            ));
         }
     }
 
     // Aliases
-    let old_aliases: HashMap<&str, &str> = old
+    let old_aliases: HashMap<&str, String> = old
         .spec
         .aliases
         .iter()
-        .map(|a| (a.name.as_str(), a.command.as_str()))
+        .map(|a| (a.name.as_str(), gated(&a.command, a)))
         .collect();
-    let new_aliases: HashMap<&str, &str> = new
+    let new_aliases: HashMap<&str, String> = new
         .spec
         .aliases
         .iter()
-        .map(|a| (a.name.as_str(), a.command.as_str()))
+        .map(|a| (a.name.as_str(), gated(&a.command, a)))
         .collect();
     for alias in &new.spec.aliases {
+        let command = gated(&alias.command, alias);
         match old_aliases.get(alias.name.as_str()) {
-            None => changes.push((
-                Role::Ok,
-                format!("alias added: {}={}", alias.name, alias.command),
-            )),
-            Some(prev) if *prev != alias.command.as_str() => changes.push((
+            None => changes.push((Role::Ok, format!("alias added: {}={}", alias.name, command))),
+            Some(prev) if *prev != command => changes.push((
                 Role::Warn,
-                format!(
-                    "alias '{}': {} {} {}",
-                    alias.name, prev, arrow, alias.command
-                ),
+                format!("alias '{}': {} {} {}", alias.name, prev, arrow, command),
             )),
             Some(_) => {}
         }
@@ -475,7 +486,11 @@ pub fn diff_module_specs(
         if !new_aliases.contains_key(alias.name.as_str()) {
             changes.push((
                 Role::Fail,
-                format!("alias removed: {}={}", alias.name, alias.command),
+                format!(
+                    "alias removed: {}={}",
+                    alias.name,
+                    gated(&alias.command, alias)
+                ),
             ));
         }
     }

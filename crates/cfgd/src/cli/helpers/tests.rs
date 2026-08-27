@@ -1371,11 +1371,13 @@ fn resolve_desired_state_module_only_isolates_every_profile_owned_field() {
             env: vec![config::EnvVar {
                 name: "RICH_VAR".to_string(),
                 value: "1".to_string(),
+                platforms: vec![],
             }],
             env_scope: config::EnvScope::Login,
             aliases: vec![config::ShellAlias {
                 name: "gs".to_string(),
                 command: "git status".to_string(),
+                platforms: vec![],
             }],
             packages: config::PackagesSpec {
                 pipx: vec!["some-tool".to_string()],
@@ -1514,6 +1516,7 @@ fn resolve_desired_state_with_profile_unions_module_and_keeps_every_profile_owne
             env: vec![config::EnvVar {
                 name: "RICH_VAR".to_string(),
                 value: "1".to_string(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -1544,6 +1547,7 @@ fn resolve_desired_state_with_profile_unions_module_and_keeps_every_profile_owne
         vec![config::EnvVar {
             name: "RICH_VAR".to_string(),
             value: "1".to_string(),
+            platforms: vec![],
         }],
         "--with-profile must not zero any profile-owned field"
     );

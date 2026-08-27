@@ -880,7 +880,11 @@ fn outranking_owner(owners: &config::EntryOwners, source: &str, resource: &str) 
         return None;
     };
     let winner = owners.env.get(rest)?;
-    (winner != &super::Owner::source(source).token()).then(|| winner.clone())
+    // `PATH` records every contributing layer, so "did this source win" is a
+    // membership question rather than an equality one: a source whose entries
+    // are IN the folded value is not outranked by the layers beside it.
+    let mine = super::Owner::source(source).token();
+    (!winner.split_whitespace().any(|token| token == mine)).then(|| winner.clone())
 }
 
 /// The tier word as it opens a decision row's subject, TitleCased to match
@@ -2133,6 +2137,7 @@ mod outranked_tests {
         let env = vec![config::EnvVar {
             name: name.to_string(),
             value: value.to_string(),
+            platforms: vec![],
         }];
         let spec = config::ProfileSpec {
             env: env.clone(),
@@ -2490,6 +2495,7 @@ mod fingerprint_gate_tests {
                     .map(|(name, value)| config::EnvVar {
                         name: name.to_string(),
                         value: value.to_string(),
+                        platforms: vec![],
                     })
                     .collect(),
                 ..Default::default()

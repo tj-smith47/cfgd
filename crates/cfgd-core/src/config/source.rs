@@ -355,6 +355,14 @@ pub struct EnvVar {
     /// Value assigned to the variable, exported verbatim into the shell
     /// environment.
     pub value: String,
+    /// Platform tags gating this entry alone. Empty means every platform the
+    /// declaring module or profile is not already gated off of. Tags are
+    /// matched against the machine's OS, distro, and arch; use `macos` for
+    /// macOS. An entry gated off this host is not part of its desired state at
+    /// all: it appears on no surface, exactly as a platform-filtered package
+    /// does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
 }
 
 impl<'de> Deserialize<'de> for EnvVar {
@@ -367,12 +375,18 @@ impl<'de> Deserialize<'de> for EnvVar {
         struct Raw {
             name: String,
             value: String,
+            #[serde(
+                default,
+                deserialize_with = "crate::platform::deserialize_platform_tags"
+            )]
+            platforms: Vec<String>,
         }
         let raw = Raw::deserialize(deserializer)?;
         crate::validate_env_var_user_name(&raw.name).map_err(serde::de::Error::custom)?;
         Ok(EnvVar {
             name: raw.name,
             value: raw.value,
+            platforms: raw.platforms,
         })
     }
 }
@@ -389,6 +403,14 @@ pub struct ShellAlias {
     /// reaches the shell exactly as declared. Required — an alias with no
     /// command has nothing to expand to.
     pub command: String,
+    /// Platform tags gating this entry alone. Empty means every platform the
+    /// declaring module or profile is not already gated off of. Tags are
+    /// matched against the machine's OS, distro, and arch; use `macos` for
+    /// macOS. An entry gated off this host is not part of its desired state at
+    /// all: it appears on no surface, exactly as a platform-filtered package
+    /// does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
 }
 
 impl<'de> Deserialize<'de> for ShellAlias {
@@ -401,13 +423,31 @@ impl<'de> Deserialize<'de> for ShellAlias {
         struct Raw {
             name: String,
             command: String,
+            #[serde(
+                default,
+                deserialize_with = "crate::platform::deserialize_platform_tags"
+            )]
+            platforms: Vec<String>,
         }
         let raw = Raw::deserialize(deserializer)?;
         crate::validate_alias_name(&raw.name).map_err(serde::de::Error::custom)?;
         Ok(ShellAlias {
             name: raw.name,
             command: raw.command,
+            platforms: raw.platforms,
         })
+    }
+}
+
+impl crate::platform::PlatformGated for EnvVar {
+    fn platforms(&self) -> &[String] {
+        &self.platforms
+    }
+}
+
+impl crate::platform::PlatformGated for ShellAlias {
+    fn platforms(&self) -> &[String] {
+        &self.platforms
     }
 }
 

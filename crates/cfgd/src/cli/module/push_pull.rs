@@ -262,11 +262,19 @@ pub(super) fn build_module_crd_json(
     let env: Vec<cfgd_crd::ModuleEnvVar> = env
         .iter()
         .map(|entry| {
-            let cfgd_core::config::EnvVar { name, value } = entry;
+            let cfgd_core::config::EnvVar {
+                name,
+                value,
+                platforms,
+            } = entry;
             cfgd_crd::ModuleEnvVar {
                 name: name.clone(),
                 value: value.clone(),
                 append: false, // local EnvVar has no append concept today
+                // Carried so a module round-trips through the registry
+                // unchanged, and so the pod-mutating webhook can honour the
+                // gate instead of injecting an entry the module gated off.
+                platforms: platforms.clone(),
             }
         })
         .collect();
@@ -1094,6 +1102,10 @@ spec:
   env:
     - name: FOO
       value: bar
+    - name: MAC_ONLY
+      value: yes
+      platforms:
+        - macos
   aliases:
     - name: ll
       command: ls -la
@@ -1262,8 +1274,19 @@ spec:
 
             assert_eq!(
                 spec["env"],
-                serde_json::json!([{ "name": "FOO", "value": "bar", "append": false }]),
-                "env vars must round-trip into the CRD's env field: {spec:?}"
+                serde_json::json!([
+                    { "name": "FOO", "value": "bar", "append": false },
+                    {
+                        "name": "MAC_ONLY",
+                        "value": "yes",
+                        "append": false,
+                        "platforms": ["macos"],
+                    },
+                ]),
+                "env vars round-trip into the CRD's env field, gate included, so a module \
+                 pushed to a registry comes back declaring what it declared — and so the \
+                 pod-mutating webhook can honour the gate rather than injecting an entry \
+                 the module gated off: {spec:?}"
             );
             assert_eq!(
                 spec["packages"][0]["platforms"],

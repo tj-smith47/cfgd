@@ -1709,10 +1709,12 @@ pub struct ProfileUpdateArgs {
     /// Files (repeatable, prefix with - to remove by target path)
     #[arg(long = "file", allow_hyphen_values = true)]
     pub files: Vec<String>,
-    /// Env vars as KEY=VALUE (repeatable, prefix with - to remove by key)
+    /// Env vars as KEY=VALUE (repeatable, prefix with - to remove by key —
+    /// removing takes every platform variant of that key)
     #[arg(long = "env", allow_hyphen_values = true)]
     pub env: Vec<String>,
-    /// Shell aliases as name=command (repeatable, prefix with - to remove by name)
+    /// Shell aliases as name=command (repeatable, prefix with - to remove by
+    /// name — removing takes every platform variant of that name)
     #[arg(long = "alias", allow_hyphen_values = true)]
     pub aliases: Vec<String>,
     /// System settings as key=value (repeatable, prefix with - to remove by key)
@@ -1866,10 +1868,12 @@ pub struct ModuleUpdateArgs {
     /// Files (repeatable, prefix with - to remove by target path)
     #[arg(long = "file", allow_hyphen_values = true)]
     pub files: Vec<String>,
-    /// Env vars as KEY=VALUE (repeatable, prefix with - to remove by key)
+    /// Env vars as KEY=VALUE (repeatable, prefix with - to remove by key —
+    /// removing takes every platform variant of that key)
     #[arg(long = "env", allow_hyphen_values = true)]
     pub env: Vec<String>,
-    /// Shell aliases as name=command (repeatable, prefix with - to remove by name)
+    /// Shell aliases as name=command (repeatable, prefix with - to remove by
+    /// name — removing takes every platform variant of that name)
     #[arg(long = "alias", allow_hyphen_values = true)]
     pub aliases: Vec<String>,
     /// Dependencies (repeatable, prefix with - to remove)

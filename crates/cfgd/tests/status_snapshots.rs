@@ -240,15 +240,18 @@ fn declared_surfaces(packages: usize, files: usize) -> ModuleSurfaces {
             EnvVar {
                 name: "PAGER".into(),
                 value: "less -R".into(),
+                platforms: vec![],
             },
             EnvVar {
                 name: "EDITOR".into(),
                 value: "nvim".into(),
+                platforms: vec![],
             },
         ],
         aliases: vec![ShellAlias {
             name: "gs".into(),
             command: "git status --short".into(),
+            platforms: vec![],
         }],
         scripts: vec![
             HookScripts {

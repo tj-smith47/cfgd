@@ -43,9 +43,21 @@ pub(super) fn merge_with_policy(
         } = &layer.spec;
 
         let layer_owner = layer.owner_token();
-        // Env: later overrides earlier by name (respecting priority ordering)
-        crate::merge_env(&mut merged.env, env);
-        merged.entry_owners.claim(&layer_owner, env, aliases);
+        // Platform-gated entries are filtered BEFORE the fold, for the same
+        // reason `config::merge_layers` filters before its own: an entry that
+        // does not apply here must not displace one that does.
+        let platform = crate::platform::Platform::current();
+        let env: Vec<crate::config::EnvVar> = crate::platform::applicable_here(env, platform)
+            .cloned()
+            .collect();
+        let aliases: Vec<crate::config::ShellAlias> =
+            crate::platform::applicable_here(aliases, platform)
+                .cloned()
+                .collect();
+        // Env: later overrides earlier by name (respecting priority ordering);
+        // `PATH` concatenates.
+        crate::fold_env_layer(&mut merged.env, &env, crate::PATH_LIST_SEPARATOR);
+        merged.entry_owners.claim(&layer_owner, &env, &aliases);
         for secret in secrets {
             merged.entry_owners.claim_env_names(
                 &layer_owner,
@@ -63,7 +75,7 @@ pub(super) fn merge_with_policy(
         }
 
         // Aliases: later overrides earlier by name
-        crate::merge_aliases(&mut merged.aliases, aliases);
+        crate::merge_aliases(&mut merged.aliases, &aliases);
 
         // Packages: union
         if let Some(pkgs) = packages {

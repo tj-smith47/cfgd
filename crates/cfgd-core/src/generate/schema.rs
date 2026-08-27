@@ -89,6 +89,14 @@ spec:
   env:
     - name: EDITOR              # required, string — variable name
       value: nvim               # required, string — variable value
+    # optional, list of strings — platform filter for THIS entry alone.
+    # Same vocabulary as spec.platforms: OS (linux, macos, freebsd, windows),
+    # distro, or arch. An entry gated off the current host is absent entirely.
+    # Two surviving PATH declarations concatenate; every other name is
+    # last-writer-wins.
+    - name: PATH
+      value: /opt/homebrew/bin:$PATH
+      platforms: [macos]
 
   # Shell aliases set by this module.
   # Merged with profile aliases; module wins on name conflict.
@@ -97,6 +105,11 @@ spec:
   aliases:
     - name: vim                 # required, string — alias name
       command: nvim             # required, string — alias command
+    # optional, list of strings — platform filter for THIS entry alone,
+    # same vocabulary as spec.platforms.
+    - name: pbcopy
+      command: xclip -selection clipboard
+      platforms: [linux]
 
   # System configurator settings contributed by this module.
   # Deep-merged into the profile system map; module values override profile values at leaf level.
@@ -157,6 +170,13 @@ spec:
       value: nvim               # required, string — variable value
     - name: GIT_AUTHOR_NAME
       value: Jane Doe
+    # optional, list of strings — platform filter for THIS entry alone.
+    # Values: OS (linux, macos, freebsd, windows), distro, or arch. An entry
+    # gated off the current host is absent entirely. Two surviving PATH
+    # declarations concatenate; every other name is last-writer-wins.
+    - name: PATH
+      value: /opt/homebrew/bin:$PATH
+      platforms: [macos]
 
   # Shell aliases — name/command pairs written to ~/.cfgd.env (bash/zsh) or fish conf.d.
   # Later profile overrides earlier for the same name. Module aliases win over profile aliases.
@@ -166,6 +186,11 @@ spec:
       command: nvim             # required, string — alias command
     - name: k
       command: kubectl
+    # optional, list of strings — platform filter for THIS entry alone,
+    # same vocabulary as the env entry above.
+    - name: pbcopy
+      command: xclip -selection clipboard
+      platforms: [linux]
 
   # How far spec.env exports reach for the current user. Omit to inherit (resolves to All).
   # All = every user context (interactive + login shells, systemd --user / Wayland GUI,

@@ -537,17 +537,6 @@ impl FoldedPath {
     }
 }
 
-/// Whether a declared `PATH` segment references the PATH the shell already has,
-/// in any dialect's spelling. A declaration is authored once and rendered into
-/// every dialect, so `$PATH` in a value that ends up in a PowerShell file has
-/// to become `$env:PATH` there rather than a literal nobody set.
-fn is_inherited_path_ref(segment: &str) -> bool {
-    matches!(
-        segment.trim().to_ascii_uppercase().as_str(),
-        "$PATH" | "${PATH}" | "$ENV:PATH" | "%PATH%"
-    )
-}
-
 /// The ONE derivation of a generated file's `PATH` line, over both producers.
 ///
 /// Declared entries come first, in declared order, because they are the user's
@@ -606,7 +595,7 @@ pub(super) fn fold_path_line(
         if segment.is_empty() {
             continue;
         }
-        if is_inherited_path_ref(segment) {
+        if crate::is_inherited_path_ref(segment) {
             parts.extend(derived.iter().map(|d| PathPart::Dir(d.dir.clone())));
             spliced = true;
             parts.push(PathPart::Inherited);
@@ -954,6 +943,7 @@ mod tests {
         EnvVar {
             name: name.to_string(),
             value: value.to_string(),
+            platforms: vec![],
         }
     }
 

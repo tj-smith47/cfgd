@@ -82,7 +82,13 @@ pub fn compose(
         // Collect source-specific env for template sandboxing
         let mut env: Vec<EnvVar> = Vec::new();
         for layer in &input.layers {
-            crate::merge_env(&mut env, &layer.spec.env);
+            let applicable: Vec<EnvVar> = crate::platform::applicable_here(
+                &layer.spec.env,
+                crate::platform::Platform::current(),
+            )
+            .cloned()
+            .collect();
+            crate::fold_env_layer(&mut env, &applicable, crate::PATH_LIST_SEPARATOR);
         }
         source_env.insert(input.source_name.clone(), env);
 

@@ -636,6 +636,7 @@ fn module_validate_accepts_full() {
             name: "EDITOR".to_string(),
             value: "vim".to_string(),
             append: false,
+            platforms: vec![],
         }],
         depends: vec!["base".to_string()],
         oci_artifact: Some("registry.example.com/modules/vim:v1".to_string()),

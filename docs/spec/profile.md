@@ -182,9 +182,9 @@ spec:
 |-------|------|----------|---------|-------------|
 | `inherits` | list of string | No | `[]` | Parent profiles to inherit from. Resolved depth-first, left-to-right. |
 | `modules` | list of string | No | `[]` | Module names to activate. Modules are resolved and applied before profile-level items. |
-| `env` | list | No | `[]` | Environment variables to export. See [spec.env[]](#specenv). |
+| `env` | list | No | `[]` | Environment variables to export, each optionally gated to named platforms. See [spec.env[]](#specenv). |
 | `envScope` | string | No | `All` | How far `spec.env` exports reach for the current user. See [spec.envScope](#specenvscope). |
-| `aliases` | list | No | `[]` | Shell aliases to install. See [spec.aliases[]](#specaliases). |
+| `aliases` | list | No | `[]` | Shell aliases to install, each optionally gated to named platforms. See [spec.aliases[]](#specaliases). |
 | `packages` | object | No | | Package declarations by manager. See [spec.packages](#specpackages). |
 | `files` | object | No | | Managed files and permissions. See [spec.files](#specfiles). |
 | `system` | map | No | `{}` | System configurator settings. Keys map to configurator names; values are configurator-specific. See [spec.system](#specsystem). |
@@ -224,9 +224,19 @@ instead; the two differ by *scope of affected users*, not by which shells.
 |-------|------|----------|---------|-------------|
 | `name` | string | Yes | | Environment variable name (e.g. `EDITOR`). |
 | `value` | string | Yes | | Value to assign. |
+| `platforms` | list of string | No | `[]` | Platform tags gating this entry alone. Same vocabulary as a module's [`spec.platforms`](module.md#specplatforms). |
 
 When profiles are merged via `inherits`, a variable defined in a child profile overrides the same
 variable from a parent.
+
+`platforms` gates one entry rather than the whole profile: when it is non-empty and the current
+platform matches none of the tags, the entry is not part of this machine's desired state at all
+(it appears on no surface, exactly as a platform-filtered package does). Omit it to export the
+variable everywhere.
+
+`PATH` is the one name whose surviving declarations **concatenate** rather than replace: a common
+entry and a gated one both apply on a machine that matches both, and the folded value keeps them
+in declaration order with `$PATH` written once. Every other name is last-writer-wins.
 
 **Example:**
 ```yaml
@@ -235,7 +245,20 @@ env:
     value: nvim
   - name: GOPATH
     value: ~/go
+  - name: PATH
+    value: $HOME/.local/bin:$PATH
+  # only on macOS: these Homebrew prefixes do not exist elsewhere
+  - name: PATH
+    value: /opt/homebrew/opt/ruby/bin:$PATH
+    platforms: [macos]
+  - name: BROWSER
+    value: xdg-open
+    platforms: [linux, freebsd]
 ```
+
+On macOS the two `PATH` declarations fold into one line
+(`$HOME/.local/bin:/opt/homebrew/opt/ruby/bin:$PATH`) and `BROWSER` is absent; on Linux the second
+`PATH` declaration is absent and `BROWSER` is exported.
 
 ---
 
@@ -297,6 +320,10 @@ Shell aliases to install.
 |-------|------|----------|---------|-------------|
 | `name` | string | Yes | | Alias name (the command you type). |
 | `command` | string | Yes | | Shell command the alias expands to. |
+| `platforms` | list of string | No | `[]` | Platform tags gating this entry alone. Same vocabulary as a module's [`spec.platforms`](module.md#specplatforms). |
+
+`platforms` gates one alias rather than the whole profile, exactly as [`spec.env[]`](#specenv)'s
+does: an alias gated off the current host is not installed and appears on no surface.
 
 **Example:**
 ```yaml
@@ -305,6 +332,10 @@ aliases:
     command: ls -la
   - name: gs
     command: git status
+  # Linux has no pbcopy; this stands in for it
+  - name: pbcopy
+    command: xclip -selection clipboard
+    platforms: [linux]
 ```
 
 ---

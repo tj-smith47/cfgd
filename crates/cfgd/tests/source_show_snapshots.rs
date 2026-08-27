@@ -130,6 +130,7 @@ fn happy_manifest() -> ConfigSourceDocument {
                     env: vec![EnvVar {
                         name: "EDITOR".into(),
                         value: "nvim".into(),
+                        platforms: vec![],
                     }],
                     ..PolicyItems::default()
                 },
@@ -464,6 +465,7 @@ fn manifest_with_locked_policy() -> ConfigSourceDocument {
                     env: vec![EnvVar {
                         name: "CORP_PROXY".into(),
                         value: "http://proxy.corp.example.com:8080".into(),
+                        platforms: vec![],
                     }],
                     ..PolicyItems::default()
                 },

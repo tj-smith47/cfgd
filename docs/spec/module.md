@@ -128,8 +128,8 @@ cfgd module show nvim -o jsonpath='{.metadata.version}'   # → 1.4.0
 | `platforms` | list of string | No | `[]` | Platform filter for the whole module. When set and the current platform matches none, the entire module is skipped. See [spec.platforms[]](#specplatforms). |
 | `packages` | list | No | `[]` | Cross-platform package declarations. See [spec.packages[]](#specpackages). |
 | `files` | list | No | `[]` | Files to deploy from the module directory to the machine. See [spec.files[]](#specfiles). |
-| `env` | list | No | `[]` | Environment variables to export. See [spec.env[]](#specenv). |
-| `aliases` | list | No | `[]` | Shell aliases to install. See [spec.aliases[]](#specaliases). |
+| `env` | list | No | `[]` | Environment variables to export, each optionally gated to named platforms. See [spec.env[]](#specenv). |
+| `aliases` | list | No | `[]` | Shell aliases to install, each optionally gated to named platforms. See [spec.aliases[]](#specaliases). |
 | `system` | map | No | `{}` | System configurator settings. Keys are configurator names, values are configurator-specific config. Same schema as profile `spec.system`. See [spec.system](#specsystem). |
 | `scripts` | object | No | | Lifecycle scripts. See [spec.scripts](#specscripts). |
 
@@ -328,6 +328,18 @@ over the profile's value.
 |-------|------|----------|---------|-------------|
 | `name` | string | Yes | | Environment variable name. |
 | `value` | string | Yes | | Value to assign. |
+| `platforms` | list of string | No | `[]` | Platform tags gating this entry alone. Same vocabulary as [`spec.platforms`](#specplatforms). |
+
+`platforms` is the third level of platform gating cfgd offers, below the whole module
+([`spec.platforms`](#specplatforms)) and one package ([`spec.packages[].platforms`](#specpackages)):
+when it is non-empty and the current platform matches none of the tags, the entry is not part of
+this machine's desired state at all and appears on no surface. `cfgd module show` and
+`cfgd status <module>` list it anyway — they describe what the module declares — annotated
+`(platforms: macos)`.
+
+`PATH` is the one name whose surviving declarations **concatenate** rather than replace, so a
+common declaration and a gated one both reach the generated env file, in declaration order with
+`$PATH` written once. Every other name is last-writer-wins.
 
 **Example:**
 ```yaml
@@ -336,6 +348,9 @@ env:
     value: nvim
   - name: NVIM_APPNAME
     value: my-nvim
+  - name: PATH
+    value: /opt/homebrew/opt/ruby/bin:$PATH
+    platforms: [macos]
 ```
 
 ---
@@ -349,6 +364,9 @@ name conflicts.
 |-------|------|----------|---------|-------------|
 | `name` | string | Yes | | Alias name (the command you type). |
 | `command` | string | Yes | | Shell command the alias expands to. |
+| `platforms` | list of string | No | `[]` | Platform tags gating this entry alone. Same vocabulary as [`spec.platforms`](#specplatforms). |
+
+`platforms` gates one alias, exactly as [`spec.env[]`](#specenv)'s does.
 
 **Example:**
 ```yaml
@@ -357,6 +375,9 @@ aliases:
     command: nvim
   - name: vi
     command: nvim
+  - name: pbcopy
+    command: xclip -selection clipboard
+    platforms: [linux]
 ```
 
 ---

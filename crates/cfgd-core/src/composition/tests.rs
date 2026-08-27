@@ -13,6 +13,7 @@ fn make_local_profile() -> ResolvedProfile {
                 env: vec![EnvVar {
                     name: "editor".into(),
                     value: "vim".into(),
+                    platforms: vec![],
                 }],
                 packages: Some(PackagesSpec {
                     cargo: Some(CargoSpec {
@@ -28,6 +29,7 @@ fn make_local_profile() -> ResolvedProfile {
             env: vec![EnvVar {
                 name: "editor".into(),
                 value: "vim".into(),
+                platforms: vec![],
             }],
             packages: PackagesSpec {
                 cargo: Some(CargoSpec {
@@ -67,6 +69,7 @@ fn make_source_input(name: &str, priority: u32) -> CompositionInput {
                 env: vec![EnvVar {
                     name: "EDITOR".into(),
                     value: "code --wait".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -488,10 +491,12 @@ fn composition_records_which_layer_declared_each_env_entry() {
         env: vec![EnvVar {
             name: "TEAM".into(),
             value: "platform".into(),
+            platforms: vec![],
         }],
         aliases: vec![ShellAlias {
             name: "k".into(),
             command: "kubectl".into(),
+            platforms: vec![],
         }],
         ..Default::default()
     })];
@@ -863,6 +868,7 @@ fn filter_rejected_noop_on_null() {
         env: vec![EnvVar {
             name: "EDITOR".into(),
             value: "code".into(),
+            platforms: vec![],
         }],
         ..Default::default()
     };
@@ -882,6 +888,7 @@ fn multiple_sources_priority_ordering() {
                 env: vec![EnvVar {
                     name: "theme".into(),
                     value: "dark".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -903,6 +910,7 @@ fn multiple_sources_priority_ordering() {
                 env: vec![EnvVar {
                     name: "theme".into(),
                     value: "light".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1423,6 +1431,7 @@ fn compose_deterministic_with_multiple_sources() {
                         env: vec![EnvVar {
                             name: "PAGER".into(),
                             value: "less".into(),
+                            platforms: vec![],
                         }],
                         ..Default::default()
                     },
@@ -1451,6 +1460,7 @@ fn compose_deterministic_with_multiple_sources() {
                         env: vec![EnvVar {
                             name: "PAGER".into(),
                             value: "bat".into(),
+                            platforms: vec![],
                         }],
                         ..Default::default()
                     },
@@ -1496,6 +1506,7 @@ fn higher_priority_source_wins_env_var() {
                 env: vec![EnvVar {
                     name: "THEME".into(),
                     value: "solarized".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1517,6 +1528,7 @@ fn higher_priority_source_wins_env_var() {
                 env: vec![EnvVar {
                     name: "THEME".into(),
                     value: "dracula".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1555,6 +1567,7 @@ fn local_env_wins_over_source_env_at_same_name() {
                 env: vec![EnvVar {
                     name: "EDITOR".into(),
                     value: "nvim".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1563,6 +1576,7 @@ fn local_env_wins_over_source_env_at_same_name() {
             env: vec![EnvVar {
                 name: "EDITOR".into(),
                 value: "nvim".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -1575,6 +1589,7 @@ fn local_env_wins_over_source_env_at_same_name() {
                 env: vec![EnvVar {
                     name: "EDITOR".into(),
                     value: "code --wait".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1756,6 +1771,7 @@ fn single_source_merges_correctly() {
                 env: vec![EnvVar {
                     name: "FZF_DEFAULT_OPTS".into(),
                     value: "--height 40%".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1913,6 +1929,7 @@ fn source_env_tracks_per_source_env_vars() {
                 env: vec![EnvVar {
                     name: "CORP_VAR".into(),
                     value: "corp-value".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1928,6 +1945,7 @@ fn source_env_tracks_per_source_env_vars() {
                 env: vec![EnvVar {
                     name: "LAYER_VAR".into(),
                     value: "from-layer".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1974,6 +1992,7 @@ fn higher_priority_source_wins_alias() {
                 aliases: vec![ShellAlias {
                     name: "ll".into(),
                     command: "ls -la".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1982,6 +2001,7 @@ fn higher_priority_source_wins_alias() {
             aliases: vec![ShellAlias {
                 name: "ll".into(),
                 command: "ls -la".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -1994,6 +2014,7 @@ fn higher_priority_source_wins_alias() {
                 aliases: vec![ShellAlias {
                     name: "ll".into(),
                     command: "exa -la".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -2043,6 +2064,7 @@ fn has_content_with_env() {
         env: vec![EnvVar {
             name: "A".into(),
             value: "1".into(),
+            platforms: vec![],
         }],
         ..Default::default()
     };
@@ -2055,6 +2077,7 @@ fn has_content_with_aliases() {
         aliases: vec![ShellAlias {
             name: "g".into(),
             command: "git".into(),
+            platforms: vec![],
         }],
         ..Default::default()
     };
@@ -2120,10 +2143,12 @@ fn policy_items_to_spec_converts_all_fields() {
         env: vec![EnvVar {
             name: "A".into(),
             value: "1".into(),
+            platforms: vec![],
         }],
         aliases: vec![ShellAlias {
             name: "g".into(),
             command: "git".into(),
+            platforms: vec![],
         }],
         modules: vec!["nvim".into()],
         secrets: vec![crate::config::SecretSpec {
@@ -2412,10 +2437,12 @@ fn count_policy_tier_items_comprehensive() {
         env: vec![EnvVar {
             name: "A".into(),
             value: "1".into(),
+            platforms: vec![],
         }],
         aliases: vec![ShellAlias {
             name: "g".into(),
             command: "git".into(),
+            platforms: vec![],
         }],
         system: BTreeMap::from([("shell".into(), serde_yaml::Value::Null)]),
         modules: vec!["mod1".into(), "mod2".into()],
@@ -2434,10 +2461,12 @@ fn filter_rejected_removes_env() {
             EnvVar {
                 name: "EDITOR".into(),
                 value: "code".into(),
+                platforms: vec![],
             },
             EnvVar {
                 name: "PAGER".into(),
                 value: "less".into(),
+                platforms: vec![],
             },
         ],
         ..Default::default()
@@ -2455,10 +2484,12 @@ fn filter_rejected_removes_aliases() {
             ShellAlias {
                 name: "vim".into(),
                 command: "nvim".into(),
+                platforms: vec![],
             },
             ShellAlias {
                 name: "ll".into(),
                 command: "ls -la".into(),
+                platforms: vec![],
             },
         ],
         ..Default::default()
@@ -2948,6 +2979,7 @@ fn record_policy_conflicts_secrets_and_aliases() {
         aliases: vec![ShellAlias {
             name: "g".into(),
             command: "git".into(),
+            platforms: vec![],
         }],
         secrets: vec![crate::config::SecretSpec {
             source: "vault://test".into(),
@@ -3050,6 +3082,7 @@ fn build_source_layers_optional_opt_in() {
                 env: vec![EnvVar {
                     name: "EXTRA".into(),
                     value: "yes".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -3593,10 +3626,12 @@ fn record_policy_conflicts_env_vars() {
             EnvVar {
                 name: "EDITOR".into(),
                 value: "vim".into(),
+                platforms: vec![],
             },
             EnvVar {
                 name: "PAGER".into(),
                 value: "less".into(),
+                platforms: vec![],
             },
         ],
         ..Default::default()
@@ -3701,6 +3736,7 @@ fn override_test_input(priority: u32, overrides_yaml: &str) -> CompositionInput 
                 env: vec![EnvVar {
                     name: "EDITOR".into(),
                     value: "vim".into(),
+                    platforms: vec![],
                 }],
                 packages: Some(PackagesSpec {
                     npm: Some(NpmSpec {
@@ -3758,6 +3794,7 @@ fn override_env_stays_below_local_config() {
                 env: vec![EnvVar {
                     name: "EDITOR".into(),
                     value: "code".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -4121,6 +4158,7 @@ fn compose_accepts_compliant_source() {
                 env: vec![EnvVar {
                     name: "CORP".into(),
                     value: "1".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -4158,6 +4196,7 @@ fn compose_max_priority_source_no_overflow_and_correct_rank() {
                 env: vec![EnvVar {
                     name: "REQUIRED_VAR".into(),
                     value: "enforced".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },

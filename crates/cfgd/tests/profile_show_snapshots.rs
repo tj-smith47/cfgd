@@ -54,10 +54,12 @@ fn happy_resolved() -> ResolvedProfile {
                 EnvVar {
                     name: "EDITOR".into(),
                     value: "nvim".into(),
+                    platforms: vec![],
                 },
                 EnvVar {
                     name: "LANG".into(),
                     value: "en_US.UTF-8".into(),
+                    platforms: vec![],
                 },
             ],
             env_scope: cfgd_core::config::EnvScope::All,

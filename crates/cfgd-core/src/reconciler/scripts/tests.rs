@@ -5,6 +5,7 @@ fn fake_env_var(name: &str, value: &str) -> EnvVar {
     EnvVar {
         name: name.to_string(),
         value: value.to_string(),
+        platforms: vec![],
     }
 }
 
