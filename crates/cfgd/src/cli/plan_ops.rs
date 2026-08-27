@@ -694,12 +694,19 @@ pub(in crate::cli) fn report_plan_verdict(
     total_actions: usize,
     scope: Option<&ScopeReport>,
     pending_decisions: usize,
+    preview: &crate::cli::PreviewScope<'_>,
 ) {
     if total_actions > 0 {
         printer.status_simple(
             Role::Info,
             format!("{} planned", cfgd_core::pluralize(total_actions, "action")),
         );
+        // The reader has just read the changes, so the preview closes on the
+        // command that performs them — scoped as this preview was, or a bare
+        // `cfgd apply` would perform work it never showed. Every other verdict
+        // surface in the CLI already names its verb; this arm was the one that
+        // ended on a count.
+        printer.hint(crate::cli::perform_preview_hint(preview));
         return;
     }
     match scope {
@@ -717,6 +724,10 @@ pub(in crate::cli) fn report_plan_verdict(
 #[derive(Clone, Copy)]
 pub(in crate::cli) struct PlanPreviewArgs<'a> {
     pub context: &'a str,
+    /// How this preview was scoped, for the verdict's next step. A bare
+    /// `cfgd apply` offered after a filtered preview performs work the reader
+    /// was never shown.
+    pub preview: crate::cli::PreviewScope<'a>,
     pub phase_filter: Option<&'a PhaseFilter>,
     pub dry_run_fm: Option<&'a CfgdFileManager>,
     pub scope: &'a ScopeReport,
@@ -740,6 +751,7 @@ pub(in crate::cli) fn display_plan_preview(
         scope,
         pending_backups,
         withheld,
+        preview: _,
     } = *args;
 
     // The run's own rows and warnings, before anything this command adds: the
@@ -826,6 +838,7 @@ pub(in crate::cli) fn display_plan_preview(
         plan_output.total_actions,
         Some(scope),
         withheld.pending.len(),
+        &args.preview,
     );
 }
 
