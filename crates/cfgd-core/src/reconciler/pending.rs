@@ -1617,6 +1617,7 @@ pub fn mint_decisions(store: &StateStore, review: &SourcePolicyReview) -> Vec<(S
             &mint.summary(),
             mint.content_hash.as_deref(),
         ) {
+            // tracing-ok: the decision ROW could not be written; the decision itself renders from the plan
             tracing::warn!(error = %e, "failed to record pending decision");
             continue;
         }
@@ -1641,6 +1642,7 @@ pub fn mint_decisions(store: &StateStore, review: &SourcePolicyReview) -> Vec<(S
             &mint.summary(),
             mint.content_hash.as_deref(),
         ) {
+            // tracing-ok: same, for the annotation column
             tracing::warn!(error = %e, "failed to refresh pending decision annotation");
         }
     }
@@ -1649,6 +1651,7 @@ pub fn mint_decisions(store: &StateStore, review: &SourcePolicyReview) -> Vec<(S
     // asked about — no question, no notification, and no new row.
     for (source_name, resource, hash) in &review.fingerprint_backfill {
         if let Err(e) = store.set_decision_content_hash(source_name, resource, hash) {
+            // tracing-ok: same, for the per-item fingerprint
             tracing::warn!(error = %e, "failed to record decision content hash");
         }
     }
@@ -1665,12 +1668,14 @@ pub fn mint_decisions(store: &StateStore, review: &SourcePolicyReview) -> Vec<(S
             DECISION_ACTION_INSTALL,
             &accepted.summary(),
         ) {
+            // tracing-ok: same, for an auto-accepted row
             tracing::warn!(error = %e, "failed to record auto-accepted decision");
         }
     }
 
     for (source_name, hash) in &review.changed_hashes {
         if let Err(e) = store.set_source_config_hash(source_name, hash) {
+            // tracing-ok: same, for the source hash
             tracing::warn!(error = %e, "failed to store source config hash");
         }
     }
@@ -1910,6 +1915,7 @@ impl DecisionExclusions {
         let mut out = Self::default();
         for path in paths {
             let unmatched = |detail: &str| {
+                // tracing-ok: a decision path that matches no planned resource; no row exists for it to restate
                 tracing::warn!(
                     decision = %path,
                     "pending decision {detail} — it cannot be withheld from the plan"

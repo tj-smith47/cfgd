@@ -1271,6 +1271,7 @@ impl<'a> super::Reconciler<'a> {
                                     self.state
                                         .store_file_backup(apply_id, &path_str, &file_state)
                                 {
+                                    // tracing-ok: the rollback copy could not be stored; no row states it, the write it protects settles on its own
                                     tracing::warn!(
                                         "failed to store file backup for {}: {}",
                                         path.posix(),
@@ -1281,6 +1282,7 @@ impl<'a> super::Reconciler<'a> {
                             Ok(None) => {
                                 if let Err(e) = self.state.store_absent_backup(apply_id, &path_str)
                                 {
+                                    // tracing-ok: same, for the CREATE marker a rollback deletes by
                                     tracing::warn!(
                                         "failed to store absent marker for {}: {}",
                                         path.posix(),
@@ -1289,6 +1291,7 @@ impl<'a> super::Reconciler<'a> {
                                 }
                             }
                             Err(e) => {
+                                // tracing-ok: same, one step earlier - the target could not be read at all
                                 tracing::warn!(
                                     "failed to capture file state for backup of {}: {}",
                                     path.posix(),
@@ -1953,6 +1956,7 @@ impl<'a> super::Reconciler<'a> {
                         run.script_output.as_deref(),
                     )
                 {
+                    // tracing-ok: the journal row could not be closed; the action's own line is settled either way
                     tracing::warn!("failed to record journal completion: {e}");
                 }
                 (
@@ -1987,6 +1991,7 @@ impl<'a> super::Reconciler<'a> {
                 if let Some(jid) = journal_id
                     && let Err(je) = self.state.journal_fail(jid, finished, &e.to_string())
                 {
+                    // tracing-ok: same, for the failure half
                     tracing::warn!("failed to record journal failure: {je}");
                 }
                 // The run's own verdict about what is on the machine, recorded

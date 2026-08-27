@@ -263,7 +263,9 @@ Demote to `debug!` when the event carries a field the printed line does not; del
 - **`daemon/` is exempt at any depth in either crate.** There the log IS the output: a service under systemd/launchd prints its ticks to journald through this channel and no other, which is why `cfgd daemon run` keeps `info` as its tracing floor.
 - **The `// tracing-ok: <why>` hatch applies**, read exactly as the domain gate's is.
 
-`warn!` and `error!` are NOT part of this gate — outside the three domains above they reach the user, the default filter being `warn`. `info!` outside the daemon is a line nobody reads AND a strand risk when they do.
+`warn!` and `error!` are NOT part of the AUDIT gate — outside the three domains above they reach the user, the default filter being `warn`. `info!` outside the daemon is a line nobody reads AND a strand risk when they do.
+
+On the APPLY PATH the two louder levels are mechanically enforced instead, by `no_apply_path_warn_restates_a_printer_line` (`crates/cfgd/src/cli/tests.rs`): every `tracing::warn!` / `tracing::error!` under `crates/cfgd-core/src/reconciler/` and `crates/cfgd/src/packages/` either carries the same `// tracing-ok: <why>` hatch or is demoted to `debug!`. That population is where a restatement costs the most: at the default filter the event lands at **column 0** in the middle of the phase tree — left of `Phase:`, left of every owner token and every action row — wearing a wall-clock stamp, a level word and `key="value"` grammar, and it wraps mid-word because nothing indents it. `packages.rs`'s installed-state re-read warned `cannot re-read installed packages; installing the planned set in full` with an `error =` field byte-for-byte equal to the row two lines below it, and the line sat in the scrollback for the last two minutes of a recorded run. Its plan-side twin in `plan.rs` was the same event on the same failure. Both are `debug!` now: the manager is the only field they carried that the printed row does not, and the row's own subject names it.
 
 ## The two mechanisms that keep tracing off the live region
 
