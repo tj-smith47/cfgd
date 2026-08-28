@@ -1427,7 +1427,7 @@ pub(super) fn print_startup_banner(
     cfgd_version: &str,
 ) {
     tracing::info!("daemon: starting cfgd {cfgd_version}");
-    tracing::info!("daemon: health endpoint at {ipc_path}");
+    tracing::info!("daemon: health endpoint at {ipc_path}"); // native-ok: journal line, not a display slot
     tracing::info!("daemon: running — {}", intervals.join(", "));
     if printer.can_prompt() {
         printer.hint("Press Ctrl+C to stop");
