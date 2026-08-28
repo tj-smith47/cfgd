@@ -158,6 +158,7 @@ impl<'p> OutputWindow<'p> {
         // The ring's rows are rewritten in place by `repaint` below — indicatif
         // has no way to reach a second row for an over-wide one — so this is
         // the one path that must clamp rather than wrap.
+        // plain-clamp-ok: foreign captured bytes, with no row above them to match a retreated head against
         let clamped = clamp_line(
             text,
             available_width(self.spinner.sink.as_ref(), self.body_depth),

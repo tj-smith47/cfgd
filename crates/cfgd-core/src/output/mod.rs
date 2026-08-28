@@ -496,8 +496,12 @@ pub fn condense_script_label_within(body: &str, max_chars: usize) -> String {
             first
         }
     } else {
-        let truncated: String = first.chars().take(max_chars).collect();
-        format!("{truncated}…")
+        // The one column cut a script label meets, and it retreats to a token
+        // like every other cut of text cfgd authored: `clamp_at_token` counts
+        // its own marker inside `max`, so the budget is widened by the column
+        // this function's marker takes. `markdown-preview.nvim/a…` is what a
+        // raw take made of a path whose `/` sat one column back.
+        renderer::wrap::clamp_at_token(&first, max_chars + 1)
     }
 }
 
@@ -857,6 +861,138 @@ mod collapse_tests {
 mod condense_script_label_tests {
     use super::condense_script_label;
 
+    /// Every column cut of text cfgd itself AUTHORED retreats to a token: the
+    /// script label (`condense_script_label_within`), a live row's repaint and
+    /// a spinner label (`clamp_at_token`). A raw `chars().take(n)` cut the
+    /// hero's `postApply` row at `markdown-preview.nvim/a…`, one column past
+    /// the `/` the retreat would have stopped on, and read as a directory
+    /// named `a`. The behavioural half drives both cutters over a body whose
+    /// cut lands one character past a space, a comma and a `/`; the source
+    /// half walks `output/` and `reconciler/format.rs` for a column-cut idiom
+    /// (`chars().take(`, `wrap::clamp(`, `clamp_line(`, `truncate_str(`)
+    /// outside the cutters' own definitions, hatched with
+    /// `// plain-clamp-ok: <why>` where the text is FOREIGN (a captured
+    /// child's line) or the width is a table column's. `elided_list` cuts
+    /// between whole operands and states `+N more`, so it uses none of them.
+    fn on_boundary_text(body: &str, kept: &str) -> bool {
+        body.starts_with(kept)
+            && (kept.ends_with([' ', ',', '/']) || body[kept.len()..].starts_with([' ', ',', '/']))
+    }
+
+    #[test]
+    fn every_column_cut_of_cfgd_authored_text_retreats_to_a_token() {
+        use super::super::output::renderer::wrap::clamp_at_token;
+        use super::condense_script_label_within;
+
+        // Each body's boundary sits exactly one column before the cut, the
+        // shape a raw take gets wrong: the kept text is the whole token run
+        // up to the boundary, and the marker stands where the boundary was.
+        let cases = [
+            (
+                "nvim --headless \"+Lazy! load go.nvim\" \"+GoInstallBinaries\" +qa && echo done",
+                " +qa",
+            ),
+            (
+                "brew install neovim, ripgrep, fd, bat, eza, cargo, zoxide, node",
+                ", zoxide",
+            ),
+            (
+                "mp=\"$HOME/.local/share/nvim/lazy/markdown-preview.nvim/app\" && cd \"$mp\"",
+                "/app",
+            ),
+        ];
+        for (body, needle) in cases {
+            let at = body.find(needle).unwrap();
+            let boundary = needle.chars().next().unwrap();
+            let max = body[..at].chars().count() + 3;
+            let raw: String = body.chars().take(max).collect();
+            assert!(
+                !on_boundary_text(body, &raw),
+                "the case is not one a raw take gets right"
+            );
+            let label = condense_script_label_within(body, max);
+            // The marker stands ON a boundary: the kept text ends with one,
+            // or the next character of the body is one.
+            let on_boundary =
+                |cut: &str| on_boundary_text(body, cut.strip_suffix('…').unwrap_or(cut));
+            assert!(
+                on_boundary(&label),
+                "the script label cut past the `{boundary}` a column back: {label:?}"
+            );
+            assert!(label.chars().count() <= max + 1);
+            let live = clamp_at_token(body, max + 1);
+            assert!(
+                on_boundary(&live),
+                "the live-row cut past the `{boundary}` a column back: {live:?}"
+            );
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        let mut pending = vec![root.join("output")];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs")
+                    && path.file_name().is_none_or(|n| n != "tests.rs")
+                {
+                    files.push(path);
+                }
+            }
+        }
+        files.push(root.join("reconciler/format.rs"));
+        let idioms = [
+            "chars().take(",
+            "wrap::clamp(",
+            "clamp_line(",
+            "truncate_str(",
+        ];
+        let mut seen = 0usize;
+        let mut offenders = Vec::new();
+        for path in files {
+            if path.ends_with("renderer/wrap.rs") {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).unwrap();
+            let lines: Vec<&str> = body.lines().collect();
+            let mut in_tests = false;
+            for (n, line) in lines.iter().enumerate() {
+                let code = line.trim_start();
+                // The file's own test module opens at column 0; an indented
+                // `#[cfg(test)]` gates one item inside production code.
+                if line.starts_with("#[cfg(test)]") {
+                    in_tests = true;
+                }
+                if in_tests || code.starts_with("//") || code.starts_with("use ") {
+                    continue;
+                }
+                if !idioms.iter().any(|i| code.contains(i)) {
+                    continue;
+                }
+                seen += 1;
+                let hatched = [line, lines.get(n.wrapping_sub(1)).copied().unwrap_or("")]
+                    .iter()
+                    .any(|l| l.contains("// plain-clamp-ok:"));
+                if !hatched {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, code.trim()));
+                }
+            }
+        }
+        assert!(
+            seen >= 2,
+            "the walk no longer reaches the hatched cut sites"
+        );
+        assert!(
+            offenders.is_empty(),
+            "a column cut of cfgd-authored text retreats to a token through \
+             `wrap::clamp_at_token`; a cut of foreign bytes or a table cell \
+             carries `// plain-clamp-ok: <why>`:\n{}",
+            offenders.join("\n")
+        );
+    }
+
     #[test]
     fn multi_line_keeps_only_first_line_plus_ellipsis() {
         let script = "echo start\napt-get update\napt-get install -y neovim\necho done";
@@ -888,7 +1024,8 @@ mod condense_script_label_tests {
     fn long_single_line_truncated_at_cap() {
         let long = "x".repeat(200);
         let label = condense_script_label(&long);
-        assert_eq!(label.chars().count(), super::SCRIPT_LABEL_MAX_CHARS + 1); // +1 for the appended `…`
+        // +1 for the appended `…`; a retreat may give columns back.
+        assert!(label.chars().count() <= super::SCRIPT_LABEL_MAX_CHARS + 1);
         assert!(label.ends_with('…'));
         assert!(!label.contains('\n') && !label.contains('\r'));
     }
@@ -899,7 +1036,7 @@ mod condense_script_label_tests {
         // at SCRIPT_LABEL_MAX_CHARS would land mid-character and panic.
         let long = "☃".repeat(200);
         let label = condense_script_label(&long);
-        assert_eq!(label.chars().count(), super::SCRIPT_LABEL_MAX_CHARS + 1);
+        assert!(label.chars().count() <= super::SCRIPT_LABEL_MAX_CHARS + 1);
         assert!(label.ends_with('…'));
     }
 

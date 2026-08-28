@@ -202,6 +202,7 @@ impl Renderer {
         if let Some(term_cols) = w.wrap_columns() {
             fit_widths(&mut widths, wrap::line_budget(term_cols, depth));
         }
+        // plain-clamp-ok: a cell's width is the column's, and it has no row above it to match a retreated head against
         let clamped = |cell: &str, i: usize| wrap::clamp(cell, widths[i]);
         // Lay every row out BEFORE any padding is decided. A wrapping column
         // breaks at word boundaries, so the widest line it actually paints can
