@@ -83,11 +83,21 @@ fn explain_resolve_field_path_nested() {
 #[test]
 fn explain_resolve_field_path_deep() {
     let profile = find_schema("Profile").unwrap();
-    let fields = resolve_field_path(&profile.fields, &["packages", "brew"]);
-    assert!(fields.is_some());
-    let children = fields.unwrap();
+    // `brew` is a two-shape union (a bare list, or a `BrewSpec` map), so the
+    // path answers with the field itself and its shapes live in `variants`.
+    let fields = resolve_field_path(&profile.fields, &["packages", "brew"]).unwrap();
+    assert_eq!(fields.len(), 1);
+    let brew = &fields[0];
+    assert!(brew.children.is_empty());
+    let object = brew
+        .variants
+        .iter()
+        .find(|v| v.name == "object")
+        .expect("the map shape is a variant");
     // Brew has file, taps, formulae, casks
-    assert_eq!(children.len(), 4);
+    assert_eq!(object.children.len(), 4);
+    let list = brew.variants.iter().find(|v| v.name == "[]string");
+    assert!(list.is_some(), "the bare-list shape is a variant too");
 }
 
 #[test]
@@ -640,14 +650,14 @@ fn explain_drilldown_renders_the_documented_shape() {
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     let expected = "\
-Explain: profile.spec.packages.brew <BrewSpec>
+Explain: profile.spec.packages.brew <([]string | object)>
   Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.
 
-Fields
-  casks     <[]string> — Homebrew casks (GUI applications) to install.
-  file      <string>   — Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.
-  formulae  <[]string> — Homebrew formulae (CLI packages) to install.
-  taps      <[]string> — Third-party taps to add before installing formulae/casks.
+Variants
+  []string  <[]string>     — Package names, as a bare list.
+  object    <object>   [+] — The object form of `brew`: taps, formulae and casks, or a Brewfile. A bare list of names folds into `formulae`.
+
+→ `cfgd explain profile.spec.packages.brew.<field>` expands a field marked [+]
 ";
     pretty_assertions::assert_eq!(output, expected);
 }

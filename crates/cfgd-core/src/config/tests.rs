@@ -3061,3 +3061,93 @@ fn an_ungated_entry_serializes_exactly_as_it_did_before_the_field_existed() {
     );
     assert_ne!(env, gated, "a gate is part of what the entry declares");
 }
+
+/// A `deserialize_with` that WIDENS a field past its Rust type and the schema
+/// the derive reflects are two statements of one grammar, and must be minted
+/// together: `explain`'s Type column, its `Variants` section, `-o json`'s
+/// `type` and the SchemaStore-published `cfgd-profile` / `cfgd-source`
+/// schemas all read the reflection, and none of them can see serde. Without
+/// the paired `schema_with`, the published `BrewSpec` was a bare object that
+/// rejected `brew: [ripgrep, fzf]` — the form the rustdoc example used and
+/// `cfgd apply` accepted. Walks the source for every field on either union
+/// deserializer, then the live schema for both shapes.
+#[test]
+fn every_list_or_map_package_field_declares_both_shapes_in_its_schema() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config/profile_spec.rs"),
+    )
+    .unwrap();
+    let lines: Vec<&str> = src.lines().collect();
+    let mut widened = Vec::new();
+    let mut unpaired = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        let widening = line.contains("deserialize_with = \"list_or_struct\"")
+            || line.contains("deserialize_with = \"list_or_packages_vec\"");
+        if !widening {
+            continue;
+        }
+        // The field name is on the next `pub` line; the paired attribute sits
+        // between the two.
+        let mut m = n + 1;
+        let mut paired = false;
+        while m < lines.len() && !lines[m].trim_start().starts_with("pub ") {
+            paired |= lines[m].contains("schema_with");
+            m += 1;
+        }
+        let field = lines[m]
+            .trim_start()
+            .trim_start_matches("pub ")
+            .split(':')
+            .next()
+            .unwrap()
+            .to_string();
+        if !paired {
+            unpaired.push(format!("{field} (line {})", n + 1));
+        }
+        widened.push(field);
+    }
+    assert!(
+        widened.len() >= 18,
+        "the walk no longer reaches the union-deserialized package fields — it found {widened:?}"
+    );
+    assert!(
+        unpaired.is_empty(),
+        "a `deserialize_with` that accepts two shapes needs a `schema_with` that says so:\n{}",
+        unpaired.join("\n")
+    );
+
+    let schema = serde_json::to_value(schemars::schema_for!(super::PackagesSpec)).unwrap();
+    let props = schema["properties"]
+        .as_object()
+        .expect("PackagesSpec is an object");
+    let mut one_shaped = Vec::new();
+    for field in &widened {
+        let camel = {
+            let mut out = String::new();
+            let mut up = false;
+            for c in field.chars() {
+                if c == '_' {
+                    up = true;
+                } else if up {
+                    out.push(c.to_ascii_uppercase());
+                    up = false;
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        };
+        let prop = &props[&camel];
+        let members = prop["anyOf"].as_array().cloned().unwrap_or_default();
+        let is_array = |m: &serde_json::Value| m["type"] == "array";
+        let is_object = |m: &serde_json::Value| m["type"] == "object" || m.get("$ref").is_some();
+        if !(members.iter().any(is_array) && members.iter().any(is_object)) {
+            one_shaped.push(format!("{camel}: {prop}"));
+        }
+    }
+    assert!(
+        one_shaped.is_empty(),
+        "a package field's schema must carry BOTH the list and the map shape its deserializer accepts:\n{}",
+        one_shaped.join("\n")
+    );
+}

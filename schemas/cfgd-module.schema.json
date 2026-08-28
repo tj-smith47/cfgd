@@ -233,7 +233,7 @@
           "type": "array"
         },
         "prefer": {
-          "description": "Manager preference order for this package, overriding the profile's\ndefault manager priority (e.g. `[brew, apt]`, or `[script]` to force the\ninstall script below).",
+          "description": "Manager preference order for this package, overriding the profile's\ndefault manager priority (e.g. `[brew, apt]`, or `[script]` to force\nthis entry's own `script`).",
           "items": {
             "type": "string"
           },

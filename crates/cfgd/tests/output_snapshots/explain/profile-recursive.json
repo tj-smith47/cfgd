@@ -438,88 +438,171 @@
           "description": "APK packages (Alpine).",
           "name": "apk",
           "required": false,
-          "type": "[]string"
-        },
-        {
-          "children": [
+          "type": "([]string | object)",
+          "variants": [
             {
-              "description": "Path to a package-list file to install from, one name per line.",
-              "name": "file",
-              "required": false,
-              "type": "string"
-            },
-            {
-              "description": "APT package names to install.",
-              "name": "packages",
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
               "required": false,
               "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Package names.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "A `packages` map, the same list under a key.",
+              "name": "object",
+              "required": false,
+              "type": "object"
             }
-          ],
+          ]
+        },
+        {
           "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
           "name": "apt",
           "required": false,
-          "type": "object",
-          "typeName": "AptSpec"
+          "type": "([]string | object)",
+          "variants": [
+            {
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Path to a package-list file to install from, one name per line.",
+                  "name": "file",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "APT package names to install.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "The object form of `apt`: a package list, a file listing packages, or both. A bare list of names folds into `packages`.",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
-          "children": [
-            {
-              "description": "Homebrew casks (GUI applications) to install.",
-              "name": "casks",
-              "required": false,
-              "type": "[]string"
-            },
-            {
-              "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.",
-              "name": "file",
-              "required": false,
-              "type": "string"
-            },
-            {
-              "description": "Homebrew formulae (CLI packages) to install.",
-              "name": "formulae",
-              "required": false,
-              "type": "[]string"
-            },
-            {
-              "description": "Third-party taps to add before installing formulae/casks.",
-              "name": "taps",
-              "required": false,
-              "type": "[]string"
-            }
-          ],
           "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
           "name": "brew",
           "required": false,
-          "type": "object",
-          "typeName": "BrewSpec"
-        },
-        {
-          "children": [
+          "type": "([]string | object)",
+          "variants": [
             {
-              "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`.",
-              "name": "file",
-              "required": false,
-              "type": "string"
-            },
-            {
-              "description": "Crate names to install (`cargo install`).",
-              "name": "packages",
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
               "required": false,
               "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Homebrew casks (GUI applications) to install.",
+                  "name": "casks",
+                  "required": false,
+                  "type": "[]string"
+                },
+                {
+                  "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.",
+                  "name": "file",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Homebrew formulae (CLI packages) to install.",
+                  "name": "formulae",
+                  "required": false,
+                  "type": "[]string"
+                },
+                {
+                  "description": "Third-party taps to add before installing formulae/casks.",
+                  "name": "taps",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "The object form of `brew`: taps, formulae and casks, or a Brewfile. A bare list of names folds into `formulae`.",
+              "name": "object",
+              "required": false,
+              "type": "object"
             }
-          ],
+          ]
+        },
+        {
           "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
           "name": "cargo",
           "required": false,
-          "type": "object",
-          "typeName": "CargoSpec"
+          "type": "([]string | object)",
+          "variants": [
+            {
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`.",
+                  "name": "file",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Crate names to install (`cargo install`).",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "The object form of `cargo`: crates to install, a `Cargo.toml` to install from, or both. A bare list of names folds into `packages`.",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "Chocolatey packages (Windows).",
           "name": "chocolatey",
           "required": false,
-          "type": "[]string"
+          "type": "([]string | object)",
+          "variants": [
+            {
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Package names.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "A `packages` map, the same list under a key.",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "children": [
@@ -576,124 +659,383 @@
           "description": "DNF packages (Fedora/RHEL).",
           "name": "dnf",
           "required": false,
-          "type": "[]string"
-        },
-        {
-          "children": [
+          "type": "([]string | object)",
+          "variants": [
             {
-              "description": "Flatpak application ids to install.",
-              "name": "packages",
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
               "required": false,
               "type": "[]string"
             },
             {
-              "description": "Remote to install from (e.g. `flathub`). Falls back to Flatpak's configured default remote when omitted.",
-              "name": "remote",
+              "children": [
+                {
+                  "description": "Package names.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "A `packages` map, the same list under a key.",
+              "name": "object",
               "required": false,
-              "type": "string"
+              "type": "object"
             }
-          ],
+          ]
+        },
+        {
           "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
           "name": "flatpak",
           "required": false,
-          "type": "object",
-          "typeName": "FlatpakSpec"
+          "type": "([]string | object)",
+          "variants": [
+            {
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Flatpak application ids to install.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                },
+                {
+                  "description": "Remote to install from (e.g. `flathub`). Falls back to Flatpak's configured default remote when omitted.",
+                  "name": "remote",
+                  "required": false,
+                  "type": "string"
+                }
+              ],
+              "description": "The object form of `flatpak`: application ids and the remote to install them from. A bare list of ids folds into `packages`.",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "Go packages (`go install`).",
           "name": "go",
           "required": false,
-          "type": "[]string"
+          "type": "([]string | object)",
+          "variants": [
+            {
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Package names.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "A `packages` map, the same list under a key.",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "Nix packages (`nix-env` / `nix profile`).",
           "name": "nix",
           "required": false,
-          "type": "[]string"
-        },
-        {
-          "children": [
+          "type": "([]string | object)",
+          "variants": [
             {
-              "description": "Path to a `package.json` to install dependencies from.",
-              "name": "file",
-              "required": false,
-              "type": "string"
-            },
-            {
-              "description": "Package names to install globally (`npm install -g`).",
-              "name": "global",
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
               "required": false,
               "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Package names.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "A `packages` map, the same list under a key.",
+              "name": "object",
+              "required": false,
+              "type": "object"
             }
-          ],
+          ]
+        },
+        {
           "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
           "name": "npm",
           "required": false,
-          "type": "object",
-          "typeName": "NpmSpec"
+          "type": "([]string | object)",
+          "variants": [
+            {
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Path to a `package.json` to install dependencies from.",
+                  "name": "file",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Package names to install globally (`npm install -g`).",
+                  "name": "global",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "The object form of `npm`: global packages, a `package.json` to install from, or both. A bare list of names folds into `global`.",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "Pacman packages (Arch).",
           "name": "pacman",
           "required": false,
-          "type": "[]string"
+          "type": "([]string | object)",
+          "variants": [
+            {
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Package names.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "A `packages` map, the same list under a key.",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "pipx-installed Python applications.",
           "name": "pipx",
           "required": false,
-          "type": "[]string"
+          "type": "([]string | object)",
+          "variants": [
+            {
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Package names.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "A `packages` map, the same list under a key.",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "pkg packages (FreeBSD).",
           "name": "pkg",
           "required": false,
-          "type": "[]string"
+          "type": "([]string | object)",
+          "variants": [
+            {
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Package names.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "A `packages` map, the same list under a key.",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "Scoop packages (Windows).",
           "name": "scoop",
           "required": false,
-          "type": "[]string"
-        },
-        {
-          "children": [
+          "type": "([]string | object)",
+          "variants": [
             {
-              "description": "Snap names installed with `--classic` confinement.",
-              "name": "classic",
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
               "required": false,
               "type": "[]string"
             },
             {
-              "description": "Snap names installed with default (strict) confinement.",
-              "name": "packages",
+              "children": [
+                {
+                  "description": "Package names.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "A `packages` map, the same list under a key.",
+              "name": "object",
               "required": false,
-              "type": "[]string"
+              "type": "object"
             }
-          ],
+          ]
+        },
+        {
           "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
           "name": "snap",
           "required": false,
-          "type": "object",
-          "typeName": "SnapSpec"
+          "type": "([]string | object)",
+          "variants": [
+            {
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Snap names installed with `--classic` confinement.",
+                  "name": "classic",
+                  "required": false,
+                  "type": "[]string"
+                },
+                {
+                  "description": "Snap names installed with default (strict) confinement.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "The object form of `snap`: strict and classic-confinement snaps. A bare list of names folds into `packages`.",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "Winget packages (Windows).",
           "name": "winget",
           "required": false,
-          "type": "[]string"
+          "type": "([]string | object)",
+          "variants": [
+            {
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Package names.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "A `packages` map, the same list under a key.",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "Yum packages (legacy RHEL/CentOS).",
           "name": "yum",
           "required": false,
-          "type": "[]string"
+          "type": "([]string | object)",
+          "variants": [
+            {
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Package names.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "A `packages` map, the same list under a key.",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "Zypper packages (openSUSE).",
           "name": "zypper",
           "required": false,
-          "type": "[]string"
+          "type": "([]string | object)",
+          "variants": [
+            {
+              "description": "Package names, as a bare list.",
+              "name": "[]string",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "children": [
+                {
+                  "description": "Package names.",
+                  "name": "packages",
+                  "required": false,
+                  "type": "[]string"
+                }
+              ],
+              "description": "A `packages` map, the same list under a key.",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         }
       ],
       "description": "Packages this profile installs, grouped by manager.",

@@ -348,31 +348,50 @@ already present. When multiple profiles are merged, package lists are unioned (n
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `brew` | object | No | | Homebrew packages. See [spec.packages.brew](#specpackagesbrew). |
-| `apt` | object | No | | APT packages (Debian/Ubuntu). See [spec.packages.apt](#specpackagesapt). |
+| `brew` | object or list | No | | Homebrew packages. See [spec.packages.brew](#specpackagesbrew). |
+| `apt` | object or list | No | | APT packages (Debian/Ubuntu). See [spec.packages.apt](#specpackagesapt). |
 | `cargo` | object or list | No | | Cargo (Rust) packages. See [spec.packages.cargo](#specpackagescargo). |
-| `npm` | object | No | | npm global packages. See [spec.packages.npm](#specpackagesnpm). |
-| `pipx` | list of string | No | `[]` | pipx packages (isolated Python tools). |
-| `dnf` | list of string | No | `[]` | DNF packages (Fedora/RHEL). |
-| `apk` | list of string | No | `[]` | apk packages (Alpine Linux). |
-| `pacman` | list of string | No | `[]` | pacman packages (Arch Linux). |
-| `zypper` | list of string | No | `[]` | zypper packages (openSUSE). |
-| `yum` | list of string | No | `[]` | yum packages (older RHEL/CentOS). |
-| `pkg` | list of string | No | `[]` | pkg packages (FreeBSD). |
-| `nix` | list of string | No | `[]` | Nix packages (nix-env). |
-| `go` | list of string | No | `[]` | Go packages installed via `go install`. |
-| `snap` | object | No | | Snap packages (Ubuntu). See [spec.packages.snap](#specpackagessnap). |
-| `flatpak` | object | No | | Flatpak packages. See [spec.packages.flatpak](#specpackagesflatpak). |
-| `winget` | list of string | No | `[]` | winget packages (Windows). |
-| `chocolatey` | list of string | No | `[]` | Chocolatey packages (Windows). |
-| `scoop` | list of string | No | `[]` | Scoop packages (Windows). |
+| `npm` | object or list | No | | npm global packages. See [spec.packages.npm](#specpackagesnpm). |
+| `pipx` | list of string or object | No | `[]` | pipx packages (isolated Python tools). |
+| `dnf` | list of string or object | No | `[]` | DNF packages (Fedora/RHEL). |
+| `apk` | list of string or object | No | `[]` | apk packages (Alpine Linux). |
+| `pacman` | list of string or object | No | `[]` | pacman packages (Arch Linux). |
+| `zypper` | list of string or object | No | `[]` | zypper packages (openSUSE). |
+| `yum` | list of string or object | No | `[]` | yum packages (older RHEL/CentOS). |
+| `pkg` | list of string or object | No | `[]` | pkg packages (FreeBSD). |
+| `nix` | list of string or object | No | `[]` | Nix packages (nix-env). |
+| `go` | list of string or object | No | `[]` | Go packages installed via `go install`. |
+| `snap` | object or list | No | | Snap packages (Ubuntu). See [spec.packages.snap](#specpackagessnap). |
+| `flatpak` | object or list | No | | Flatpak packages. See [spec.packages.flatpak](#specpackagesflatpak). |
+| `winget` | list of string or object | No | `[]` | winget packages (Windows). |
+| `chocolatey` | list of string or object | No | `[]` | Chocolatey packages (Windows). |
+| `scoop` | list of string or object | No | `[]` | Scoop packages (Windows). |
 | `custom` | list | No | `[]` | Custom package managers. See [spec.packages.custom[]](#specpackagescustom). |
+
+Every manager but `custom` accepts two shapes. A bare list is the short form; the object form
+carries the manager's other fields. For the twelve `list of string or object` managers the object
+form has one key, `packages`, and the two spellings are interchangeable:
+
+```yaml
+packages:
+  brew: [ripgrep, fzf]          # short form: folds into `formulae`
+  apt:
+    file: packages.txt          # object form: the manager's own fields
+    packages: [curl, git]
+  pipx: [black, ruff]           # short form
+  dnf:
+    packages: [htop]            # object form: `packages` is the only key
+```
+
+The published JSON schemas (`schemas/cfgd-profile.schema.json`, `schemas/cfgd-source.schema.json`)
+and `cfgd explain profile.spec.packages.<manager>` state both shapes; the `Variants` section of
+`explain` lists them.
 
 ---
 
 ### spec.packages.brew
 
-Homebrew packages for macOS (and Linux Homebrew).
+Homebrew packages for macOS (and Linux Homebrew). A bare list of names is the short form and folds into `formulae`.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -400,7 +419,7 @@ packages:
 
 ### spec.packages.apt
 
-APT packages for Debian and Ubuntu.
+APT packages for Debian and Ubuntu. A bare list of names is the short form and folds into `packages`.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -441,7 +460,7 @@ packages:
 
 ### spec.packages.npm
 
-npm global packages.
+npm global packages. A bare list of names is the short form and folds into `global`.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -452,7 +471,7 @@ npm global packages.
 
 ### spec.packages.snap
 
-Snap packages (Ubuntu and derivatives).
+Snap packages (Ubuntu and derivatives). A bare list of names is the short form and folds into `packages`.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -463,7 +482,7 @@ Snap packages (Ubuntu and derivatives).
 
 ### spec.packages.flatpak
 
-Flatpak packages.
+Flatpak packages. A bare list of names is the short form and folds into `packages`.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
