@@ -23861,22 +23861,21 @@ fn cmd_compliance_export_json_returns_snapshot_object() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn cmd_sync_non_git_shows_pull_warning_and_sync_header() {
-    // A tempdir is not a git repo, so git_pull_sync will fail with a
-    // warning. The test verifies both the header and the pull-failure warning path.
+fn cmd_sync_over_a_non_repo_reports_no_pull_at_all() {
+    // A config directory under no version control has nothing to pull, and
+    // `git_pull_sync` answers a bare `Err` there — which opened a `Local Repo`
+    // section whose `⚠ Pull failed` sat two lines above the closing verdict.
     let h = CliTestHarness::builder().build();
     super::sync::cmd_sync(&h.cli(), h.printer()).unwrap();
     h.assert_header("Sync");
     let output = h.output();
-    // Spinner section appears with the pulling message; final state is "Pull
-    // failed" on a non-git dir.
     assert!(
-        output.contains("Local Repo"),
-        "missing 'Local Repo' section: {output}"
+        !output.contains("Local Repo"),
+        "a directory under no version control must open no pull section: {output}"
     );
     assert!(
-        output.contains("Pull failed"),
-        "missing pull failure status: {output}"
+        output.contains("✓ Synced"),
+        "nothing refused, so the run closes on its success verdict: {output}"
     );
 }
 
@@ -23898,7 +23897,9 @@ spec:
         priority: 100
 "#;
     let h = CliTestHarness::builder().config(config_with_source).build();
-    super::sync::cmd_sync(&h.cli(), h.printer()).unwrap();
+    // A refused source leaves `cmd_sync` exiting nonzero, which would take
+    // this process with it; the rendered section is what is under test.
+    super::sync::run_sync(&h.cli(), h.printer()).unwrap();
     h.assert_header("Sync");
     // When sources are configured, the Sources subheader should appear
     h.assert_output_contains("Sources");
@@ -29491,6 +29492,7 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
                 files: 3,
                 scripts: 4,
                 status: (*s).to_string(),
+                platform_skip_reason: None,
                 declared: Default::default(),
             })
             .collect(),
@@ -29982,6 +29984,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
             files: 6,
             scripts: 0,
             status: "installed".into(),
+            platform_skip_reason: None,
             declared: super::status::ModuleDeclared {
                 file_root: Some(under_home(".config/nvim")),
                 ..Default::default()

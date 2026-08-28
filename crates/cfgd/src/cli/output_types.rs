@@ -149,6 +149,12 @@ pub struct RollbackOutput {
 #[serde(rename_all = "camelCase")]
 pub struct SyncOutput {
     pub local_pulled: bool,
+    /// Why the local repository could not be pulled, absent when it was or
+    /// when the config directory is under no version control. The human
+    /// verdict withholds `Synced` on the same fact, so a consumer can see
+    /// what the report said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_pull_error: Option<String>,
     pub sources: Vec<SourceSyncOutput>,
 }
 
@@ -1276,6 +1282,7 @@ mod tests {
     fn sync_output_pins_local_pulled_flag_and_sources_array() {
         let v = SyncOutput {
             local_pulled: true,
+            local_pull_error: None,
             sources: vec![SourceSyncOutput {
                 name: "main".to_string(),
                 status: "synced".to_string(),

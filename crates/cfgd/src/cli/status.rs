@@ -65,6 +65,13 @@ pub struct ModuleStatusEntry {
     /// number that row's own cell prints, and 0 for a module with no such row.
     pub scripts: usize,
     pub status: String,
+    /// Why this host resolves the module to nothing — the reason the header's
+    /// `Modules` row prints in its skipped annotation. Absent for a module
+    /// that applies here. Without it a gated module reached `-o json` as an
+    /// ordinary entry reading `not applied`, and a consumer could not
+    /// reconstruct what the human dashboard states.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform_skip_reason: Option<String>,
     /// What resolution can still say about the module's recorded Managed
     /// Resources rows. Display-only — the recorded row is the fact a consumer
     /// reads out of `managedResources`, so the payload shape is the same with
@@ -1489,6 +1496,7 @@ pub(super) fn cmd_status(
                 files: tally.files,
                 scripts: tally.scripts,
                 status,
+                platform_skip_reason: module.platform_skip_reason.clone(),
                 declared: declared.get(&module.name).cloned().unwrap_or_default(),
             }
         })
@@ -2031,6 +2039,7 @@ mod tests {
             files: 6,
             scripts: declared.scripts,
             status: "installed".to_string(),
+            platform_skip_reason: None,
             declared,
         }
     }
@@ -2333,8 +2342,26 @@ mod tests {
         (config_dir, state_dir, config_path)
     }
 
-    /// The `Modules` row a rendered report carries, whitespace-collapsed.
+    /// The rendered `Modules` row's words, ASSERTING as it reads that the row
+    /// sits in the same key column as the `Profile` row above it. A surface
+    /// that emits the row outside its header block renders it at a different
+    /// indent — which is what `sync` did, printing it at column 0 beside a
+    /// `Profile` two spaces in — and no comparison of the words alone can see
+    /// that. The interior run collapses: the key column is padded to the
+    /// widest key of each surface's own row set, a layout fact rather than a
+    /// disagreement about what the profile resolved to.
     fn rendered_modules_row(out: &str) -> String {
+        let indent_of = |key: &str| {
+            out.lines()
+                .find(|l| l.trim_start().starts_with(key))
+                .map(|l| l.len() - l.trim_start().len())
+                .unwrap_or_else(|| panic!("no {key} row rendered: {out}"))
+        };
+        assert_eq!(
+            indent_of("Modules"),
+            indent_of("Profile"),
+            "the `Modules` row left the header's key column:\n{out}"
+        );
         out.lines()
             .find(|l| l.trim_start().starts_with("Modules"))
             .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
@@ -2387,6 +2414,47 @@ mod tests {
         drop(config_dir);
     }
 
+    /// The gated module reaches `-o json` carrying the reason the human
+    /// `Modules` row prints in its skipped annotation.
+    ///
+    /// Without it a module this host resolves to nothing arrived as an
+    /// ordinary entry reading `not applied`, and a consumer could not tell it
+    /// apart from one that simply has not been applied yet.
+    #[test]
+    fn status_json_carries_the_skip_reason_its_modules_row_prints() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let (config_dir, state_dir, config_path) = setup_env_with_resolved_modules();
+        let mut cli = test_cli_for(config_path, state_dir.path());
+        cli.cache_dir = Some(state_dir.path().to_path_buf());
+
+        let (printer, buf) = test_printers_json();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        drop(printer);
+        let payload: serde_json::Value =
+            serde_json::from_str(&cfgd_core::test_helpers::captured_text(&buf))
+                .expect("status emits a payload");
+
+        let modules = payload["modules"].as_array().expect("modules array");
+        let entry = |name: &str| {
+            modules
+                .iter()
+                .find(|m| m["name"] == name)
+                .unwrap_or_else(|| panic!("no {name} entry in {payload}"))
+        };
+        let elsewhere = if cfg!(windows) { "linux" } else { "windows" };
+        assert_eq!(
+            entry("off-host")["platformSkipReason"],
+            serde_json::json!(format!("platform not matched (requires: {elsewhere})")),
+        );
+        assert_eq!(
+            entry("editor").get("platformSkipReason"),
+            None,
+            "a module that applies here carries no skip reason"
+        );
+        drop(config_dir);
+    }
+
     /// Every surface reporting on a resolved profile names one identical set
     /// of modules.
     ///
@@ -2431,6 +2499,8 @@ mod tests {
         .unwrap();
         let mut response = crate::cli::daemon::placeholder_status();
         response.running = true;
+        response.config_path = Some(cli.config.display().to_string());
+        response.profile = Some("base".to_string());
         response.modules = cfgd_core::output::HeaderModule::of_resolved(&desired.modules);
         let daemon = render(&|p| {
             p.emit(crate::cli::daemon::build_daemon_status_doc(
@@ -2467,6 +2537,7 @@ mod tests {
                     files: 1,
                     scripts: 1,
                     status: "installed".to_string(),
+                    platform_skip_reason: None,
                     declared: ModuleDeclared::default(),
                 },
                 ModuleStatusEntry {
@@ -2475,6 +2546,7 @@ mod tests {
                     files: 12,
                     scripts: 7,
                     status: "installed".to_string(),
+                    platform_skip_reason: None,
                     declared: ModuleDeclared::default(),
                 },
                 ModuleStatusEntry {
@@ -2483,6 +2555,7 @@ mod tests {
                     files: 0,
                     scripts: 0,
                     status: "installed".to_string(),
+                    platform_skip_reason: None,
                     declared: ModuleDeclared::default(),
                 },
             ],
@@ -2946,6 +3019,7 @@ mod tests {
             files: tally.files,
             scripts: tally.scripts,
             status: "installed".to_string(),
+            platform_skip_reason: None,
             declared,
         }];
         output.managed_resources = resources.clone();
@@ -3025,6 +3099,7 @@ mod tests {
                 files: tally.files,
                 scripts: tally.scripts,
                 status: "installed".to_string(),
+                platform_skip_reason: None,
                 declared,
             }];
             output.managed_resources = resources;

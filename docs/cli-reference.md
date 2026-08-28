@@ -979,11 +979,31 @@ how long.
 
 Pull from all remotes, show changes, prompt for apply.
 
-The header opens on `Config` and `Profile` before the first fetch, so a failed
-pull is still attributed to a named configuration. The `Modules` row comes
-last, beside the closing `cfgd apply` hint, because a sync exists to bring a
-changed config down: it names what the config on disk resolves to **now**, not
-what it declared before the pull.
+The header opens on `Config`, `Profile` and `Modules` before the first fetch,
+so every row describes the configuration this run started from and a failed
+pull is still attributed to a named one. The body below reports what the pull
+changed; the plan the closing hint invites reads the new set.
+
+The `Local Repo` section appears only for a config directory under version
+control — there is nothing to pull from one that is not.
+
+```
+Sync
+  Config   /home/you/.config/cfgd/cfgd.yaml
+  Profile  work
+  Modules  core, editor
+
+Local Repo
+  ✓ Pulled new changes from remote — commit: 9b1c3d4e5f60 -> 4f2a8c1d9e07
+
+✓ Synced
+→ Run `cfgd plan` to preview changes, then `cfgd apply`
+```
+
+A leg that refused withholds the success verdict and exits non-zero, the same
+way `cfgd apply` reports a partial run. A source the reader declined at the
+permission prompt is an answered question rather than a refusal, so it keeps
+exit 0.
 
 ```
 Sync
@@ -991,13 +1011,14 @@ Sync
   Profile  work
 
 Local Repo
-  ✓ Pulled new changes from remote — commit: 9b1c3d4e5f60 -> 4f2a8c1d9e07
+  ⚠ Pull failed — find remote: remote 'origin' does not exist
+  → Resolve the local repository by hand, then re-run `cfgd sync`
 
-✓ Synced
-
-Modules  core, editor
-→ Run `cfgd plan` to preview changes, then `cfgd apply`
+⚠ Sync incomplete — local repo not pulled
 ```
+
+`-o json` carries `localPullError` beside `localPulled`, so a consumer sees
+the same fact the verdict withheld `Synced` over.
 
 ### `cfgd pull`
 

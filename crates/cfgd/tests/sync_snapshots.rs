@@ -6,7 +6,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::output_types::{SourceSyncOutput, SyncOutput};
-use cfgd::cli::sync::{build_sync_doc, cmd_sync};
+use cfgd::cli::sync::{build_sync_doc, cmd_sync, run_sync, sync_refused};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::test_helpers::EnvVarGuard;
@@ -23,6 +23,7 @@ const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 fn happy_output() -> SyncOutput {
     SyncOutput {
         local_pulled: false,
+        local_pull_error: None,
         sources: vec![
             SourceSyncOutput {
                 name: "team-a".to_string(),
@@ -159,6 +160,49 @@ fn sync_module_dependency_header_human() {
     );
 }
 
+/// A local repository the run could not pull withholds the success verdict.
+///
+/// `✓ Synced` two lines under `⚠ Pull failed` claimed the very thing the row
+/// above it denied, and the command exited 0 — so a CI `&&` chain read a
+/// refused leg as a completed sync. The verdict now names what the run came
+/// to, and `cmd_sync` exits nonzero on the outcomes nobody chose.
+#[test]
+#[serial]
+fn sync_local_pull_failure_withholds_the_synced_verdict() {
+    let (config_dir, state_dir, _target) = tiny_profile_setup();
+
+    // A real repository with a commit and no `origin`: the pull refuses
+    // without reaching a network, so the fixture fails the same way on every
+    // host.
+    let repo = git2::Repository::init(config_dir.path()).unwrap();
+    let sig = git2::Signature::now("t", "t@example.com").unwrap();
+    let tree = {
+        let mut index = repo.index().unwrap();
+        let oid = index.write_tree().unwrap();
+        repo.find_tree(oid).unwrap()
+    };
+    repo.commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])
+        .unwrap();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    let payload = run_sync(&cli, &printer).unwrap();
+    drop(printer);
+
+    assert!(
+        sync_refused(&payload),
+        "a refused pull must leave the command exiting nonzero"
+    );
+    let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "sync/local_pull_failed.txt",
+        &stripped
+    );
+}
+
 /// Permission-rejection path skips the source and prints a Skipped status.
 #[test]
 #[serial]
@@ -248,7 +292,9 @@ fn sync_source_failure_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_sync(&cli, &printer).unwrap();
+    // A refused source leaves `cmd_sync` exiting nonzero, which would take
+    // this process with it; the render is what is under test.
+    run_sync(&cli, &printer).unwrap();
     drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
@@ -390,7 +436,9 @@ fn sync_source_failure_settles_the_spinner_exactly_once_never_via_drop() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, buf) = Printer::for_test_live_scrollback();
 
-    cmd_sync(&cli, &printer).unwrap();
+    // A refused source leaves `cmd_sync` exiting nonzero, which would take
+    // this process with it; the render is what is under test.
+    run_sync(&cli, &printer).unwrap();
     drop(printer);
 
     let out = cfgd_core::test_helpers::captured_text(&buf);

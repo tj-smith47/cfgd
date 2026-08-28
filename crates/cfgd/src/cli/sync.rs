@@ -3,22 +3,72 @@ use super::*;
 use cfgd_core::output::{Doc, OwnerLabel, Role};
 
 pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
+    // A leg that refused must not read as success to a CI `&&` chain, the same
+    // reason `apply` exits nonzero on a partial run. The rows and the payload
+    // are already flushed by `run_sync`, so this exits directly rather than
+    // returning an error nothing new could say.
+    if sync_refused(&run_sync(cli, printer)?) {
+        cfgd_core::exit::ExitCode::Error.exit();
+    }
+    Ok(())
+}
+
+/// Whether a leg of the run refused, which is what the process exit reports.
+///
+/// A source the reader declined at the permission prompt is an answered
+/// question, not a refusal: the run did what they said. A source that failed
+/// and a local repository that could not be pulled are the two outcomes
+/// nobody chose.
+pub fn sync_refused(payload: &SyncOutput) -> bool {
+    payload.local_pull_error.is_some() || payload.sources.iter().any(|s| s.status == "failed")
+}
+
+/// Drive the sync and return the payload it settled, so a caller can map a
+/// refused leg onto a nonzero process exit and a test can read the outcome
+/// without the process leaving under it.
+pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<SyncOutput> {
     printer.heading("Sync");
 
-    let (cfg, profile_name, _resolved) = load_config_and_profile(cli, printer)?;
-    printer.kv_rows(cfgd_core::output::config_profile_rows(
-        Some(&cli.config),
-        Some(&profile_name),
+    // The configuration as this command FOUND it. The body below reports what
+    // the pull changed, and the plan the closing hint invites reads the new
+    // set — so the header describes the starting point, exactly as `Config`
+    // and `Profile` beside it do.
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    let mut rows = cfgd_core::output::config_profile_rows(Some(&cli.config), Some(profile_name));
+    // Resolved quietly: the one advisory this resolution can raise is that a
+    // subscribed source has no local cache yet and should be fetched with
+    // `cfgd sync` — which is the command printing it, three lines above the
+    // section that does the fetching.
+    let quiet = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
+    let desired = resolve_desired_state(
+        &ctx,
+        cfg,
+        local_resolved,
+        &[],
+        false,
+        &quiet,
+        false,
+        composition::ConstraintMode::Report,
+    )?;
+    rows.extend(cfgd_core::output::modules_header_row_for(
+        &cfgd_core::output::HeaderModule::of_resolved(&desired.modules),
     ));
+    printer.kv_rows(rows);
 
-    let config_dir = config_dir(cli);
+    let config_dir = ctx.config_dir().to_path_buf();
 
     let mut sync_payload = SyncOutput {
         local_pulled: false,
+        local_pull_error: None,
         sources: Vec::new(),
     };
 
-    {
+    // A config directory under no version control has nothing to pull, so it
+    // opens no section: `git_pull_sync` answers a bare `Err` there, and the
+    // `⚠ Pull failed` it produced sat two lines above a `✓ Synced` claiming
+    // the pull the row said had failed.
+    if config_dir.join(".git").exists() {
         // The section keeps only its pull outcome: the header's `Config` row
         // already names this location, and stating it again three lines later
         // makes one fact read as two.
@@ -39,8 +89,10 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                 sp.finish_ok("Already up to date");
             }
             Err(e) => {
-                sp.finish_warn("Pull failed")
-                    .detail(cfgd_core::output::collapse_to_subject_line(e));
+                let reason = cfgd_core::output::collapse_to_subject_line(e);
+                sp.finish_warn("Pull failed").detail(reason.clone());
+                repo_sec.hint(MSG_LOCAL_PULL_FAILED);
+                sync_payload.local_pull_error = Some(reason);
             }
         }
     }
@@ -279,14 +331,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         }
     }
 
-    // Resolved AFTER the pull and the source fetches, never from the config
-    // loaded above: a sync exists to bring a changed config down, so the set
-    // the closing `cfgd apply` hint acts on is the one on disk now. A config
-    // the pull left unloadable prints no row and is reported, loudly, by the
-    // command that hint names.
-    let header_modules = post_sync_modules(cli, printer);
-
-    let (verdict_role, verdict, verdict_detail) = sync_verdict(&sync_payload.sources);
+    let (verdict_role, verdict, verdict_detail) = sync_verdict(&sync_payload);
     match verdict_detail {
         Some(detail) => {
             printer.status(verdict_role, verdict).detail(detail);
@@ -294,50 +339,17 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         None => printer.status_simple(verdict_role, verdict),
     }
 
-    let mut doc = Doc::new().kv_rows(cfgd_core::output::modules_header_row_for(&header_modules));
-    if changes_detected {
+    let doc = if changes_detected {
         // The `source:<name>` rows above already said the sources updated; all
         // that is left to say is what to run next, in the one spelling every
         // other command uses for it.
-        doc = doc.hint(MSG_RUN_APPLY);
-    }
+        Doc::new().hint(MSG_RUN_APPLY)
+    } else {
+        Doc::new()
+    };
     printer.emit(doc.with_data(&sync_payload));
 
-    Ok(())
-}
-
-/// The modules the freshly synced config resolves to, for the closing header
-/// row.
-///
-/// Best-effort by design: the row is the only thing that depends on it, and a
-/// sync that fetched everything it was asked to has succeeded whatever the
-/// pulled config now says.
-fn post_sync_modules(
-    cli: &Cli,
-    printer: &cfgd_core::output::Printer,
-) -> Vec<cfgd_core::output::HeaderModule> {
-    // Quiet: every advisory this second load can raise was already drained by
-    // the load at the top of the command.
-    let quiet = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
-    let ctx = RunContext::new(cli, &quiet);
-    let Ok((cfg, _, local_resolved)) = ctx.config_and_profile() else {
-        return Vec::new();
-    };
-    // Cache-only: the fetches above already populated it, and a sync never
-    // reaches the network twice for one source.
-    let Ok(desired) = resolve_desired_state(
-        &ctx,
-        cfg,
-        local_resolved,
-        &[],
-        false,
-        &quiet,
-        false,
-        composition::ConstraintMode::Report,
-    ) else {
-        return Vec::new();
-    };
-    cfgd_core::output::HeaderModule::of_resolved(&desired.modules)
+    Ok(sync_payload)
 }
 
 /// The one line `cfgd sync` closes on, whichever way the run went.
@@ -351,7 +363,12 @@ fn post_sync_modules(
 ///
 /// A run with no subscribed sources has only the local pull to report, and
 /// there the verdict carries no count.
-fn sync_verdict(sources: &[SourceSyncOutput]) -> (Role, &'static str, Option<String>) {
+///
+/// The local pull is one of the run's legs, so a pull that refused withholds
+/// the success verdict: `✓ Synced` two lines under `⚠ Pull failed` claimed the
+/// very thing the row above it denied.
+fn sync_verdict(payload: &SyncOutput) -> (Role, &'static str, Option<String>) {
+    let sources = &payload.sources;
     let total = sources.len();
     let failed = sources.iter().filter(|s| s.status == "failed").count();
     let skipped = sources.iter().filter(|s| s.status == "skipped").count();
@@ -365,11 +382,31 @@ fn sync_verdict(sources: &[SourceSyncOutput]) -> (Role, &'static str, Option<Str
             Some(format!("{failed} of {total} {noun} refused")),
         );
     }
-    if skipped > 0 {
+    let unpulled = payload.local_pull_error.is_some();
+    if skipped > 0 || unpulled {
+        let mut detail = Vec::new();
+        if total > 0 {
+            detail.push(if skipped > 0 {
+                format!("{synced} of {total} {noun}, {skipped} skipped")
+            } else {
+                format!("{total} {noun} synced")
+            });
+        }
+        if unpulled {
+            detail.push("local repo not pulled".to_string());
+        }
         return (
+            // no-next-step: the failed pull and each skipped source hinted
+            // their own next step above
             Role::Warn,
-            "Synced",
-            Some(format!("{synced} of {total} {noun}, {skipped} skipped")),
+            // A pull nothing verified cannot be reported as one: the word
+            // says what the run came to, not what it set out to do.
+            if unpulled {
+                "Sync incomplete"
+            } else {
+                "Synced"
+            },
+            Some(detail.join(", ")),
         );
     }
     if total == 0 {

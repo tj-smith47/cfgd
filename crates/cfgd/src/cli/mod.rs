@@ -94,6 +94,14 @@ use cfgd_core::state::StateStore;
 
 const MSG_RUN_APPLY: &str = "Run `cfgd plan` to preview changes, then `cfgd apply`";
 
+/// What a reader DOES about a local config repository `cfgd sync` could not
+/// pull — the local-layer twin of
+/// [`source::source_failure_next_step`](crate::cli::source::source_failure_next_step),
+/// which words the same beat for a subscribed source. The repository is the
+/// reader's own, so the fix is theirs and the command to re-run is named as a
+/// placeholder-free re-invocation of the one that just reported the refusal.
+const MSG_LOCAL_PULL_FAILED: &str = "Resolve the local repository by hand, then re-run `cfgd sync`";
+
 /// What a mutating `source` or `module` verb just did, for
 /// [`success_next_step`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
