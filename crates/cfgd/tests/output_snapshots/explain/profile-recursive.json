@@ -54,7 +54,7 @@
           "description": "Scripts run after the copy step (e.g. restart the service stopped by `preBackup`). Always attempted, including after a failed `preBackup` or a failed copy.",
           "name": "postBackup",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
           "typeName": "ScriptEntry",
           "variants": [
             {
@@ -135,10 +135,11 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
@@ -146,7 +147,7 @@
           "description": "Scripts run before the snapshot is taken (e.g. stop a service that holds `source` open so the snapshot is consistent). A failure skips the snapshot and records a failed run; `postBackup` still runs.",
           "name": "preBackup",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
           "typeName": "ScriptEntry",
           "variants": [
             {
@@ -227,10 +228,11 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
@@ -438,7 +440,7 @@
           "description": "APK packages (Alpine).",
           "name": "apk",
           "required": false,
-          "type": "([]string | object)",
+          "type": "([]string | PackageListSpec)",
           "variants": [
             {
               "description": "Package names, as a bare list.",
@@ -455,15 +457,16 @@
                   "type": "[]string"
                 }
               ],
-              "description": "A `packages` map, the same list under a key.",
-              "name": "object",
+              "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+              "name": "PackageListSpec",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "PackageListSpec"
             }
           ]
         },
         {
-          "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
+          "description": "APT packages (Debian/Ubuntu).",
           "name": "apt",
           "required": false,
           "type": "([]string | AptSpec)",
@@ -498,7 +501,7 @@
           ]
         },
         {
-          "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
+          "description": "Homebrew packages (macOS/Linux).",
           "name": "brew",
           "required": false,
           "type": "([]string | BrewSpec)",
@@ -545,7 +548,7 @@
           ]
         },
         {
-          "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
+          "description": "Cargo packages (`cargo install`).",
           "name": "cargo",
           "required": false,
           "type": "([]string | CargoSpec)",
@@ -583,7 +586,7 @@
           "description": "Chocolatey packages (Windows).",
           "name": "chocolatey",
           "required": false,
-          "type": "([]string | object)",
+          "type": "([]string | PackageListSpec)",
           "variants": [
             {
               "description": "Package names, as a bare list.",
@@ -600,10 +603,11 @@
                   "type": "[]string"
                 }
               ],
-              "description": "A `packages` map, the same list under a key.",
-              "name": "object",
+              "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+              "name": "PackageListSpec",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "PackageListSpec"
             }
           ]
         },
@@ -662,7 +666,7 @@
           "description": "DNF packages (Fedora/RHEL).",
           "name": "dnf",
           "required": false,
-          "type": "([]string | object)",
+          "type": "([]string | PackageListSpec)",
           "variants": [
             {
               "description": "Package names, as a bare list.",
@@ -679,15 +683,16 @@
                   "type": "[]string"
                 }
               ],
-              "description": "A `packages` map, the same list under a key.",
-              "name": "object",
+              "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+              "name": "PackageListSpec",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "PackageListSpec"
             }
           ]
         },
         {
-          "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
+          "description": "Flatpak packages (Linux).",
           "name": "flatpak",
           "required": false,
           "type": "([]string | FlatpakSpec)",
@@ -725,7 +730,7 @@
           "description": "Go packages (`go install`).",
           "name": "go",
           "required": false,
-          "type": "([]string | object)",
+          "type": "([]string | PackageListSpec)",
           "variants": [
             {
               "description": "Package names, as a bare list.",
@@ -742,10 +747,11 @@
                   "type": "[]string"
                 }
               ],
-              "description": "A `packages` map, the same list under a key.",
-              "name": "object",
+              "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+              "name": "PackageListSpec",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "PackageListSpec"
             }
           ]
         },
@@ -753,7 +759,7 @@
           "description": "Nix packages (`nix-env` / `nix profile`).",
           "name": "nix",
           "required": false,
-          "type": "([]string | object)",
+          "type": "([]string | PackageListSpec)",
           "variants": [
             {
               "description": "Package names, as a bare list.",
@@ -770,15 +776,16 @@
                   "type": "[]string"
                 }
               ],
-              "description": "A `packages` map, the same list under a key.",
-              "name": "object",
+              "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+              "name": "PackageListSpec",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "PackageListSpec"
             }
           ]
         },
         {
-          "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
+          "description": "npm global packages.",
           "name": "npm",
           "required": false,
           "type": "([]string | NpmSpec)",
@@ -816,7 +823,7 @@
           "description": "Pacman packages (Arch).",
           "name": "pacman",
           "required": false,
-          "type": "([]string | object)",
+          "type": "([]string | PackageListSpec)",
           "variants": [
             {
               "description": "Package names, as a bare list.",
@@ -833,10 +840,11 @@
                   "type": "[]string"
                 }
               ],
-              "description": "A `packages` map, the same list under a key.",
-              "name": "object",
+              "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+              "name": "PackageListSpec",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "PackageListSpec"
             }
           ]
         },
@@ -844,7 +852,7 @@
           "description": "pipx-installed Python applications.",
           "name": "pipx",
           "required": false,
-          "type": "([]string | object)",
+          "type": "([]string | PackageListSpec)",
           "variants": [
             {
               "description": "Package names, as a bare list.",
@@ -861,10 +869,11 @@
                   "type": "[]string"
                 }
               ],
-              "description": "A `packages` map, the same list under a key.",
-              "name": "object",
+              "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+              "name": "PackageListSpec",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "PackageListSpec"
             }
           ]
         },
@@ -872,7 +881,7 @@
           "description": "pkg packages (FreeBSD).",
           "name": "pkg",
           "required": false,
-          "type": "([]string | object)",
+          "type": "([]string | PackageListSpec)",
           "variants": [
             {
               "description": "Package names, as a bare list.",
@@ -889,10 +898,11 @@
                   "type": "[]string"
                 }
               ],
-              "description": "A `packages` map, the same list under a key.",
-              "name": "object",
+              "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+              "name": "PackageListSpec",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "PackageListSpec"
             }
           ]
         },
@@ -900,7 +910,7 @@
           "description": "Scoop packages (Windows).",
           "name": "scoop",
           "required": false,
-          "type": "([]string | object)",
+          "type": "([]string | PackageListSpec)",
           "variants": [
             {
               "description": "Package names, as a bare list.",
@@ -917,15 +927,16 @@
                   "type": "[]string"
                 }
               ],
-              "description": "A `packages` map, the same list under a key.",
-              "name": "object",
+              "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+              "name": "PackageListSpec",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "PackageListSpec"
             }
           ]
         },
         {
-          "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
+          "description": "Snap packages (Linux).",
           "name": "snap",
           "required": false,
           "type": "([]string | SnapSpec)",
@@ -963,7 +974,7 @@
           "description": "Winget packages (Windows).",
           "name": "winget",
           "required": false,
-          "type": "([]string | object)",
+          "type": "([]string | PackageListSpec)",
           "variants": [
             {
               "description": "Package names, as a bare list.",
@@ -980,10 +991,11 @@
                   "type": "[]string"
                 }
               ],
-              "description": "A `packages` map, the same list under a key.",
-              "name": "object",
+              "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+              "name": "PackageListSpec",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "PackageListSpec"
             }
           ]
         },
@@ -991,7 +1003,7 @@
           "description": "Yum packages (legacy RHEL/CentOS).",
           "name": "yum",
           "required": false,
-          "type": "([]string | object)",
+          "type": "([]string | PackageListSpec)",
           "variants": [
             {
               "description": "Package names, as a bare list.",
@@ -1008,10 +1020,11 @@
                   "type": "[]string"
                 }
               ],
-              "description": "A `packages` map, the same list under a key.",
-              "name": "object",
+              "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+              "name": "PackageListSpec",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "PackageListSpec"
             }
           ]
         },
@@ -1019,7 +1032,7 @@
           "description": "Zypper packages (openSUSE).",
           "name": "zypper",
           "required": false,
-          "type": "([]string | object)",
+          "type": "([]string | PackageListSpec)",
           "variants": [
             {
               "description": "Package names, as a bare list.",
@@ -1036,10 +1049,11 @@
                   "type": "[]string"
                 }
               ],
-              "description": "A `packages` map, the same list under a key.",
-              "name": "object",
+              "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+              "name": "PackageListSpec",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "PackageListSpec"
             }
           ]
         }
@@ -1056,7 +1070,7 @@
           "description": "Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).",
           "name": "onChange",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
           "typeName": "ScriptEntry",
           "variants": [
             {
@@ -1137,10 +1151,11 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
@@ -1148,7 +1163,7 @@
           "description": "Run when the daemon detects drift, before any auto-apply decision.",
           "name": "onDrift",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
           "typeName": "ScriptEntry",
           "variants": [
             {
@@ -1229,10 +1244,11 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
@@ -1240,7 +1256,7 @@
           "description": "Run once after every action in an apply completes.",
           "name": "postApply",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
           "typeName": "ScriptEntry",
           "variants": [
             {
@@ -1321,10 +1337,11 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
@@ -1332,7 +1349,7 @@
           "description": "Run once after a daemon reconcile tick completes.",
           "name": "postReconcile",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
           "typeName": "ScriptEntry",
           "variants": [
             {
@@ -1413,10 +1430,11 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
@@ -1424,7 +1442,7 @@
           "description": "Run once before any action in an apply.",
           "name": "preApply",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
           "typeName": "ScriptEntry",
           "variants": [
             {
@@ -1505,10 +1523,11 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
@@ -1516,7 +1535,7 @@
           "description": "Run once before a daemon reconcile tick begins.",
           "name": "preReconcile",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
           "typeName": "ScriptEntry",
           "variants": [
             {
@@ -1597,10 +1616,11 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         }

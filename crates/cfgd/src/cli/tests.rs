@@ -21345,7 +21345,7 @@ fn action_path_script_run() {
 
 #[test]
 fn action_path_script_run_full_entry() {
-    let entry = config::ScriptEntry::Full {
+    let entry = config::ScriptEntry::Full(config::ScriptCommand {
         workdir: None,
         run: "echo hello".into(),
         timeout: None,
@@ -21356,7 +21356,7 @@ fn action_path_script_run_full_entry() {
         unless: None,
         creates: None,
         interactive: false,
-    };
+    });
     let action = reconciler::Action::Script(reconciler::ScriptAction::Run {
         entry,
         phase: reconciler::ScriptPhase::PostApply,

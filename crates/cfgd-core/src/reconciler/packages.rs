@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 
-use crate::config::{ResolvedProfile, ScriptEntry, ScriptShell};
+use crate::config::{ResolvedProfile, ScriptCommand, ScriptEntry, ScriptShell};
 use crate::errors::{ConfigError, Result};
 use crate::modules::ResolvedModule;
 use crate::output::{LaneOutput, Printer};
@@ -786,7 +786,7 @@ impl<'x> PackageExec<'x> {
                         // guards run through the same guard-evaluation path
                         // as lifecycle scripts (creates → onlyIf → unless);
                         // a guard that says "skip" yields changed=false.
-                        let script_entry = ScriptEntry::Full {
+                        let script_entry = ScriptEntry::Full(ScriptCommand {
                             run: script_content.clone(),
                             timeout: None,
                             idle_timeout: None,
@@ -797,7 +797,7 @@ impl<'x> PackageExec<'x> {
                             creates: pkg.creates.clone(),
                             interactive: false,
                             workdir: None,
-                        };
+                        });
                         let source = module_dir.as_deref().unwrap_or(mcx.config_dir);
                         let working = script_default_workdir(mcx.config_dir);
                         let (_label, changed, _captured) = execute_script(

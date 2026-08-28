@@ -251,7 +251,7 @@
           "description": "Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).",
           "name": "onChange",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
           "typeName": "ScriptEntry",
           "variants": [
             {
@@ -332,10 +332,11 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
@@ -343,7 +344,7 @@
           "description": "Run when the daemon detects drift, before any auto-apply decision.",
           "name": "onDrift",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
           "typeName": "ScriptEntry",
           "variants": [
             {
@@ -424,10 +425,11 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
@@ -435,7 +437,7 @@
           "description": "Run once after every action in an apply completes.",
           "name": "postApply",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
           "typeName": "ScriptEntry",
           "variants": [
             {
@@ -516,10 +518,11 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
@@ -527,7 +530,7 @@
           "description": "Run once after a daemon reconcile tick completes.",
           "name": "postReconcile",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
           "typeName": "ScriptEntry",
           "variants": [
             {
@@ -608,10 +611,11 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
@@ -619,7 +623,7 @@
           "description": "Run once before any action in an apply.",
           "name": "preApply",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
           "typeName": "ScriptEntry",
           "variants": [
             {
@@ -700,10 +704,11 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
@@ -711,7 +716,7 @@
           "description": "Run once before a daemon reconcile tick begins.",
           "name": "preReconcile",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
           "typeName": "ScriptEntry",
           "variants": [
             {
@@ -792,10 +797,11 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         }

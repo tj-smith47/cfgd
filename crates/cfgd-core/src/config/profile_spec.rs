@@ -121,13 +121,6 @@ where
 {
     use serde::de;
 
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct PackagesMap {
-        #[serde(default)]
-        packages: Vec<String>,
-    }
-
     struct ListOrPackagesVisitor;
 
     impl<'de> de::Visitor<'de> for ListOrPackagesVisitor {
@@ -161,7 +154,7 @@ where
         where
             M: de::MapAccess<'de>,
         {
-            let m = PackagesMap::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            let m = PackageListSpec::deserialize(de::value::MapAccessDeserializer::new(map))?;
             Ok(m.packages)
         }
     }
@@ -178,7 +171,13 @@ where
 /// form. The deserializer and the schema are two statements of one grammar;
 /// `every_list_or_map_package_field_declares_both_shapes_in_its_schema`
 /// fails a field that carries one without the other.
-fn list_or_packages_vec_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+///
+/// The map arm is the NAMED [`PackageListSpec`], never an inline object: an
+/// anonymous arm renders as `object` in `cfgd explain`'s type span, so
+/// thirteen of nineteen `packages.*` rows read `<([]string | object)>` and
+/// said nothing a reader could look up.
+fn list_or_packages_vec_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let spec = generator.subschema_for::<PackageListSpec>();
     schemars::json_schema!({
         "anyOf": [
             {
@@ -186,21 +185,24 @@ fn list_or_packages_vec_schema(_: &mut schemars::SchemaGenerator) -> schemars::S
                 "items": { "type": "string" },
                 "description": "Package names, as a bare list.",
             },
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "packages": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Package names.",
-                    },
-                },
-                "description": "A `packages` map, the same list under a key.",
-            },
+            spec,
             { "type": "null" },
         ],
     })
+}
+
+/// The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same
+/// list under a `packages` key.
+///
+/// Both the deserializer ([`list_or_packages_vec`]) and the schema
+/// ([`list_or_packages_vec_schema`]) read this one type, so the map a config
+/// may write and the map `cfgd explain` documents cannot drift.
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageListSpec {
+    /// Package names.
+    #[serde(default)]
+    pub packages: Vec<String>,
 }
 
 /// The schema of a [`list_or_struct`] field: the manager spec `T`, the bare
@@ -433,20 +435,19 @@ case_insensitive_enum!(EnvScope {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackagesSpec {
-    /// Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a
-    /// `BrewSpec` mapping.
+    /// Homebrew packages (macOS/Linux).
     #[serde(default, deserialize_with = "list_or_struct")]
     #[schemars(schema_with = "list_or_struct_schema::<BrewSpec>")]
     pub brew: Option<BrewSpec>,
-    /// APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.
+    /// APT packages (Debian/Ubuntu).
     #[serde(default, deserialize_with = "list_or_struct")]
     #[schemars(schema_with = "list_or_struct_schema::<AptSpec>")]
     pub apt: Option<AptSpec>,
-    /// Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.
+    /// Cargo packages (`cargo install`).
     #[serde(default, deserialize_with = "list_or_struct")]
     #[schemars(schema_with = "list_or_struct_schema::<CargoSpec>")]
     pub cargo: Option<CargoSpec>,
-    /// npm global packages. Accepts a bare list or an `NpmSpec` mapping.
+    /// npm global packages.
     #[serde(default, deserialize_with = "list_or_struct")]
     #[schemars(schema_with = "list_or_struct_schema::<NpmSpec>")]
     pub npm: Option<NpmSpec>,
@@ -478,11 +479,11 @@ pub struct PackagesSpec {
     #[serde(default, deserialize_with = "list_or_packages_vec")]
     #[schemars(schema_with = "list_or_packages_vec_schema")]
     pub pkg: Vec<String>,
-    /// Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.
+    /// Snap packages (Linux).
     #[serde(default, deserialize_with = "list_or_struct")]
     #[schemars(schema_with = "list_or_struct_schema::<SnapSpec>")]
     pub snap: Option<SnapSpec>,
-    /// Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.
+    /// Flatpak packages (Linux).
     #[serde(default, deserialize_with = "list_or_struct")]
     #[schemars(schema_with = "list_or_struct_schema::<FlatpakSpec>")]
     pub flatpak: Option<FlatpakSpec>,

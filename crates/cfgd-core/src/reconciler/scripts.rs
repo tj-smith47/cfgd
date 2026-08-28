@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 
 use crate::PathDisplayExt;
-use crate::config::{ScriptEntry, ScriptShell};
+use crate::config::{ScriptCommand, ScriptEntry, ScriptShell};
 use crate::errors::{CfgdError, ConfigError, Result};
 use crate::output::{OutputWindow, Printer, Role, condense_script_label};
 
@@ -620,9 +620,9 @@ fn execute_script_inner(
     // deploy dir (`workdir: ~/.local/share/app`), the module source
     // (`workdir: $CFGD_MODULE_DIR`), or any absolute path.
     let workdir_override = match entry {
-        ScriptEntry::Full {
+        ScriptEntry::Full(ScriptCommand {
             workdir: Some(w), ..
-        } => Some(resolve_script_workdir(w, env_vars)),
+        }) => Some(resolve_script_workdir(w, env_vars)),
         _ => None,
     };
     let working_dir = workdir_override.as_deref().unwrap_or(working_dir);
@@ -645,13 +645,13 @@ fn execute_script_inner(
     // then `onlyIf` (run only on zero exit), then `unless` (run only on
     // non-zero exit). Any guard that says "skip" short-circuits with
     // changed=false. A skip is a clean no-op, not a failure.
-    if let ScriptEntry::Full {
+    if let ScriptEntry::Full(ScriptCommand {
         only_if,
         unless,
         creates,
         shell,
         ..
-    } = entry
+    }) = entry
     {
         let guard_shell = shell_override.unwrap_or(*shell);
 
@@ -704,9 +704,9 @@ fn execute_script_inner(
     // must NOT inherit `default_timeout` — only an author-declared `timeout:`
     // bounds an interactive step (see the disposition match below).
     let explicit_timeout = match entry {
-        ScriptEntry::Full {
+        ScriptEntry::Full(ScriptCommand {
             timeout: Some(t), ..
-        } => Some(
+        }) => Some(
             crate::parse_duration_str(t)
                 .map_err(|e| CfgdError::Config(ConfigError::Invalid { message: e }))?,
         ),
@@ -714,10 +714,10 @@ fn execute_script_inner(
     };
     let effective_timeout = explicit_timeout.unwrap_or(default_timeout);
     let idle_timeout = match entry {
-        ScriptEntry::Full {
+        ScriptEntry::Full(ScriptCommand {
             idle_timeout: Some(t),
             ..
-        } => Some(
+        }) => Some(
             crate::parse_duration_str(t)
                 .map_err(|e| CfgdError::Config(ConfigError::Invalid { message: e }))?,
         ),
@@ -725,17 +725,17 @@ fn execute_script_inner(
     };
 
     let entry_shell = match entry {
-        ScriptEntry::Full { shell, .. } => *shell,
+        ScriptEntry::Full(ScriptCommand { shell, .. }) => *shell,
         ScriptEntry::Simple(_) => ScriptShell::Auto,
     };
     let shell = shell_override.unwrap_or(entry_shell);
 
     let interactive = matches!(
         entry,
-        ScriptEntry::Full {
+        ScriptEntry::Full(ScriptCommand {
             interactive: true,
             ..
-        }
+        })
     );
     let disposition = interactive_disposition(interactive, stdin_is_tty);
     // Every other arm still gets its own process group, so a timeout/idle
@@ -1498,10 +1498,10 @@ pub(super) fn default_continue_on_error(phase: &ScriptPhase) -> bool {
 /// Resolve the effective `continue_on_error` for a script entry in a given phase.
 pub(crate) fn effective_continue_on_error(entry: &ScriptEntry, phase: &ScriptPhase) -> bool {
     match entry {
-        ScriptEntry::Full {
+        ScriptEntry::Full(ScriptCommand {
             continue_on_error: Some(v),
             ..
-        } => *v,
+        }) => *v,
         _ => default_continue_on_error(phase),
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::ScriptCommand;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
@@ -4701,7 +4702,7 @@ fn continue_on_error_defaults_per_phase() {
 
 #[test]
 fn effective_continue_on_error_uses_explicit_value() {
-    let entry = ScriptEntry::Full {
+    let entry = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "echo test".to_string(),
         timeout: None,
@@ -4712,14 +4713,14 @@ fn effective_continue_on_error_uses_explicit_value() {
         unless: None,
         creates: None,
         interactive: false,
-    };
+    });
     // Should be true even for pre-apply (which defaults to false)
     assert!(super::effective_continue_on_error(
         &entry,
         &ScriptPhase::PreApply
     ));
 
-    let entry_false = ScriptEntry::Full {
+    let entry_false = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "echo test".to_string(),
         timeout: None,
@@ -4730,7 +4731,7 @@ fn effective_continue_on_error_uses_explicit_value() {
         unless: None,
         creates: None,
         interactive: false,
-    };
+    });
     // Should be false even for post-apply (which defaults to true)
     assert!(!super::effective_continue_on_error(
         &entry_false,
@@ -4750,7 +4751,7 @@ fn effective_continue_on_error_falls_back_to_default() {
         &ScriptPhase::PostApply
     ));
 
-    let full_no_override = ScriptEntry::Full {
+    let full_no_override = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "echo test".to_string(),
         timeout: None,
@@ -4761,7 +4762,7 @@ fn effective_continue_on_error_falls_back_to_default() {
         unless: None,
         creates: None,
         interactive: false,
-    };
+    });
     assert!(!super::effective_continue_on_error(
         &full_no_override,
         &ScriptPhase::PreApply
@@ -4828,7 +4829,7 @@ fn plan_scripts_carries_full_entry() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let mut resolved = make_empty_resolved();
-    resolved.merged.scripts.pre_apply = vec![ScriptEntry::Full {
+    resolved.merged.scripts.pre_apply = vec![ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "scripts/check.sh".to_string(),
         timeout: Some("10s".to_string()),
@@ -4839,7 +4840,7 @@ fn plan_scripts_carries_full_entry() {
         unless: None,
         creates: None,
         interactive: false,
-    }];
+    })];
 
     let plan = reconciler
         .plan(
@@ -4859,12 +4860,12 @@ fn plan_scripts_carries_full_entry() {
     assert_eq!(pre_phase.action_count(), 1);
     match pre_phase.actions().next().expect("phase holds an action") {
         Action::Script(ScriptAction::Run { entry, .. }) => match entry {
-            ScriptEntry::Full {
+            ScriptEntry::Full(ScriptCommand {
                 run,
                 timeout,
                 continue_on_error,
                 ..
-            } => {
+            }) => {
                 assert_eq!(run, "scripts/check.sh");
                 assert_eq!(timeout.as_deref(), Some("10s"));
                 assert_eq!(*continue_on_error, Some(true));
@@ -4965,7 +4966,7 @@ fn execute_script_failure_returns_error() {
 #[test]
 fn execute_script_with_timeout_override() {
     let printer = test_printer();
-    let entry = ScriptEntry::Full {
+    let entry = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "echo fast".to_string(),
         timeout: Some("5s".to_string()),
@@ -4976,7 +4977,7 @@ fn execute_script_with_timeout_override() {
         unless: None,
         creates: None,
         interactive: false,
-    };
+    });
     let dir = tempfile::tempdir().unwrap();
     let (_, _, output) = super::execute_script(
         &entry,
@@ -5078,7 +5079,7 @@ fn execute_script_rejects_non_executable_file() {
 fn execute_script_idle_timeout_kills_idle_process() {
     let printer = test_printer();
     // Script prints once then sleeps forever — idle timeout should kill it
-    let entry = ScriptEntry::Full {
+    let entry = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "echo started; sleep 60".to_string(),
         timeout: Some("30s".to_string()),
@@ -5089,7 +5090,7 @@ fn execute_script_idle_timeout_kills_idle_process() {
         unless: None,
         creates: None,
         interactive: false,
-    };
+    });
     let dir = tempfile::tempdir().unwrap();
     let result = super::execute_script(
         &entry,
@@ -5792,7 +5793,7 @@ fn apply_continue_on_error_post_script_continues() {
     let mut resolved = make_empty_resolved();
 
     // Post-apply script that fails but has continueOnError=true
-    resolved.merged.scripts.post_apply = vec![ScriptEntry::Full {
+    resolved.merged.scripts.post_apply = vec![ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "exit 42".to_string(),
         timeout: Some("5s".to_string()),
@@ -5803,7 +5804,7 @@ fn apply_continue_on_error_post_script_continues() {
         unless: None,
         creates: None,
         interactive: false,
-    }];
+    })];
 
     let pkg_actions = vec![PackageAction::Install {
         manager: "brew".to_string(),
@@ -5870,7 +5871,7 @@ fn apply_continue_on_error_multiline_script_condenses_display_keeps_raw_descript
     // stdout and then legitimately reappear in the (content-preserving)
     // collapsed error text, making a naive "not in output" assertion below a
     // false positive regardless of whether the display subject condenses.
-    resolved.merged.scripts.post_apply = vec![ScriptEntry::Full {
+    resolved.merged.scripts.post_apply = vec![ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "true\n# raw-body-second-line-marker\nexit 42".to_string(),
         timeout: Some("5s".to_string()),
@@ -5881,7 +5882,7 @@ fn apply_continue_on_error_multiline_script_condenses_display_keeps_raw_descript
         unless: None,
         creates: None,
         interactive: false,
-    }];
+    })];
 
     let plan = reconciler
         .plan(
@@ -5938,7 +5939,7 @@ fn apply_continue_on_error_false_pre_script_aborts() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let mut resolved = make_empty_resolved();
-    resolved.merged.scripts.pre_apply = vec![ScriptEntry::Full {
+    resolved.merged.scripts.pre_apply = vec![ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "exit 1".to_string(),
         timeout: Some("5s".to_string()),
@@ -5949,7 +5950,7 @@ fn apply_continue_on_error_false_pre_script_aborts() {
         unless: None,
         creates: None,
         interactive: false,
-    }];
+    })];
 
     let plan = reconciler
         .plan(
@@ -5997,7 +5998,7 @@ fn apply_continue_on_error_false_pre_script_abort_message_condenses_multiline_de
     let reconciler = Reconciler::new(&registry, &state);
 
     let mut resolved = make_empty_resolved();
-    resolved.merged.scripts.pre_apply = vec![ScriptEntry::Full {
+    resolved.merged.scripts.pre_apply = vec![ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "echo line-one\necho line-two\nexit 1".to_string(),
         timeout: Some("5s".to_string()),
@@ -6008,7 +6009,7 @@ fn apply_continue_on_error_false_pre_script_abort_message_condenses_multiline_de
         unless: None,
         creates: None,
         interactive: false,
-    }];
+    })];
 
     let plan = reconciler
         .plan(
@@ -6226,7 +6227,7 @@ fn apply_guard_skipped_profile_script_records_unchanged() {
     let dir = tempfile::tempdir().unwrap();
     let sentinel = dir.path().join("body-ran");
     // `unless: true` always succeeds → the body is skipped.
-    let entry = ScriptEntry::Full {
+    let entry = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: format!("touch {}", sentinel.display()),
         timeout: None,
@@ -6237,7 +6238,7 @@ fn apply_guard_skipped_profile_script_records_unchanged() {
         unless: Some("true".to_string()),
         creates: None,
         interactive: false,
-    };
+    });
 
     let state = test_state();
     let registry = ProviderRegistry::new();
@@ -6295,7 +6296,7 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
     let on_change_marker = dir.path().join("module-on-change-fired");
 
     // `unless: true` → the module's RunScript body is skipped → changed=false.
-    let guarded = ScriptEntry::Full {
+    let guarded = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: format!("touch {}", sentinel.display()),
         timeout: None,
@@ -6306,7 +6307,7 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
         unless: Some("true".to_string()),
         creates: None,
         interactive: false,
-    };
+    });
 
     let state = test_state();
     let registry = ProviderRegistry::new();
@@ -6395,7 +6396,7 @@ fn apply_guard_permitted_module_script_fires_on_change() {
     let on_change_marker = dir.path().join("module-on-change-fired-pos");
 
     // `unless: false` → condition does NOT hold → the body RUNS → changed=true.
-    let guarded = ScriptEntry::Full {
+    let guarded = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: format!("touch {}", sentinel.display()),
         timeout: None,
@@ -6406,7 +6407,7 @@ fn apply_guard_permitted_module_script_fires_on_change() {
         unless: Some("false".to_string()),
         creates: None,
         interactive: false,
-    };
+    });
 
     let state = test_state();
     let registry = ProviderRegistry::new();
@@ -14694,7 +14695,7 @@ mod bridge {
 
         // Post-apply script that fails with continueOnError=true → exercises
         // the Role::Warn branch in apply.rs (continueOnError-warning).
-        resolved.merged.scripts.post_apply = vec![ScriptEntry::Full {
+        resolved.merged.scripts.post_apply = vec![ScriptEntry::Full(ScriptCommand {
             workdir: None,
             run: "exit 42".to_string(),
             timeout: Some("5s".to_string()),
@@ -14705,7 +14706,7 @@ mod bridge {
             unless: None,
             creates: None,
             interactive: false,
-        }];
+        })];
 
         let pkg_actions = vec![
             PackageAction::Install {
@@ -18098,7 +18099,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
         pre_apply_scripts: Vec::new(),
         pre_reconcile_scripts: Vec::new(),
         post_reconcile_scripts: Vec::new(),
-        on_change_scripts: vec![ScriptEntry::Full {
+        on_change_scripts: vec![ScriptEntry::Full(ScriptCommand {
             workdir: None,
             run: "exit 5".to_string(),
             timeout: None,
@@ -18109,7 +18110,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
             unless: None,
             creates: None,
             interactive: false,
-        }],
+        })],
         on_drift_scripts: Vec::new(),
         system: BTreeMap::new(),
         depends: vec![],
@@ -18240,7 +18241,7 @@ fn apply_profile_on_change_failure_aborts_when_continue_on_error_false() {
     registry.default_file_strategy = crate::config::FileStrategy::Copy;
     let reconciler = Reconciler::new(&registry, &state);
     let mut resolved = make_empty_resolved();
-    resolved.merged.scripts.on_change = vec![ScriptEntry::Full {
+    resolved.merged.scripts.on_change = vec![ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "exit 11".to_string(),
         timeout: None,
@@ -18251,7 +18252,7 @@ fn apply_profile_on_change_failure_aborts_when_continue_on_error_false() {
         unless: None,
         creates: None,
         interactive: false,
-    }];
+    })];
 
     let file_actions = vec![FileAction::Create {
         source: source.clone(),
@@ -19718,7 +19719,7 @@ fn full_guarded_script(
     only_if: Option<String>,
     unless: Option<String>,
 ) -> ScriptEntry {
-    ScriptEntry::Full {
+    ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: run.to_string(),
         timeout: None,
@@ -19729,7 +19730,7 @@ fn full_guarded_script(
         unless,
         creates,
         interactive: false,
-    }
+    })
 }
 
 #[test]

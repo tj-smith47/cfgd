@@ -494,8 +494,8 @@ fn explain_cmd_field_path_oneof_shows_both_variants() {
         "expected the string variant, got: {output}"
     );
     assert!(
-        output.contains("object"),
-        "expected the object variant, got: {output}"
+        output.contains("ScriptCommand"),
+        "expected the object variant by name, got: {output}"
     );
     // Non-recursive: the one object shape's own fields (`run`, …) are the
     // page's `Fields`, listed by name where a plain object would list its
@@ -660,7 +660,7 @@ fn explain_drilldown_renders_the_documented_shape() {
     let output = cfgd_core::test_helpers::captured_text(&buf);
     let expected = "\
 Explain: profile.spec.packages.brew <([]string | BrewSpec)>
-  Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.
+  Homebrew packages (macOS/Linux).
 
 Variants
   []string — Package names, as a bare list.
@@ -1047,7 +1047,14 @@ fn every_field_row_mark_lands_in_a_column() {
 ///   under the page's own path, so the legend's placeholder substitutes to a
 ///   command that runs.
 ///
-/// One commit shipped all four wrong on the one screen the author demo
+/// - every object arm is a NAMED type, so the type span reads
+///   `<([]string | PackageListSpec)>` and not `<([]string | object)>`;
+/// - a field's description never restates a type its own span already
+///   shows: `Homebrew packages. Accepts a bare list or a \`BrewSpec\`
+///   mapping.` under `<([]string | BrewSpec)>` above a `Variants` section
+///   listing both was one fact stated three times.
+///
+/// One commit shipped the first four wrong on the one screen the author demo
 /// exists to show: `brew`'s `taps`/`formulae`/`casks`/`file` vanished behind a
 /// row named `object`, that row wore the `[+]` the legend promised a field
 /// for, and eighteen of nineteen type spans read `object`.
@@ -1073,12 +1080,27 @@ fn every_union_typed_field_renders_its_shapes_once_and_its_fields_by_name() {
                 let heading = rendered.lines().next().unwrap_or_default().to_string();
 
                 for v in &f.variants {
+                    assert!(
+                        !v.type_name.is_empty() || v.type_desc != "object",
+                        "{page}: an object arm is a named type a reader can look up, never \
+                         an anonymous `object`"
+                    );
+                    // A field whose own type is a named union (`[]ScriptEntry`)
+                    // heads with that name and discloses the arms under
+                    // `Variants`; an inline union heads with the join.
                     if !v.type_name.is_empty() {
                         assert!(
-                            heading.contains(&v.displayed_type()) && !heading.contains("object"),
+                            (heading.contains(&v.displayed_type()) || !f.type_name.is_empty())
+                                && !heading.contains("object"),
                             "{page}: a $ref member names its type in the heading: {heading}"
                         );
                     }
+                    assert!(
+                        !f.description.contains(&v.displayed_type()),
+                        "{page}: the description restates its own type span `{}`: {}",
+                        v.displayed_type(),
+                        f.description
+                    );
                     let row = rendered
                         .lines()
                         .find(|l| l.trim_start().starts_with(&v.name))

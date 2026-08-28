@@ -986,8 +986,10 @@ fn union_type_join(
         }
         let resolved = resolve_ref(member, ctx);
         // A `$ref` member names its `$defs` type; `object` is reserved for a
-        // member that genuinely has none, so `brew` reads
-        // `([]string | BrewSpec)` while `apk`'s inline arm stays `object`.
+        // member that genuinely has none. Every object arm cfgd publishes is
+        // a named type (`([]string | BrewSpec)`, `([]string | PackageListSpec)`),
+        // which `every_union_typed_field_renders_its_shapes_once_and_its_fields_by_name`
+        // holds.
         let desc = named_type(member, &resolved)
             .unwrap_or_else(|| type_description(&resolved, ctx, visited));
         descent.leave(visited);
@@ -1003,9 +1005,10 @@ fn union_type_join(
 /// `$ref` member resolves through (`BrewSpec`), else its own
 /// [`type_description`] (schemars drops Rust variant names for
 /// `#[serde(untagged)]` enums, so for an inline member the type string is the
-/// only stable label — e.g. `ScriptEntry` yields a `string` variant and an
-/// `object` variant carrying its `run`/`timeout`/… fields). The name IS the
-/// shape, which is why a variant row renders no type span of its own.
+/// only stable label — e.g. `ScriptEntry` yields a `string` variant and a
+/// `ScriptCommand` variant carrying its `run`/`timeout`/… fields, named
+/// because the variant wraps a named struct). The name IS the shape, which is
+/// why a variant row renders no type span of its own.
 /// Returns an empty vec when the union already collapses to one type via
 /// [`union_member_type`] (nothing to break down) or the schema is not a union.
 fn union_variants(

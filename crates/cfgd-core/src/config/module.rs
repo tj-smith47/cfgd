@@ -315,66 +315,76 @@ pub enum ScriptEntry {
     /// A bare command string, run with the platform's default shell and no
     /// timeout/guard.
     Simple(String),
-    Full {
-        /// The command or script body to run.
-        run: String,
-        /// Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
-        /// Unset means no timeout.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        timeout: Option<String>,
-        /// Kill the script if it produces no stdout/stderr output for this duration.
-        /// Prevents scripts from silently hanging on unresponsive resources.
-        /// Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
-        #[serde(
-            default,
-            skip_serializing_if = "Option::is_none",
-            rename = "idleTimeout"
-        )]
-        idle_timeout: Option<String>,
-        /// Treat a non-zero exit as success and continue reconciliation instead
-        /// of failing the run. Default: `false`.
-        #[serde(
-            default,
-            skip_serializing_if = "Option::is_none",
-            rename = "continueOnError"
-        )]
-        continue_on_error: Option<bool>,
-        /// Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
-        #[serde(default, skip_serializing_if = "is_shell_auto")]
-        shell: ScriptShell,
-        /// Run the script only if this command exits zero. A non-zero exit skips
-        /// the script (the condition for running was not met). Evaluated with the
-        /// same shell, working directory, and environment as the body.
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "onlyIf")]
-        only_if: Option<String>,
-        /// Run the script only if this command exits NON-zero. A zero exit
-        /// (success) skips the script (the guarded state already holds).
-        /// Evaluated with the same shell, working directory, and environment as
-        /// the body.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        unless: Option<String>,
-        /// Skip the script if this path already exists. A leading `~` expands to
-        /// the home directory; a relative path resolves against the script's
-        /// working directory. Existence follows symlinks.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        creates: Option<String>,
-        /// Run the script attached to the terminal (inherited stdin/stdout/stderr,
-        /// no spinner, no output capture, no idle timeout) so it can prompt the
-        /// user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
-        /// stdin is not a terminal (CI, piped input, or any daemon-run phase) the
-        /// script is skipped with a warning rather than hanging on instant EOF.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        interactive: bool,
-        /// Working directory for the script. By default every lifecycle script
-        /// runs in the user's home directory — never the config source tree — so
-        /// a relative write can't pollute the user's GitOps repo. Set `workdir`
-        /// to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
-        /// against the script environment (which always carries `$CFGD_MODULE_DIR`
-        /// and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
-        /// `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        workdir: Option<String>,
-    },
+    /// The mapping form, carrying the body and its knobs.
+    Full(ScriptCommand),
+}
+
+/// The mapping form of a [`ScriptEntry`]: a command with a timeout, shell,
+/// guard condition or working directory.
+///
+/// A named type rather than an inline variant so `cfgd explain` shows a
+/// reader `<(string | ScriptCommand)>` — a name they can look up — instead of
+/// `<(string | object)>`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ScriptCommand {
+    /// The command or script body to run.
+    pub run: String,
+    /// Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+    /// Unset means no timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<String>,
+    /// Kill the script if it produces no stdout/stderr output for this duration.
+    /// Prevents scripts from silently hanging on unresponsive resources.
+    /// Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "idleTimeout"
+    )]
+    pub idle_timeout: Option<String>,
+    /// Treat a non-zero exit as success and continue reconciliation instead
+    /// of failing the run. Default: `false`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "continueOnError"
+    )]
+    pub continue_on_error: Option<bool>,
+    /// Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+    #[serde(default, skip_serializing_if = "is_shell_auto")]
+    pub shell: ScriptShell,
+    /// Run the script only if this command exits zero. A non-zero exit skips
+    /// the script (the condition for running was not met). Evaluated with the
+    /// same shell, working directory, and environment as the body.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "onlyIf")]
+    pub only_if: Option<String>,
+    /// Run the script only if this command exits NON-zero. A zero exit
+    /// (success) skips the script (the guarded state already holds).
+    /// Evaluated with the same shell, working directory, and environment as
+    /// the body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unless: Option<String>,
+    /// Skip the script if this path already exists. A leading `~` expands to
+    /// the home directory; a relative path resolves against the script's
+    /// working directory. Existence follows symlinks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creates: Option<String>,
+    /// Run the script attached to the terminal (inherited stdin/stdout/stderr,
+    /// no spinner, no output capture, no idle timeout) so it can prompt the
+    /// user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+    /// stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+    /// script is skipped with a warning rather than hanging on instant EOF.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interactive: bool,
+    /// Working directory for the script. By default every lifecycle script
+    /// runs in the user's home directory — never the config source tree — so
+    /// a relative write can't pollute the user's GitOps repo. Set `workdir`
+    /// to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+    /// against the script environment (which always carries `$CFGD_MODULE_DIR`
+    /// and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+    /// `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
 }
 
 fn is_shell_auto(s: &ScriptShell) -> bool {
@@ -386,7 +396,7 @@ impl ScriptEntry {
     pub fn run_str(&self) -> &str {
         match self {
             ScriptEntry::Simple(s) => s,
-            ScriptEntry::Full { run, .. } => run,
+            ScriptEntry::Full(ScriptCommand { run, .. }) => run,
         }
     }
 }
@@ -791,7 +801,7 @@ shell: zsh
 "#;
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         match entry {
-            ScriptEntry::Full { shell, run, .. } => {
+            ScriptEntry::Full(ScriptCommand { shell, run, .. }) => {
                 assert_eq!(shell, ScriptShell::Zsh);
                 assert_eq!(run, "echo hello");
             }
@@ -806,7 +816,7 @@ run: echo hello
 "#;
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         match entry {
-            ScriptEntry::Full { shell, .. } => {
+            ScriptEntry::Full(ScriptCommand { shell, .. }) => {
                 assert_eq!(shell, ScriptShell::Auto);
             }
             other => panic!("expected Full variant, got: {other:?}"),
@@ -830,7 +840,7 @@ shell: ruby
 
     #[test]
     fn script_shell_roundtrip_serialization() {
-        let entry = ScriptEntry::Full {
+        let entry = ScriptEntry::Full(ScriptCommand {
             workdir: None,
             run: "make build".into(),
             timeout: None,
@@ -841,7 +851,7 @@ shell: ruby
             unless: None,
             creates: None,
             interactive: false,
-        };
+        });
         let yaml = serde_yaml::to_string(&entry).unwrap();
         assert!(
             yaml.contains("shell: bash"),
@@ -854,7 +864,7 @@ shell: ruby
 
     #[test]
     fn script_shell_auto_not_serialized() {
-        let entry = ScriptEntry::Full {
+        let entry = ScriptEntry::Full(ScriptCommand {
             workdir: None,
             run: "echo hi".into(),
             timeout: None,
@@ -865,7 +875,7 @@ shell: ruby
             unless: None,
             creates: None,
             interactive: false,
-        };
+        });
         let yaml = serde_yaml::to_string(&entry).unwrap();
         assert!(
             !yaml.contains("shell"),
@@ -881,7 +891,7 @@ workdir: ~/.local/share/clift
 "#;
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         match &entry {
-            ScriptEntry::Full { workdir, .. } => {
+            ScriptEntry::Full(ScriptCommand { workdir, .. }) => {
                 assert_eq!(workdir.as_deref(), Some("~/.local/share/clift"));
             }
             other => panic!("expected Full variant, got {other:?}"),
@@ -903,12 +913,12 @@ creates: ~/.local/bin/thing
 "#;
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         match &entry {
-            ScriptEntry::Full {
+            ScriptEntry::Full(ScriptCommand {
                 only_if,
                 unless,
                 creates,
                 ..
-            } => {
+            }) => {
                 assert_eq!(only_if.as_deref(), Some("test -d /opt"));
                 assert_eq!(unless.as_deref(), Some("command -v thing"));
                 assert_eq!(creates.as_deref(), Some("~/.local/bin/thing"));
@@ -932,12 +942,12 @@ creates: ~/.local/bin/thing
         let yaml = "run: echo hi\n";
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         match &entry {
-            ScriptEntry::Full {
+            ScriptEntry::Full(ScriptCommand {
                 only_if,
                 unless,
                 creates,
                 ..
-            } => {
+            }) => {
                 assert!(only_if.is_none());
                 assert!(unless.is_none());
                 assert!(creates.is_none());
@@ -1025,7 +1035,7 @@ interactive: true
 "#;
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         match entry {
-            ScriptEntry::Full { interactive, .. } => assert!(interactive),
+            ScriptEntry::Full(ScriptCommand { interactive, .. }) => assert!(interactive),
             other => panic!("expected Full variant, got: {other:?}"),
         }
     }
@@ -1035,7 +1045,7 @@ interactive: true
         let yaml = "run: echo hi\n";
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         match entry {
-            ScriptEntry::Full { interactive, .. } => assert!(!interactive),
+            ScriptEntry::Full(ScriptCommand { interactive, .. }) => assert!(!interactive),
             other => panic!("expected Full variant, got: {other:?}"),
         }
         // Default-false must not serialize.
@@ -1048,7 +1058,7 @@ interactive: true
 
     #[test]
     fn script_interactive_roundtrip_serialization() {
-        let entry = ScriptEntry::Full {
+        let entry = ScriptEntry::Full(ScriptCommand {
             workdir: None,
             run: "echo hi; read".into(),
             timeout: None,
@@ -1059,7 +1069,7 @@ interactive: true
             unless: None,
             creates: None,
             interactive: true,
-        };
+        });
         let yaml = serde_yaml::to_string(&entry).unwrap();
         assert!(
             yaml.contains("interactive: true"),
