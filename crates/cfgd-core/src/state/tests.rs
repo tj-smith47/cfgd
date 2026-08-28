@@ -22,6 +22,7 @@ const ADDED_COLUMNS: &[(usize, &str, &str)] = &[
     (16, "backup_runs", "kind"),
     (17, "pending_decisions", "content_hash"),
     (18, "config_sources", "last_commit_signed"),
+    (19, "managed_resources", "file_hashes"),
 ];
 
 /// Every `ADD COLUMN` migration must be listed in [`ADDED_COLUMNS`].
@@ -392,39 +393,76 @@ fn upsert_managed_resource() {
 
 #[test]
 fn refresh_managed_resource_hash_writes_only_when_the_hash_moved() {
+    use super::HashRefresh;
     let store = StateStore::open_in_memory().unwrap();
     store
         .upsert_managed_resource("file", "/home/.zshrc", "acme", Some("hash1"), None)
         .unwrap();
 
-    assert!(
+    assert_eq!(
         store
-            .refresh_managed_resource_hash("file", "/home/.zshrc", "hash2")
+            .refresh_managed_resource_hash("file", "/home/.zshrc", "hash2", "/home/.zshrc:hash2")
             .unwrap(),
-        "a hash that moved is written"
+        HashRefresh::Moved {
+            previous_files: None
+        },
+        "a hash that moved is written; the row had no breakdown to hand back"
     );
-    assert!(
-        !store
-            .refresh_managed_resource_hash("file", "/home/.zshrc", "hash2")
+    assert_eq!(
+        store
+            .refresh_managed_resource_hash("file", "/home/.zshrc", "hash2", "/home/.zshrc:hash2")
             .unwrap(),
+        HashRefresh::Unchanged,
         "a hash that already agrees costs no write"
+    );
+    assert_eq!(
+        store
+            .refresh_managed_resource_hash("file", "/home/.zshrc", "hash3", "/home/.zshrc:hash3")
+            .unwrap(),
+        HashRefresh::Moved {
+            previous_files: Some("/home/.zshrc:hash2".to_string())
+        },
+        "the next move hands back the breakdown the row kept"
     );
 
     let resources = store.managed_resources().unwrap();
     assert_eq!(resources.len(), 1);
-    assert_eq!(resources[0].last_hash.as_deref(), Some("hash2"));
+    assert_eq!(resources[0].last_hash.as_deref(), Some("hash3"));
     assert_eq!(
         resources[0].source, "acme",
         "the refresh touches the hash and nothing else"
     );
 
-    assert!(
-        !store
-            .refresh_managed_resource_hash("file", "/home/.vimrc", "hash3")
+    assert_eq!(
+        store
+            .refresh_managed_resource_hash("file", "/home/.vimrc", "hash3", "/home/.vimrc:hash3")
             .unwrap(),
+        HashRefresh::Unchanged,
         "a resource with no row is left alone, never minted"
     );
     assert_eq!(store.managed_resources().unwrap().len(), 1);
+}
+
+#[test]
+fn a_row_with_no_breakdown_is_backfilled_once_and_silently() {
+    use super::HashRefresh;
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_managed_resource("file", "/home/.zshrc", "local", Some("hash1"), None)
+        .unwrap();
+    assert_eq!(
+        store
+            .refresh_managed_resource_hash("file", "/home/.zshrc", "hash1", "/home/.zshrc:hash1")
+            .unwrap(),
+        HashRefresh::Backfilled,
+        "the hash agrees but the breakdown was missing: stored, not news"
+    );
+    assert_eq!(
+        store
+            .refresh_managed_resource_hash("file", "/home/.zshrc", "hash1", "/home/.zshrc:hash1")
+            .unwrap(),
+        HashRefresh::Unchanged
+    );
 }
 
 #[test]

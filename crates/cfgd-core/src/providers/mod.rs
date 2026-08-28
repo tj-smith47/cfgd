@@ -1283,14 +1283,15 @@ pub trait FileManager: Send + Sync {
 /// One converged link entry as the recorded-hash refresh sees it: the
 /// `~`-expanded target its `managed_resources` row is keyed on, the digest of
 /// what the link deploys ([`crate::reconciler::link_deployed_digest`]), and
-/// how many files that digest covers — one for a file, the tree's count for a
-/// directory link — so a count a reader is shown can be worded in FILES
-/// rather than in rows.
+/// the per-file `<path>:<sha256>` breakdown behind that digest — one entry
+/// for a file, one per regular file for a directory link — which is what
+/// lets the refresh count the files that MOVED rather than the files the
+/// row covers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkDeployedRow {
     pub target: PathBuf,
     pub hash: String,
-    pub files: usize,
+    pub file_hashes: Vec<String>,
 }
 
 // --- PackageAction ---

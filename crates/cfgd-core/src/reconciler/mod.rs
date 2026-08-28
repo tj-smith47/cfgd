@@ -45,7 +45,7 @@ pub use env_engine::{
     EnvHostProbeOverride, EnvHostProbeOverrideGuard, with_env_host_probe_override_guard,
 };
 pub use env_engine::{ManagerPathDir, launchd_env_plist};
-pub use files::{RefreshedHashes, link_deployed_digest};
+pub use files::{LinkDeployedDigest, RefreshedHashes, link_deployed_digest};
 pub(crate) use format::debug_assert_system_key_undoubled;
 pub use format::{
     DisplaySubject, action_display_subject, bare_script_subject, condense_action_desc_for_display,

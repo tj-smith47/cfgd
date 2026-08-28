@@ -1108,16 +1108,19 @@ fn reconcile_tick(
     // The sentence states what the tick did to the RECORD as well as what it
     // did to the machine. Folded here rather than in the clean arm, so every
     // arm of the branch above reports it on the same terms.
-    // Worded in FILES, never rows: a module's row is one aggregate over
-    // every file its entries deploy, so the row count under-states what moved.
-    let outcome = match refreshed_hashes.files {
-        0 => outcome,
-        files => outcome.map(|sentence| {
+    // Worded in FILES that MOVED, never rows and never a row's coverage: a
+    // module's row is one aggregate over every file its entries deploy, so
+    // the row count under-states what moved and the coverage over-states it.
+    // A count the rows cannot prove is left unsaid.
+    let outcome = match (refreshed_hashes.rows, refreshed_hashes.files) {
+        (0, _) => outcome,
+        (_, Some(moved)) => outcome.map(|sentence| {
             format!(
                 "{sentence}, {} refreshed",
-                crate::pluralize(files, "deployed file")
+                crate::pluralize(moved, "deployed file")
             )
         }),
+        (_, None) => outcome.map(|sentence| format!("{sentence}, deployed files refreshed")),
     };
 
     // A per-module tick names its module: the log carries ticks of both

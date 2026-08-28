@@ -8615,7 +8615,9 @@ fn every_error_only_arm_of_the_reconcile_tick_is_classified() {
 /// The row is seeded with the hash a real apply records — never NULL, which
 /// every tick backfills and so would pass this on a machine nobody touched.
 /// The clause must depend on the bytes MOVING: the first tick, over the
-/// recorded bytes, says nothing; only the tick that sees the pull does.
+/// recorded bytes, says nothing (it stores the per-file breakdown the row
+/// lacked, silently); only the tick that sees the pull does — and it counts
+/// the ONE file the pull moved, not the three the row covers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial(daemon_log)]
 async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle() {
@@ -8677,12 +8679,18 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
         ) -> crate::errors::Result<crate::daemon::PlannedFiles> {
             let fm = crate::test_helpers::MockFileManager::new();
             let content = *self.content.blocking_lock();
+            let target = crate::to_posix_string(&self.target);
+            // One row standing for a whole tree: the sentence counts the
+            // files that MOVED, never the row and never its coverage.
+            let file_hashes = vec![
+                format!("{target}/a.lua:{}", crate::sha256_hex(b"a")),
+                format!("{target}/b.lua:{}", crate::sha256_hex(b"b")),
+                format!("{target}/c.lua:{}", crate::sha256_hex(content)),
+            ];
             fm.set_link_deployed(vec![crate::providers::LinkDeployedRow {
                 target: self.target.clone(),
                 hash: crate::sha256_hex(content),
-                // One row standing for a whole tree: the sentence counts
-                // the files, not the row.
-                files: 3,
+                file_hashes,
             }]);
             Ok((vec![], Some(Box::new(fm))))
         }
@@ -8759,7 +8767,7 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
 
     let logs = daemon_log();
     assert!(
-        logs.contains("reconcile: complete — nothing to do, 3 deployed files refreshed"),
+        logs.contains("reconcile: complete — nothing to do, 1 deployed file refreshed"),
         "the tick that carried the sync must not read like an idle one: {logs}"
     );
 }
@@ -20339,7 +20347,7 @@ fn every_counted_clause_names_the_unit_it_counts() {
     let classified: &[(&str, &[&str])] = &[
         ("effective_total", &["action", "resource"]),
         ("succeeded", &["action"]),
-        ("files", &["deployed file"]),
+        ("moved", &["deployed file"]),
     ];
     let re = regex::Regex::new(r#"pluralize\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*"([^"]+)"\s*\)"#)
         .unwrap();

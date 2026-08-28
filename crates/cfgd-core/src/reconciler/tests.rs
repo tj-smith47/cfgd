@@ -27606,12 +27606,15 @@ fn a_module_deploying_a_directory_by_symlink_reports_the_file_that_moved_inside_
     );
 }
 
-/// The count the daemon words is over FILES: a module's row is one aggregate
-/// over every file its entries deploy, so `1 deployed file refreshed` for a
-/// six-entry tree named a unit the number was never in.
+/// The count the daemon words is over FILES THAT MOVED: a module's row is
+/// one aggregate over every file its entries deploy, so `1 deployed file
+/// refreshed` for a six-entry tree named a unit the number was never in —
+/// and `52 deployed files refreshed` for a one-line edit under a 52-file tree
+/// was the same row's coverage printed as movement. A count of what moved is
+/// never the coverage of the record that moved.
 #[test]
 #[cfg(unix)]
-fn a_refreshed_module_aggregate_counts_the_files_behind_its_one_row() {
+fn a_one_file_edit_inside_a_module_tree_is_counted_as_one() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("lua");
     std::fs::create_dir_all(source.join("config")).unwrap();
@@ -27651,11 +27654,45 @@ fn a_refreshed_module_aggregate_counts_the_files_behind_its_one_row() {
         .unwrap();
 
     let refreshed = reconciler
+        .refresh_link_deployed_hashes(None, &make_empty_resolved(), &[module.clone()])
+        .unwrap();
+    assert_eq!(
+        refreshed,
+        RefreshedHashes {
+            rows: 1,
+            files: None
+        },
+        "the row had no breakdown to count against, so no number is claimed"
+    );
+
+    std::fs::write(
+        source.join("config/options.lua"),
+        "a\nopt.relativenumber = true\n",
+    )
+    .unwrap();
+    let refreshed = reconciler
+        .refresh_link_deployed_hashes(None, &make_empty_resolved(), &[module.clone()])
+        .unwrap();
+    assert_eq!(
+        refreshed,
+        RefreshedHashes {
+            rows: 1,
+            files: Some(1)
+        },
+        "one file moved under a three-file aggregate: one, not three"
+    );
+
+    std::fs::write(source.join("config/keymaps.lua"), "d\n").unwrap();
+    std::fs::write(&init, "c2\n").unwrap();
+    let refreshed = reconciler
         .refresh_link_deployed_hashes(None, &make_empty_resolved(), &[module])
         .unwrap();
     assert_eq!(
         refreshed,
-        RefreshedHashes { rows: 1, files: 3 },
-        "one aggregate row, three files behind it"
+        RefreshedHashes {
+            rows: 1,
+            files: Some(2)
+        },
+        "a file that appeared and one whose bytes moved are each counted once"
     );
 }
