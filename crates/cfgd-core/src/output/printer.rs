@@ -157,8 +157,15 @@ pub(crate) fn colors_must_be_disabled(output_format: &OutputFormat) -> bool {
 /// terminal. `build` re-applies the same `colors`, and `with_colors` withdraws
 /// the stamp with the colour, so the two cannot end up disagreeing.
 fn stamp_hyperlinks(theme: Theme, colors: bool) -> Theme {
+    // Colour off already settles the answer, so the terminal is never asked:
+    // the probe reads several environment variables on every construction, and
+    // `with_hyperlinks` would discard what it learned. `-o json`, `NO_COLOR`
+    // and a piped stdout are the common case, not the rare one.
+    if !colors {
+        return theme.with_colors(false);
+    }
     theme
-        .with_colors(colors)
+        .with_colors(true)
         .with_hyperlinks(super::terminal_supports_hyperlinks())
 }
 

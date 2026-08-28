@@ -18,13 +18,14 @@ served from the release tag, so a file pins the schema of the cfgd version that
 wrote it. Add a modeline to the top of the file:
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/tj-smith47/cfgd/v0.9.0/schemas/cfgd-config.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/tj-smith47/cfgd/v<version>/schemas/cfgd-config.schema.json
 apiVersion: cfgd.io/v1alpha1
 kind: Config
 # ...
 ```
 
-Swap the filename for `cfgd-module`, `cfgd-profile`, or `cfgd-source` as appropriate.
+Swap `<version>` for the cfgd release that wrote the file (`cfgd --version`), and
+the filename for `cfgd-module`, `cfgd-profile`, or `cfgd-source` as appropriate.
 
 cfgd's scaffolders (`cfgd init`, `cfgd profile create`, `cfgd module create`, and
 AI generate) emit this modeline as the first line of every manifest they write, so
