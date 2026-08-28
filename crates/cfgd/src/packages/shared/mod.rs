@@ -541,11 +541,20 @@ pub(super) fn pkg_run(
 /// augmented PATH is how brew finds its own tools, and overwriting it would
 /// undo a decision made with more context than this has.
 ///
-/// Every spawn wrapper in this module calls it — `pkg_run`, `run_pkg_cmd*` and
-/// `run_pkg_query` alike. A manager's install path reaches all three (npm's
-/// `install` asks `npm config get prefix` through `run_pkg_query` before it
-/// builds the install command), so augmenting one of them leaves the same
-/// availability/spawn disagreement live one call earlier.
+/// Every spawn of a manager binary under `packages/` calls it — through
+/// `pkg_run`, `run_pkg_cmd*` and `run_pkg_query`, and directly from the two
+/// probes that spawn on their own (`tool_version_from`, `pip_python_version`).
+/// A manager's install path reaches several of them (npm's `install` asks
+/// `npm config get prefix` through `run_pkg_query` before it builds the
+/// install command; every `available_version` prices through `run_pkg_query`;
+/// a provision's settled row reads `tool_version_from`), so augmenting some
+/// and not others leaves the same availability/spawn disagreement live one
+/// call earlier — a brew this run had just bootstrapped answered `is_available`
+/// and then reported no version, because `brew --version` shells out to a
+/// `ruby`/`git` its shim finds through the PATH it inherits. A spawn that is
+/// NOT a manager binary (`stat`, `useradd`) says so with `// own-path-ok:` on
+/// the line or the line above; `every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs`
+/// walks the crate for one that neither routes here nor says why.
 fn hand_child_bootstrapped_path(cmd: &mut Command) {
     let dirs = cfgd_core::bootstrapped_path_dirs();
     if dirs.is_empty()
@@ -952,6 +961,7 @@ fn pip_python_version(pip_tool: &str) -> Option<String> {
     }
     let mut cmd = tool_cmd_with_resolver(pip_tool, || resolve_tool_with_fallbacks(pip_tool, &[]));
     cmd.arg("--version");
+    hand_child_bootstrapped_path(&mut cmd);
     let out = cfgd_core::command_output_with_timeout(&mut cmd, cfgd_core::COMMAND_TIMEOUT).ok()?;
     let probed = parse_pip_python_version(&cfgd_core::stdout_lossy_trimmed(&out))?;
     Some(VERSION.get_or_init(|| probed).clone())
@@ -1105,6 +1115,7 @@ fn brew_owner() -> Option<String> {
         .args(["-c", "%U", LINUXBREW_PATH])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        // own-path-ok: stat is coreutils, not a manager this run could have bootstrapped
         .output()
         .ok()?;
     let owner = cfgd_core::stdout_lossy_trimmed(&output);
@@ -1398,6 +1409,7 @@ pub(super) fn sudo_cmd_with_seam(program: &str) -> Command {
 /// banner holding no version, so a row that cannot state the fact states
 /// nothing rather than a guess.
 pub(super) fn tool_version_from(cmd: &mut Command) -> Option<String> {
+    hand_child_bootstrapped_path(cmd);
     let out = cfgd_core::command_output_with_timeout(cmd, cfgd_core::COMMAND_TIMEOUT).ok()?;
     if !out.status.success() {
         return None;

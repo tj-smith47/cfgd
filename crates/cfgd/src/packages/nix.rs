@@ -4,12 +4,12 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::errors::Result;
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     bootstrap_via_shell_script, install_batch_then_per_package, resolve_tool_with_fallbacks,
-    run_pkg_cmd, run_pkg_cmd_live, strip_version_suffix, tool_cmd_with_resolver,
+    run_pkg_cmd, run_pkg_cmd_live, run_pkg_query, strip_version_suffix, tool_cmd_with_resolver,
 };
 
 pub struct NixManager;
@@ -88,13 +88,7 @@ impl PackageManager for NixManager {
         // a multi-line `Key: value` block in nix 2.20+, which no line-oriented
         // parser can reliably read; the JSON shape is stable across versions.
         if nix_available() {
-            let output = nix_cmd()
-                .args(["profile", "list", "--json"])
-                .output()
-                .map_err(|e| PackageError::CommandFailed {
-                    manager: "nix".into(),
-                    source: e,
-                })?;
+            let output = run_pkg_query("nix", nix_cmd().args(["profile", "list", "--json"]))?;
 
             if output.status.success() {
                 return Ok(parse_nix_profile_list_json(&String::from_utf8_lossy(
@@ -179,13 +173,10 @@ impl PackageManager for NixManager {
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // nix search nixpkgs <pkg> --json → parse version from first matching result
         if nix_available() {
-            let output = nix_cmd()
-                .args(["search", "nixpkgs", package, "--json"])
-                .output()
-                .map_err(|e| PackageError::CommandFailed {
-                    manager: "nix".into(),
-                    source: e,
-                })?;
+            let output = run_pkg_query(
+                "nix",
+                nix_cmd().args(["search", "nixpkgs", package, "--json"]),
+            )?;
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if let Some(v) = parse_nix_search_version(&stdout) {

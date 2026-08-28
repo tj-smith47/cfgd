@@ -4,14 +4,14 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::errors::Result;
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 
 #[cfg(target_os = "linux")]
 use super::shared::detect_system_method;
 use super::shared::{
     MediatedArms, bootstrap_via_system_manager, parse_version_field, resolve_tool_with_fallbacks,
-    run_pkg_cmd, run_pkg_cmd_live, system_manager_arms, tool_cmd_with_resolver,
+    run_pkg_cmd, run_pkg_cmd_live, run_pkg_query, system_manager_arms, tool_cmd_with_resolver,
 };
 
 pub struct FlatpakManager;
@@ -125,13 +125,10 @@ impl PackageManager for FlatpakManager {
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // flatpak remote-info flathub <app-id> → parse "Version:" field
-        let output = flatpak_cmd()
-            .args(["remote-info", "flathub", package])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "flatpak".into(),
-                source: e,
-            })?;
+        let output = run_pkg_query(
+            "flatpak",
+            flatpak_cmd().args(["remote-info", "flathub", package]),
+        )?;
         if !output.status.success() {
             return Ok(None);
         }

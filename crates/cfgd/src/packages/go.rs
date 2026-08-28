@@ -199,13 +199,10 @@ impl PackageManager for GoInstallManager {
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // go list -m -json <pkg>@latest → parse "Version" field
-        let output = go_cmd()
-            .args(["list", "-m", "-json", &format!("{}@latest", package)])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "go".into(),
-                source: e,
-            })?;
+        let output = run_pkg_query(
+            "go",
+            go_cmd().args(["list", "-m", "-json", &format!("{}@latest", package)]),
+        )?;
         if !output.status.success() {
             return Ok(None);
         }

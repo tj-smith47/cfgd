@@ -3,10 +3,10 @@
 use std::collections::HashSet;
 use std::process::Command;
 
-use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::errors::Result;
 use cfgd_core::providers::{BootstrapPlan, PackageInfo, PackageManager};
 
-use super::shared::{canonical_ci_pkg_name, run_pkg_cmd, run_pkg_cmd_live};
+use super::shared::{canonical_ci_pkg_name, run_pkg_cmd, run_pkg_cmd_live, run_pkg_query};
 
 pub struct ChocolateyManager;
 
@@ -187,13 +187,7 @@ impl PackageManager for ChocolateyManager {
     }
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
-        let output = Command::new("choco")
-            .args(["info", package])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "chocolatey".into(),
-                source: e,
-            })?;
+        let output = run_pkg_query("chocolatey", Command::new("choco").args(["info", package]))?;
         if !output.status.success() {
             return Ok(None);
         }

@@ -7,7 +7,7 @@ use cfgd_core::errors::Result;
 use cfgd_core::output::Role;
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 
-use super::shared::{run_pkg_cmd, run_pkg_cmd_msg};
+use super::shared::{run_pkg_cmd, run_pkg_cmd_msg, run_pkg_query};
 
 /// Build the OS-native shell invocation for a user-authored package-manager
 /// command string: `sh -c <cmd>` on Unix, `cmd.exe /C <cmd>` on Windows.
@@ -157,11 +157,8 @@ impl PackageManager for ScriptedManager {
     fn is_available(&self) -> bool {
         #[cfg(test)]
         let _path_guard = cfgd_core::test_helpers::path_env_read_guard();
-        shell_command(&self.check_cmd)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
+        run_pkg_query(self.name(), &mut shell_command(&self.check_cmd))
+            .map(|out| out.status.success())
             .unwrap_or(false)
     }
 

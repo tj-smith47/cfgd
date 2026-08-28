@@ -13,10 +13,10 @@
 //! `packages::simple::mod` still shell out via raw `Command::new` and are not
 //! yet seamed.
 
-use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::errors::Result;
 use cfgd_core::tool_cmd;
 
-use super::shared::run_pkg_cmd;
+use super::shared::{run_pkg_cmd, run_pkg_query};
 
 pub(super) const APT_CACHE_BIN_ENV: &str = "CFGD_APT_CACHE_BIN";
 pub(super) const APK_BIN_ENV: &str = "CFGD_APK_BIN";
@@ -59,14 +59,10 @@ pub(super) fn query_version_info(manager: &str, package: &str) -> Result<Option<
         "pacman" => ("pacman", &["-Si"]),
         _ => (manager, &["info"]),
     };
-    let output = tool_cmd(info_bin_env(manager), cmd)
-        .args(args)
-        .arg(package)
-        .output()
-        .map_err(|e| PackageError::CommandFailed {
-            manager: manager.into(),
-            source: e,
-        })?;
+    let output = run_pkg_query(
+        manager,
+        tool_cmd(info_bin_env(manager), cmd).args(args).arg(package),
+    )?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -83,13 +79,10 @@ pub(super) fn query_version_info(manager: &str, package: &str) -> Result<Option<
 }
 
 pub(super) fn query_version_apt(manager: &str, package: &str) -> Result<Option<String>> {
-    let output = tool_cmd(APT_CACHE_BIN_ENV, "apt-cache")
-        .args(["policy", package])
-        .output()
-        .map_err(|e| PackageError::CommandFailed {
-            manager: manager.into(),
-            source: e,
-        })?;
+    let output = run_pkg_query(
+        manager,
+        tool_cmd(APT_CACHE_BIN_ENV, "apt-cache").args(["policy", package]),
+    )?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -117,13 +110,10 @@ pub(super) fn query_version_apt(manager: &str, package: &str) -> Result<Option<S
 }
 
 pub(super) fn query_version_apk(manager: &str, package: &str) -> Result<Option<String>> {
-    let output = tool_cmd(APK_BIN_ENV, "apk")
-        .args(["policy", package])
-        .output()
-        .map_err(|e| PackageError::CommandFailed {
-            manager: manager.into(),
-            source: e,
-        })?;
+    let output = run_pkg_query(
+        manager,
+        tool_cmd(APK_BIN_ENV, "apk").args(["policy", package]),
+    )?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -153,13 +143,10 @@ pub(super) fn query_version_pkg(manager: &str, package: &str) -> Result<Option<S
     // are installable — silently starving version-constraint resolution. Query
     // `%n<TAB>%v` and match the name exactly so a pattern that expands to several
     // packages can never yield a sibling's version.
-    let output = tool_cmd(PKG_BIN_ENV, "pkg")
-        .args(["rquery", "%n\t%v", package])
-        .output()
-        .map_err(|e| PackageError::CommandFailed {
-            manager: manager.into(),
-            source: e,
-        })?;
+    let output = run_pkg_query(
+        manager,
+        tool_cmd(PKG_BIN_ENV, "pkg").args(["rquery", "%n\t%v", package]),
+    )?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -186,13 +173,10 @@ pub(super) fn query_version_pkg(manager: &str, package: &str) -> Result<Option<S
 /// evaluates the floor exactly as `pkg install`'s own resolver would. Returns
 /// `Ok(true)` when `available` is equal to or greater than the floor.
 pub(super) fn pkg_version_meets_minimum(available: &str, min_version: &str) -> Result<bool> {
-    let output = tool_cmd(PKG_BIN_ENV, "pkg")
-        .args(["version", "-t", available, min_version])
-        .output()
-        .map_err(|e| PackageError::CommandFailed {
-            manager: "pkg".into(),
-            source: e,
-        })?;
+    let output = run_pkg_query(
+        "pkg",
+        tool_cmd(PKG_BIN_ENV, "pkg").args(["version", "-t", available, min_version]),
+    )?;
     if !output.status.success() {
         return Ok(false);
     }

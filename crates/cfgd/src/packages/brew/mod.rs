@@ -14,6 +14,7 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 use super::shared::{
     brew_available, brew_cmd, brew_path_dirs, command_failure_reason,
     install_batch_then_per_package, pkg_run, run_pkg_cmd, run_pkg_cmd_live, run_pkg_cmd_msg,
+    run_pkg_query,
 };
 
 pub struct BrewManager;
@@ -286,13 +287,10 @@ impl PackageManager for BrewCaskManager {
 
     fn available_version(&self, cask: &str) -> Result<Option<String>> {
         // brew info --json=v2 --cask <pkg> → .casks[0].version
-        let output = brew_cmd()
-            .args(["info", "--json=v2", "--cask", cask])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "brew-cask".into(),
-                source: e,
-            })?;
+        let output = run_pkg_query(
+            "brew-cask",
+            brew_cmd().args(["info", "--json=v2", "--cask", cask]),
+        )?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -341,6 +339,7 @@ impl PackageManager for BrewManager {
                     "/bin/bash",
                     "linuxbrew",
                 ])
+                // own-path-ok: useradd is the host's, not a manager this run bootstraps
                 .status()
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "brew".into(),
@@ -474,13 +473,7 @@ impl PackageManager for BrewManager {
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // brew info --json=v2 <pkg> → .formulae[0].versions.stable
-        let output = brew_cmd()
-            .args(["info", "--json=v2", package])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "brew".into(),
-                source: e,
-            })?;
+        let output = run_pkg_query("brew", brew_cmd().args(["info", "--json=v2", package]))?;
         if !output.status.success() {
             return Ok(None);
         }
