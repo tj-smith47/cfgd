@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use cfgd_core::output::{CommandPair, Doc, Printer, SectionBuilder, renderer::Table};
+use cfgd_core::output::{CommandPair, Doc, KvPair, Printer, SectionBuilder, renderer::Table};
 use cfgd_core::schema::{FieldNode, KIND_REGISTRY};
 
 // cfgd explain — schema documentation for all resource types
@@ -35,6 +35,12 @@ pub struct ResourceSchema {
 }
 
 impl ResourceSchema {
+    /// The URL the `Docs` row opens, pinned to THIS binary's release tag —
+    /// the one derivation both the human row and `-o json`'s `docsUrl` read.
+    pub fn docs_url(&self) -> String {
+        cfgd_core::config::docs_url(&self.docs, env!("CARGO_PKG_VERSION"))
+    }
+
     /// The kind's top-level field tree.
     pub fn field_tree(&self) -> Vec<FieldNode> {
         self.fields.clone()
@@ -276,6 +282,9 @@ pub struct ExplainOutput {
     /// Where this kind is documented in the repo's `docs/` tree. Additive:
     /// a consumer reading only the fields it already knows sees no change.
     pub docs: String,
+    /// `docs` as the URL the human row links to, pinned to this binary's
+    /// release tag. Additive beside `docs`, which keeps the bare path.
+    pub docs_url: String,
     pub description: String,
     pub fields: Vec<ExplainField>,
 }
@@ -339,6 +348,7 @@ fn schema_to_output(schema: &ResourceSchema) -> ExplainOutput {
         kind: schema.kind.clone(),
         location: schema.location.clone(),
         docs: schema.docs.clone(),
+        docs_url: schema.docs_url(),
         description: schema.description.clone(),
         fields: schema.fields.iter().map(schema_field_to_explain).collect(),
     }
@@ -610,13 +620,16 @@ pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc
     let doc = Doc::new()
         .heading_title("Explain", schema.name.clone())
         .paragraph(schema.description.clone())
-        .kv_block([
+        // One block, so every row pads to one key column; the pointer is a
+        // LINK: the short path on a terminal that can open it, the full URL
+        // anywhere else — a partial path is clickable nowhere.
+        .kv_rows([
             // name-row-ok: a KRM field name, spelled as the YAML spells it
-            ("apiVersion", schema.api_version.as_str()),
+            KvPair::new("apiVersion", schema.api_version.as_str()),
             // name-row-ok: a KRM field name, spelled as the YAML spells it
-            ("kind", schema.kind.as_str()),
-            ("Location", schema.location.as_str()),
-            ("Docs", schema.docs.as_str()),
+            KvPair::new("kind", schema.kind.as_str()),
+            KvPair::new("Location", schema.location.as_str()),
+            KvPair::linked("Docs", &schema.docs, schema.docs_url()),
         ])
         .section("Fields (under spec)", |s| {
             append_fields(s, &fields, recursive)

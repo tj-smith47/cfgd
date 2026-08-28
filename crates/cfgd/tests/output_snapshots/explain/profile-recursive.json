@@ -2,6 +2,7 @@
   "apiVersion": "cfgd.io/v1alpha1",
   "description": "A composable layer of modules, packages, files, and settings.",
   "docs": "docs/spec/profile.md#fields",
+  "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/profile.md#fields",
   "fields": [
     {
       "children": [

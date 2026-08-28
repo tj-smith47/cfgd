@@ -770,9 +770,15 @@ fn explain_points_every_kind_at_its_docs_page() {
     cmd_explain(&printer, Some("module"), false).unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
+    // A capture opens no hyperlink, so the row states the URL a reader can
+    // copy — release-pinned, never `master`.
+    let expected = format!(
+        "Docs        https://github.com/tj-smith47/cfgd/blob/v{}/docs/spec/module.md#fields",
+        env!("CARGO_PKG_VERSION")
+    );
     assert!(
-        output.contains("Docs        docs/spec/module.md#fields"),
-        "expected the docs row beneath location, got: {output}"
+        output.contains(&expected),
+        "expected the docs row beneath location to carry {expected}, got: {output}"
     );
 
     let (printer, cap) = Printer::for_test_doc();
@@ -784,6 +790,16 @@ fn explain_points_every_kind_at_its_docs_page() {
         assert!(
             docs.starts_with("docs/") && docs.contains('#'),
             "every kind points at a docs anchor, {} does not: {docs:?}",
+            schema["kind"]
+        );
+        let url = schema["docsUrl"].as_str().unwrap_or_default();
+        assert_eq!(
+            url,
+            format!(
+                "https://github.com/tj-smith47/cfgd/blob/v{}/{docs}",
+                env!("CARGO_PKG_VERSION")
+            ),
+            "docsUrl must be the release-pinned form of docs for {}",
             schema["kind"]
         );
     }

@@ -4,7 +4,7 @@ Explain: Profile
 apiVersion  cfgd.io/v1alpha1
 kind        Profile
 Location    profiles/<name>/profile.yaml
-Docs        docs/spec/profile.md#fields
+Docs        https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/profile.md#fields
 
 Fields (under spec)
   aliases   <[]ShellAlias>

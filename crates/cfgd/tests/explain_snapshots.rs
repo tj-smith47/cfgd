@@ -19,16 +19,37 @@ use cfgd::cli::explain::{
     build_explain_drilldown_doc, build_explain_index_doc, build_explain_schema_doc, find_schema,
     resolve_field_path,
 };
-use cfgd_core::output::Printer;
+use cfgd_core::output::test_capture::assert_snapshot_at;
+use cfgd_core::output::{DocCapture, Printer, strip_ansi};
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
+
+/// Assert a human golden with the running cfgd version folded to `<VERSION>`.
+/// The `Docs` row carries a release-pinned URL, so an unfolded golden would
+/// have to be re-cut on every version bump.
+fn assert_human(cap: &DocCapture, name: &str) {
+    let human = strip_ansi(&cap.human());
+    let actual = cfgd_core::normalize_cfgd_version(&human, env!("CARGO_PKG_VERSION"));
+    assert_snapshot_at(Path::new(SNAPSHOT_ROOT), name, &actual);
+}
+
+/// The same fold over the `-o json` payload, whose `docsUrl` is the same
+/// release-pinned URL.
+fn assert_json(cap: &DocCapture, name: &str) {
+    let payload = cap
+        .json()
+        .map(|v| serde_json::to_string_pretty(&v).expect("payload serializes"))
+        .unwrap_or_default();
+    let actual = cfgd_core::normalize_cfgd_version(&payload, env!("CARGO_PKG_VERSION"));
+    assert_snapshot_at(Path::new(SNAPSHOT_ROOT), name, &actual);
+}
 
 #[test]
 fn explain_index_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_explain_index_doc());
     drop(printer);
-    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/index.txt");
+    assert_human(&cap, "explain/index.txt");
 }
 
 #[test]
@@ -46,7 +67,7 @@ fn explain_index_json() {
         Some(10),
         "explain index must list 10 schemas (9 registry kinds incl. Module CRD + TeamConfig), got: {actual}"
     );
-    cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/index.json");
+    assert_json(&cap, "explain/index.json");
 }
 
 #[test]
@@ -55,7 +76,7 @@ fn explain_module_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_explain_schema_doc(schema, false));
     drop(printer);
-    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/module.txt");
+    assert_human(&cap, "explain/module.txt");
 }
 
 #[test]
@@ -74,7 +95,7 @@ fn explain_module_json() {
         Some("Module"),
         "explain module payload must carry kind=Module, got: {actual}"
     );
-    cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/module.json");
+    assert_json(&cap, "explain/module.json");
 }
 
 #[test]
@@ -106,7 +127,7 @@ fn explain_recursive_tree_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_explain_schema_doc(schema, true));
     drop(printer);
-    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/profile-recursive.txt");
+    assert_human(&cap, "explain/profile-recursive.txt");
 }
 
 #[test]
@@ -121,7 +142,7 @@ fn explain_recursive_tree_json() {
         Some("Profile"),
         "recursive explain payload must carry kind=Profile, got: {actual}"
     );
-    cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/profile-recursive.json");
+    assert_json(&cap, "explain/profile-recursive.json");
 }
 
 #[test]
@@ -132,10 +153,7 @@ fn explain_union_drilldown_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_explain_drilldown_doc(schema, &path, fields, false));
     drop(printer);
-    cap.assert_human_snapshot_in(
-        Path::new(SNAPSHOT_ROOT),
-        "explain/profile-packages-brew.txt",
-    );
+    assert_human(&cap, "explain/profile-packages-brew.txt");
 }
 
 #[test]

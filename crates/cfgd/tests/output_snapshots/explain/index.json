@@ -3,6 +3,7 @@
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "A reusable unit of packages, files, scripts, and environment.",
     "docs": "docs/spec/module.md#fields",
+    "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/module.md#fields",
     "fields": [
       {
         "children": [
@@ -828,6 +829,7 @@
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "A composable layer of modules, packages, files, and settings.",
     "docs": "docs/spec/profile.md#fields",
+    "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/profile.md#fields",
     "fields": [
       {
         "children": [
@@ -2511,6 +2513,7 @@
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "A published source of modules and profiles for multi-source config.",
     "docs": "docs/sources.md#configsource-manifest",
+    "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/sources.md#configsource-manifest",
     "fields": [
       {
         "children": [
@@ -6089,6 +6092,7 @@
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "The root cfgd configuration: active profile, sources, daemon, theme.",
     "docs": "docs/spec/config.md#fields",
+    "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/config.md#fields",
     "fields": [
       {
         "children": [
@@ -6989,6 +6993,7 @@
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "Per-machine desired state reconciled by the cfgd operator.",
     "docs": "docs/spec/machineconfig.md#fields",
+    "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/machineconfig.md#fields",
     "fields": [
       {
         "children": [
@@ -7092,6 +7097,7 @@
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "Namespace-scoped policy of required modules, packages, and settings.",
     "docs": "docs/spec/configpolicy.md#fields",
+    "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/configpolicy.md#fields",
     "fields": [
       {
         "children": [
@@ -7220,6 +7226,7 @@
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "Cluster-scoped policy fanned out across selected namespaces.",
     "docs": "docs/spec/clusterconfigpolicy.md#fields",
+    "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/clusterconfigpolicy.md#fields",
     "fields": [
       {
         "children": [
@@ -7369,6 +7376,7 @@
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "A recorded drift event between desired and observed machine state.",
     "docs": "docs/spec/driftalert.md#fields",
+    "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/driftalert.md#fields",
     "fields": [
       {
         "description": "Identifier of the device that reported the drift, as it enrolled.",
@@ -7446,6 +7454,7 @@
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "Cluster-side Module CRD: an OCI-packaged module injected via CSI.",
     "docs": "docs/operator.md#pod-module-injection",
+    "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/operator.md#pod-module-injection",
     "fields": [
       {
         "description": "Names of other `Module` resources that must be applied first.",
@@ -7611,6 +7620,7 @@
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "Crossplane composite resource for team-level configuration. Fans out to per-user MachineConfig CRDs via composition function.",
     "docs": "docs/spec/teamconfig.md#fields",
+    "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/teamconfig.md#fields",
     "fields": [
       {
         "description": "Name of the team this document configures. Used as the prefix of every MachineConfig the composition generates, so it must be a valid DNS label.",

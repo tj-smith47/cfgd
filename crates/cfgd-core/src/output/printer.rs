@@ -151,6 +151,17 @@ pub(crate) fn colors_must_be_disabled(output_format: &OutputFormat) -> bool {
         || output_format.is_structured()
 }
 
+/// Stamp OSC 8 hyperlinks onto `theme` iff colour resolved on and the terminal
+/// is a known emitter. Read by the two PRODUCTION constructors only: a capture
+/// never detects, so no golden can pick up an escape from the developer's own
+/// terminal. `build` re-applies the same `colors`, and `with_colors` withdraws
+/// the stamp with the colour, so the two cannot end up disagreeing.
+fn stamp_hyperlinks(theme: Theme, colors: bool) -> Theme {
+    theme
+        .with_colors(colors)
+        .with_hyperlinks(super::terminal_supports_hyperlinks())
+}
+
 /// The depth an action row renders at in a report: under its phase's section
 /// and its owner's group. A sole-lane phase draws a level shallower, which
 /// only leaves such a row more room than it was budgeted.
@@ -187,7 +198,12 @@ impl Printer {
     ) -> Self {
         let theme = theme_name.map(Theme::from_preset).unwrap_or_default();
         let colors = colors.resolve(&output_format);
-        Self::build(verbosity, theme, output_format, colors)
+        Self::build(
+            verbosity,
+            stamp_hyperlinks(theme, colors),
+            output_format,
+            colors,
+        )
     }
 
     /// Production constructor for a printer built from the user's `spec.theme`
@@ -206,7 +222,12 @@ impl Printer {
     ) -> Self {
         let theme = Theme::from_config(theme);
         let colors = colors.resolve(&output_format);
-        Self::build(verbosity, theme, output_format, colors)
+        Self::build(
+            verbosity,
+            stamp_hyperlinks(theme, colors),
+            output_format,
+            colors,
+        )
     }
 
     fn build(

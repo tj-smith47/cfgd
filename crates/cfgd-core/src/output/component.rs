@@ -171,6 +171,16 @@ pub struct KvPair {
     /// way, and the breakdown a nested row renders is its own payload field.
     #[serde(skip)]
     pub nested: bool,
+    /// A URL the VALUE opens when the terminal renders OSC 8 hyperlinks; on
+    /// one that does not, the renderer prints the URL itself in the value's
+    /// place, because a terminal auto-links a full URL and never a partial
+    /// path. Renderer-owned like the three slots above: the escape is styling,
+    /// and `cursor_safe` would eat a caller's own.
+    ///
+    /// Never serialized — a `-o json` reader gets the URL through its own
+    /// payload field (`docsUrl`), never through the display row.
+    #[serde(skip)]
+    pub link: Option<String>,
 }
 
 impl KvPair {
@@ -181,6 +191,18 @@ impl KvPair {
             annotation: None,
             value_role: None,
             nested: false,
+            link: None,
+        }
+    }
+
+    /// A pair whose value is a LINK: `text` is what a hyperlink-capable
+    /// terminal shows and `url` where a click lands; a terminal without
+    /// hyperlinks shows `url` itself (`Docs  docs/spec/module.md#fields`
+    /// on iTerm, the full GitHub URL under `| cat`).
+    pub fn linked(k: impl Into<String>, text: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            link: Some(url.into()),
+            ..Self::new(k, text)
         }
     }
 

@@ -1040,8 +1040,29 @@ cfgd explain --recursive machineconfig     # expand all fields
 
 Schemas are derived from the live resource types (the `cfgd-core` kind
 registry), so `explain` always matches what cfgd actually accepts. Every kind's
-header carries a `docs` row pointing at the page in `docs/` that describes it in
+header carries a `Docs` row pointing at the page in `docs/` that describes it in
 prose.
+
+That row is a link, pinned to the release of cfgd that printed it, so the page
+it opens documents the schema the binary just explained rather than whatever
+`master` has moved on to. On a terminal that renders OSC 8 hyperlinks the row
+shows the short repo-relative path and a click opens the page; everywhere else
+(a pipe, a file, a terminal cfgd does not recognize) the row is the full URL,
+because a repo-relative path is something no terminal auto-links and no reader
+can paste into a browser:
+
+```
+Docs        https://github.com/tj-smith47/cfgd/blob/v0.9.0/docs/spec/module.md#fields
+```
+
+Hyperlinks are detected from the terminal, never from a flag: iTerm2, WezTerm,
+VS Code's terminal, Ghostty, Hyper, Windows Terminal, kitty, Alacritty, Konsole,
+and any VTE-based terminal (GNOME Terminal, Tilix) from VTE 0.50 on. Colour is a
+separate gate — `--color never`, `NO_COLOR` and a non-terminal stdout all
+withhold the escape along with every other one.
+
+`-o json` carries the bare pointer as `docs` and the same release-pinned URL as
+an additive `docsUrl` field beside it.
 
 A field's type is rendered as the named type it resolves to
 (`files <[]ModuleFileEntry>`, `scripts <ScriptSpec>`); a field whose schema is an
