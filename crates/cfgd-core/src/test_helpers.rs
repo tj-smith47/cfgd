@@ -2917,6 +2917,9 @@ pub struct MockPackageManager {
     /// taken when the plan says the run delivers one; `bootstrap_method` is
     /// the host arm it falls to otherwise. The npm/pipx/go shape.
     pub bootstrap_cascade: Vec<String>,
+    /// What `tool_version()` answers, for a test about the detail a landed
+    /// provision states.
+    pub tool_version: Option<String>,
     pub installed: std::collections::HashSet<String>,
     pub install_calls: Mutex<Vec<Vec<String>>>,
     pub uninstall_calls: Mutex<Vec<Vec<String>>>,
@@ -2986,6 +2989,7 @@ impl MockPackageManager {
             bootstrap_capable: false,
             bootstrap_method: "mock".to_string(),
             bootstrap_cascade: Vec::new(),
+            tool_version: None,
             bootstrap_requires: Vec::new(),
             bootstrap_creates: Vec::new(),
             installed: std::collections::HashSet::new(),
@@ -3077,6 +3081,13 @@ impl MockPackageManager {
     /// content for a manager this run will provision.
     pub fn creating_dirs(mut self, dirs: &[&str]) -> Self {
         self.bootstrap_creates = dirs.iter().map(|d| (*d).to_string()).collect();
+        self
+    }
+
+    /// Report this version once available, so a landed provision has a fact
+    /// to state beside its row.
+    pub fn reporting_version(mut self, version: &str) -> Self {
+        self.tool_version = Some(version.to_string());
         self
     }
 
@@ -3207,6 +3218,10 @@ impl crate::providers::PackageManager for MockPackageManager {
                 .requiring(self.bootstrap_requires.clone())
                 .creating(self.bootstrap_creates.clone())
         })
+    }
+
+    fn tool_version(&self) -> Option<String> {
+        self.tool_version.clone()
     }
 
     fn bootstrap(&self, _cx: &crate::providers::PackageContext<'_>) -> crate::errors::Result<()> {

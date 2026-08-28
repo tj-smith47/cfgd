@@ -48,6 +48,10 @@ impl PackageManager for NixManager {
         "nix"
     }
 
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(nix_cmd().arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         nix_env_available() || nix_available()
     }

@@ -2630,6 +2630,7 @@ fn env_apply_result(descriptions: &[&str]) -> ApplyResult {
                 skipped: d.ends_with(":skipped"),
                 not_attempted: None,
                 installed: None,
+                versions: Default::default(),
             })
             .collect(),
         status: ApplyStatus::Success,

@@ -37,6 +37,10 @@ impl PackageManager for SnapManager {
         "snap"
     }
 
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(snap_cmd().arg("version"))
+    }
+
     fn is_available(&self) -> bool {
         snap_available()
     }

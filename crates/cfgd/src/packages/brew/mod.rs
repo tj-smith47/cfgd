@@ -143,6 +143,10 @@ impl PackageManager for BrewTapManager {
         "brew-tap"
     }
 
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(brew_cmd().arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         brew_available()
     }
@@ -223,6 +227,10 @@ impl PackageManager for BrewCaskManager {
         "brew-cask"
     }
 
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(brew_cmd().arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         brew_available()
     }
@@ -299,6 +307,10 @@ impl PackageManager for BrewCaskManager {
 impl PackageManager for BrewManager {
     fn name(&self) -> &str {
         "brew"
+    }
+
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(brew_cmd().arg("--version"))
     }
 
     fn is_available(&self) -> bool {

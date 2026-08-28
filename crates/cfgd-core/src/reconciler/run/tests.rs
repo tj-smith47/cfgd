@@ -90,6 +90,7 @@ fn action_result(success: bool) -> ActionResult {
         skipped: false,
         not_attempted: None,
         installed: None,
+        versions: Default::default(),
     }
 }
 
@@ -730,6 +731,7 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
         skipped: false,
         not_attempted: Some(crate::NO_SESSION_MANAGER.to_string()),
         installed: None,
+        versions: Default::default(),
     });
 
     let tally = result.tally();
@@ -906,7 +908,7 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
         aliases: 3,
     });
     let subject = action_display_subject(&write_env).body.clone();
-    let detail = super::super::action_produced_detail(&write_env, None)
+    let detail = super::super::action_produced_detail(&write_env, None, &[])
         .expect("a write of 3 vars and 3 aliases states what it produced");
     // A far longer sibling in the SAME report, so the column the short row
     // pads to is one its own width would never have produced.

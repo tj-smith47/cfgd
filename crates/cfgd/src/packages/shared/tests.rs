@@ -2225,3 +2225,40 @@ fn command_failure_reason_is_the_only_place_a_managers_stderr_becomes_a_message(
         offenders.join("\n")
     );
 }
+
+/// Every banner shape a manager in this crate prints yields its dotted
+/// version and nothing else: the prefix (`v`, `go`), the trailing punctuation
+/// and the words around it are not the fact.
+#[test]
+fn parse_tool_version_reads_every_managers_banner_shape() {
+    for (banner, expected) in [
+        ("Homebrew 4.6.3", Some("4.6.3")),
+        (
+            "Homebrew 4.6.3\nHomebrew/homebrew-core (git revision abc)",
+            Some("4.6.3"),
+        ),
+        ("11.4.2", Some("11.4.2")),
+        ("go version go1.24.1 linux/amd64", Some("1.24.1")),
+        ("v1.8.1911", Some("1.8.1911")),
+        ("apt 2.8.3 (amd64)", Some("2.8.3")),
+        ("apk-tools 2.14.4, compiled for x86_64.", Some("2.14.4")),
+        ("nix (Nix) 2.24.9", Some("2.24.9")),
+        ("cargo 1.89.0 (c24e10642 2025-06-23)", Some("1.89.0")),
+        ("pipx 1.7.1", Some("1.7.1")),
+        ("snap    2.70\nsnapd   2.70", Some("2.70")),
+        ("Flatpak 1.16.0", Some("1.16.0")),
+        (
+            "Current Scoop version:\nv0.5.2 - Released at 2024-10-30",
+            Some("0.5.2"),
+        ),
+        ("Chocolatey v2.4.3", Some("2.4.3")),
+        ("usage: nothing here", None),
+        ("", None),
+    ] {
+        assert_eq!(
+            super::parse_tool_version(banner).as_deref(),
+            expected,
+            "banner: {banner:?}"
+        );
+    }
+}

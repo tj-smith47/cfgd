@@ -36,6 +36,10 @@ impl PackageManager for FlatpakManager {
         "flatpak"
     }
 
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(flatpak_cmd().arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         flatpak_available()
     }
