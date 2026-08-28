@@ -418,6 +418,16 @@ pub struct DaemonStatusResponse {
     /// terms as [`Self::reconcile_interval_secs`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_interval_secs: Option<u64>,
+    /// The config file the running loop was started against, POSIX-folded, and
+    /// the profile it resolved. Every other surface reporting on a machine's
+    /// configuration opens with the pair (`cfgd status`, every run header);
+    /// the daemon is the one that runs unattended, so a dashboard that cannot
+    /// say WHICH config the loop is reconciling is the one that most needs to.
+    /// `None` from a daemon that predates the fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -436,6 +446,10 @@ pub(super) struct DaemonState {
     last_sync: Option<String>,
     drift_count: u32,
     sources: Vec<SourceStatus>,
+    // Seeded once at startup from what `run_daemon` was invoked with; a SIGHUP
+    // reload re-reads the same file under the same profile.
+    config_path: Option<String>,
+    profile: Option<String>,
     update_available: Option<String>,
     // The stale-skill signature ("user:N,project:M") last surfaced via the
     // notifier, so the consolidated skill-stale notice fires at most once per
@@ -467,6 +481,8 @@ impl DaemonState {
                 status: "active".to_string(),
                 last_commit: None,
             }],
+            config_path: None,
+            profile: None,
             update_available: None,
             skills_stale_notified: None,
             module_last_reconcile: HashMap::new(),
@@ -514,6 +530,8 @@ impl DaemonState {
                 .sync_secs
                 .as_ref()
                 .map(|v| v.load(std::sync::atomic::Ordering::Relaxed)),
+            config_path: self.config_path.clone(),
+            profile: self.profile.clone(),
         }
     }
 }
@@ -720,6 +738,9 @@ pub(super) struct PreLoopSetup {
     pub shortest_reconcile: Duration,
     pub shortest_sync: Duration,
     pub server_checkin_url: Option<String>,
+    /// The profile the loop resolved — `--profile`, then `spec.profile`, then
+    /// `default`. What `daemon status` names beside the config path.
+    pub profile_name: String,
 }
 
 /// Build everything `run_daemon` needs before it starts spawning tasks.
@@ -787,6 +808,7 @@ pub(super) fn build_pre_loop_setup(
     let managed_paths = discover_managed_paths(config_path, profile_override, hooks);
 
     let (profiles_dir, profile_name) = profile_context(config_path, &cfg, profile_override);
+    let resolved_profile_name = profile_name.to_string();
     let resolved_profile = config::resolve_profile(profile_name, &profiles_dir).ok();
     let profile_chain: Vec<String> = resolved_profile
         .as_ref()
@@ -856,6 +878,7 @@ pub(super) fn build_pre_loop_setup(
         shortest_reconcile,
         shortest_sync,
         server_checkin_url,
+        profile_name: resolved_profile_name,
     })
 }
 
@@ -1026,6 +1049,8 @@ pub(super) async fn run_daemon_with(
     // Initialize per-source status entries
     {
         let mut st = state.lock().await;
+        st.config_path = Some(crate::PathDisplayExt::display_posix(&config_path));
+        st.profile = Some(setup.profile_name.clone());
         for s in st.sources.iter_mut().filter(|s| s.name == LOCAL_LAYER) {
             s.last_commit = setup.local_head_commit.clone();
         }

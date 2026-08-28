@@ -83,6 +83,8 @@ fn sample_status_basic() -> DaemonStatusResponse {
         module_reconcile: vec![],
         reconcile_interval_secs: Some(300),
         sync_interval_secs: Some(900),
+        config_path: Some("/home/u/.config/cfgd/cfgd.yaml".to_string()),
+        profile: Some("work".to_string()),
     }
 }
 
@@ -105,6 +107,8 @@ fn sample_status_no_timestamps() -> DaemonStatusResponse {
         module_reconcile: vec![],
         reconcile_interval_secs: None,
         sync_interval_secs: None,
+        config_path: None,
+        profile: None,
     }
 }
 

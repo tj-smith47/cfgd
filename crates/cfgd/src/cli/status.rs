@@ -1,5 +1,4 @@
 use super::*;
-use cfgd_core::PathDisplayExt;
 use cfgd_core::config::LOCAL_LAYER;
 use cfgd_core::output::{
     Doc, KvPair, OwnerLabel, Printer, Role, SectionBuilder, condense_script_label, renderer::Table,
@@ -608,10 +607,10 @@ pub fn build_fleet_status_doc(
 ) -> Doc {
     let mut doc = Doc::new()
         .heading("Status")
-        .kv("Config", config_path.display_posix());
-    if let Some(profile) = derivable_profile(profile_name) {
-        doc = doc.kv("Profile", profile);
-    }
+        .kv_rows(cfgd_core::output::config_profile_rows(
+            Some(config_path),
+            derivable_profile(profile_name),
+        ));
 
     // Only the recorded-state dashboard needs a staleness signal: a `--scan`/
     // `--exit-code` run just checked the machine itself, so its Drift section

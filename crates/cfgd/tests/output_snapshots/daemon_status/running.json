@@ -1,8 +1,10 @@
 {
+  "configPath": "/home/u/.config/cfgd/cfgd.yaml",
   "driftCount": 7,
   "lastReconcile": "2026-05-12T10:00:00Z",
   "lastSync": "2026-05-12T09:55:00Z",
   "pid": 4242,
+  "profile": "work",
   "reconcileIntervalSecs": 300,
   "running": true,
   "sources": [

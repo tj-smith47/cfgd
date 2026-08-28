@@ -219,6 +219,37 @@ impl KvPair {
     }
 }
 
+/// The `Config` and `Profile` header rows — the ONE builder for the two facts
+/// every surface reporting ON a machine's configuration opens with.
+///
+/// Three surfaces state them (`cfgd apply`'s run header, `cfgd status`,
+/// `cfgd daemon status`) and a fourth states the config half alone
+/// (`cfgd profile show`, whose heading already names the profile). Built in
+/// one place so the key spellings, their order and the path's POSIX fold
+/// cannot drift between them: `daemon status` named neither, which left the
+/// one always-on surface unable to say which config file the loop it reports
+/// on is actually running.
+///
+/// `profile` is already resolved by the caller — a surface with no profile to
+/// name (a `--module` isolate, a recorded run that named none) passes `None`
+/// and gets one row.
+pub fn config_profile_rows(
+    config_path: Option<&std::path::Path>,
+    profile: Option<&str>,
+) -> Vec<KvPair> {
+    let mut rows = Vec::new();
+    if let Some(path) = config_path {
+        rows.push(KvPair::new(
+            "Config",
+            crate::PathDisplayExt::display_posix(&path),
+        ));
+    }
+    if let Some(profile) = profile {
+        rows.push(KvPair::new("Profile", profile));
+    }
+    rows
+}
+
 /// A `command_list` row: a shell command (or a `name <type>` pair) and its
 /// description.
 ///

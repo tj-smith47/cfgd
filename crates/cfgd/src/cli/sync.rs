@@ -1,16 +1,15 @@
 use super::*;
 
-use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, OwnerLabel, Role};
 
 pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
     printer.heading("Sync");
 
     let (cfg, profile_name, _resolved) = load_config_and_profile(cli, printer)?;
-    printer.kv_block([
-        ("Config".to_string(), cli.config.display_posix()),
-        ("Profile".to_string(), profile_name),
-    ]);
+    printer.kv_rows(cfgd_core::output::config_profile_rows(
+        Some(&cli.config),
+        Some(&profile_name),
+    ));
 
     let config_dir = config_dir(cli);
 

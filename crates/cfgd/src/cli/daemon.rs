@@ -1,6 +1,6 @@
 use super::source::list::last_sync_display;
 use super::*;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, KvPair, Printer, Role};
 use serde::Serialize;
 
 /// JSON payload for `cfgd daemon install`.
@@ -140,6 +140,8 @@ fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
         module_reconcile: vec![],
         reconcile_interval_secs: None,
         sync_interval_secs: None,
+        config_path: None,
+        profile: None,
     }
 }
 
@@ -178,25 +180,29 @@ pub fn build_daemon_status_doc(
                     ),
                 );
             }
-            let mut rows = vec![
-                ("PID".to_string(), s.pid.to_string()),
-                // A measured duration, not a declared one: the intervals below
-                // are the operator's own literals and stay verbatim.
-                (
-                    "Uptime".to_string(),
-                    cfgd_core::humanize_duration_secs(s.uptime_secs),
-                ),
-            ];
+            // The config and profile the loop is reconciling under, through
+            // the one builder `cfgd status` and every run header read.
+            let mut rows = cfgd_core::output::config_profile_rows(
+                s.config_path.as_deref().map(std::path::Path::new),
+                s.profile.as_deref(),
+            );
+            rows.push(KvPair::new("PID", s.pid.to_string()));
+            // A measured duration, not a declared one: the intervals below
+            // are the operator's own literals and stay verbatim.
+            rows.push(KvPair::new(
+                "Uptime",
+                cfgd_core::humanize_duration_secs(s.uptime_secs),
+            ));
             // Omitted rather than guessed when the daemon did not report them:
             // the loop's cadence is whatever it reloaded last, and this command
             // holds no config of its own to answer from.
             if let Some(secs) = s.reconcile_interval_secs {
-                rows.push(("Reconcile Interval".to_string(), format!("{secs}s")));
+                rows.push(KvPair::new("Reconcile Interval", format!("{secs}s")));
             }
             if let Some(secs) = s.sync_interval_secs {
-                rows.push(("Sync Interval".to_string(), format!("{secs}s")));
+                rows.push(KvPair::new("Sync Interval", format!("{secs}s")));
             }
-            rows.push(("Drift Count".to_string(), s.drift_count.to_string()));
+            rows.push(KvPair::new("Drift Count", s.drift_count.to_string()));
             // The stored instant stays in the `-o json` payload below; a
             // person reading the dashboard is asking how stale the loop is.
             //
@@ -205,12 +211,12 @@ pub fn build_daemon_status_doc(
             // top-level row is the most recent of them wearing a name that
             // reads as all of them.
             if let Some(ref last) = s.last_reconcile {
-                rows.push((
-                    "Last Reconcile".to_string(),
+                rows.push(KvPair::new(
+                    "Last Reconcile",
                     last_sync_display(Some(last), now),
                 ));
             }
-            doc = doc.kv_block(rows);
+            doc = doc.kv_rows(rows);
 
             let rows: Vec<SourceListEntry> = s
                 .sources
@@ -547,6 +553,8 @@ mod tests {
             module_reconcile: vec![],
             reconcile_interval_secs: None,
             sync_interval_secs: None,
+            config_path: None,
+            profile: None,
         }
     }
 

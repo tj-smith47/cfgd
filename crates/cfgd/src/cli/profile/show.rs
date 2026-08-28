@@ -8,9 +8,14 @@ use cfgd_core::output::{Doc, KvPair, Printer};
 /// Build the `cfgd profile show` Doc from a resolved profile. Pure; consumes
 /// nothing — the caller serializes `{name, resolved}` as the structured payload.
 pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str, config_path: &Path) -> Doc {
-    let mut doc = Doc::new()
-        .heading_title("Profile", name)
-        .kv("Config", config_path.display_posix());
+    // No `Profile` row beside it: the heading above already names it.
+    let mut doc =
+        Doc::new()
+            .heading_title("Profile", name)
+            .kv_rows(cfgd_core::output::config_profile_rows(
+                Some(config_path),
+                None,
+            ));
 
     doc = doc.section("Layers", |s| {
         resolved.layers.iter().fold(s, |s, layer: &ProfileLayer| {
