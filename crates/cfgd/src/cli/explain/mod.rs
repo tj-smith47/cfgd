@@ -66,6 +66,7 @@ fn teamconfig_schema() -> ResourceSchema {
             // schemars enum to enumerate.
             type_name: String::new(),
             enum_values: Vec::new(),
+            is_variant: false,
             required,
             description: description.to_string(),
             children,
@@ -199,7 +200,10 @@ pub fn find_schema(name: &str) -> Option<&'static ResourceSchema> {
 /// REST of the path wins, deterministically, so a caller can drill straight
 /// past the variant boundary (`scripts.preApply.run` finds `run` inside the
 /// object variant without ever naming `object` in the path).
-fn resolve_field_path<'a>(fields: &'a [FieldNode], path_parts: &[&str]) -> Option<&'a [FieldNode]> {
+pub fn resolve_field_path<'a>(
+    fields: &'a [FieldNode],
+    path_parts: &[&str],
+) -> Option<&'a [FieldNode]> {
     if path_parts.is_empty() {
         return Some(fields);
     }
@@ -405,7 +409,37 @@ fn enum_line(f: &FieldNode) -> String {
 /// behind the legend explaining it, so a list can never mark a field it then
 /// says nothing about (or explain a mark it never printed).
 fn is_expandable(f: &FieldNode) -> bool {
-    !f.children.is_empty() || !f.variants.is_empty()
+    // A shape is not a field: its name is a rendered type, never a path
+    // segment, so it never earns the mark that promises one.
+    !f.is_variant && (!f.children.is_empty() || !f.variants.is_empty())
+}
+
+/// The type span a row renders: `<type>` for a field, nothing for a shape,
+/// whose NAME is its type — two columns stating one fact is what
+/// `[]string  <[]string>` read as.
+fn row_type_span(f: &FieldNode) -> String {
+    if f.is_variant {
+        String::new()
+    } else {
+        type_span(f)
+    }
+}
+
+/// The fields a drill-down lists under `Fields`: the node's own, or — for a
+/// union whose ONE object arm is the only shape with fields — that arm's, in
+/// the place a plain object would have listed its own. A `Variants` section
+/// discloses shapes; it never replaces the field list, and `resolve_field_path`
+/// already drills through the arm, so every promoted row is a path segment.
+/// Two arms with fields cannot be merged and stay behind `--recursive`.
+fn own_fields(f: &FieldNode) -> &[FieldNode] {
+    if !f.children.is_empty() {
+        return &f.children;
+    }
+    let mut with_fields = f.variants.iter().filter(|v| !v.children.is_empty());
+    match (with_fields.next(), with_fields.next()) {
+        (Some(only), None) => &only.children,
+        _ => &[],
+    }
 }
 
 /// The `[+]` legend, or `None` when nothing in `fields` carries the mark.
@@ -430,7 +464,7 @@ fn expandable_hint(base: &str, fields: &[&FieldNode], recursive: bool) -> Option
 fn field_row(f: &FieldNode, widths: &LevelWidths) -> CommandPair {
     let req = if f.required { " (required)" } else { "" };
     let more = if is_expandable(f) { " [+]" } else { "" };
-    let type_span = type_span(f);
+    let type_span = row_type_span(f);
     let key = format!(
         "{:<name_width$}  {:<type_width$}{:<req_width$}{more}",
         f.name,
@@ -440,13 +474,14 @@ fn field_row(f: &FieldNode, widths: &LevelWidths) -> CommandPair {
         type_width = widths.type_span,
         req_width = widths.required,
     );
-    CommandPair::typed(
-        // Nothing follows the last filled column, so its padding is trailing
-        // whitespace; `command_list` pads every key to the widest anyway.
-        key.trim_end().to_string(),
-        type_span,
-        described_with_enum(f),
-    )
+    // Nothing follows the last filled column, so its padding is trailing
+    // whitespace; `command_list` pads every key to the widest anyway.
+    let key = key.trim_end().to_string();
+    if f.is_variant {
+        CommandPair::new(key, described_with_enum(f))
+    } else {
+        CommandPair::typed(key, type_span, described_with_enum(f))
+    }
 }
 
 /// The three column widths a level's rows pad to, measured over that level.
@@ -469,7 +504,7 @@ impl LevelWidths {
                 .unwrap_or(0),
             type_span: fields
                 .iter()
-                .map(|f| type_span(f).chars().count())
+                .map(|f| row_type_span(f).chars().count())
                 .max()
                 .unwrap_or(0),
             required: if fields.iter().any(|f| f.required) {
@@ -515,7 +550,7 @@ fn push_tree_rows(rows: &mut Vec<CommandPair>, fields: &[&FieldNode], depth: usi
     let widths = LevelWidths::of(fields);
     for f in fields {
         let req = if f.required { " (required)" } else { "" };
-        let type_span = type_span(f);
+        let type_span = row_type_span(f);
         // The tree carries no `[+]`, so the flag is last and needs no padding
         // of its own — but the type span it follows is variable-width, which
         // is what moved it. Same column, same measurement unit.
@@ -528,11 +563,11 @@ fn push_tree_rows(rows: &mut Vec<CommandPair>, fields: &[&FieldNode], depth: usi
             name_width = widths.name,
             type_width = widths.type_span,
         );
-        rows.push(CommandPair::typed(
-            key.trim_end().to_string(),
-            type_span,
-            String::new(),
-        ));
+        rows.push(if f.is_variant {
+            CommandPair::new(key.trim_end().to_string(), String::new())
+        } else {
+            CommandPair::typed(key.trim_end().to_string(), type_span, String::new())
+        });
         if !f.enum_values.is_empty() {
             rows.push(CommandPair::new(
                 format!("{:indent$}{}", "", enum_line(f), indent = (depth + 1) * 2),
@@ -652,12 +687,18 @@ pub fn build_explain_drilldown_doc(
         // The object's own fields expand ONE level without `--recursive` —
         // the auto-expand this view exists for; `--recursive` still governs
         // whether each of THOSE fields expands further, via `append_fields`.
-        let children = sorted_by_name(f.children.iter());
+        let children = sorted_by_name(own_fields(f).iter());
         doc = doc.section_if_nonempty("Fields", &children, |s, children| {
             append_fields(s, children, recursive)
         });
-        marked.extend(variants.iter().copied());
+        // Only a FIELD can be marked: the legend's placeholder must
+        // substitute to a path the CLI resolves, and a shape's name is not one.
         marked.extend(children.iter().copied());
+        if !recursive && children.is_empty() && f.variants.iter().any(|v| !v.children.is_empty()) {
+            doc = doc.hint(format!(
+                "`cfgd explain {path_str} --recursive` expands the shapes under Variants"
+            ));
+        }
     } else {
         let all = sorted_by_name(fields.iter());
         doc = doc.section("Fields", |s| append_fields(s, &all, recursive));
