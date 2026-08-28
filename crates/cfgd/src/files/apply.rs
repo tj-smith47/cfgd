@@ -173,7 +173,7 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
     fn link_deployed_content_hashes(
         &self,
         profile: &cfgd_core::config::MergedProfile,
-    ) -> Result<Vec<(PathBuf, String)>> {
+    ) -> Result<Vec<cfgd_core::providers::LinkDeployedRow>> {
         self.link_deployed_content(profile)
     }
 }

@@ -27423,14 +27423,16 @@ fn a_module_deploying_a_directory_by_symlink_reports_the_file_that_moved_inside_
     assert_eq!(
         reconciler
             .refresh_link_deployed_hashes(None, &make_empty_resolved(), &modules)
-            .unwrap(),
+            .unwrap()
+            .rows,
         1,
         "a directory the module deploys by symlink contributes its files to the aggregate"
     );
     assert_eq!(
         reconciler
             .refresh_link_deployed_hashes(None, &make_empty_resolved(), &modules)
-            .unwrap(),
+            .unwrap()
+            .rows,
         0,
         "nothing moved, so the aggregate stands"
     );
@@ -27443,8 +27445,63 @@ fn a_module_deploying_a_directory_by_symlink_reports_the_file_that_moved_inside_
     assert_eq!(
         reconciler
             .refresh_link_deployed_hashes(None, &make_empty_resolved(), &modules)
-            .unwrap(),
+            .unwrap()
+            .rows,
         1,
         "an edit two levels under the directory entry moves the module's aggregate"
+    );
+}
+
+/// The count the daemon words is over FILES: a module's row is one aggregate
+/// over every file its entries deploy, so `1 deployed file refreshed` for a
+/// six-entry tree named a unit the number was never in.
+#[test]
+#[cfg(unix)]
+fn a_refreshed_module_aggregate_counts_the_files_behind_its_one_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("lua");
+    std::fs::create_dir_all(source.join("config")).unwrap();
+    std::fs::write(source.join("config/options.lua"), "a\n").unwrap();
+    std::fs::write(source.join("init.lua"), "b\n").unwrap();
+    let init = dir.path().join("init.lua");
+    std::fs::write(&init, "c\n").unwrap();
+    let home = dir.path().join("home/.config/nvim");
+    std::fs::create_dir_all(&home).unwrap();
+    std::os::unix::fs::symlink(&source, home.join("lua")).unwrap();
+    std::os::unix::fs::symlink(&init, home.join("init.lua")).unwrap();
+
+    let entry = |src: &std::path::Path, dst: std::path::PathBuf| ResolvedFile {
+        source: src.to_path_buf(),
+        target: dst,
+        is_git_source: false,
+        strategy: Some(FileStrategy::Symlink),
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    let mut module = make_resolved_module("nvim");
+    module.packages.clear();
+    module.files = vec![
+        entry(&source, home.join("lua")),
+        entry(&init, home.join("init.lua")),
+    ];
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let (rtype, rid) = super::format::parse_resource_from_description(
+        &super::format::module_files_description("nvim", 2),
+    );
+    state
+        .upsert_managed_resource(&rtype, &rid, "local", None, None)
+        .unwrap();
+
+    let refreshed = reconciler
+        .refresh_link_deployed_hashes(None, &make_empty_resolved(), &[module])
+        .unwrap();
+    assert_eq!(
+        refreshed,
+        RefreshedHashes { rows: 1, files: 3 },
+        "one aggregate row, three files behind it"
     );
 }

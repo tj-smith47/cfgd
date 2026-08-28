@@ -408,7 +408,7 @@ impl super::CfgdFileManager {
     pub(super) fn link_deployed_content(
         &self,
         profile: &MergedProfile,
-    ) -> Result<Vec<(PathBuf, String)>> {
+    ) -> Result<Vec<cfgd_core::providers::LinkDeployedRow>> {
         let mut deployed = Vec::new();
 
         for managed in &profile.files.managed {
@@ -428,7 +428,11 @@ impl super::CfgdFileManager {
             // unanswered, which is not the same as an answer of "unchanged":
             // report nothing for it and let the recorded hash stand.
             match cfgd_core::reconciler::link_deployed_digest(&source_path) {
-                Some((digest, _)) => deployed.push((target_path, digest)),
+                Some((hash, files)) => deployed.push(cfgd_core::providers::LinkDeployedRow {
+                    target: target_path,
+                    hash,
+                    files,
+                }),
                 None => tracing::debug!("cannot hash {}", source_path.posix()),
             }
         }

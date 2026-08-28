@@ -6,7 +6,9 @@ use super::file_action::apply_file_action_direct;
 
 impl<'a> super::Reconciler<'a> {
     /// Bring the recorded content hash of every link-deployed file back in line
-    /// with the bytes it currently holds, and report how many rows moved. Both
+    /// with the bytes it currently holds, and report what moved — as rows AND
+    /// as the files behind them, since a module's row is one aggregate over
+    /// many (see [`RefreshedHashes`]). Both
     /// halves of the machine are covered: a profile-level `spec.files.managed`
     /// entry has a row of its own, while a module's files share one aggregate row
     /// (see `Self::module_link_deployed_rows`).
@@ -39,22 +41,28 @@ impl<'a> super::Reconciler<'a> {
         fm: Option<&dyn crate::providers::FileManager>,
         resolved: &crate::config::ResolvedProfile,
         modules: &[crate::modules::ResolvedModule],
-    ) -> Result<usize> {
-        let mut rows: Vec<(String, String, String)> = Vec::new();
+    ) -> Result<RefreshedHashes> {
+        let mut rows: Vec<(String, String, String, usize)> = Vec::new();
         if let Some(fm) = fm {
-            for (target, hash) in fm.link_deployed_content_hashes(&resolved.merged)? {
-                rows.push(("file".to_string(), crate::to_posix_string(&target), hash));
+            for row in fm.link_deployed_content_hashes(&resolved.merged)? {
+                rows.push((
+                    "file".to_string(),
+                    crate::to_posix_string(&row.target),
+                    row.hash,
+                    row.files,
+                ));
             }
         }
         rows.extend(self.module_link_deployed_rows(modules));
         if rows.is_empty() {
-            return Ok(0);
+            return Ok(RefreshedHashes::default());
         }
         self.state.in_transaction(|| {
-            let mut refreshed = 0;
-            for (rtype, rid, hash) in &rows {
+            let mut refreshed = RefreshedHashes::default();
+            for (rtype, rid, hash, files) in &rows {
                 if self.state.refresh_managed_resource_hash(rtype, rid, hash)? {
-                    refreshed += 1;
+                    refreshed.rows += 1;
+                    refreshed.files += files;
                 }
             }
             Ok(refreshed)
@@ -86,12 +94,13 @@ impl<'a> super::Reconciler<'a> {
     fn module_link_deployed_rows(
         &self,
         modules: &[crate::modules::ResolvedModule],
-    ) -> Vec<(String, String, String)> {
+    ) -> Vec<(String, String, String, usize)> {
         use crate::config::FileStrategy;
 
         let mut rows = Vec::new();
         for module in modules {
             let mut parts = Vec::new();
+            let mut files = 0;
             for file in &module.files {
                 let strategy = file.strategy.unwrap_or(self.registry.default_file_strategy);
                 if !matches!(strategy, FileStrategy::Symlink | FileStrategy::Hardlink) {
@@ -103,11 +112,12 @@ impl<'a> super::Reconciler<'a> {
                 if !super::modules::planned_file_converged(file, &target, strategy, None) {
                     continue;
                 }
-                let Some((digest, _)) = link_deployed_digest(&file.source) else {
+                let Some((digest, count)) = link_deployed_digest(&file.source) else {
                     parts.clear();
                     break;
                 };
                 parts.push(format!("{}:{digest}", crate::to_posix_string(&target)));
+                files += count;
             }
             if parts.is_empty() {
                 continue;
@@ -115,7 +125,7 @@ impl<'a> super::Reconciler<'a> {
             let (rtype, rid) = super::format::parse_resource_from_description(
                 &super::format::module_files_description(&module.name, module.files.len()),
             );
-            rows.push((rtype, rid, super::apply::hash_sorted_parts(parts)));
+            rows.push((rtype, rid, super::apply::hash_sorted_parts(parts), files));
         }
         rows
     }
@@ -155,6 +165,18 @@ impl<'a> super::Reconciler<'a> {
         };
         Ok(description)
     }
+}
+
+/// What a recorded-hash refresh moved. `rows` is the `managed_resources`
+/// writes, `files` the link-deployed files those rows stand for — a
+/// profile-level entry is one row for one file (or one tree), a module's row
+/// is ONE aggregate over every file its entries deploy. A count a reader is
+/// shown is worded from `files`: the noun names the unit the count is in,
+/// and a row that aggregates many of the noun is not one of it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RefreshedHashes {
+    pub rows: usize,
+    pub files: usize,
 }
 
 /// The content digest of everything a converged link entry deploys, and how

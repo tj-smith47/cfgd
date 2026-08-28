@@ -8660,10 +8660,13 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
             _: &ResolvedProfile,
         ) -> crate::errors::Result<crate::daemon::PlannedFiles> {
             let fm = crate::test_helpers::MockFileManager::new();
-            fm.set_link_deployed(vec![(
-                self.target.clone(),
-                crate::sha256_hex(b"landed by the pull"),
-            )]);
+            fm.set_link_deployed(vec![crate::providers::LinkDeployedRow {
+                target: self.target.clone(),
+                hash: crate::sha256_hex(b"landed by the pull"),
+                // One row standing for a whole tree: the sentence counts
+                // the files, not the row.
+                files: 3,
+            }]);
             Ok((vec![], Some(Box::new(fm))))
         }
         fn plan_packages(
@@ -8706,7 +8709,7 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
 
     let logs = daemon_log();
     assert!(
-        logs.contains("reconcile: complete — nothing to do, 1 deployed file refreshed"),
+        logs.contains("reconcile: complete — nothing to do, 3 deployed files refreshed"),
         "the tick that carried the sync must not read like an idle one: {logs}"
     );
 }
@@ -20270,4 +20273,46 @@ mod log_dialect {
             "the operands belong in the sentence, not in a field tail: {logs}"
         );
     }
+}
+
+/// The noun of a counted clause names the unit the count is IN. The tick's
+/// `deployed file` clause once counted `managed_resources` ROWS, and a
+/// module's row is one aggregate over every file its entries deploy, so
+/// `1 deployed file refreshed` stood for a six-entry tree. Every `pluralize`
+/// in the tick is classified here by the binding it counts; a new clause
+/// fails until its binding and noun are paired.
+#[test]
+fn every_counted_clause_names_the_unit_it_counts() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/reconcile.rs");
+    let body = std::fs::read_to_string(&path).expect("the reconcile tick is checked out");
+    // binding → the nouns it is honestly counted in.
+    let classified: &[(&str, &[&str])] = &[
+        ("effective_total", &["action", "resource"]),
+        ("succeeded", &["action"]),
+        ("files", &["deployed file"]),
+    ];
+    let re = regex::Regex::new(r#"pluralize\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*"([^"]+)"\s*\)"#)
+        .unwrap();
+    let mut seen = 0usize;
+    let mut wrong = Vec::new();
+    for cap in re.captures_iter(&body) {
+        seen += 1;
+        let (binding, noun) = (&cap[1], &cap[2]);
+        let ok = classified
+            .iter()
+            .any(|(b, nouns)| *b == binding && nouns.contains(&noun));
+        if !ok {
+            wrong.push(format!("pluralize({binding}, \"{noun}\")"));
+        }
+    }
+    assert!(
+        seen >= 7,
+        "the walk no longer reaches the tick's counted clauses — it found {seen}"
+    );
+    assert!(
+        wrong.is_empty(),
+        "a counted clause names a unit its binding is not in — classify the pair here, \
+         or count the unit the noun names:\n{}",
+        wrong.join("\n")
+    );
 }

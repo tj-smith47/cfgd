@@ -66,7 +66,7 @@ pub struct MockFileManager {
     /// What `link_deployed_content_hashes` reports. Empty by default — the mock
     /// deploys nothing — so only a test that has recorded a managed row for the
     /// same target fills it.
-    pub link_deployed: Mutex<Vec<(PathBuf, String)>>,
+    pub link_deployed: Mutex<Vec<crate::providers::LinkDeployedRow>>,
 }
 
 impl MockFileManager {
@@ -85,7 +85,7 @@ impl MockFileManager {
 
     /// Pin what `link_deployed_content_hashes` reports, so a caller can drive
     /// the recorded-hash refresh without a real symlink deployment.
-    pub fn set_link_deployed(&self, rows: Vec<(PathBuf, String)>) {
+    pub fn set_link_deployed(&self, rows: Vec<crate::providers::LinkDeployedRow>) {
         *self.link_deployed.lock().unwrap() = rows;
     }
 
@@ -203,7 +203,7 @@ impl crate::providers::FileManager for MockFileManager {
     fn link_deployed_content_hashes(
         &self,
         _profile: &crate::config::MergedProfile,
-    ) -> crate::errors::Result<Vec<(PathBuf, String)>> {
+    ) -> crate::errors::Result<Vec<crate::providers::LinkDeployedRow>> {
         Ok(self.link_deployed.lock().unwrap().clone())
     }
 }

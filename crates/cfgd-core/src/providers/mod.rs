@@ -1261,12 +1261,11 @@ pub trait FileManager: Send + Sync {
         strategy: Option<crate::config::FileStrategy>,
     ) -> Result<FileDriftResult>;
 
-    /// What each LINK-DEPLOYED managed file currently holds, as
-    /// `(~-expanded target, sha256 hex)` pairs.
+    /// What each LINK-DEPLOYED managed entry currently holds.
     ///
-    /// One entry per `spec.files.managed` entry the profile deploys by
+    /// One row per `spec.files.managed` entry the profile deploys by
     /// Symlink/Hardlink whose target is converged (the link really names the
-    /// managed source) and whose source is a single file. Convergence for those
+    /// managed source). Convergence for those
     /// two strategies is link IDENTITY, so an edit made through the link is not
     /// drift and plans no action — which is exactly the case that leaves cfgd's
     /// recorded content hash describing bytes the deployed file no longer holds.
@@ -1278,7 +1277,20 @@ pub trait FileManager: Send + Sync {
     fn link_deployed_content_hashes(
         &self,
         profile: &crate::config::MergedProfile,
-    ) -> Result<Vec<(PathBuf, String)>>;
+    ) -> Result<Vec<LinkDeployedRow>>;
+}
+
+/// One converged link entry as the recorded-hash refresh sees it: the
+/// `~`-expanded target its `managed_resources` row is keyed on, the digest of
+/// what the link deploys ([`crate::reconciler::link_deployed_digest`]), and
+/// how many files that digest covers — one for a file, the tree's count for a
+/// directory link — so a count a reader is shown can be worded in FILES
+/// rather than in rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkDeployedRow {
+    pub target: PathBuf,
+    pub hash: String,
+    pub files: usize,
 }
 
 // --- PackageAction ---
