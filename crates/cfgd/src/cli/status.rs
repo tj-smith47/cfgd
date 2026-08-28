@@ -386,15 +386,24 @@ pub struct ModuleFileStatus {
 /// inside differ. The empty branch lives here so the one distinction that
 /// matters — a live scan may report a detection, a recorded dashboard may only
 /// report what it holds — cannot be made twice and answered differently.
+///
+/// `verified` is whether ANY check stands behind an empty section: this run
+/// scanned, or a scan is on record. Without one the verdict is a report of
+/// absence, and it takes `Role::Info` — the role its sibling `No applies
+/// recorded yet` already takes on the same screen — never `Role::Ok`, which
+/// `diff` refuses for a check that could not run (`Drift undetermined`) and
+/// which here painted a green tick over `never scanned`.
 fn drift_section<T>(
     doc: Doc,
     drift: &[T],
     checked_live: bool,
+    verified: bool,
     scan_note: Option<&str>,
     row: impl Fn(SectionBuilder, &T) -> SectionBuilder,
 ) -> Doc {
     doc.section("Drift", |s| {
         if drift.is_empty() {
+            let role = if verified { Role::Ok } else { Role::Info };
             // Only the live scan may claim a detection. The recorded dashboard
             // has asked nothing of the machine, and "No drift detected" over a
             // host whose last apply left a declared package uninstalled is an
@@ -410,7 +419,7 @@ fn drift_section<T>(
             // When the recording was taken qualifies what "no drift" is worth,
             // so it rides the verdict rather than sitting in a header row the
             // reader has to carry down the page.
-            s.status_with(Role::Ok, subject, |f| match scan_note {
+            s.status_with(role, subject, |f| match scan_note {
                 Some(note) => f.detail(note),
                 None => f,
             })
@@ -449,6 +458,7 @@ fn render_drift_section(
     doc: Doc,
     drift: &[cfgd_core::state::DriftEvent],
     checked_live: bool,
+    verified: bool,
     scan_note: Option<&str>,
 ) -> Doc {
     let drop_env_file_row = cfgd_core::output::env_file_row_is_redundant(
@@ -458,7 +468,7 @@ fn render_drift_section(
         .iter()
         .filter(|e| !(drop_env_file_row && e.resource_type == "env"))
         .collect();
-    drift_section(doc, &rows, checked_live, scan_note, |s, event| {
+    drift_section(doc, &rows, checked_live, verified, scan_note, |s, event| {
         // A "script" / "Running script" resource_id is the raw run_str body
         // (preserved byte-identical for UPSERT matching against prior drift
         // rows) — condense only here, at the point it enters a status subject,
@@ -536,7 +546,9 @@ fn render_module_drift_section(doc: Doc, drift: &[ModuleDrift], checked_live: bo
             .then_with(|| a.surface.cmp(b.surface))
             .then_with(|| a.item.cmp(&b.item))
     });
-    drift_section(doc, &ordered, checked_live, None, |s, d| {
+    // No scan stamp reaches this surface, so the only check that can stand
+    // behind an empty section is the one this run made.
+    drift_section(doc, &ordered, checked_live, checked_live, None, |s, d| {
         let subject = format!(
             "{}:{} {}",
             OwnerLabel::new("module", &d.owner).plain(),
@@ -663,6 +675,7 @@ pub fn build_fleet_status_doc(
         doc,
         &output.drift,
         output.drift_checked_live,
+        output.drift_checked_live || output.last_scan_at.is_some(),
         note.as_deref(),
     );
 
@@ -2432,6 +2445,133 @@ mod tests {
         assert!(
             !scanned.contains("Last Scan"),
             "no scan row on any branch: {scanned}"
+        );
+    }
+
+    /// An empty Drift section wears the tick only when a check stands behind
+    /// it: this run scanned, or a scan is on record. `never scanned` under a
+    /// green `✓` claimed a verdict nothing had produced, while `diff` refuses
+    /// exactly that (`Drift undetermined`, no tick) — the two are pinned here
+    /// to one role for one fact: neither paints `Ok` over an unverified one.
+    #[test]
+    fn no_recorded_verdict_claims_a_check_that_never_ran() {
+        let tick = cfgd_core::output::Theme::default().icon_ok;
+        let fleet = |last_scan_at: Option<&str>, checked_live: bool| {
+            let output = StatusOutput {
+                last_apply: None,
+                drift: Vec::new(),
+                sources: Vec::new(),
+                pending_decisions: Vec::new(),
+                modules: Vec::new(),
+                managed_resources: Vec::new(),
+                warnings: Vec::new(),
+                classification_degraded: false,
+                classification_degraded_code: None,
+                classification_degraded_reason: None,
+                drift_checked_live: checked_live,
+                last_scan_at: last_scan_at.map(str::to_string),
+            };
+            let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+            printer.emit(build_fleet_status_doc(
+                &output,
+                &[],
+                std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+                "default",
+                "2026-05-14T10:05:00Z",
+                &Default::default(),
+            ));
+            drop(printer);
+            cfgd_core::test_helpers::captured_text(&buf)
+        };
+        let verdict = |out: &str| {
+            out.lines()
+                .find(|l| l.contains("No drift"))
+                .unwrap_or_else(|| panic!("no drift verdict rendered: {out}"))
+                .trim()
+                .to_string()
+        };
+
+        let never = verdict(&fleet(None, false));
+        assert!(
+            never.contains("never scanned") && !never.starts_with(&tick),
+            "no check ran, so no tick: {never}"
+        );
+        let recorded = verdict(&fleet(Some("2026-05-14T10:00:00Z"), false));
+        assert!(
+            recorded.starts_with(&tick),
+            "a scan on record earns the tick: {recorded}"
+        );
+        let live = verdict(&fleet(None, true));
+        assert!(
+            live.starts_with(&tick),
+            "a scan this run made earns the tick: {live}"
+        );
+
+        // The per-module view holds no scan stamp, so only a live scan can
+        // stand behind its empty section.
+        let module = |checked_live: bool| {
+            let output = ModuleStatus {
+                name: "nvim".to_string(),
+                packages: 0,
+                files: 0,
+                env: 0,
+                aliases: 0,
+                scripts: Vec::new(),
+                system: Vec::new(),
+                depends: Vec::new(),
+                declared: Default::default(),
+                status: "installed".to_string(),
+                last_applied: None,
+                scope: None,
+                package_state: Vec::new(),
+                deployed_files: Vec::new(),
+                drift_checked_live: checked_live,
+                drift: Vec::new(),
+            };
+            let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+            printer.emit(build_module_status_doc(
+                &output,
+                ModuleStatusView::Compact,
+                "2026-05-14T10:05:00Z",
+            ));
+            drop(printer);
+            verdict(&cfgd_core::test_helpers::captured_text(&buf))
+        };
+        assert!(
+            !module(false).starts_with(&tick),
+            "an unscanned module wears no tick: {}",
+            module(false)
+        );
+        assert!(
+            module(true).starts_with(&tick),
+            "a scanned module earns it: {}",
+            module(true)
+        );
+
+        // The sibling surface, for the same fact: a check that could not run
+        // is no verdict either.
+        let payload = DiffOutput {
+            summary: DiffSummary {
+                env_check_failed: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(super::super::diff::build_diff_doc(
+            &payload,
+            super::super::diff::DiffScope::Machine,
+        ));
+        drop(printer);
+        let diff = cfgd_core::test_helpers::captured_text(&buf);
+        let undetermined = diff
+            .lines()
+            .find(|l| l.contains("Drift undetermined"))
+            .unwrap_or_else(|| panic!("diff names the gap: {diff}"))
+            .trim();
+        assert!(
+            !undetermined.starts_with(&tick),
+            "diff paints no tick over an unverified fact either: {undetermined}"
         );
     }
 
