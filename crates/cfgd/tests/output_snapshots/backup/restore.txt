@@ -6,6 +6,6 @@ Restore: docs
 
 backup:docs
   ✓ restore <SOURCE> from notes.txt.<TIMESTAMP> — 12 B
-  → Previous contents backed up to <SOURCE>.cfgd-backup
+  → Previous contents backed up to <SOURCE>.cfgd-backup; put them back with `cfgd backup rollback docs`
 
 ✓ Restore complete — 1 action succeeded (XXs wall)

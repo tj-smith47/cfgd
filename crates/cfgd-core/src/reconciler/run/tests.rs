@@ -596,6 +596,7 @@ fn every_rollup_line_reserves_the_glyph_column() {
         RunTitle::Reconcile,
         RunTitle::Backup,
         RunTitle::Restore,
+        RunTitle::Rollback,
     ];
     // Two shapes per arm: one that reached what it planned, and one that fell
     // short — the shortfall line is pushed by the renderer, outside
@@ -1892,6 +1893,7 @@ fn every_unfinished_verdict_closes_on_the_one_next_step() {
         RunTitle::Reconcile,
         RunTitle::Backup,
         RunTitle::Restore,
+        RunTitle::Rollback,
     ];
     let converged = |status: ApplyStatus| RunTally {
         succeeded: 2,
@@ -1930,7 +1932,11 @@ fn every_unfinished_verdict_closes_on_the_one_next_step() {
                 "a closing hint names the command that comes next, in backticks: {next:?}"
             );
             assert!(
-                !next.contains("<name>") || matches!(title, RunTitle::Backup | RunTitle::Restore),
+                !next.contains("<name>")
+                    || matches!(
+                        title,
+                        RunTitle::Backup | RunTitle::Restore | RunTitle::Rollback
+                    ),
                 "only a run over one declared unit has a unit to name: {next:?}"
             );
             // The verdict lines state facts; the instruction is the hint's.

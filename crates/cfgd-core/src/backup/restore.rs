@@ -32,6 +32,9 @@ use super::{BackupOperation, BackupUnit};
 /// Read by the header's `Actions {n} planned` row and by
 /// [`report_restore`]'s [`crate::reconciler::RunTally::planned_total`], so the
 /// two ends of one restore cannot state different amounts of work.
+/// [`super::rollback_backup`] is the same one overlay and reads the same
+/// constant, so the two verbs cannot promise different amounts of work for the
+/// same shape of run.
 pub const RESTORE_ACTION_COUNT: usize = 1;
 
 /// One snapshot on disk, as `cfgd backup list <name> --snapshots` lists it and
@@ -133,7 +136,11 @@ pub fn report_restore(printer: &Printer, outcome: &RestoreOutcome) -> crate::rec
         // an operator needs after a restore they regret, and `note` is
         // Verbose-only. The sentence's verb is the sidecar's own: a copy that
         // was reused must not read as one written this time.
-        group.hint(format!("Previous contents {}", safety.detail()));
+        group.hint(format!(
+            "Previous contents {}; put them back with `cfgd backup rollback {}`",
+            safety.detail(),
+            outcome.name
+        ));
     }
     crate::reconciler::RunTally {
         succeeded: usize::from(outcome.restored),
@@ -387,7 +394,7 @@ pub fn restore_backup(
     // Narrated: extracting an archive snapshot is the restore's first
     // multi-second wait and prints nothing of its own until it is done.
     let staged = printer.narrate(format!("Restoring {name}: staging snapshot"), |_| {
-        stage_snapshot(&name, &snapshot, &target)
+        stage_payload(&name, &snapshot.path, &target)
     })?;
 
     let mut failures: Vec<String> = Vec::new();
@@ -513,7 +520,7 @@ fn reresolve_snapshot(
 /// Windows UNC canonicalization (`\\?\UNC\server\share\x`) into the relative
 /// path `UNC/server/share/x` — the overlay would then build that tree under the
 /// working directory. Folding happens once, in [`report_path`], on the way out.
-fn resolve_target_link(target: &Path) -> PathBuf {
+pub(super) fn resolve_target_link(target: &Path) -> PathBuf {
     match std::fs::symlink_metadata(target) {
         Ok(meta) if meta.is_symlink() => target
             .canonicalize()
@@ -525,7 +532,7 @@ fn resolve_target_link(target: &Path) -> PathBuf {
 /// A path as the restore reports it: posix-folded, with the Windows verbatim
 /// prefix `canonicalize` adds dropped so `restoredTo` reads as the path the
 /// operator knows rather than `//?/C:/...`.
-fn report_path(path: &Path) -> String {
+pub(super) fn report_path(path: &Path) -> String {
     crate::strip_windows_verbatim(&crate::to_posix_string(path)).to_string()
 }
 
@@ -589,14 +596,15 @@ fn overwrites_source(unit: &BackupUnit<'_>, target: &Path) -> bool {
 /// The [`tempfile::TempDir`] is what makes cleanup unconditional: it is
 /// removed when this value drops, on the success path and on every `?` that
 /// leaves the restore early.
-struct StagedSnapshot {
+pub(super) struct StagedSnapshot {
     _dir: tempfile::TempDir,
-    payload: PathBuf,
+    pub(super) payload: PathBuf,
 }
 
-/// Copy the snapshot into a temp directory beside `target`.
+/// Copy the payload a restore or a rollback will publish into a temp directory
+/// beside `target`.
 ///
-/// Beside the target rather than beside the snapshot, so landing it on the
+/// Beside the target rather than beside the payload, so landing it on the
 /// target's filesystem keeps the overlay a local copy rather than a
 /// cross-device one, and so nothing walking the unit's destination can take it
 /// for a snapshot.
@@ -605,14 +613,19 @@ struct StagedSnapshot {
 /// Creating the missing ones here would leave an empty tree behind on every
 /// path that aborts before the overlay; the overlay creates them itself, once
 /// it is certain it is going to write.
-fn stage_snapshot(
+///
+/// Taken by path rather than by [`SnapshotInfo`] because a rollback's payload
+/// is a sidecar beside the source and has no run record at all; the two verbs
+/// publish through one staging step so an interrupted rollback recovers the
+/// way an interrupted restore does.
+pub(super) fn stage_payload(
     name: &str,
-    snapshot: &SnapshotInfo,
+    source: &Path,
     target: &Path,
 ) -> std::result::Result<StagedSnapshot, BackupError> {
     let staging_failed = |e: std::io::Error| BackupError::StagingFailed {
         name: name.to_string(),
-        path: snapshot.path.clone(),
+        path: source.to_path_buf(),
         source: e,
     };
     let dir = tempfile::Builder::new()
@@ -621,11 +634,11 @@ fn stage_snapshot(
         .map_err(staging_failed)?;
 
     let payload = dir.path().join("payload");
-    let meta = std::fs::symlink_metadata(&snapshot.path).map_err(staging_failed)?;
+    let meta = std::fs::symlink_metadata(source).map_err(staging_failed)?;
     if meta.is_dir() {
-        crate::copy_dir_recursive(&snapshot.path, &payload).map_err(staging_failed)?;
+        crate::copy_dir_recursive(source, &payload).map_err(staging_failed)?;
     } else {
-        std::fs::copy(&snapshot.path, &payload).map_err(staging_failed)?;
+        std::fs::copy(source, &payload).map_err(staging_failed)?;
     }
     Ok(StagedSnapshot { _dir: dir, payload })
 }
@@ -653,7 +666,7 @@ fn existing_ancestor(target: &Path) -> PathBuf {
 /// leaves the target half-written, and whatever occupied the name (including a
 /// symlink) is unlinked rather than written through. A directory is overlaid
 /// entry by entry with the same guarantee per file.
-fn overlay_restore(
+pub(super) fn overlay_restore(
     name: &str,
     payload: &Path,
     target: &Path,
@@ -724,7 +737,7 @@ fn ensure_dir(path: &Path) -> std::io::Result<()> {
 }
 
 /// Whether the snapshot payload is a `directory` or a `file`.
-fn payload_kind(name: &str, path: &Path) -> Result<&'static str> {
+pub(super) fn payload_kind(name: &str, path: &Path) -> Result<&'static str> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.is_dir() => Ok("directory"),
         Ok(_) => Ok("file"),
@@ -746,7 +759,11 @@ fn payload_kind(name: &str, path: &Path) -> Result<&'static str> {
 /// has already had its own final component resolved by [`resolve_target_link`],
 /// so the only path that lands here unresolved is a broken link — which reads as
 /// absent and is replaced rather than refused, exactly as a missing target is.
-fn check_target_kind(name: &str, target: &Path, snapshot_kind: &'static str) -> Result<()> {
+pub(super) fn check_target_kind(
+    name: &str,
+    target: &Path,
+    snapshot_kind: &'static str,
+) -> Result<()> {
     let Ok(meta) = std::fs::metadata(target) else {
         return Ok(());
     };

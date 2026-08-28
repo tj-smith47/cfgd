@@ -242,6 +242,12 @@ pub fn config() -> Config {
     // `backup run`, for the same three reasons.
     cfg = cfg.annotation("backup restore", write(true, false, true));
 
+    // `backup rollback` overwrites live data with the sidecar a displacement
+    // left beside the source, and runs the same arbitrary hooks. It IS
+    // idempotent, unlike its two siblings: the copy is left in place and a
+    // second call lands the same bytes. A client must still prompt.
+    cfg = cfg.annotation("backup rollback", write(true, true, true));
+
     for path in LONG_RUNNING {
         cfg = cfg.task_mode_for(*path, TaskMode::Detached);
     }

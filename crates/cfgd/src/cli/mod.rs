@@ -230,6 +230,10 @@ pub(in crate::cli) enum Mutation<'a> {
     /// config towards the machine — so its next step reads the divergence it
     /// just created, and never `cfgd apply`, which would undo it.
     RolledBack,
+    /// `backup rollback` put a unit's pre-restore contents back over its
+    /// source. It moves the machine the same direction `RolledBack` does — away
+    /// from what a restore had just written — so it reads the same divergence.
+    BackupRolledBack,
 }
 
 /// The next step a mutating `source`, `module`, `profile`, `secret` or
@@ -275,7 +279,7 @@ pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> String {
         Mutation::SecretEncrypted => {
             "Reference it with `cfgd profile update <profile> --secret <file>:<target>`".to_string()
         }
-        Mutation::RolledBack => {
+        Mutation::RolledBack | Mutation::BackupRolledBack => {
             "Run `cfgd diff` to see how the machine now differs from your config".to_string()
         }
         Mutation::ModuleCreated { name } => {
@@ -1161,7 +1165,7 @@ pub enum Command {
 
     /// Run declarative backups (`spec.backups[]`)
     #[command(
-        long_about = "Run, inspect, or restore declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, leaving a safety copy of the current contents beside it first (skipped when --to points outside the source).\n\nExamples:\n  cfgd backup run\n  cfgd backup run notes-db\n  cfgd backup list\n  cfgd backup list notes-db --snapshots\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd --output json backup list"
+        long_about = "Run, inspect, restore, or roll back declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, leaving a safety copy of the current contents beside it first (skipped when --to points outside the source). `backup rollback` puts that safety copy back.\n\nExamples:\n  cfgd backup run\n  cfgd backup run notes-db\n  cfgd backup list\n  cfgd backup list notes-db --snapshots\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd backup rollback\n  cfgd backup rollback notes-db --yes\n  cfgd --output json backup list"
     )]
     Backup {
         #[command(subcommand)]
@@ -1681,6 +1685,19 @@ pub enum BackupCommand {
         /// safety copy
         #[arg(long, value_hint = clap::ValueHint::AnyPath)]
         to: Option<PathBuf>,
+
+        /// Skip the confirmation prompt
+        #[arg(from_global)]
+        yes: bool,
+    },
+
+    /// Put a backup's pre-restore copy back over its source
+    #[command(
+        long_about = "Put the copy a restore (or an apply) left beside a backup's source back over it.\n\nEvery time cfgd displaces a file it copies the current contents aside first, as\nthe <path>.cfgd-backup sidecar beside them; `backup restore` leaves one before\nit overlays a snapshot. A rollback puts the newest such copy back, which is how\na restore of the wrong snapshot is undone. One copy is retained per source, so\na rollback always undoes the most recent displacement.\n\nWith no name, lists the backups that have a copy to put back and leaves the\nmachine alone.\n\nThe unit's preBackup / postBackup hooks wrap the rollback once, with\nCFGD_OPERATION=rollback. The copy is left in place afterwards, so rolling back\ntwice is the same as rolling back once.\n\ncfgd asks before overwriting live data; --yes (or CFGD_YES=1) skips the prompt,\nand is required when stdin is not a terminal.\n\nExamples:\n  cfgd backup rollback\n  cfgd backup rollback notes-db\n  cfgd backup rollback notes-db --yes\n  cfgd --output json backup rollback"
+    )]
+    Rollback {
+        /// Backup name (default: list every backup that has a copy to put back)
+        name: Option<String>,
 
         /// Skip the confirmation prompt
         #[arg(from_global)]
@@ -3003,6 +3020,9 @@ pub fn execute(
                     yes: *yes,
                 },
             ),
+            BackupCommand::Rollback { name, yes } => {
+                backup::cmd_backup_rollback(cli, printer, name.as_deref(), *yes)
+            }
         },
         Command::Explain {
             resource,

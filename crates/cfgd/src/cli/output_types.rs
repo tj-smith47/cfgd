@@ -800,6 +800,81 @@ pub struct BackupRestoreDeclinedOutput {
     pub declined: bool,
 }
 
+/// One backup that has a copy to put back, for `cfgd backup rollback` with no
+/// name.
+///
+/// A unit with no sidecar beside its source is absent from the listing: the
+/// command's whole question is what it COULD roll back, and a row saying
+/// "nothing" for a unit that has never been restored is the answer to a
+/// question nobody asked.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRollbackEntry {
+    pub name: String,
+    /// The copy that would be put back, absolute and posix-folded.
+    pub copy: String,
+    /// ISO 8601 UTC time the copy was written, read off its mtime — a sidecar
+    /// carries no record of its own. On the same scale as
+    /// `BackupSnapshotEntry::created`.
+    pub created: String,
+    pub size_bytes: u64,
+}
+
+/// Outcome of `cfgd backup rollback <name>`.
+///
+/// Shaped like [`BackupRestoreOutput`] because it is the same write read the
+/// other way: `copy` stands where `snapshot` does, and `clean` is the same
+/// predicate the exit code gates on.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRollbackOutput {
+    pub name: String,
+    /// The copy that was put back, absolute and posix-folded.
+    pub copy: String,
+    /// Where it landed — the unit's source, with a top-level symlink followed.
+    pub restored_to: String,
+    /// Whether the overlay actually ran and completed.
+    pub restored: bool,
+    /// The overlay completed AND every hook succeeded.
+    pub clean: bool,
+    pub size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl From<&cfgd_core::backup::RollbackOutcome> for BackupRollbackOutput {
+    fn from(outcome: &cfgd_core::backup::RollbackOutcome) -> Self {
+        Self {
+            name: outcome.name.clone(),
+            copy: outcome.copy.clone(),
+            restored_to: outcome.restored_to.clone(),
+            restored: outcome.restored,
+            clean: outcome.is_clean(),
+            size_bytes: outcome.size_bytes,
+            error: outcome.error.clone(),
+        }
+    }
+}
+
+/// A rollback the operator declined at the confirmation prompt, the
+/// [`BackupRestoreDeclinedOutput`] of the third mutating verb and carrying the
+/// same `declined` discriminator for the same reason.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRollbackDeclinedOutput {
+    pub name: String,
+    /// The copy that would have been put back.
+    pub copy: String,
+    /// Where it would have landed.
+    pub restored_to: String,
+    /// Always `false`; present so a consumer can read the same key on both the
+    /// declined and the completed payload.
+    pub restored: bool,
+    /// Always `true` — the discriminator between this payload and a rollback
+    /// that ran.
+    pub declined: bool,
+}
+
 /// Outcome of one unit run by `cfgd backup run`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

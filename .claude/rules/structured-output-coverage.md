@@ -17,6 +17,7 @@ keys while carrying six). The keys live in the builder and its golden.
 | apply                        | yes               | apply-result records consumed by CI                |
 | backup_list                  | yes               | backup inventory / snapshot list queried by scripts |
 | backup_restore               | yes               | restore result records                             |
+| backup_rollback              | yes               | rollback result records, and the copies a rollback could put back |
 | backup_run                   | yes               | backup-run result records                          |
 | checkin                      | yes               | machine identity exposed to gateway                |
 | clusterconfigpolicy_validate | yes               | validation result consumed by scripts/CI           |

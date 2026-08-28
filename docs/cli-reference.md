@@ -1899,7 +1899,8 @@ where unrecorded items could exist: with no config file, or a config with no
 
 ### `cfgd backup`
 
-Run, inspect, or restore the declarative backups a profile declares in `spec.backups[]`.
+Run, inspect, restore, or roll back the declarative backups a profile declares in
+`spec.backups[]`.
 
 ```sh
 cfgd backup run                                       # run every backup declared in the active profile
@@ -1910,10 +1911,13 @@ cfgd backup list notes-db --snapshots                 # its snapshots: name, kin
 cfgd backup restore notes-db                          # newest snapshot, back over the source
 cfgd backup restore notes-db --at 20260730T120000Z    # pick an older one
 cfgd backup restore notes-db --to /tmp/inspect --yes  # somewhere else, no prompt
+cfgd backup rollback                                  # what has a pre-restore copy beside it
+cfgd backup rollback notes-db --yes                   # put that copy back over the source
 cfgd --output json backup list
 ```
 
-An unknown name given to `cfgd backup run`, `backup list`, or `backup restore` is exit code `6`
+An unknown name given to `cfgd backup run`, `backup list`, `backup restore`, or
+`backup rollback` is exit code `6`
 (see [Exit Codes](#exit-codes)) and lists every valid name; an unknown `--at` snapshot is exit `6`
 too and lists every available snapshot. A run that recorded a failure (a bad copy, or
 `postBackup` erroring after a good one) also exits nonzero.
@@ -1926,6 +1930,17 @@ backup's source also skips the safety copy, while a path at or inside the source
 one. The unit's `preBackup` / `postBackup` hooks wrap the whole restore exactly once and see
 `CFGD_OPERATION=restore`. Where cfgd cannot prompt (piped stdin, CI, or `-o json`) a restore
 without `--yes` is an error rather than a silent no-op. See [Restoring](backups.md#restoring).
+
+`backup rollback <name>` puts the safety copy back over the source, undoing a restore of the
+wrong snapshot. It runs through the same envelope: the unit's lock, the one `preBackup` /
+`postBackup` hook list (seeing `CFGD_OPERATION=rollback`), and the same confirmation and `--yes`
+rule. It takes no safety copy of its own — what it displaces is what the restore just wrote,
+still in the snapshot store — and leaves the sidecar in place, so a second rollback lands the
+same bytes. One copy is retained per source: a new displacement prunes the older stamped
+sidecars cfgd itself wrote for that path, and nothing else in the directory. With no name it
+lists what it could put back and changes nothing; a unit with no copy beside its source is exit
+`6` with a `cfgd backup restore <name>` hint. See
+[Rolling back a restore](backups.md#rolling-back-a-restore).
 
 A unit that is already running elsewhere (the daemon's timer, another `cfgd apply`) is refused
 rather than interleaved: `backup run` reports the holding process as a skip and exits `1`, while the
@@ -1947,6 +1962,12 @@ when the operator declines at the confirmation prompt,
 `{ name, snapshot, restoredTo, restored: false, declined: true }`. The declined payload omits
 `clean` deliberately: a decline exits `0`, and reporting `clean: false` beside a zero exit would
 contradict whichever of the two a consumer trusted.
+For `backup rollback <name>`: a single
+`{ name, copy, restoredTo, restored, clean, sizeBytes, error? }`, and on a decline
+`{ name, copy, restoredTo, restored: false, declined: true }` — the same split, for the same
+reason. For `backup rollback` with no name: an array of `{ name, copy, created, sizeBytes }`,
+one per unit that has a copy beside its source, where `created` is the copy's modification time
+(a sidecar carries no record of its own).
 `nextRunAt` is the ISO 8601 UTC time the daemon's timer will next fire the unit, computed from the
 same `schedule` + last `finished_at` seeding the daemon uses; it is omitted for a schedule-less
 unit (the `Next Run` column renders `-`). See [Declarative Backups](backups.md#cli).
@@ -2183,12 +2204,12 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | Code | Meaning | Emitted by |
 |---|---|---|
 | `0` | Operation succeeded. | All commands on success. |
-| `1` | Generic failure (network, IO, unclassified internal error). Also a `cfgd backup run` that recorded a failed or unclean snapshot (see [Run Semantics](backups.md#run-semantics)), a `cfgd backup restore` whose overlay or hooks failed, and `cfgd diff --exit-code` when a system configurator's own check failed — drift is undetermined rather than absent, which outranks `5`. | Any command whose `Result` resolves to a non-config error, and `cfgd diff --exit-code` on a failed configurator check. |
+| `1` | Generic failure (network, IO, unclassified internal error). Also a `cfgd backup run` that recorded a failed or unclean snapshot (see [Run Semantics](backups.md#run-semantics)), a `cfgd backup restore` or `cfgd backup rollback` whose overlay or hooks failed, and `cfgd diff --exit-code` when a system configurator's own check failed — drift is undetermined rather than absent, which outranks `5`. | Any command whose `Result` resolves to a non-config error, and `cfgd diff --exit-code` on a failed configurator check. |
 | `2` | An upgrade is available but not installed. | `cfgd upgrade --check` only. |
 | `3` | No cfgd config file at the resolved path. | Any command when `--config` points to a missing file. |
 | `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |
 | `5` | Drift detected between actual and desired state. | `cfgd diff --exit-code`, `cfgd status --exit-code`, `cfgd verify --exit-code`. |
-| `6` | A named resource was not found. | Any command naming a missing resource: `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd backup run/list/restore <missing>`, `cfgd backup restore --at <missing-snapshot>`, `cfgd init --apply-profile <missing>`, `cfgd init --apply-module <missing>`, `cfgd config get/set/unset <missing-key>`, `cfgd alias show/delete <missing>` (which dispatch into the same config-key lookup with an `aliases.` prefix), `cfgd rollback <missing-apply-id>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
+| `6` | A named resource was not found. | Any command naming a missing resource: `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd backup run/list/restore/rollback <missing>`, `cfgd backup restore --at <missing-snapshot>`, `cfgd backup rollback <name>` with no copy beside its source, `cfgd init --apply-profile <missing>`, `cfgd init --apply-module <missing>`, `cfgd config get/set/unset <missing-key>`, `cfgd alias show/delete <missing>` (which dispatch into the same config-key lookup with an `aliases.` prefix), `cfgd rollback <missing-apply-id>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
 | `7` | An apply ran but at least one action failed (partial or total). Also a schedule-less `spec.backups[]` unit that failed or didn't complete cleanly during `cfgd apply` (see [Apply Integration](backups.md#cli)) — the unit is reported, apply continues, and the overall status downgrades to `partial`. | `cfgd apply`, `cfgd init --apply/--apply-profile/--apply-module`, and `cfgd module create --apply` when one or more actions fail. |
 | `130` | `apply` was cooperatively aborted by `SIGINT` (Ctrl-C). | `cfgd apply` interrupted with Ctrl-C; the in-flight action finishes, the lock releases, the run is recorded as `Aborted`. |
 | `143` | `apply` was cooperatively aborted by `SIGTERM`. | `cfgd apply` interrupted with `kill`; same cooperative-abort semantics as `130`. |

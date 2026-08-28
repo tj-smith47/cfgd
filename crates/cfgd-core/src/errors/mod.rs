@@ -537,6 +537,16 @@ pub enum BackupError {
     )]
     SafetyBackupFailed { name: String, message: String },
 
+    /// `cfgd backup rollback <name>` on a unit whose source has no
+    /// `.cfgd-backup` sidecar beside it. Nothing displaced the source, so
+    /// there is nothing to put back — and the verb that would leave one is
+    /// the one the message names.
+    #[error(
+        "backup '{name}': no rollback copy beside {}; a rollback puts back the sidecar a restore or an apply left there",
+        .source_path.posix()
+    )]
+    NoRollbackCopy { name: String, source_path: PathBuf },
+
     /// A fatal failure aborted a restore while the unit's `postBackup` hook
     /// ALSO failed on the way out. Carried as one error because the abort is
     /// the primary condition, but a structured-output consumer would never

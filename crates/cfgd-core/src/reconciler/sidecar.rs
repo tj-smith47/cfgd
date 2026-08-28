@@ -96,6 +96,7 @@ pub fn backup_file(target: &Path) -> Result<SidecarOutcome> {
         // `symlink_metadata` still counts as an entry someone made.
         let backup_path = reserve_backup_path(target, None)?;
         crate::create_symlink(&dest, &backup_path).map_err(|e| failed(target, format!("{e}")))?;
+        prune_stamped_sidecars(target, &backup_path);
         return Ok(SidecarOutcome::new(backup_path, false));
     }
 
@@ -106,6 +107,7 @@ pub fn backup_file(target: &Path) -> Result<SidecarOutcome> {
         let backup_path = reserve_backup_path(target, None)?;
         crate::copy_dir_recursive(target, &backup_path)
             .map_err(|e| failed(target, format!("{e}")))?;
+        prune_stamped_sidecars(target, &backup_path);
         return Ok(SidecarOutcome::new(backup_path, false));
     }
 
@@ -115,6 +117,7 @@ pub fn backup_file(target: &Path) -> Result<SidecarOutcome> {
     // An earlier adoption already preserved these exact bytes; rewriting the
     // sidecar would only widen the window in which it is half-written.
     if sidecar_holds(&backup_path, &hash) {
+        prune_stamped_sidecars(target, &backup_path);
         return Ok(SidecarOutcome::new(backup_path, true));
     }
     crate::atomic_write(&backup_path, &content).map_err(|e| failed(target, format!("{e}")))?;
@@ -133,7 +136,99 @@ pub fn backup_file(target: &Path) -> Result<SidecarOutcome> {
         crate::set_file_permissions(&backup_path, mode)
             .map_err(|e| failed(target, format!("mode of {}: {e}", backup_path.posix())))?;
     }
+    prune_stamped_sidecars(target, &backup_path);
     Ok(SidecarOutcome::new(backup_path, false))
+}
+
+/// Every sidecar of `target` cfgd wrote as a stamped copy, other than `keep`,
+/// removed — so a target keeps at most one stamped sidecar however many times
+/// it is displaced.
+///
+/// The retention rule lives HERE, at the write, so every displacer holds it:
+/// the adoption path and `cfgd backup restore`'s safety copy leave the same
+/// sidecar, and `cfgd backup rollback` puts the newest one back. Without a
+/// bound, a unit restored weekly grows a stamped copy per restore beside the
+/// user's live data, none of which any surface lists.
+///
+/// The primary `<target>.cfgd-backup` is never a candidate: it holds the
+/// content that predates cfgd, which `profile update` and module removal offer
+/// to restore. Only a name [`cfgd_backup_path`] itself would have produced is
+/// touched — the stamp's shape is checked, so a hand-written
+/// `<target>.cfgd-backup.mine` beside it is left where its author put it.
+///
+/// Best-effort: a copy that cannot be removed stays, and the next displacement
+/// tries again. Failing the adoption over a stale sidecar would abandon a write
+/// whose own copy is already safely on disk.
+fn prune_stamped_sidecars(target: &Path, keep: &Path) {
+    let (Some(dir), Some(base)) = (
+        target.parent(),
+        cfgd_backup_path(target, "")
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_owned),
+    ) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == keep {
+            continue;
+        }
+        if !entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| is_stamped_sidecar_name(name, &base))
+        {
+            continue;
+        }
+        let removed = match entry.file_type() {
+            Ok(kind) if kind.is_dir() => std::fs::remove_dir_all(&path),
+            Ok(_) => std::fs::remove_file(&path),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = removed {
+            tracing::debug!(
+                path = %path.posix(),
+                error = %e,
+                "sidecar: could not prune a superseded stamped copy",
+            );
+        }
+    }
+}
+
+/// Whether `name` is one of the stamped names [`reserve_backup_path`] mints
+/// for `base` (`<base>.<stamp>`, `<base>.<stamp>-<n>`).
+///
+/// The primary `<base>` itself answers `false`: it is the content that predates
+/// cfgd, and nothing prunes it.
+fn is_stamped_sidecar_name(name: &str, base: &str) -> bool {
+    let Some(rest) = name.strip_prefix(base).and_then(|r| r.strip_prefix('.')) else {
+        return false;
+    };
+    let (stamp, disambiguator) = match rest.split_once('-') {
+        Some((stamp, n)) => (stamp, Some(n)),
+        None => (rest, None),
+    };
+    is_backup_stamp(stamp)
+        && disambiguator.is_none_or(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Whether `s` has the shape [`crate::utc_now_backup_stamp`] renders
+/// (`20260512T143025Z`).
+///
+/// Judged on the shape rather than by parsing it back: the value is only ever
+/// used to decide whether cfgd wrote this name, and a stamp naming an
+/// impossible date is still one cfgd's own writer produced.
+fn is_backup_stamp(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 16
+        && b[8] == b'T'
+        && b[15] == b'Z'
+        && b[..8].iter().all(u8::is_ascii_digit)
+        && b[9..15].iter().all(u8::is_ascii_digit)
 }
 
 /// Where this backup may be written without destroying an older one.
@@ -334,13 +429,19 @@ mod tests {
 
         std::fs::write(&target, "second original").unwrap();
         let second = super::backup_file(&target).unwrap().path;
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "second original");
         std::fs::write(&target, "third original").unwrap();
         let third = super::backup_file(&target).unwrap().path;
 
         assert_ne!(second, third, "back-to-back adoptions need distinct names");
         assert_eq!(std::fs::read_to_string(&primary).unwrap(), "first original");
-        assert_eq!(std::fs::read_to_string(&second).unwrap(), "second original");
         assert_eq!(std::fs::read_to_string(&third).unwrap(), "third original");
+        // The third copy did not land ON the second — it took its own name and
+        // then superseded it, which is the retention rule, not a clobber.
+        assert!(
+            !second.exists(),
+            "one stamped copy is retained; the superseded one is pruned"
+        );
     }
 
     #[test]
@@ -375,8 +476,58 @@ mod tests {
             "the older sidecar must not gain the newer originals' entries"
         );
         assert!(primary.join("old.conf").exists());
-        assert!(first.join("new.conf").exists() && !first.join("newer.conf").exists());
         assert!(second.join("newer.conf").exists() && !second.join("new.conf").exists());
+        assert!(
+            !first.exists(),
+            "the superseded stamped tree is pruned, never merged into"
+        );
+    }
+
+    #[test]
+    fn a_stamped_sidecar_is_pruned_and_a_hand_written_neighbour_is_not() {
+        // Only a name the reservation itself would mint is a candidate: the
+        // primary holds the content that predates cfgd, and a file somebody
+        // else parked beside it is theirs.
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("app.conf");
+        let primary = tmp.path().join("app.conf.cfgd-backup");
+        let stale = tmp.path().join("app.conf.cfgd-backup.20250101T000000Z");
+        let mine = tmp.path().join("app.conf.cfgd-backup.mine");
+        std::fs::write(&primary, "the original").unwrap();
+        std::fs::write(&stale, "an older displacement").unwrap();
+        std::fs::write(&mine, "hand written").unwrap();
+        std::fs::write(&target, "live").unwrap();
+
+        let written = super::backup_file(&target).unwrap().path;
+
+        assert!(!stale.exists(), "the superseded stamped copy is pruned");
+        assert!(written.exists() && written != primary && written != stale);
+        assert_eq!(std::fs::read_to_string(&primary).unwrap(), "the original");
+        assert_eq!(std::fs::read_to_string(&mine).unwrap(), "hand written");
+    }
+
+    #[test]
+    fn only_the_reservations_own_stamp_shapes_are_pruneable() {
+        let base = "conf.toml.cfgd-backup";
+        for name in [
+            "conf.toml.cfgd-backup.20260512T143025Z",
+            "conf.toml.cfgd-backup.20260512T143025Z-1",
+            "conf.toml.cfgd-backup.20260512T143025Z-64",
+        ] {
+            assert!(super::is_stamped_sidecar_name(name, base), "{name}");
+        }
+        for name in [
+            // The pre-cfgd original, and everything that is not this
+            // reservation's own output.
+            "conf.toml.cfgd-backup",
+            "conf.toml.cfgd-backup.mine",
+            "conf.toml.cfgd-backup.20260512T143025Z-x",
+            "conf.toml.cfgd-backup.20260512T143025",
+            "conf.toml.cfgd-backup.20260512t143025Z",
+            "other.toml.cfgd-backup.20260512T143025Z",
+        ] {
+            assert!(!super::is_stamped_sidecar_name(name, base), "{name}");
+        }
     }
 
     #[cfg(unix)]

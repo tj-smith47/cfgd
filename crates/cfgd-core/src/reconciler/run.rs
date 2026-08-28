@@ -67,6 +67,7 @@ pub enum RunTitle {
     Reconcile,
     Backup,
     Restore,
+    Rollback,
 }
 
 impl RunTitle {
@@ -77,6 +78,7 @@ impl RunTitle {
             RunTitle::Reconcile => "Reconcile",
             RunTitle::Backup => "Backup",
             RunTitle::Restore => "Restore",
+            RunTitle::Rollback => "Rollback",
         }
     }
 }
@@ -1432,6 +1434,7 @@ fn rerun_command(title: RunTitle) -> &'static str {
         RunTitle::Apply | RunTitle::Reconcile => "cfgd apply",
         RunTitle::Backup => "cfgd backup run <name>",
         RunTitle::Restore => "cfgd backup restore <name>",
+        RunTitle::Rollback => "cfgd backup rollback <name>",
     }
 }
 

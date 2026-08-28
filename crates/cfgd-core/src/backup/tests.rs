@@ -3034,3 +3034,180 @@ fn a_restore_subject_folds_the_home_directory() {
         "write /home/tjx/.cfgd.env"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `backup rollback`
+// ---------------------------------------------------------------------------
+
+impl Harness {
+    /// Put the unit's retained pre-restore sidecar back over its source, the
+    /// way the CLI does.
+    fn rollback(&self, spec: &BackupSpec) -> Result<rollback::RollbackOutcome> {
+        let config_dir = self.config_dir();
+        let state_dir = self.state_dir();
+        crate::with_test_home(&self.root, || {
+            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
+            rollback::rollback_backup(&unit, &self.printer)
+        })
+    }
+
+    /// The copy `rollback` would put back, without putting it back.
+    fn rollback_copy(&self, spec: &BackupSpec) -> Option<rollback::RollbackCopy> {
+        let config_dir = self.config_dir();
+        let state_dir = self.state_dir();
+        crate::with_test_home(&self.root, || {
+            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
+            rollback::rollback_copy(&unit)
+        })
+    }
+}
+
+/// The whole point of the verb: a restore overwrote the live source, and the
+/// bytes it displaced come back.
+#[test]
+fn a_rollback_puts_the_pre_restore_contents_back_over_the_source() {
+    let h = Harness::new();
+    let source = h.seed_file("notes.txt", b"snapshot era");
+    let s = spec("docs", &source);
+    h.run(&s);
+
+    std::fs::write(&source, b"what the operator wrote later").expect("edit source");
+    let restored = h.restore(&s, None, None).expect("restore runs");
+    assert!(restored.is_clean(), "{restored:?}");
+    assert_eq!(std::fs::read(&source).unwrap(), b"snapshot era");
+
+    let outcome = h.rollback(&s).expect("rollback runs");
+    assert!(outcome.is_clean(), "{outcome:?}");
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        b"what the operator wrote later",
+        "the sidecar the restore left is what a rollback puts back"
+    );
+}
+
+/// A directory unit rolls back the whole tree the sidecar holds.
+#[test]
+fn a_rollback_puts_a_directory_units_pre_restore_contents_back() {
+    let h = Harness::new();
+    let source = h.root.join("journal");
+    std::fs::create_dir_all(&source).expect("source dir");
+    std::fs::write(source.join("a.md"), b"snapshot era").expect("write");
+    let s = spec("journal", &source);
+    h.run(&s);
+
+    std::fs::write(source.join("a.md"), b"edited later").expect("write");
+    std::fs::write(source.join("b.md"), b"added later").expect("write");
+    h.restore(&s, None, None).expect("restore runs");
+    assert_eq!(std::fs::read(source.join("a.md")).unwrap(), b"snapshot era");
+
+    let outcome = h.rollback(&s).expect("rollback runs");
+    assert!(outcome.is_clean(), "{outcome:?}");
+    assert_eq!(std::fs::read(source.join("a.md")).unwrap(), b"edited later");
+    assert_eq!(std::fs::read(source.join("b.md")).unwrap(), b"added later");
+}
+
+/// One retained pre-restore copy per unit: the sidecar a later displacement
+/// writes prunes the stamped one it replaces, and the primary — the content
+/// that predates cfgd, which `profile update` and module removal restore from
+/// — is never touched.
+#[test]
+fn a_later_safety_copy_prunes_the_stamped_one_it_replaces() {
+    let h = Harness::new();
+    let source = h.seed_file("notes.txt", b"the original");
+    let primary = h.root.join("notes.txt.cfgd-backup");
+    std::fs::write(&primary, b"the original").expect("seed the pre-cfgd sidecar");
+
+    let s = spec("docs", &source);
+    h.run(&s);
+
+    for bytes in [
+        b"second".as_slice(),
+        b"third".as_slice(),
+        b"fourth".as_slice(),
+    ] {
+        std::fs::write(&source, bytes).expect("edit source");
+        h.restore(&s, None, None).expect("restore runs");
+    }
+
+    let sidecars = snapshots(&h.root)
+        .into_iter()
+        .filter(|n| n.starts_with("notes.txt.cfgd-backup"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sidecars.len(),
+        2,
+        "the primary plus exactly one stamped copy survive: {sidecars:?}"
+    );
+    assert_eq!(
+        std::fs::read(&primary).unwrap(),
+        b"the original",
+        "the pre-cfgd sidecar is never pruned"
+    );
+    assert_eq!(
+        h.rollback_copy(&s).expect("a copy to roll back").path,
+        h.root.join(
+            sidecars
+                .iter()
+                .find(|n| *n != "notes.txt.cfgd-backup")
+                .unwrap()
+        ),
+        "the newest sidecar is what a rollback would put back"
+    );
+}
+
+/// A unit nothing ever displaced has nothing to put back, and says so with the
+/// verb that would produce one.
+#[test]
+fn a_rollback_with_no_copy_beside_the_source_is_refused() {
+    let h = Harness::new();
+    let source = h.seed_file("notes.txt", b"untouched");
+    let s = spec("docs", &source);
+    h.run(&s);
+
+    let err = h.rollback(&s).expect_err("nothing to roll back");
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::Backup(BackupError::NoRollbackCopy { .. })
+        ),
+        "expected a typed no-copy refusal, got: {err}"
+    );
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        b"untouched",
+        "a refused rollback touches nothing"
+    );
+}
+
+/// The unit's one hook list wraps a rollback exactly as it wraps a run and a
+/// restore, and `$CFGD_OPERATION` is what tells the three apart.
+#[test]
+fn a_rollback_runs_the_units_hooks_with_the_rollback_operation() {
+    let h = Harness::new();
+    let source = h.seed_file("notes.txt", b"snapshot era");
+    let pre = h.root.join("pre.txt");
+    let post = h.root.join("post.txt");
+    let mut s = spec("docs", &source);
+    s.pre_backup = vec![echo_env_hook(&["CFGD_OPERATION"], &pre)];
+    s.post_backup = vec![echo_env_hook(&["CFGD_OPERATION"], &post)];
+
+    h.run(&s);
+    std::fs::write(&source, b"later").expect("edit source");
+    h.restore(&s, None, None).expect("restore runs");
+    h.rollback(&s).expect("rollback runs");
+
+    assert_eq!(marker_contents(&pre), "rollback");
+    assert_eq!(marker_contents(&post), "rollback");
+}
+
+/// The row a rollback settles on is an action row: a lowercase verb head, the
+/// target it writes, and the copy it wrote from.
+#[test]
+fn a_rollback_subject_folds_the_home_directory() {
+    let home = PathBuf::from("/home/tj");
+    let _home = crate::with_test_home_guard(&home);
+    assert_eq!(
+        super::rollback_subject("/home/tj/notes", "notes.cfgd-backup"),
+        "rollback ~/notes from notes.cfgd-backup"
+    );
+}
