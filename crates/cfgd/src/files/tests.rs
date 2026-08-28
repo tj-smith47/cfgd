@@ -1140,7 +1140,11 @@ fn link_deployed_content_follows_an_edit_made_through_the_link() {
     let deployed = fm.link_deployed_content(&resolved.merged).unwrap();
     assert_eq!(
         deployed,
-        vec![(target.clone(), cfgd_core::sha256_hex(b"content"))],
+        vec![cfgd_core::providers::LinkDeployedRow {
+            target: target.clone(),
+            hash: cfgd_core::sha256_hex(b"content"),
+            files: 1,
+        }],
         "a converged symlink reports the bytes its target resolves to"
     );
 
@@ -1154,7 +1158,11 @@ fn link_deployed_content_follows_an_edit_made_through_the_link() {
     let deployed = fm.link_deployed_content(&resolved.merged).unwrap();
     assert_eq!(
         deployed,
-        vec![(target, cfgd_core::sha256_hex(b"edited through the link"))],
+        vec![cfgd_core::providers::LinkDeployedRow {
+            target,
+            hash: cfgd_core::sha256_hex(b"edited through the link"),
+            files: 1,
+        }],
         "the reported hash follows the edit, so a stale record can be corrected"
     );
 }
@@ -1212,14 +1220,16 @@ fn refresh_link_deployed_hashes_writes_once_per_edit_and_nothing_in_between() {
     assert_eq!(
         reconciler
             .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
-            .unwrap(),
+            .unwrap()
+            .rows,
         1,
         "the row recorded no hash at all, so the first refresh writes one"
     );
     assert_eq!(
         reconciler
             .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
-            .unwrap(),
+            .unwrap()
+            .rows,
         0,
         "nothing moved since, so the daemon's next tick writes nothing"
     );
@@ -1228,14 +1238,16 @@ fn refresh_link_deployed_hashes_writes_once_per_edit_and_nothing_in_between() {
     assert_eq!(
         reconciler
             .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
-            .unwrap(),
+            .unwrap()
+            .rows,
         1,
         "the edit through the link moves the recorded hash exactly once"
     );
     assert_eq!(
         reconciler
             .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
-            .unwrap(),
+            .unwrap()
+            .rows,
         0
     );
 
@@ -1263,7 +1275,8 @@ fn refresh_link_deployed_hashes_never_mints_a_row_for_an_untracked_file() {
     assert_eq!(
         reconciler
             .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
-            .unwrap(),
+            .unwrap()
+            .rows,
         0
     );
     assert!(
@@ -4591,7 +4604,8 @@ fn link_deployed_content_covers_every_file_under_a_directory_entry() {
         1,
         "the directory entry has one row: {before:?}"
     );
-    assert_eq!(before[0].0, target);
+    assert_eq!(before[0].target, target);
+    assert_eq!(before[0].files, 1, "one file under the tree");
 
     fs::write(
         files_dir.join("options.lua"),
@@ -4600,7 +4614,7 @@ fn link_deployed_content_covers_every_file_under_a_directory_entry() {
     .unwrap();
     let after = fm.link_deployed_content(&resolved.merged).unwrap();
     assert_ne!(
-        before[0].1, after[0].1,
+        before[0].hash, after[0].hash,
         "an edit two levels under the entry moves its recorded digest"
     );
 }

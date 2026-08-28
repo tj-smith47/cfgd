@@ -698,7 +698,7 @@ fn reconcile_tick(
         Ok(refreshed) => refreshed,
         Err(e) => {
             tracing::warn!(error = %e, "reconcile: failed to refresh recorded file hashes");
-            0
+            crate::reconciler::RefreshedHashes::default()
         }
     };
 
@@ -1095,12 +1095,14 @@ fn reconcile_tick(
     // The sentence states what the tick did to the RECORD as well as what it
     // did to the machine. Folded here rather than in the clean arm, so every
     // arm of the branch above reports it on the same terms.
-    let outcome = match refreshed_hashes {
+    // Worded in FILES, never rows: a module's row is one aggregate over
+    // every file its entries deploy, so the row count under-states what moved.
+    let outcome = match refreshed_hashes.files {
         0 => outcome,
-        n => outcome.map(|sentence| {
+        files => outcome.map(|sentence| {
             format!(
                 "{sentence}, {} refreshed",
-                crate::pluralize(n, "deployed file")
+                crate::pluralize(files, "deployed file")
             )
         }),
     };
