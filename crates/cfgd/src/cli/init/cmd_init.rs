@@ -221,6 +221,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
             let platform = cfgd_core::platform::Platform::current();
             let mgr_map = registry.manager_map();
+            let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
             let mut resolved_modules = modules::resolve_modules(
                 args.apply_modules,
                 &target_dir,
@@ -228,9 +229,9 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &[],
                 platform,
                 &mgr_map,
+                Some(&pkg_cx),
                 printer,
             )?;
-            let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
                 .with_config_dir(&target_dir)
                 .diffing_installed(&pkg_cx)
@@ -317,6 +318,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 }
             }
 
+            let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
             let mut resolved_modules = if !module_names.is_empty() {
                 let platform = cfgd_core::platform::Platform::current();
                 let mgr_map = registry.manager_map();
@@ -341,6 +343,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     &[],
                     platform,
                     &mgr_map,
+                    Some(&pkg_cx),
                     printer,
                 )?
             } else {
@@ -356,7 +359,6 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             // fresh machine only ever installs, never uninstalls. Profile-scoped:
             // module packages are added separately by `reconciler.plan` as
             // `Action::Module`, so this planner stays profile-only.
-            let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
             let pkg_actions = super::packages::plan_packages(
                 &resolved.merged,
                 &[],

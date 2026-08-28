@@ -150,6 +150,7 @@ pub(crate) fn resolve_daemon_modules(
     resolved: &ResolvedProfile,
     config_dir: &Path,
     source_roots: &[crate::modules::SourceModuleRoot],
+    installed: Option<&PackageContext<'_>>,
     printer: &Printer,
     scope: crate::Scope,
 ) -> Vec<crate::modules::ResolvedModule> {
@@ -167,6 +168,7 @@ pub(crate) fn resolve_daemon_modules(
         source_roots,
         platform,
         &mgr_map,
+        installed,
         printer,
     ) {
         Ok(m) => m,

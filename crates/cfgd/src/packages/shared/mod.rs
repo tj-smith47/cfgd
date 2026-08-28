@@ -694,7 +694,15 @@ pub(super) fn brew_available() -> bool {
     if command_available("brew") {
         return true;
     }
-    cfg!(target_os = "linux") && std::path::Path::new(LINUXBREW_PATH).exists()
+    // A brew that landed after this process started (a daemon that predates
+    // the bootstrap) is not on the inherited PATH; the known prefixes are.
+    if cfg!(target_os = "linux") {
+        return std::path::Path::new(LINUXBREW_PATH).exists();
+    }
+    cfg!(target_os = "macos")
+        && MACOS_BREW_PREFIXES
+            .iter()
+            .any(|prefix| brew_prefix_holds_brew(std::path::Path::new(prefix)))
 }
 
 /// A system manager a bootstrap cascade can mediate through, as

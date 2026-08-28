@@ -28662,6 +28662,52 @@ fn every_merged_env_view_is_built_once_per_command() {
     );
 }
 
+/// A `ResolvedPackage` is minted by `modules::resolve_package` and nowhere
+/// else in production: it is the one site that decides WHICH manager a bare
+/// entry lands on (the one that already holds it, else the platform default),
+/// and a second literal construction is a second "pick a manager" that the
+/// holder rule does not reach. Both crates' production halves are walked; a
+/// `#[cfg(test)]` module below the cut and any `tests.rs` build fixtures and
+/// are what a test SHOULD do.
+#[test]
+fn every_resolved_package_producer_routes_through_the_one_resolver() {
+    let cfgd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = walk_rust_files(&cfgd.join("src"));
+    files.extend(walk_rust_files(&cfgd.join("../cfgd-core/src")));
+    files.sort();
+    let mut producers = Vec::new();
+    for path in files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name == "tests.rs" || name == "test_helpers.rs" {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = body
+            .split_once("\n#[cfg(test)]")
+            .map(|(head, _)| head)
+            .unwrap_or(&body);
+        for (i, line) in production.lines().enumerate() {
+            if line.contains("ResolvedPackage {") && !line.contains("pub struct ResolvedPackage") {
+                producers.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        producers.iter().all(|p| p.contains("modules/resolve.rs")),
+        "a ResolvedPackage is built only by the one resolver:\n{}",
+        producers.join("\n")
+    );
+    assert!(
+        !producers.is_empty(),
+        "the walk found no producer at all, so it proved nothing"
+    );
+}
+
 /// Every `.rs` file under `dir`, recursively.
 fn walk_rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();

@@ -282,6 +282,7 @@ pub fn cmd_module_create(
         let platform = cfgd_core::platform::Platform::current();
         let mgr_map = registry.manager_map();
         let cache_base = module_cache_dir(cli)?;
+        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
         let mut resolved_modules = modules::resolve_modules(
             std::slice::from_ref(name),
             &config_dir,
@@ -289,6 +290,7 @@ pub fn cmd_module_create(
             &[],
             platform,
             &mgr_map,
+            Some(&pkg_cx),
             printer,
         )?;
         let resolved = config::ResolvedProfile {
@@ -296,7 +298,6 @@ pub fn cmd_module_create(
             merged: config::MergedProfile::default(),
         };
 
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
         let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
             .with_config_dir(&config_dir)
             .diffing_installed(&pkg_cx)

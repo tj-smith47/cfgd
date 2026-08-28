@@ -1752,6 +1752,7 @@ pub(super) fn cmd_status_module(
         // package onto a manager the module cannot use.
         let registry = ctx.base_registry();
         let mgr_map = registry.manager_map();
+        let pkg_cx = ctx.package_context()?;
         let resolved_modules = modules::resolve_modules(
             &[mod_name.to_string()],
             config_dir,
@@ -1759,6 +1760,7 @@ pub(super) fn cmd_status_module(
             &[],
             platform,
             &mgr_map,
+            Some(&pkg_cx),
             printer,
         )?;
         let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());

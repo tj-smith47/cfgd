@@ -25134,6 +25134,92 @@ fn a_module_package_the_manager_already_has_is_not_planned() {
     );
 }
 
+/// The whole path the daemon's tick took: a bare `- name: npm` resolved
+/// through the run's own installed-state context lands on brew, and the plan
+/// built over that resolution carries no install of it — not through apt,
+/// not through brew. `prefer: [apt]` over the same machine plans the apt
+/// install the author asked for.
+#[test]
+fn a_bare_entry_another_manager_holds_is_neither_re_resolved_nor_planned() {
+    let state = test_state();
+    let printer = test_printer();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(MockPackageManager::new("apt")));
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("brew").with_installed(&["npm"]),
+    ));
+    let cx = test_package_context(&printer, &state);
+    let reconciler = Reconciler::new(&registry, &state).diffing_installed(&cx);
+    let resolved = make_empty_resolved();
+    let platform = crate::test_helpers::linux_ubuntu_platform();
+    let managers = registry.manager_map();
+
+    let plan_for = |entry: ModulePackageEntry| {
+        let pkg = crate::modules::resolve_package(&entry, "nvim", &platform, &managers, Some(&cx))
+            .unwrap()
+            .unwrap();
+        let manager = pkg.manager.clone();
+        let mut module = make_resolved_module("nvim");
+        module.packages = vec![pkg];
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                vec![module],
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+        (manager, all_plan_items(&plan).join("\n"))
+    };
+
+    let (manager, items) = plan_for(ModulePackageEntry {
+        name: "npm".into(),
+        ..Default::default()
+    });
+    assert_eq!(manager, "brew");
+    assert!(
+        !items.contains("npm"),
+        "a tool brew already holds is not installed again, got:\n{items}"
+    );
+
+    let (manager, items) = plan_for(ModulePackageEntry {
+        name: "npm".into(),
+        prefer: vec!["apt".into()],
+        ..Default::default()
+    });
+    assert_eq!(manager, "apt");
+    assert!(
+        items.contains("npm"),
+        "an authored `prefer: [apt]` plans the apt install, got:\n{items}"
+    );
+}
+
+/// `package_survives_elision` is the ONE predicate, and the in-run arm is
+/// part of it: a tool a node of THIS run provisioned is elided from an
+/// EMPTY listing, and only for an entry whose author named no manager.
+#[test]
+fn a_tool_this_run_provisioned_is_elided_by_the_one_predicate() {
+    let apt = MockPackageManager::new("apt");
+    let none = crate::providers::InstalledPackages::default();
+    let mut pkg = make_resolved_module("nvim").packages.remove(0);
+    pkg.canonical_name = "npm".into();
+    pkg.resolved_name = "npm".into();
+    pkg.manager = "apt".into();
+    pkg.manager_declared = false;
+
+    assert!(Reconciler::package_survives_elision(&apt, &none, &pkg, &[]));
+    assert!(
+        !Reconciler::package_survives_elision(&apt, &none, &pkg, &["npm".to_string()]),
+        "the run's own provision of npm satisfies the bare entry"
+    );
+    pkg.manager_declared = true;
+    assert!(
+        Reconciler::package_survives_elision(&apt, &none, &pkg, &["npm".to_string()]),
+        "a declared route is judged by its own manager's listing, never by the cascade"
+    );
+}
+
 /// A module declares `minVersion` and the machine's copy is older: the package
 /// is still planned, because "present" was never the question the floor asks.
 #[test]

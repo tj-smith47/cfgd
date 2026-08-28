@@ -931,7 +931,10 @@ impl<'a> super::Reconciler<'a> {
         };
         match cx.installed_for(mgr) {
             Ok(installed) => {
-                packages.retain(|pkg| Self::package_survives_elision(mgr, &installed, pkg));
+                let provisioned = self.provisioned.borrow();
+                packages.retain(|pkg| {
+                    Self::package_survives_elision(mgr, &installed, pkg, &provisioned)
+                });
             }
             Err(e) => {
                 // The apply-side twin's reasoning, on the plan side: a warn
@@ -948,16 +951,37 @@ impl<'a> super::Reconciler<'a> {
 
     /// Whether `pkg` survives the installed-state elision: not installed under
     /// `mgr`'s identity fold, or installed short of its declared `minVersion`
-    /// floor. The ONE predicate [`Self::retain_uninstalled`],
-    /// [`Self::fill_planned_versions`] and the execute-time re-read in
-    /// `PackageExec::install_module_packages` all read, so a package can never
-    /// be planned-but-unpriced, priced-but-elided, or installed by the
-    /// `Packages` phase after the `Prerequisites` phase already landed it.
+    /// floor, and not the canonical tool a manager node of THIS run already
+    /// delivered (`provisioned`, see [`Self::provisioned`]). The ONE predicate
+    /// [`Self::retain_uninstalled`], [`Self::fill_planned_versions`] and the
+    /// execute-time re-read in `PackageExec::install_module_packages` all
+    /// read, so a package can never be planned-but-unpriced,
+    /// priced-but-elided, or installed by the `Packages` phase after the
+    /// `Prerequisites` phase already landed it.
+    ///
+    /// The provisioned arm is the in-run twin of the resolver's own rule
+    /// (`modules::resolve_package`): a bare entry is satisfied by whichever
+    /// available manager already holds the tool, but a tool the run's own
+    /// cascade delivers lands AFTER resolution read the listings, and its
+    /// entry then still stands as a default-manager install of the same
+    /// toolchain. Keyed on the canonical name's FAMILY, the unit a lane and
+    /// every other exclusion check agree on. An entry whose author NAMED the
+    /// manager is never elided this way: a declared route provisions through
+    /// that very manager (`declared_manager_routes`), so its own listing
+    /// reports the tool and the installed arm applies.
     pub(super) fn package_survives_elision(
         mgr: &dyn PackageManager,
         installed: &crate::providers::InstalledPackages,
         pkg: &crate::modules::ResolvedPackage,
+        provisioned: &[String],
     ) -> bool {
+        if !pkg.manager_declared
+            && provisioned
+                .iter()
+                .any(|m| crate::manager_family(m) == crate::manager_family(&pkg.canonical_name))
+        {
+            return false;
+        }
         let identity = mgr.package_identity(&pkg.resolved_name);
         if !installed.contains(&identity) {
             return true;
@@ -1015,7 +1039,12 @@ impl<'a> super::Reconciler<'a> {
                         .entry(mgr.name().to_string())
                         .or_insert_with(|| cx.installed_for(mgr).ok());
                     if let Some(installed) = listing
-                        && !Self::package_survives_elision(mgr, installed, pkg)
+                        && !Self::package_survives_elision(
+                            mgr,
+                            installed,
+                            pkg,
+                            &self.provisioned.borrow(),
+                        )
                     {
                         continue;
                     }
