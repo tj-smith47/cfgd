@@ -142,7 +142,10 @@ pub(super) fn clone_into(
     if target_dir.join(".git").exists() {
         let mut row = printer.status(
             Role::Info,
-            format!("Skipped clone into {}", target_dir.posix()),
+            format!(
+                "Skipped clone into {}",
+                cfgd_core::fold_home_in_text(&target_dir.posix().to_string())
+            ),
         );
         if let Some(detail) = checkout_detail(target_dir) {
             row = row.detail(detail);
@@ -156,7 +159,10 @@ pub(super) fn clone_into(
 
     let mut row = printer.status(
         Role::Ok,
-        format!("Cloned {url} into {}", target_dir.posix()),
+        format!(
+            "Cloned {url} into {}",
+            cfgd_core::fold_home_in_text(&target_dir.posix().to_string())
+        ),
     );
     // The subject already carries the URL, so this arm cannot take
     // `checkout_detail` wholesale — only its revision spelling.

@@ -2095,9 +2095,28 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
     let budget = printer.subject_budget();
     let width = report_align_width(&plan, None, budget);
     let trailing = report_trailing_allowance(&plan, None, budget);
+    // The WHOLE report: the header the run opens on, then the tree. A tree
+    // rendered alone passed the home-fold claim while the `Config` row six
+    // lines above it still spelled `/home/tj/.config/cfgd/cfgd.yaml`.
+    let config_path = home.join(".config/cfgd/cfgd.yaml");
+    let ctx = RunContext {
+        title: RunTitle::Plan,
+        config_path: Some(&config_path),
+        profile: Some("base"),
+        sources: &[],
+        modules: &[],
+        trigger: None,
+        subject: None,
+        unit_source: None,
+    };
+    ApplyRun::new(ctx, &plan).preview_only().header(&printer);
     render_plan_tree(&plan, None, &printer);
     drop(printer);
     let shown = screen.contents();
+    assert!(
+        shown.contains("Config   ~/.config/cfgd/cfgd.yaml"),
+        "the header's `Config` row folds home the way the rows under it do:\n{shown}"
+    );
 
     // The claim survives: the column plus the glyph plus what any row may
     // print beside it fits the line.
