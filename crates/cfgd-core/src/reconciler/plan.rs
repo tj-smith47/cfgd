@@ -175,8 +175,20 @@ impl<'a> super::Reconciler<'a> {
         // host plans nothing, which is what keeps a daemon tick from running
         // `apt update` on every interval.
         observe(PhaseName::Prerequisites);
-        let manager_actions =
+        let mut manager_actions =
             super::managers::plan_managers(self.registry, &profile_packages, &module_routed);
+        // A tool this plan's own cascade provisions as a MANAGER is already
+        // the run's statement about that tool; a bare module entry naming it
+        // under the platform default is a second, weaker one and would land a
+        // second copy through a manager that never delivered the first. Judged
+        // by the one elision predicate, with the plan's provisions in the
+        // slot the apply fills from what actually landed. Dropping an entry
+        // can retire a manager's last consumer, so the nodes are planned
+        // again over what survived.
+        if self.elide_provisioned_tools(&mut module_routed, &manager_actions) {
+            manager_actions =
+                super::managers::plan_managers(self.registry, &profile_packages, &module_routed);
+        }
 
         // The env file publishes where a manager's binaries live, so it has to
         // know about a manager this very run is about to provision, not only
@@ -947,6 +959,56 @@ impl<'a> super::Reconciler<'a> {
                 );
             }
         }
+    }
+
+    /// Drop every undeclared module entry whose canonical tool a
+    /// `ManagerAction::Provision` in `manager_actions` delivers, emptying and
+    /// removing the install actions that held nothing else. `true` when
+    /// anything was dropped. The plan-time reading of
+    /// [`Self::package_survives_elision`]'s provisioned arm, over an EMPTY
+    /// listing so only that arm can speak: the installed arm already ran in
+    /// `Self::plan_modules`.
+    fn elide_provisioned_tools(
+        &self,
+        module_routed: &mut Vec<(PhaseName, Action)>,
+        manager_actions: &[Action],
+    ) -> bool {
+        let provisions: Vec<String> = manager_actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Manager(super::ManagerAction::Provision { manager, .. }) => {
+                    Some(manager.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        if provisions.is_empty() {
+            return false;
+        }
+        let none = crate::providers::InstalledPackages::default();
+        let mut dropped = false;
+        module_routed.retain_mut(|(_, action)| {
+            let Action::Module(ModuleAction {
+                kind: ModuleActionKind::InstallPackages { resolved },
+                ..
+            }) = action
+            else {
+                return true;
+            };
+            let before = resolved.len();
+            resolved.retain(|pkg| {
+                self.registry
+                    .package_managers()
+                    .iter()
+                    .find(|m| m.name() == pkg.manager)
+                    .is_none_or(|mgr| {
+                        Self::package_survives_elision(mgr.as_ref(), &none, pkg, &provisions)
+                    })
+            });
+            dropped |= resolved.len() != before;
+            !resolved.is_empty()
+        });
+        dropped
     }
 
     /// Whether `pkg` survives the installed-state elision: not installed under

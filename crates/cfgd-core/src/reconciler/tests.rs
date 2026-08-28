@@ -11381,6 +11381,74 @@ fn a_tool_this_run_provisioned_is_not_installed_again_by_a_module_entry() {
     );
 }
 
+/// The same shape, one step earlier: the PLAN. The hero recording showed
+/// `√ provision npm via brew` in `Prerequisites` beside `apt install …, npm,
+/// …` in `Packages` — the apply's execute-time elision dropped the apt copy
+/// (`11 of 12 packages`), but the plan had promised it, priced it, and counted
+/// it. A bare entry naming a tool this plan's own cascade provisions is
+/// elided from the plan itself, by the same predicate, and `Actions planned`
+/// no longer counts an install the run will never perform.
+#[test]
+fn a_tool_this_plan_provisions_is_not_planned_again_by_a_module_entry() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "alt",
+    )));
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "sys",
+    )));
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("tool")
+            .without_index()
+            .unavailable()
+            .bootstrappable_via("sys"),
+    ));
+    let pkg = |canonical: &str, manager: &str| ResolvedPackage {
+        canonical_name: canonical.to_string(),
+        resolved_name: canonical.to_string(),
+        manager: manager.to_string(),
+        manager_declared: false,
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+        min_version: None,
+    };
+    let mut module = make_resolved_module("tools");
+    module.packages = vec![
+        pkg("tool", "alt"),
+        pkg("other", "alt"),
+        pkg("widget", "tool"),
+    ];
+
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let items = all_plan_items(&plan).join("\n");
+    assert!(
+        items.contains("provision tool via sys"),
+        "the absent manager is provisioned by its cascade, got:\n{items}"
+    );
+    assert!(
+        items.contains("alt install other") && !items.contains("tool, other"),
+        "the entry naming the provisioned tool is elided from the plan, its sibling kept, got:\n{items}"
+    );
+    assert!(
+        items.contains("tool install widget"),
+        "the provisioned manager still installs what needed it, got:\n{items}"
+    );
+}
+
 /// The hero recording's second shape: `Prerequisites` ran `provision cargo via
 /// rustup` and `provision npm, pipx via apt` while the module declared `pipx`
 /// with `prefer: [brew, apt]` and `cargo` with `aliases: {brew: rust, apt:
