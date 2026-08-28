@@ -60,7 +60,12 @@ pub fn sources_table(entries: &[SourceListEntry], wide: bool, now: &str) -> Tabl
         ),
         (
             "Source",
-            entries.iter().map(|e| cell(e.url.clone())).collect(),
+            // A local source's origin is a directory, folded like every
+            // display slot; the payload keeps the absolute path.
+            entries
+                .iter()
+                .map(|e| cell(e.url.as_deref().map(cfgd_core::fold_home_in_text)))
+                .collect(),
         ),
         (
             "Priority",

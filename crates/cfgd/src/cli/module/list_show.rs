@@ -150,7 +150,10 @@ pub fn build_module_show_doc(
     if !output.depends.is_empty() {
         rows.push(KvPair::new("Dependencies", output.depends.join(", ")));
     }
-    rows.push(KvPair::new("Directory", &output.directory));
+    rows.push(KvPair::new(
+        "Directory",
+        cfgd_core::fold_home_in_text(&output.directory),
+    ));
 
     if let Some(entry) = lock_entry {
         rows.push(KvPair::annotated("Source", "remote", "locked"));
