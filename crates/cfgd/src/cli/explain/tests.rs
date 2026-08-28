@@ -960,6 +960,125 @@ fn no_explain_description_names_a_position_on_the_screen() {
     );
 }
 
+/// No description `explain` renders — or the published schemas carry —
+/// addresses a MAINTAINER instead of a user.
+///
+/// `schemars` takes a type's WHOLE doc comment as its `description`: every
+/// paragraph, on `cfgd explain`, in `-o json`, in the SchemaStore-published
+/// schema and in every generated agent skill. A WHY paragraph written for
+/// the next maintainer therefore ships to a reader who has no
+/// `profile_spec.rs`: `PackageListSpec`'s named two private functions in
+/// rustdoc link syntax on all twelve bare-list drilldowns, and
+/// `ScriptCommand`'s explained a rendering decision to whoever hovered
+/// `postApply:`. The WHY goes in a `//` comment or on the private function.
+///
+/// Walked twice, over the in-process render AND the committed
+/// `tests/golden/schema/*.json`, so the file SchemaStore serves is judged
+/// rather than only the tree `explain` built from it.
+#[test]
+fn no_schema_description_addresses_a_maintainer_instead_of_a_user() {
+    /// Words with no meaning in the config grammar: a schema-derivation
+    /// vocabulary, and the first-person plural of a note between authors.
+    /// `cfgd renders with` is a user sentence about the theme; only a
+    /// rendering DECISION (`cfgd renders \`…\``) is refused.
+    const MAINTAINER_VOCABULARY: &[&str] = &[
+        "deserializer",
+        "schema_with",
+        "serde",
+        "inline variant",
+        "enum variant",
+        " we ",
+        "cfgd renders `",
+    ];
+
+    /// Why `text` reads as a note to a maintainer, if it does: rustdoc
+    /// intra-doc link syntax (`` [`ident`] ``), a private schema/deserializer
+    /// helper's name, or the vocabulary above.
+    fn addresses_a_maintainer(text: &str) -> Option<&'static str> {
+        if text.contains("[`") {
+            return Some("rustdoc link syntax");
+        }
+        let names_a_private_fn = text
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .any(|w| {
+                w.contains('_')
+                    && (w.ends_with("_schema") || w.ends_with("_vec") || w.contains("_or_"))
+            });
+        if names_a_private_fn {
+            return Some("a private function name");
+        }
+        let lower = format!(" {} ", text.to_lowercase());
+        MAINTAINER_VOCABULARY
+            .iter()
+            .find(|word| lower.contains(*word))
+            .copied()
+    }
+
+    fn walk(path: &str, fields: &[FieldNode], found: &mut Vec<String>) {
+        for f in fields {
+            let here = format!("{path}.{}", f.name);
+            if let Some(why) = addresses_a_maintainer(&f.description) {
+                found.push(format!("{here} ({why}): {}", f.description));
+            }
+            walk(&here, &f.children, found);
+            walk(&here, &f.variants, found);
+        }
+    }
+
+    fn walk_json(path: &str, value: &serde_json::Value, found: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let Some(serde_json::Value::String(d)) = map.get("description")
+                    && let Some(why) = addresses_a_maintainer(d)
+                {
+                    found.push(format!("{path} ({why}): {d}"));
+                }
+                for (k, v) in map {
+                    walk_json(&format!("{path}/{k}"), v, found);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (i, v) in items.iter().enumerate() {
+                    walk_json(&format!("{path}/{i}"), v, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut found = Vec::new();
+    for schema in all_schemas() {
+        walk(&schema.name, &schema.fields, &mut found);
+    }
+    let goldens =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/tests/golden/schema");
+    let mut judged = 0;
+    for entry in std::fs::read_dir(&goldens).expect("golden schema dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path).expect("golden readable");
+        let value: serde_json::Value = serde_json::from_str(&body).expect("golden is JSON");
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        walk_json(&name, &value, &mut found);
+        judged += 1;
+    }
+    assert!(
+        judged > 0,
+        "no golden schemas judged under {}",
+        goldens.display()
+    );
+    assert!(
+        found.is_empty(),
+        "a schema description is written for a maintainer, and schemars ships every \
+         paragraph of a doc comment to the user — move the WHY to a `//` comment: {found:#?}"
+    );
+}
+
 /// Every mark a field row carries lands in a COLUMN.
 ///
 /// The legend tells the reader to scan for `[+]`, and only a column can be

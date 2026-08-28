@@ -440,7 +440,7 @@
     },
     "PackageListSpec": {
       "additionalProperties": false,
-      "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+      "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key.",
       "properties": {
         "packages": {
           "default": [],
@@ -864,7 +864,7 @@
       "type": "object"
     },
     "ScriptCommand": {
-      "description": "The mapping form of a [`ScriptEntry`]: a command with a timeout, shell, guard condition or working directory. A named type rather than an inline variant so `cfgd explain` shows a reader `<(string | ScriptCommand)>` — a name they can look up — instead of `<(string | object)>`.",
+      "description": "The mapping form of a script entry: a command with a timeout, shell, guard condition or working directory.",
       "properties": {
         "continueOnError": {
           "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",

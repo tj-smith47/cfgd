@@ -193,10 +193,10 @@ fn list_or_packages_vec_schema(generator: &mut schemars::SchemaGenerator) -> sch
 
 /// The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same
 /// list under a `packages` key.
-///
-/// Both the deserializer ([`list_or_packages_vec`]) and the schema
-/// ([`list_or_packages_vec_schema`]) read this one type, so the map a config
-/// may write and the map `cfgd explain` documents cannot drift.
+// Every line of this block is the schema `description`, on `cfgd explain`,
+// in `-o json`, in the SchemaStore schema and in every generated agent skill.
+// The pairing with `list_or_packages_vec` / `list_or_packages_vec_schema` is
+// documented on the latter, where a maintainer reads it.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageListSpec {

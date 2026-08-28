@@ -283,7 +283,7 @@
       "type": "object"
     },
     "ScriptCommand": {
-      "description": "The mapping form of a [`ScriptEntry`]: a command with a timeout, shell, guard condition or working directory. A named type rather than an inline variant so `cfgd explain` shows a reader `<(string | ScriptCommand)>` — a name they can look up — instead of `<(string | object)>`.",
+      "description": "The mapping form of a script entry: a command with a timeout, shell, guard condition or working directory.",
       "properties": {
         "continueOnError": {
           "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",

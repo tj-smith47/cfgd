@@ -316,15 +316,14 @@ pub enum ScriptEntry {
     /// timeout/guard.
     Simple(String),
     /// The mapping form, carrying the body and its knobs.
+    // A named type rather than an inline variant so `cfgd explain` shows a
+    // reader `<(string | ScriptCommand)>` — a name they can look up — instead
+    // of `<(string | object)>`.
     Full(ScriptCommand),
 }
 
-/// The mapping form of a [`ScriptEntry`]: a command with a timeout, shell,
+/// The mapping form of a script entry: a command with a timeout, shell,
 /// guard condition or working directory.
-///
-/// A named type rather than an inline variant so `cfgd explain` shows a
-/// reader `<(string | ScriptCommand)>` — a name they can look up — instead of
-/// `<(string | object)>`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ScriptCommand {
     /// The command or script body to run.

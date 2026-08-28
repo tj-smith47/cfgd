@@ -520,7 +520,7 @@
     },
     "PackageListSpec": {
       "additionalProperties": false,
-      "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+      "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key.",
       "properties": {
         "packages": {
           "default": [],
