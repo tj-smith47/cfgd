@@ -1569,6 +1569,71 @@ fn filter_plan_drops_a_phase_left_entirely_empty() {
     );
 }
 
+/// Every operand a list-bearing action holds reaches the `-o json` payload.
+///
+/// The display subject cuts a long list to `a, b, +N more`, and that cut once
+/// lived in the builder that also fills `PlanActionOutput.description`, so
+/// `cfgd plan -o json` emitted `apt install unzip, ripgrep, +9 more` and nine
+/// package names reached no field at all — `targets` is empty for both package
+/// shapes. A CI gate diffing two plans could not see a package added to an
+/// eleven-entry segment. Every list-bearing shape is serialized here over more
+/// operands than any row keeps, and every name must be findable in the payload.
+#[test]
+fn every_operand_a_plan_action_holds_reaches_the_json_payload() {
+    let names: Vec<String> = (0..8).map(|i| format!("operand{i}")).collect();
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let file = |target: &str| cfgd_core::modules::ResolvedFile {
+        source: PathBuf::from("src"),
+        target: PathBuf::from(format!("/home/u/{target}")),
+        is_git_source: false,
+        strategy: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    // One shape per list-bearing action kind; a new one is added here or the
+    // walk below cannot vouch for it.
+    let shapes: Vec<(&str, Action)> = vec![
+        ("package install", pkg_install("brew", name_refs.clone())),
+        (
+            "package uninstall",
+            pkg_uninstall("brew", name_refs.clone()),
+        ),
+        (
+            "module install",
+            module_batch(
+                "m",
+                names.iter().map(|n| resolved_package("apt", n)).collect(),
+            ),
+        ),
+        (
+            "module deploy",
+            Action::Module(ModuleAction::local(
+                "m".to_string(),
+                ModuleActionKind::DeployFiles {
+                    files: names.iter().map(|n| file(n)).collect(),
+                    declared_total: names.len(),
+                },
+            )),
+        ),
+    ];
+    for (shape, action) in shapes {
+        let plan = one_phase_plan(vec![action]);
+        let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+        let json = serde_json::to_string(&output).unwrap();
+        for name in &names {
+            assert!(
+                json.contains(name.as_str()),
+                "{shape}: operand {name} reaches no field of the payload: {json}"
+            );
+        }
+        assert!(
+            !json.contains(" more"),
+            "{shape}: the wire carries a display elision marker: {json}"
+        );
+    }
+}
+
 #[test]
 fn build_plan_output_counts_actions_and_sets_context() {
     let plan = make_plan(vec![
