@@ -1019,7 +1019,7 @@ Local Repo
 
 The cause is the message git raised, without libgit2's `class=…; code=…`
 tail, and the hint names the fix for that kind of refusal: a missing remote, a
-diverged branch, an unreachable one, or the general case.
+diverged branch, an unreachable one, an empty repository, or the general case.
 
 `-o json` carries `localPullError` beside `localPulled`, so a consumer sees
 the same fact the verdict withheld `Synced` over.
