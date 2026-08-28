@@ -182,7 +182,10 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
             section,
             preopened,
             depth,
-            width,
+            // The claimed report column when the run holds one: the section
+            // path pads its commits to that, and a row repainted to any other
+            // shifts sideways at the moment it settles.
+            width: printer.live_column_for(width),
             live: printer.live_bars() && section.is_some(),
             groups: Vec::new(),
             flushed: 0,
@@ -1563,6 +1566,64 @@ mod tests {
         tree.settled(&managers, &head, done("apt install ripgrep"));
         tree.finish();
         drop(section);
+    }
+
+    /// On a terminal too narrow for the padded subject AND the wait reason
+    /// beside it, the report claims no column (the live twin of the buffered
+    /// path's retreat) and the row that still overflows is cut after a whole
+    /// token. Both hold kinds, because each words the reason differently and
+    /// the cut lands in different words.
+    #[test]
+    fn a_wait_row_on_a_narrow_terminal_retreats_its_column_and_is_cut_at_a_token() {
+        for reason in [
+            "queued behind provision brew via homebrew-installer",
+            "waiting on provision brew via homebrew-installer",
+        ] {
+            let (printer, screen) = Printer::for_test_live_terminal(24, 44);
+            let _claim = printer.report_column_beside(
+                30,
+                crate::output::measure_width(" — ") + crate::output::measure_width(reason),
+            );
+            let section = printer.section_phase(&PhaseName::Packages.section_label());
+            let managers = Owner::cfgd("managers");
+            let blocked = install("brew", "gum");
+            let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30);
+            tree.waiting(&Held {
+                waits: vec![Wait {
+                    owner: &managers,
+                    action: Some(&blocked),
+                    subject: "brew install gum".to_string(),
+                    reason: Some(reason.to_string()),
+                }],
+                pending_owners: vec![managers.token()],
+            });
+            let held = screen.contents();
+            let row = held
+                .lines()
+                .find(|line| line.contains("brew install gum"))
+                .unwrap_or_else(|| panic!("the wait row is on screen: {held}"))
+                .trim()
+                .to_string();
+            assert!(
+                row.contains("brew install gum — "),
+                "the column retreated rather than pad the reason off the line: {row:?}"
+            );
+            let kept = row
+                .strip_suffix('…')
+                .unwrap_or_else(|| panic!("a 44-column terminal cuts this row: {row:?}"));
+            let full = format!("○ brew install gum — {reason}");
+            assert!(
+                full.starts_with(kept),
+                "the cut keeps a prefix of the row: {row:?}"
+            );
+            let next = full[kept.len()..].chars().next();
+            assert!(
+                matches!(next, Some(' ' | ',' | '/')),
+                "the cut lands after a whole token, never inside one: {row:?}"
+            );
+            drop(tree);
+            drop(section);
+        }
     }
 
     #[test]

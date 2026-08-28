@@ -675,9 +675,10 @@ impl<'a> ApplyRun<'a> {
         // the apply tree the executor writes, and the `Backups` pseudo-phase
         // after it are one page, and each measuring its own part of it puts
         // the trailing column at a different x position in each.
-        let _column = printer.report_column(
-            report_align_width(plan, self.filter, printer.subject_budget())
-                .max(self.backup_align_width()),
+        let budget = printer.subject_budget();
+        let _column = printer.report_column_beside(
+            report_align_width(plan, self.filter, budget).max(self.backup_align_width()),
+            report_trailing_allowance(plan, self.filter, budget),
         );
         if self.preview_only {
             self.preview(printer);
@@ -942,7 +943,8 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
     // its backup labels too — keeps it, so its preview and its tree agree.
     let budget = printer.subject_budget();
     let width = report_align_width(plan, filter, budget);
-    let _column = printer.report_column(width);
+    let _column =
+        printer.report_column_beside(width, report_trailing_allowance(plan, filter, budget));
     for (phase, groups) in in_scope_tree(plan, filter, PhaseCoverage::Rendered) {
         let phase_section = printer.section_phase(&phase.name.section_label());
         for (group, actions) in groups {
@@ -1138,6 +1140,41 @@ pub fn report_align_width(
         .map(|action| action_display_subject_within(action, budget).to_string())
         .collect();
     align_width_of(items.iter().map(String::as_str))
+}
+
+/// The widest content any row of the report may print AFTER its subject —
+/// the `trailing` a [`Printer::report_column_beside`] claim is judged
+/// against — measured over what the run can already say: the wait reason a
+/// lane dispatcher may word about any action (`queued behind <subject>`,
+/// the wider of the two verbs) and the produced count a row's detail may
+/// carry. Both are worded by the ONE producers the rows read
+/// (`lanes::wait_reason`, [`action_produced_detail`]), so a claim here is a
+/// claim about a string the report will actually print.
+///
+/// [`Printer::report_column_beside`]: crate::output::Printer::report_column_beside
+/// [`action_produced_detail`]: super::action_produced_detail
+pub fn report_trailing_allowance(
+    plan: &Plan,
+    filter: Option<&PhaseFilter>,
+    budget: Option<usize>,
+) -> usize {
+    let separator = measure_width(" — ");
+    in_scope_tree(plan, filter, PhaseCoverage::Rendered)
+        .iter()
+        .flat_map(|(_, groups)| groups.iter())
+        .flat_map(|(_, actions)| actions.iter())
+        .map(|action| {
+            let subject = action_display_subject_within(action, budget).to_string();
+            let held = measure_width(&super::lanes::wait_reason(super::lanes::Hold::Lane(
+                &subject,
+            )));
+            let produced = super::action_produced_detail(action, None, &[])
+                .map(|d| measure_width(&d))
+                .unwrap_or(0);
+            separator + held.max(produced)
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// What a run's actions came to, as ONE line: `13 actions succeeded`, or

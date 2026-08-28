@@ -626,6 +626,43 @@ impl Printer {
         super::renderer::ReportColumnGuard::acquire(&self.renderer, width)
     }
 
+    /// [`Printer::report_column`] for a report that knows what its rows will
+    /// carry BESIDE the subject: `trailing` is the widest non-subject content
+    /// any row of it may print after the glyph — a wait reason, a produced
+    /// count — and the column is claimed only if that content still fits
+    /// beside it on this terminal, else the report claims no column at all.
+    ///
+    /// The live twin of the buffered path's `group_trailing_allowance`. A
+    /// live group's rows arrive one at a time, so its column used to be
+    /// judged against the glyph alone, and on a 44-column terminal a padded
+    /// `brew install gum` pushed its `queued behind provision brew via
+    /// homebrew` off the line, where the repaint cut it to `via h…`. Judged
+    /// once here, the same answer reaches every reader of the column: the
+    /// section's own live column defers to the claim, and a live tree asks
+    /// [`Printer::live_column_for`] for it.
+    #[must_use = "the column is released when the guard drops; bind it"]
+    pub fn report_column_beside(
+        &self,
+        width: usize,
+        trailing: usize,
+    ) -> super::renderer::ReportColumnGuard<'_> {
+        let column = super::renderer::status::group_column(
+            self.sink_stderr.wrap_columns(),
+            ACTION_ROW_DEPTH,
+            width,
+            super::renderer::status::GLYPH_PREFIX_WIDTH + trailing,
+        );
+        self.report_column(column)
+    }
+
+    /// The column a live painter pads a row to: the report's claimed column
+    /// when one is held, else `width` — the ONE rule, shared with the
+    /// section's own live column, so a row's repaint and the line that
+    /// replaces it at commit cannot pad to two different columns.
+    pub fn live_column_for(&self, width: usize) -> usize {
+        self.renderer.report_column_or(width)
+    }
+
     /// Status with no extra fields. For detail/duration/target, use the builder
     /// returned by the binding helper `status` (see status_builder.rs).
     ///

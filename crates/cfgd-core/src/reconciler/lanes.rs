@@ -292,7 +292,7 @@ struct Slot<'p> {
 /// mechanism instead had `brew install gum — queued behind brew-tap install
 /// charmbracelet/tap` deny the one dependency the tap exists to satisfy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Hold<'a> {
+pub(super) enum Hold<'a> {
     /// A DAG edge or tier barrier the row has not cleared, named by the row
     /// or tier word ahead of it.
     Edge(&'a str),
@@ -325,7 +325,7 @@ enum Hold<'a> {
 /// would print the same token twice one line apart. That row carries the
 /// reason in the subject slot, an empty subject beside a detail rendering as a
 /// leading em-dash.
-fn wait_reason(hold: Hold<'_>) -> String {
+pub(super) fn wait_reason(hold: Hold<'_>) -> String {
     match hold {
         Hold::Edge(thing) | Hold::Source(thing) => format!("waiting on {thing}"),
         Hold::Lane(occupant) => format!("queued behind {occupant}"),
