@@ -87,7 +87,7 @@ struct Graph {
 /// `provision npm via apt`, installing apt's entire node toolchain in place of
 /// the brew cascade [`plan_managers`] documents npm as preferring. A route
 /// outranks that cascade, so only a real declaration may mint one.
-fn declared_manager_routes(
+pub(super) fn declared_manager_routes(
     module_routed: &[(PhaseName, Action)],
 ) -> BTreeMap<String, DeclaredProvision> {
     let mut routes = BTreeMap::new();
@@ -170,15 +170,28 @@ pub fn plan_managers(
     package_actions: &[PackageAction],
     module_routed: &[(PhaseName, Action)],
 ) -> Vec<Action> {
+    let declared = declared_manager_routes(module_routed);
+    plan_managers_with_routes(registry, package_actions, module_routed, &declared)
+}
+
+/// [`plan_managers`] over routes derived somewhere else.
+///
+/// The elision that follows a first pass DROPS the very entries the routes were
+/// minted from, so a second pass re-deriving them off the survivors would hand
+/// back a cascade where the module had named a route. The caller derives once,
+/// before anything is elided, and both passes read that one answer.
+pub(super) fn plan_managers_with_routes(
+    registry: &ProviderRegistry,
+    package_actions: &[PackageAction],
+    module_routed: &[(PhaseName, Action)],
+    declared: &BTreeMap<String, DeclaredProvision>,
+) -> Vec<Action> {
     // The one system manager every prerequisite in this run is installed from,
     // resolved once so two prerequisites can never name two installers on the
     // same host.
     let installer = prerequisite_installer(registry).map(|pm| pm.name().to_string());
 
     let mut queue: VecDeque<String> = wanted_managers(registry, package_actions, module_routed);
-    // Read once, from the resolution that already applied every `prefer` and
-    // `aliases` the module wrote.
-    let declared = declared_manager_routes(module_routed);
 
     let mut graph = Graph::default();
     while let Some(name) = queue.pop_front() {
@@ -293,6 +306,40 @@ pub fn plan_managers(
     refuse_provisions_with_no_usable_installer(&mut graph);
     drop_prerequisites_nothing_still_needs(&mut graph);
     build_actions(registry, &graph, installer.as_deref())
+}
+
+/// The packages a provision node DELIVERS, under the manager that installs
+/// them.
+///
+/// `provision npm via brew` IS a `brew install node`, and a declared route is
+/// an install of the module's own package name through the installer its
+/// `prefer` chain picked. The ONE derivation, read by the plan (which elides a
+/// module entry naming one of these, so the `Packages` row never names a
+/// package a row above it already landed) and by the apply's settle (which
+/// records what actually landed, so a shortfall the run itself produced is
+/// worded `provisioned by this run`). Empty for anything but a provision, and
+/// for a cascade whose bootstrap is a vendor script rather than a package
+/// install.
+pub(super) fn provision_delivered_packages(
+    registry: &ProviderRegistry,
+    node: &ManagerAction,
+) -> Vec<(String, String)> {
+    let ManagerAction::Provision { via, declared, .. } = node else {
+        return Vec::new();
+    };
+    // A declared route is never batched, so it speaks for the whole node.
+    if let Some(route) = declared {
+        return vec![(route.installer.clone(), route.package.clone())];
+    }
+    node.provisioned_managers()
+        .iter()
+        .filter_map(|manager| {
+            find_manager(registry, manager)
+                .and_then(|pm| pm.mediated_packages(via))
+                .map(|names| names.into_iter().map(|name| (via.clone(), name)))
+        })
+        .flatten()
+        .collect()
 }
 
 /// The managers this run's own work names, family-folded and deduplicated.

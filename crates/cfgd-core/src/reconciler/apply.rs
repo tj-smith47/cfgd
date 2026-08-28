@@ -2171,37 +2171,16 @@ impl<'a> super::Reconciler<'a> {
                     // run PUT on the machine, so a later phase can tell a tool it
                     // delivered from one that was already here. See
                     // `Reconciler::provisioned`.
-                    if let Action::Manager(node @ ManagerAction::Provision { via, declared, .. }) =
-                        action
-                    {
+                    if let Action::Manager(node @ ManagerAction::Provision { .. }) = action {
                         let mut landed = self.provisioned.borrow_mut();
-                        let mut packages = self.provisioned_packages.borrow_mut();
                         for manager in node.provisioned_managers() {
                             if !landed.iter().any(|m| m == manager) {
                                 landed.push(manager.to_string());
                             }
-                            // The PACKAGES the provision installed, under the
-                            // manager that installed them: `provision npm via brew`
-                            // is a `brew install node`, and a module's own `brew:
-                            // [node]` beside it was delivered by this run.
-                            let mediated = match declared {
-                                Some(route) => {
-                                    Some((route.installer.clone(), vec![route.package.clone()]))
-                                }
-                                None => self
-                                    .registry
-                                    .package_managers()
-                                    .iter()
-                                    .find(|pm| pm.name() == manager)
-                                    .and_then(|pm| pm.mediated_packages(via))
-                                    .map(|names| (via.clone(), names)),
-                            };
-                            if let Some((installer, names)) = mediated {
-                                for name in names {
-                                    packages.push((installer.clone(), name));
-                                }
-                            }
                         }
+                        self.provisioned_packages.borrow_mut().extend(
+                            super::managers::provision_delivered_packages(self.registry, node),
+                        );
                     }
                     (
                         run.description,

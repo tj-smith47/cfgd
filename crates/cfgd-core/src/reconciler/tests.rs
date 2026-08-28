@@ -11459,6 +11459,113 @@ fn a_tool_this_plan_provisions_is_not_planned_again_by_a_module_entry() {
     );
 }
 
+/// The same elision over the two entries a provision delivers under a name of
+/// its own, which `manager_declared` bars from the arm above.
+///
+/// The hero recording applied a module declaring `node` (`prefer: [brew]`) and
+/// `pipx` (`prefer: [brew]`) while cfgd needed npm and pipx as MANAGERS. The
+/// `Prerequisites` phase ran `provision npm via brew` (a `brew install node`)
+/// and `provision pipx via brew` through the module's own route, and the
+/// `Packages` row underneath still read `brew install neovim, fd, zoxide,
+/// node, pipx, go, stylua, sops, age — 2 provisioned by this run`: two tools
+/// named on two rows, one of them an install the run never performed.
+///
+/// A provision delivers a PACKAGE, and that package's name is the entry's, not
+/// the manager's — the module's route installs `tool-alias` through `alt`, and
+/// `dep`'s cascade installs `dep-pkg` through the same `alt`. Both are elided
+/// by the pair the apply's settle records, so the row names neither. The
+/// strings asserted here are what `-o json` carries: the plan payload's
+/// `description` IS `format_plan_item`.
+#[test]
+fn a_declared_route_entry_this_plan_provisions_is_not_planned_again_on_the_packages_row() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "alt",
+    )));
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "sys",
+    )));
+    // Absent, and the module's own entry routes its provision through `alt`
+    // under the name that installer knows it by.
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("tool")
+            .without_index()
+            .unavailable()
+            .bootstrappable_via("sys"),
+    ));
+    // Absent, and its own cascade installs it through `alt` as `dep-pkg` —
+    // the npm/node shape, where the package the provision lands carries no
+    // route of its own.
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("dep")
+            .without_index()
+            .unavailable()
+            .bootstrappable_via("alt")
+            .mediated_by("alt", &["dep-pkg"]),
+    ));
+
+    let pkg = |canonical: &str, resolved: &str, manager: &str, declared: bool| ResolvedPackage {
+        canonical_name: canonical.to_string(),
+        resolved_name: resolved.to_string(),
+        manager: manager.to_string(),
+        manager_declared: declared,
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+        min_version: None,
+    };
+    let mut module = make_resolved_module("tools");
+    module.packages = vec![
+        pkg("tool", "tool-alias", "alt", true),
+        pkg("dep-pkg", "dep-pkg", "alt", true),
+        pkg("keep", "keep", "alt", true),
+        pkg("widget", "widget", "tool", false),
+        pkg("gadget", "gadget", "dep", false),
+    ];
+
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let items = all_plan_items(&plan).join("\n");
+    assert!(
+        items.contains("provision tool via alt (tool-alias)"),
+        "the module's route still provisions the tool it named, got:\n{items}"
+    );
+    assert!(
+        items.contains("provision dep via alt"),
+        "the cascade still provisions the manager it delivers, got:\n{items}"
+    );
+    assert_eq!(
+        items.matches("tool-alias").count(),
+        1,
+        "the package the route installs is named by the provision row alone, got:\n{items}"
+    );
+    assert_eq!(
+        items.matches("dep-pkg").count(),
+        0,
+        "the package the cascade installs is named by no packages row, got:\n{items}"
+    );
+    assert!(
+        items.contains("alt install keep"),
+        "an entry no provision delivers is kept, got:\n{items}"
+    );
+    assert!(
+        items.contains("tool install widget") && items.contains("dep install gadget"),
+        "each provisioned manager still installs what needed it, got:\n{items}"
+    );
+}
+
 /// The hero recording's second shape: `Prerequisites` ran `provision cargo via
 /// rustup` and `provision npm, pipx via apt` while the module declared `pipx`
 /// with `prefer: [brew, apt]` and `cargo` with `aliases: {brew: rust, apt:
