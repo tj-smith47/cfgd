@@ -143,9 +143,20 @@ impl Renderer {
     pub(crate) fn render_section_live_column(&self, width: usize) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let width = s.report_column.unwrap_or(width);
+        // The same preference `report_column_or` answers a caller with, held
+        // in one lock rather than two.
         if let Some(top) = s.section_stack.last_mut() {
             top.live_column = Some(width);
         }
+    }
+
+    /// The column a live group at this moment pads to: the claimed report
+    /// column when there is one, else the caller's own — the preference
+    /// [`Renderer::render_section_live_column`] applies, answered to a caller
+    /// that repaints rows itself and must pad them as the commit will.
+    pub(crate) fn report_column_or(&self, width: usize) -> usize {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.report_column.unwrap_or(width)
     }
 
     /// Claim the report-wide alignment column, answering whether this call is

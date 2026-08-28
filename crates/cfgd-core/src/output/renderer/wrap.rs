@@ -90,6 +90,47 @@ pub(crate) fn clamp(text: &str, max: usize) -> String {
     console::truncate_str(text, max, "…").into_owned()
 }
 
+/// How far back from the column cut [`clamp_at_token`] looks for a token
+/// boundary before it gives up and cuts at the column: wider than any word a
+/// row is likely to carry, narrower than the room a whole path would waste.
+const TOKEN_LOOKBACK: usize = 16;
+
+/// [`clamp`] for a SUBJECT: the cut retreats to the last token boundary — a
+/// space, a comma, a path separator — within [`TOKEN_LOOKBACK`] columns, so
+/// the marker follows a whole token rather than a fragment of one.
+///
+/// A live row's repaint is the one place a composed subject meets a column
+/// cut, and `provision brew via h…` is what the column alone made of
+/// `provision brew via homebrew`: a head a reader cannot match to any row.
+/// `… via…` says the same subject was cut, and says it with words the reader
+/// can find above. A table cell keeps the plain [`clamp`]: its width is the
+/// column's, and a cell has no row above it to match. A run with no boundary
+/// in the lookback — one long path — falls back to the column.
+pub(crate) fn clamp_at_token(text: &str, max: usize) -> String {
+    let plain = super::super::strip_ansi(text);
+    if display_width(&plain) <= max {
+        return text.to_owned();
+    }
+    // The marker takes the last column, so the kept text ends at `limit`.
+    let limit = max.saturating_sub(1);
+    let floor = limit.saturating_sub(TOKEN_LOOKBACK);
+    let mut col = 0;
+    let mut boundary = None;
+    for ch in plain.chars() {
+        if col > limit {
+            break;
+        }
+        if col > 0 && col >= floor && matches!(ch, ' ' | ',' | '/') {
+            boundary = Some(col);
+        }
+        col += UnicodeWidthChar::width(ch).unwrap_or(0);
+    }
+    match boundary {
+        Some(at) => console::truncate_str(text, at + 1, "…").into_owned(),
+        None => clamp(text, max),
+    }
+}
+
 /// Display width of the line's marker column — a leading one-column glyph
 /// (`✓`, `◉`, `-`, …) plus the space after it. Zero when the line does not
 /// open with one, so a plain sentence wraps flush rather than hanging off its
@@ -522,6 +563,40 @@ mod tests {
             out.iter().all(|line| !line.trim().is_empty()),
             "got: {out:?}"
         );
+    }
+
+    /// The subject clamp retreats to a token, the plain clamp does not; a
+    /// boundary too far back is not worth the columns and the column cut
+    /// stands.
+    #[test]
+    fn clamp_at_token_cuts_after_a_whole_token_and_marks_it() {
+        let line = "○ brew install gum — queued behind provision brew via homebrew";
+        let out = clamp_at_token(line, 41);
+        assert_eq!(out, "○ brew install gum — queued behind…", "got: {out:?}");
+        assert!(display_width(&out) <= 41);
+        assert_eq!(
+            clamp_at_token(
+                "deploy ~/.config/nvim/init.lua, ~/.config/nvim/lazy-lock.json",
+                40
+            ),
+            "deploy ~/.config/nvim/init.lua, ~…",
+            "a path separator is a boundary too, and the last one that fits wins"
+        );
+        // Styled text keeps its escapes and is measured without them.
+        let styled = "\x1b[2m○ brew install gum — queued behind provision\x1b[0m";
+        let out = clamp_at_token(styled, 30);
+        assert!(
+            out.starts_with("\x1b[2m") && out.ends_with("\x1b[0m"),
+            "got: {out:?}"
+        );
+        assert_eq!(
+            super::super::super::strip_ansi(&out),
+            "○ brew install gum — queued…"
+        );
+        // No boundary within the lookback: the column cut stands.
+        let path = "x".repeat(60);
+        assert_eq!(clamp_at_token(&path, 20), clamp(&path, 20));
+        assert_eq!(clamp_at_token("short", 20), "short");
     }
 
     #[test]

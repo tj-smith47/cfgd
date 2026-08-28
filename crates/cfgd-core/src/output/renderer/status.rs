@@ -214,7 +214,7 @@ pub(crate) fn compose_status_split(
 /// Counted rather than measured off a composed line: the decision below is the
 /// GROUP's, taken once, and a per-row measurement is what made it a per-row
 /// decision.
-const GLYPH_PREFIX_WIDTH: usize = 2;
+pub(crate) const GLYPH_PREFIX_WIDTH: usize = 2;
 
 /// The column every row of one group pads to at `depth` — the requested
 /// column, or none at all.

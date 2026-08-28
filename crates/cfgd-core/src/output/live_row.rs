@@ -110,11 +110,11 @@ impl<'p> LiveRow<'p> {
         // and are clamped at their own indent.
         let width = wrap::line_width(self.sink.as_ref(), self.depth);
         let indent = indent_prefix(self.depth + 1);
-        let mut message = wrap::clamp(&line, width);
+        let mut message = wrap::clamp_at_token(&line, width);
         for tail in &tails {
             message.push('\n');
             message.push_str(&indent);
-            message.push_str(&wrap::clamp(
+            message.push_str(&wrap::clamp_at_token(
                 tail,
                 wrap::line_width(self.sink.as_ref(), self.depth + 1),
             ));
@@ -205,8 +205,10 @@ impl<'p> LiveRow<'p> {
         let width = wrap::available_width(self.sink.as_ref(), self.depth);
         self.bar.disable_steady_tick();
         self.bar.set_style(plain_style());
-        self.bar
-            .set_message(wrap::clamp(&label.styled(&self.renderer.theme), width));
+        self.bar.set_message(wrap::clamp_at_token(
+            &label.styled(&self.renderer.theme),
+            width,
+        ));
     }
 
     /// Draw this row as a NOTE about the region rather than a step of it: a
@@ -229,7 +231,7 @@ impl<'p> LiveRow<'p> {
             .to_string();
         self.bar.disable_steady_tick();
         self.bar.set_style(plain_style());
-        self.bar.set_message(wrap::clamp(&body, width));
+        self.bar.set_message(wrap::clamp_at_token(&body, width));
     }
 
     /// Take this row out of the live region. Called once the line has been

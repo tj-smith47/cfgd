@@ -48,8 +48,8 @@ pub(super) fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> Str
     // not this string contains them.
     let width = wrap::available_width(sink, depth);
     match message.split_once('\n') {
-        Some((head, rest)) => format!("{}\n{}", wrap::clamp(head, width), rest),
-        None => wrap::clamp(message, width),
+        Some((head, rest)) => format!("{}\n{}", wrap::clamp_at_token(head, width), rest),
+        None => wrap::clamp_at_token(message, width),
     }
 }
 
