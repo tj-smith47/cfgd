@@ -13707,6 +13707,82 @@ spec:
         assert!(st.last_reconcile.is_some());
     }
 
+    /// The tick puts the modules IT resolved on the status wire, so
+    /// `cfgd daemon status` names what `cfgd status` and a run header name.
+    ///
+    /// Driven through the real tick rather than a hand-set field: a profile
+    /// whose declared list is one module reaches the wire as two once
+    /// `depends` is expanded, and the module this host gates off reaches it
+    /// carrying the reason the header row prints in its skipped annotation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reconcile_tick_puts_the_profiles_resolved_modules_on_the_status_wire() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - editor\n    - off-host\n",
+        )
+        .unwrap();
+        let module = |name: &str, body: &str| {
+            let dir = tmp.path().join("modules").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("module.yaml"),
+                format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n{body}"
+                ),
+            )
+            .unwrap();
+        };
+        module("core", "  packages: []\n");
+        module("editor", "  depends:\n    - core\n  packages: []\n");
+        let elsewhere = if cfg!(windows) { "linux" } else { "windows" };
+        module(
+            "off-host",
+            &format!("  platforms:\n    - {elsewhere}\n  packages: []\n"),
+        );
+
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+
+        let st = state.lock().await;
+        let named: Vec<&str> = st.modules.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(
+            named,
+            vec!["core", "off-host", "editor"],
+            "the tick must carry the modules it resolved, `depends` expanded \
+             and in the order it resolved them"
+        );
+        let skipped: Vec<&str> = st
+            .modules
+            .iter()
+            .filter(|m| m.platform_skip_reason.is_some())
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(
+            skipped,
+            vec!["off-host"],
+            "the gated module must reach the wire carrying its skip reason"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sync_tick_advances_last_synced_for_due_task() {
         let tmp = tempfile::TempDir::new().unwrap();

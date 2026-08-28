@@ -124,6 +124,7 @@ fn clean_output() -> StatusOutput {
                 files: 3,
                 scripts: 0,
                 status: "installed".into(),
+                platform_skip_reason: None,
                 declared: ModuleDeclared::default(),
             },
             ModuleStatusEntry {
@@ -132,6 +133,7 @@ fn clean_output() -> StatusOutput {
                 files: 12,
                 scripts: dev_tools_declared().scripts,
                 status: "installed".into(),
+                platform_skip_reason: None,
                 declared: dev_tools_declared(),
             },
         ],
@@ -216,6 +218,7 @@ fn drift_output() -> StatusOutput {
             files: 4,
             scripts: 0,
             status: "installed".into(),
+            platform_skip_reason: None,
             declared: ModuleDeclared::default(),
         }],
         managed_resources: Vec::new(),

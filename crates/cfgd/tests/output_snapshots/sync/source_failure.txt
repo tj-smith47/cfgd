@@ -2,9 +2,6 @@ Sync
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  tiny
 
-Local Repo
-  ⚠ Pull failed — open repo: could not find repository at '<CONFIG_DIR>'; class=Repository (6); code=NotFound (-3)
-
 Sources
   source:missing-team
     ✗ Sync failed — git error: 'file:///nonexistent/path/that/does/not/exist.git' is a local path or file:// URL, which is not allowed as a source origin (pass a git URL, e.g. https://github.com/acme/config.git)

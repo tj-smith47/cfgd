@@ -1,0 +1,9 @@
+Sync
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  tiny
+
+Local Repo
+  ⚠ Pull failed — find remote: remote 'origin' does not exist; class=Config (7); code=NotFound (-3)
+  → Resolve the local repository by hand, then re-run `cfgd sync`
+
+⚠ Sync incomplete — local repo not pulled
