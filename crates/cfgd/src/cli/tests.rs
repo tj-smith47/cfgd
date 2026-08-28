@@ -16336,12 +16336,12 @@ fn every_produced_count_is_an_action_rows_detail() {
     });
     assert_eq!(
         action_produced_detail(&deploy, None, &[]).as_deref(),
-        Some("1 of 6 files"),
+        Some("5 already deployed"),
         "a deploy states its shortfall from the action alone"
     );
     assert_eq!(
         action_produced_detail(&install, Some(1), &[]).as_deref(),
-        Some("1 of 2 packages"),
+        Some("1 already installed"),
         "an install states its shortfall from the count the executor re-read"
     );
     assert_eq!(

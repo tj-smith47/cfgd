@@ -10650,7 +10650,7 @@ fn a_package_a_prerequisite_landed_is_not_installed_again_by_the_packages_phase(
 /// stays the planned list on purpose (one string across the preview bullet,
 /// the alignment column and the executed row) and so does the recorded
 /// description, which is a wire contract; the shortfall belongs in the DETAIL,
-/// the slot `deploy …/init.lua — 1 of 6 files` already states its own in.
+/// the slot `deploy …/init.lua — 5 already deployed` already states its own in.
 #[test]
 fn an_install_that_landed_fewer_than_it_named_says_so_on_its_row() {
     let installs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -10771,7 +10771,7 @@ fn an_install_that_landed_fewer_than_it_named_says_so_on_its_row() {
         .find(|l| l.contains("sys install"))
         .unwrap_or_default();
     assert!(
-        row.contains("✓ sys install npm, jq") && row.contains("— 1 of 2 packages"),
+        row.contains("✓ sys install npm, jq") && row.contains("— 1 already installed"),
         "the row names the planned set and states what it landed: {rendered}"
     );
 
@@ -11029,9 +11029,11 @@ fn every_manager_node_states_what_it_produced() {
 /// then says `6 files` states one number twice on one row
 /// (`deploy …/init.lua, …/lazy-lock.json, +4 more — 6 files`). Every arm of
 /// `action_produced_detail` is rendered here over `SUBJECT_LIST_KEEP + 3`
-/// operands, each with the executor's re-read saying everything landed, and a
-/// detail opening on that total fails. A SHORTFALL (`1 of 6 files`) is a
-/// different fact and keeps its count.
+/// operands, twice: with the executor's re-read saying everything landed, and
+/// with it two short. A detail carrying the operand total fails on either
+/// pass — a SHORTFALL states the complement (`2 already installed`), never a
+/// ratio over the total the marker already gives, because `brew install
+/// neovim, fd, +7 more — 7 of 9 packages` put two different sevens on one row.
 #[test]
 fn no_produced_detail_restates_a_total_the_subject_already_gives() {
     use super::format::SUBJECT_LIST_KEEP;
@@ -11094,17 +11096,19 @@ fn no_produced_detail_restates_a_total_the_subject_already_gives() {
         }),
     ];
     let mut elided = 0;
+    let total_word = regex::Regex::new(&format!(r"\b{total}\b")).unwrap();
     for action in &actions {
         let subject = super::format::action_display_subject(action).to_string();
-        let detail = super::action_produced_detail(action, Some(total), &[]);
-        if subject.contains(" more") {
-            elided += 1;
+        if !subject.contains(" more") {
+            continue;
+        }
+        elided += 1;
+        for landed in [total, total - 2] {
+            let detail = super::action_produced_detail(action, Some(landed), &[]);
             assert!(
-                detail
-                    .as_deref()
-                    .is_none_or(|d| !d.starts_with(&format!("{total} "))),
-                "the subject's `+N more` already gives {total}; the detail says it again: \
-                 `{subject} — {}`",
+                detail.as_deref().is_none_or(|d| !total_word.is_match(d)),
+                "the subject's `+N more` already gives {total}; the detail says it again \
+                 (landed {landed}): `{subject} — {}`",
                 detail.unwrap_or_default()
             );
         }
@@ -11215,7 +11219,7 @@ fn an_install_that_landed_everything_it_named_states_no_count() {
     assert_eq!(super::action_produced_detail(&action, Some(2), &[]), None);
     assert_eq!(
         super::action_produced_detail(&action, Some(1), &[]).as_deref(),
-        Some("1 of 2 packages")
+        Some("1 already installed")
     );
     // A preview has not run, so it has no count of its own to state.
     assert_eq!(super::action_produced_detail(&action, None, &[]), None);
@@ -22612,7 +22616,7 @@ fn retain_actions_and_batches_shrinks_a_batch_before_dropping_it() {
 #[test]
 fn a_withheld_file_leaves_the_declared_set_with_it() {
     // Pruning one file from a two-file batch must not leave the survivor
-    // rendering `1 of 2 files` — that shape claims the other file CONVERGED
+    // rendering `1 already deployed` — that shape claims the other file CONVERGED
     // when it was withheld by a pending decision. The declared set shrinks
     // with the batch, so the render and the persisted id both describe the
     // batch that remains.
@@ -22649,7 +22653,7 @@ fn a_withheld_file_leaves_the_declared_set_with_it() {
     assert_eq!(format_action_description(action), "module:mymod:files:1");
     let item = format_plan_item(action);
     assert!(
-        !item.contains("of 2 files"),
+        !item.contains("already deployed"),
         "the survivor must not claim a converged sibling, got: {item}"
     );
 }
@@ -25730,7 +25734,7 @@ fn a_deployed_file_matching_its_source_is_elided_and_the_subset_names_itself() {
         .collect();
     assert_eq!(
         details,
-        vec!["1 of 2 files".to_string()],
+        vec!["1 already deployed".to_string()],
         "a subset counts against the declared set, in the row's detail"
     );
 

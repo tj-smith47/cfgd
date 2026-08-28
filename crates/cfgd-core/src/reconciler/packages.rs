@@ -470,7 +470,7 @@ impl<'x> PackageExec<'x> {
     /// whose every entry an earlier phase already landed ran and did nothing,
     /// which is a skip rather than a success. [`ActionRun::installed`] is HOW
     /// MANY of the entries it named it had to land — the fact the executed row
-    /// states as `1 of 2 packages`, and the one thing about this action a
+    /// states as `1 already installed`, and the one thing about this action a
     /// preview cannot know.
     pub(super) fn apply_package_action(&self, action: &PackageAction) -> Result<ActionRun> {
         let cx = self.cx();

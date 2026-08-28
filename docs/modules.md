@@ -636,9 +636,9 @@ name differs from the manager-specific one, it follows after `alias:`:
 named `neovim-npm`. A profile's own package lines carry neither, since a profile names a
 manager and a package directly. A deploy naming more than three targets lists the first
 two and says how many it left out (`deploy a, b, +10 more`); a deploy of only the
-files that changed counts them against the module's declared set as the row's detail
-(`deploy init.lua — 1 of 6 files`). The apply row carries the same detail, beside the
-same subject.
+files that changed says how many of the module's declared set it left alone as the row's
+detail (`deploy init.lua — 5 already deployed`). The apply row carries the same detail,
+beside the same subject.
 
 Each phase groups its actions by the owner that declared them (`profile:<name>`,
 `module:<name>`), so a bullet's owner is visible without reading the action text.
