@@ -96,11 +96,12 @@ Phase: Prerequisites
     ✓ refresh apt index                       (9.5s)
     ⠹ provision brew via homebrew installer
         ==> Downloading and installing Homebrew…
-    ○ provision pipx via apt · waiting on apt
+    ○ provision pipx via apt — waiting on refresh apt index
 ```
 
-A row held back is dimmed and names what it is waiting on: the lane or the node in the
-way (`provision npm via brew · waiting on brew`). A node held behind more than one edge
+A row held back is dimmed and names the row it is waiting on: the action occupying its
+lane or the node ahead of it (`provision npm via brew — waiting on provision brew via
+homebrew installer`). A node held behind more than one edge
 names the last of them to finish, so the line never has to take back what it said. A line
 with no action in front of it (`waiting on modules`) stands for its whole group, held by
 the tier barrier. Waiting is a live state only: it is never logged, never in `-o json`,

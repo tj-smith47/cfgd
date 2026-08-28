@@ -22095,7 +22095,7 @@ fn a_live_region_commits_swept_dependents_once_in_dispatch_order() {
     }
     assert_eq!(
         transcript
-            .matches("did not run — brew failed earlier in this phase")
+            .matches("did not run — provision brew via curl failed earlier in this phase")
             .count(),
         2,
         "both dependents must name the root cause: {transcript}"
@@ -22788,7 +22788,7 @@ fn a_failed_node_fails_its_dependents_with_the_root_cause() {
     );
     assert_eq!(
         rendered
-            .matches("did not run — brew failed earlier in this phase")
+            .matches("did not run — provision brew via curl failed earlier in this phase")
             .count(),
         2,
         "both dependents name the ROOT failure, not the link above them: {rendered}"

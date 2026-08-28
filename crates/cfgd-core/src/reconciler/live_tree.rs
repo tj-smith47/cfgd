@@ -14,7 +14,7 @@
 //!     ✓ refresh apt index                    (9.5s) ← settled, in place
 //!     ⠹ provision brew via homebrew installer       ← running
 //!         ==> Downloading and installing Homebrew…  ← its output window
-//!     ○ provision pipx via apt — waiting on apt     ← blocked, in its own row
+//!     ○ provision pipx via apt — waiting on refresh apt index ← blocked, in its own row
 //! ```
 //!
 //! Four rules hold it together, and every one of them exists because the
