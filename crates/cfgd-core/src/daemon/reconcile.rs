@@ -1105,22 +1105,31 @@ fn reconcile_tick(
         }
     };
 
-    // The sentence states what the tick did to the RECORD as well as what it
-    // did to the machine. Folded here rather than in the clean arm, so every
-    // arm of the branch above reports it on the same terms.
-    // Worded in FILES that MOVED, never rows and never a row's coverage: a
-    // module's row is one aggregate over every file its entries deploy, so
-    // the row count under-states what moved and the coverage over-states it.
-    // A count the rows cannot prove is left unsaid.
+    // The sentence states what the tick OBSERVED as well as what it did to
+    // the machine. Folded here rather than in the clean arm, so every arm
+    // of the branch above reports it on the same terms. Worded from the
+    // reader's side: a pull moved bytes under a symlink, and nothing needed
+    // doing because the link already delivers them. What cfgd refreshed is
+    // its own record of those bytes, and a clause about bookkeeping printed
+    // as work ("N deployed files refreshed") contradicted the "nothing to do"
+    // beside it. Counted in FILES that MOVED, never rows and never a row's
+    // coverage; a count the rows cannot prove is left unsaid.
     let outcome = match (refreshed_hashes.rows, refreshed_hashes.files) {
         (0, _) => outcome,
         (_, Some(moved)) => outcome.map(|sentence| {
+            let link = if moved == 1 {
+                "its link"
+            } else {
+                "their links"
+            };
             format!(
-                "{sentence}, {} refreshed",
+                "{sentence}, {} changed upstream, already live through {link}",
                 crate::pluralize(moved, "deployed file")
             )
         }),
-        (_, None) => outcome.map(|sentence| format!("{sentence}, deployed files refreshed")),
+        (_, None) => outcome.map(|sentence| {
+            format!("{sentence}, deployed files changed upstream, already live through their links")
+        }),
     };
 
     // A per-module tick names its module: the log carries ticks of both
