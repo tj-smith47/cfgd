@@ -5,7 +5,7 @@
   "definitions": {
     "AptSpec": {
       "additionalProperties": false,
-      "description": "APT package spec. Supports both list form (`apt: [curl, git]`) and object\nform (`apt: { file: packages.txt, packages: [...] }`).",
+      "description": "The object form of `apt`: a package list, a file listing packages, or both.\nA bare list of names folds into `packages`.",
       "properties": {
         "file": {
           "default": null,
@@ -28,7 +28,7 @@
     },
     "BrewSpec": {
       "additionalProperties": false,
-      "description": "Homebrew package spec. Supports both list form (`brew: [ripgrep, fzf]`,\nmapped to `formulae`) and object form for taps/casks:\n\n```yaml\nbrew:\n  taps: [homebrew/cask-fonts]\n  formulae: [ripgrep, fzf]\n  casks: [alacritty]\n```",
+      "description": "The object form of `brew`: taps, formulae and casks, or a Brewfile. A bare\nlist of names folds into `formulae`.",
       "properties": {
         "casks": {
           "default": [],
@@ -40,7 +40,7 @@
         },
         "file": {
           "default": null,
-          "description": "Path to a Brewfile to apply instead of (or alongside) the lists below.",
+          "description": "Path to a Brewfile to apply instead of (or alongside) `taps`,\n`formulae` and `casks`.",
           "type": [
             "string",
             "null"
@@ -67,10 +67,10 @@
     },
     "CargoSpec": {
       "additionalProperties": false,
-      "description": "Cargo package spec. The `cargo` field accepts both a list form\n(`cargo: [bat, ripgrep]`) and an object form\n(`cargo: { file: Cargo.toml, packages: [...] }`).",
+      "description": "The object form of `cargo`: crates to install, a `Cargo.toml` to install\nfrom, or both. A bare list of names folds into `packages`.",
       "properties": {
         "file": {
-          "description": "Path to a `Cargo.toml` whose binaries to install instead of the list below.",
+          "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`.",
           "type": [
             "string",
             "null"
@@ -512,7 +512,7 @@
     },
     "FlatpakSpec": {
       "additionalProperties": false,
-      "description": "Flatpak package spec. Supports both list form (`flatpak: [org.gimp.GIMP]`,\nmapped to `packages`) and object form for a non-default remote.",
+      "description": "The object form of `flatpak`: application ids and the remote to install\nthem from. A bare list of ids folds into `packages`.",
       "properties": {
         "packages": {
           "default": [],
@@ -598,7 +598,7 @@
     },
     "NpmSpec": {
       "additionalProperties": false,
-      "description": "npm package spec. Supports both list form (`npm: [pnpm]`, mapped to\n`global`) and object form.",
+      "description": "The object form of `npm`: global packages, a `package.json` to install\nfrom, or both. A bare list of names folds into `global`.",
       "properties": {
         "file": {
           "default": null,
@@ -624,15 +624,44 @@
       "description": "`spec.packages`: packages to install, grouped by package manager.\n\nEvery manager field accepts either a bare list of names or (for the\nmanagers with options of their own) a mapping:\n\n```yaml\npackages:\n  brew:\n    formulae: [ripgrep, fzf]\n    casks: [alacritty]\n  apt: [curl, git]\n  cargo: [ripgrep]\n```",
       "properties": {
         "apk": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A `packages` map, the same list under a key.",
+              "properties": {
+                "packages": {
+                  "description": "Package names.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "description": "APK packages (Alpine).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "APK packages (Alpine)."
         },
         "apt": {
           "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             {
               "$ref": "#/definitions/AptSpec"
             },
@@ -646,6 +675,13 @@
         "brew": {
           "anyOf": [
             {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
               "$ref": "#/definitions/BrewSpec"
             },
             {
@@ -658,6 +694,13 @@
         "cargo": {
           "anyOf": [
             {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
               "$ref": "#/definitions/CargoSpec"
             },
             {
@@ -668,12 +711,34 @@
           "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping."
         },
         "chocolatey": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A `packages` map, the same list under a key.",
+              "properties": {
+                "packages": {
+                  "description": "Package names.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "description": "Chocolatey packages (Windows).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Chocolatey packages (Windows)."
         },
         "custom": {
           "default": [],
@@ -684,15 +749,44 @@
           "type": "array"
         },
         "dnf": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A `packages` map, the same list under a key.",
+              "properties": {
+                "packages": {
+                  "description": "Package names.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "description": "DNF packages (Fedora/RHEL).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "DNF packages (Fedora/RHEL)."
         },
         "flatpak": {
           "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             {
               "$ref": "#/definitions/FlatpakSpec"
             },
@@ -704,23 +798,74 @@
           "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping."
         },
         "go": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A `packages` map, the same list under a key.",
+              "properties": {
+                "packages": {
+                  "description": "Package names.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "description": "Go packages (`go install`).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Go packages (`go install`)."
         },
         "nix": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A `packages` map, the same list under a key.",
+              "properties": {
+                "packages": {
+                  "description": "Package names.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "description": "Nix packages (`nix-env` / `nix profile`).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Nix packages (`nix-env` / `nix profile`)."
         },
         "npm": {
           "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             {
               "$ref": "#/definitions/NpmSpec"
             },
@@ -732,39 +877,134 @@
           "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping."
         },
         "pacman": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A `packages` map, the same list under a key.",
+              "properties": {
+                "packages": {
+                  "description": "Package names.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "description": "Pacman packages (Arch).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Pacman packages (Arch)."
         },
         "pipx": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A `packages` map, the same list under a key.",
+              "properties": {
+                "packages": {
+                  "description": "Package names.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "description": "pipx-installed Python applications.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "pipx-installed Python applications."
         },
         "pkg": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A `packages` map, the same list under a key.",
+              "properties": {
+                "packages": {
+                  "description": "Package names.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "description": "pkg packages (FreeBSD).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "pkg packages (FreeBSD)."
         },
         "scoop": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A `packages` map, the same list under a key.",
+              "properties": {
+                "packages": {
+                  "description": "Package names.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "description": "Scoop packages (Windows).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Scoop packages (Windows)."
         },
         "snap": {
           "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             {
               "$ref": "#/definitions/SnapSpec"
             },
@@ -776,28 +1016,94 @@
           "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping."
         },
         "winget": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A `packages` map, the same list under a key.",
+              "properties": {
+                "packages": {
+                  "description": "Package names.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "description": "Winget packages (Windows).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Winget packages (Windows)."
         },
         "yum": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A `packages` map, the same list under a key.",
+              "properties": {
+                "packages": {
+                  "description": "Package names.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "description": "Yum packages (legacy RHEL/CentOS).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Yum packages (legacy RHEL/CentOS)."
         },
         "zypper": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A `packages` map, the same list under a key.",
+              "properties": {
+                "packages": {
+                  "description": "Package names.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "description": "Zypper packages (openSUSE).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Zypper packages (openSUSE)."
         }
       },
       "type": "object"
@@ -1000,7 +1306,7 @@
     },
     "SnapSpec": {
       "additionalProperties": false,
-      "description": "Snap package spec. Supports both list form (`snap: [spotify]`, mapped to\n`packages`) and object form for classic-confinement snaps.",
+      "description": "The object form of `snap`: strict and classic-confinement snaps. A bare\nlist of names folds into `packages`.",
       "properties": {
         "classic": {
           "default": [],
