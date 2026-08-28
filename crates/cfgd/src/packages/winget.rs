@@ -6,7 +6,9 @@ use std::process::Command;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageInfo, PackageManager};
 
-use super::shared::{canonical_ci_pkg_name, parse_version_field, run_pkg_cmd, run_pkg_cmd_live};
+use super::shared::{
+    canonical_ci_pkg_name, parse_version_field, run_pkg_cmd, run_pkg_cmd_live, run_pkg_query,
+};
 
 pub struct WingetManager;
 
@@ -169,13 +171,10 @@ impl PackageManager for WingetManager {
     }
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
-        let output = Command::new("winget")
-            .args(["show", "--id", package])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "winget".into(),
-                source: e,
-            })?;
+        let output = run_pkg_query(
+            "winget",
+            Command::new("winget").args(["show", "--id", package]),
+        )?;
         if !output.status.success() {
             return Ok(None);
         }

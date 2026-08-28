@@ -11,7 +11,8 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 use super::shared::{
     MediatedArms, bootstrap_via_brew_then_system, brew_then_system_arms, detect_brew_system_method,
     pip_user_scripts_dir, pkg_run, planned_method_failed, planned_method_unavailable,
-    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, tool_cmd_with_resolver,
+    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, run_pkg_query,
+    tool_cmd_with_resolver,
 };
 
 pub struct PipxManager;
@@ -247,13 +248,7 @@ impl PackageManager for PipxManager {
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // Query PyPI JSON API: https://pypi.org/pypi/<pkg>/json → .info.version
         let url = format!("https://pypi.org/pypi/{}/json", package);
-        let output = Command::new("curl")
-            .args(["-fsSL", &url])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "pipx".into(),
-                source: e,
-            })?;
+        let output = run_pkg_query("pipx", Command::new("curl").args(["-fsSL", &url]))?;
         if !output.status.success() {
             return Ok(None);
         }

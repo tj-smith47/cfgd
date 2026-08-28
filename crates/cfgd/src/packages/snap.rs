@@ -4,14 +4,15 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::errors::Result;
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 #[cfg(target_os = "linux")]
 use super::shared::detect_system_method;
 use super::shared::{
     MediatedArms, bootstrap_via_system_manager, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, sudo_cmd_with_seam, system_manager_arms, tool_cmd_with_resolver,
+    run_pkg_cmd_live, run_pkg_query, sudo_cmd_with_seam, system_manager_arms,
+    tool_cmd_with_resolver,
 };
 
 pub struct SnapManager;
@@ -132,12 +133,7 @@ impl PackageManager for SnapManager {
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // snap info <pkg> → parse "latest/stable:" or first channel line for version
-        let output = snap_cmd().args(["info", package]).output().map_err(|e| {
-            PackageError::CommandFailed {
-                manager: "snap".into(),
-                source: e,
-            }
-        })?;
+        let output = run_pkg_query("snap", snap_cmd().args(["info", package]))?;
         if !output.status.success() {
             return Ok(None);
         }

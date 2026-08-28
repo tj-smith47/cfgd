@@ -29744,3 +29744,59 @@ fn every_plan_running_verb_settles_its_link_deployed_hashes() {
         unsettled.join("\n")
     );
 }
+
+/// Every spawn of a manager binary under `packages/` hands the child the PATH
+/// directories this run bootstrapped: through `pkg_run` / `run_pkg_cmd*` /
+/// `run_pkg_query`, or by calling `hand_child_bootstrapped_path` itself before
+/// it spawns. A spawn that is not a manager's (`stat`, `useradd`) says why with
+/// `// own-path-ok:` on the line or the line above. Fifteen `available_version`
+/// arms and two version probes spawned bare, so a brew this run had just
+/// bootstrapped answered `is_available` and then priced nothing.
+#[test]
+fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
+    let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut files = walk_rust_files(&packages_dir);
+    files.sort();
+    let spawns = [
+        ".output()",
+        ".status()",
+        ".spawn()",
+        "command_output_with_timeout(",
+    ];
+    let is_fn_head = |line: &str| {
+        let t = line.trim_start();
+        t.starts_with("fn ")
+            || t.starts_with("pub fn ")
+            || t.starts_with("pub(") && t.contains(" fn ")
+    };
+    let mut offenders = Vec::new();
+    for path in files
+        .into_iter()
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+    {
+        let body = std::fs::read_to_string(&path).unwrap();
+        let production = production_body(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") || !spawns.iter().any(|s| line.contains(s)) {
+                continue;
+            }
+            let head = (0..n).rev().find(|&i| is_fn_head(lines[i])).unwrap_or(0);
+            let handed = lines[head..n]
+                .iter()
+                .any(|l| l.contains("hand_child_bootstrapped_path("));
+            if handed || label_hatched(&lines, n, "// own-path-ok:") {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a manager binary spawned without the bootstrapped dirs (route it through \
+         run_pkg_query / pkg_run, call hand_child_bootstrapped_path first, or say why \
+         with `// own-path-ok:`):\n{}",
+        offenders.join("\n")
+    );
+}

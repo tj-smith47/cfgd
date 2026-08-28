@@ -2262,3 +2262,34 @@ fn parse_tool_version_reads_every_managers_banner_shape() {
         );
     }
 }
+
+/// A probe that spawns on its own (`tool_version_from`, and through it every
+/// provision's settled version) hands the child the directories this run
+/// bootstrapped, exactly as `pkg_run` does: a manager's `--version` shells out
+/// to siblings its shim finds through the PATH it inherits, and the one cfgd
+/// started with cannot name a prefix that did not exist then.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_version_probe_reaches_a_sibling_the_manager_shim_finds_through_the_bootstrapped_dirs() {
+    use std::os::unix::fs::PermissionsExt;
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, body: &str| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    };
+    write("sibling", "#!/bin/sh\necho 'Sibling 1.2.3'\n");
+    let shim = write("mgr", "#!/bin/sh\nexec sibling --version\n");
+    cfgd_core::register_bootstrapped_path_dirs(&[cfgd_core::to_posix_string(dir.path())]);
+
+    assert_eq!(
+        tool_version_from(&mut Command::new(&shim)).as_deref(),
+        Some("1.2.3"),
+        "the shim's sibling resolves only through the dirs this run bootstrapped"
+    );
+}
