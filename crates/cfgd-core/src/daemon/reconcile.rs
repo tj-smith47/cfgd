@@ -957,6 +957,18 @@ fn reconcile_tick(
                             failed = failed,
                             "reconcile: auto-apply complete"
                         );
+                        // The rows the apply just recorded carry no hash. The
+                        // refresh above ran BEFORE the apply, so without this
+                        // one the next tick backfills them and reports the
+                        // backfill as deployed files having moved. Its count
+                        // is bookkeeping about rows this tick wrote, not news.
+                        if let Err(e) = reconciler.refresh_link_deployed_hashes(
+                            file_manager.as_deref(),
+                            resolved,
+                            resolved_modules_ref.as_slice(),
+                        ) {
+                            tracing::warn!(error = %e, "reconcile: failed to seed recorded file hashes after apply");
+                        }
                         // Self-heal the tracking table on a full (non-module)
                         // reconcile: drop rows whose package is gone (partial
                         // uninstall / out-of-band removal) so they can't leak.

@@ -8569,6 +8569,10 @@ fn every_error_only_arm_of_the_reconcile_tick_is_classified() {
         ("store.resolve_drift_not_in", "Ok(())"),
         ("store.remove_managed_resource", "Ok(())"),
         ("crate::state::clear_pending_server_config", "Ok(())"),
+        (
+            "reconciler.refresh_link_deployed_hashes",
+            "a count of rows this tick's own apply just wrote — a backfill, not news",
+        ),
     ];
     let lines: Vec<&str> = body.lines().collect();
     let mut seen = 0usize;
@@ -8607,6 +8611,11 @@ fn every_error_only_arm_of_the_reconcile_tick_is_classified() {
 /// close on the same `nothing to do` as the four idle ticks above it. The
 /// refresh count is the only fact separating the two states, and the tick
 /// discarded it with an `if let Err`.
+///
+/// The row is seeded with the hash a real apply records — never NULL, which
+/// every tick backfills and so would pass this on a machine nobody touched.
+/// The clause must depend on the bytes MOVING: the first tick, over the
+/// recorded bytes, says nothing; only the tick that sees the pull does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial(daemon_log)]
 async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle() {
@@ -8630,18 +8639,25 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
     )
     .unwrap();
 
-    // The row an apply left behind, recording no hash yet — what the pull's
-    // bytes are about to move.
+    // The row an apply left behind, settled on the bytes it deployed — what
+    // the pull is about to move.
     let target = tmp.path().join("deployed.conf");
     let resource_id = crate::to_posix_string(&target);
     let store = StateStore::open(&state_dir.join("state.db")).unwrap();
     store
-        .upsert_managed_resource("file", &resource_id, "local", None, None)
+        .upsert_managed_resource(
+            "file",
+            &resource_id,
+            "local",
+            Some(&crate::sha256_hex(b"as the apply deployed it")),
+            None,
+        )
         .unwrap();
     drop(store);
 
     struct LinkHooks {
         target: PathBuf,
+        content: Arc<Mutex<&'static [u8]>>,
     }
     impl DaemonHooks for LinkHooks {
         fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
@@ -8660,9 +8676,10 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
             _: &ResolvedProfile,
         ) -> crate::errors::Result<crate::daemon::PlannedFiles> {
             let fm = crate::test_helpers::MockFileManager::new();
+            let content = *self.content.blocking_lock();
             fm.set_link_deployed(vec![crate::providers::LinkDeployedRow {
                 target: self.target.clone(),
-                hash: crate::sha256_hex(b"landed by the pull"),
+                hash: crate::sha256_hex(content),
                 // One row standing for a whole tree: the sentence counts
                 // the files, not the row.
                 files: 3,
@@ -8691,19 +8708,52 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
     let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
-    let st = Arc::clone(&state);
-    let not = Arc::clone(&notifier);
-    let sd = state_dir.clone();
-    let cp = config_path.clone();
-    let hooks = LinkHooks { target };
-    tokio::task::spawn_blocking(move || {
-        let printer = test_printer();
-        handle_reconcile(
-            &cp,
-            None,
-            quiet_reconcile_ctx(&st, &not, false, &hooks, &sd, &printer),
-        );
-    })
+    let content: Arc<Mutex<&'static [u8]>> =
+        Arc::new(Mutex::new(b"as the apply deployed it".as_slice()));
+    let hooks = Arc::new(LinkHooks {
+        target,
+        content: Arc::clone(&content),
+    });
+    let tick = |st: Arc<Mutex<DaemonState>>,
+                not: Arc<Notifier>,
+                hooks: Arc<LinkHooks>,
+                sd: PathBuf,
+                cp: PathBuf| {
+        tokio::task::spawn_blocking(move || {
+            let printer = test_printer();
+            handle_reconcile(
+                &cp,
+                None,
+                quiet_reconcile_ctx(&st, &not, false, &*hooks, &sd, &printer),
+            );
+        })
+    };
+
+    // An idle tick over the recorded bytes: nothing moved, nothing to say.
+    tick(
+        Arc::clone(&state),
+        Arc::clone(&notifier),
+        Arc::clone(&hooks),
+        state_dir.clone(),
+        config_path.clone(),
+    )
+    .await
+    .unwrap();
+    let idle = daemon_log();
+    assert!(
+        idle.contains("reconcile: complete — nothing to do") && !idle.contains("deployed file"),
+        "a tick over the bytes the apply recorded has no refresh to report: {idle}"
+    );
+
+    // The pull lands another machine's edit through the link.
+    *content.lock().await = b"landed by the pull";
+    tick(
+        Arc::clone(&state),
+        Arc::clone(&notifier),
+        Arc::clone(&hooks),
+        state_dir.clone(),
+        config_path.clone(),
+    )
     .await
     .unwrap();
 

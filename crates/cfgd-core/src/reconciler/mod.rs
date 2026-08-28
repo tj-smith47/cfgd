@@ -226,6 +226,14 @@ pub struct Reconciler<'a> {
 }
 
 impl<'a> Reconciler<'a> {
+    /// The file manager the registry this reconciler was built over holds —
+    /// what the CLI's post-apply hash refresh hands back to
+    /// [`Self::refresh_link_deployed_hashes`], so a caller holding only the
+    /// reconciler (`init --apply`) refreshes exactly what `apply` does.
+    pub fn file_manager(&self) -> Option<&dyn crate::providers::FileManager> {
+        self.registry.file_manager.as_deref()
+    }
+
     pub fn new(registry: &'a ProviderRegistry, state: &'a StateStore) -> Self {
         Self {
             registry,

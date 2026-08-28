@@ -617,12 +617,7 @@ pub fn run_apply(
             {
                 tracing::warn!(error = %e, "failed to record converged module state");
             }
-            refresh_link_deployed_hashes(
-                &reconciler,
-                &registry,
-                &effective_resolved,
-                &resolved_modules,
-            );
+            refresh_link_deployed_hashes(&reconciler, &effective_resolved, &resolved_modules);
         }
         report_plan_verdict(
             printer,
@@ -671,12 +666,7 @@ pub fn run_apply(
     // declined run skips this — refusing the apply refuses its writes.
     if store_writes && !matches!(disposition, reconciler::RunDisposition::Declined) {
         reconciler::mint_decisions(state, &review);
-        refresh_link_deployed_hashes(
-            &reconciler,
-            &registry,
-            &effective_resolved,
-            &resolved_modules,
-        );
+        refresh_link_deployed_hashes(&reconciler, &effective_resolved, &resolved_modules);
     }
     let (result, backup_reports) = match disposition {
         reconciler::RunDisposition::Applied { result, backups } => (result, backups),
@@ -868,16 +858,25 @@ fn register_abort_handlers(_abort: &cfgd_core::AbortFlag) {
 /// silent: a failure is logged, never propagated, because a bookkeeping
 /// correction must not fail an apply that otherwise succeeded.
 ///
-/// The file manager is optional so a `--module` run, which registers none,
-/// still refreshes its modules' aggregate rows.
-fn refresh_link_deployed_hashes(
+/// The ONE post-apply seam every verb that records managed resources settles
+/// through: `apply` (both its converged and its applied arms), `init --apply`
+/// and `module create --apply`; the daemon's applying tick reaches the core
+/// seam directly, holding its file manager apart from the registry. An apply
+/// writes every row with no hash, so a verb that skipped
+/// this left NULLs for the daemon's first tick to backfill — and report as
+/// `N deployed files refreshed` on a machine nobody had touched.
+/// `every_plan_running_verb_settles_its_link_deployed_hashes` walks the
+/// population.
+///
+/// The file manager is read off the reconciler's own registry, and is absent
+/// for a `--module` run, which still refreshes its modules' aggregate rows.
+pub(in crate::cli) fn refresh_link_deployed_hashes(
     reconciler: &cfgd_core::reconciler::Reconciler<'_>,
-    registry: &cfgd_core::providers::ProviderRegistry,
     resolved: &cfgd_core::config::ResolvedProfile,
     modules: &[cfgd_core::modules::ResolvedModule],
 ) {
     if let Err(e) =
-        reconciler.refresh_link_deployed_hashes(registry.file_manager.as_deref(), resolved, modules)
+        reconciler.refresh_link_deployed_hashes(reconciler.file_manager(), resolved, modules)
     {
         tracing::warn!(error = %e, "failed to refresh recorded file hashes");
     }

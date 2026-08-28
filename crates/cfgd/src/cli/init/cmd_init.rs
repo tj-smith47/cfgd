@@ -702,6 +702,11 @@ pub(super) fn apply_plan(
     };
     match run.execute(printer, confirm, &mut exec)? {
         cfgd_core::reconciler::RunDisposition::Applied { result, .. } => {
+            // The rows this apply just recorded carry no hash; settle them
+            // here, the way `cfgd apply` does, or the daemon's first tick on
+            // a freshly bootstrapped machine backfills them and reports the
+            // backfill as deployed files having moved.
+            crate::cli::apply::refresh_link_deployed_hashes(&reconciler, resolved, modules);
             // The one-command bootstrap is exactly where a stale shell bites
             // hardest: this apply may have installed the first package manager
             // on the box, and the invoking shell predates the env file naming
