@@ -407,7 +407,7 @@ pub fn format_plan_item(action: &Action) -> String {
             } => format!(
                 "{} install {}{}",
                 manager,
-                packages.join(", "),
+                elided_list(packages, SUBJECT_LIST_KEEP),
                 provenance_suffix(origin)
             ),
             PackageAction::Uninstall {
@@ -418,7 +418,7 @@ pub fn format_plan_item(action: &Action) -> String {
             } => format!(
                 "{} uninstall {}{}",
                 manager,
-                packages.join(", "),
+                elided_list(packages, SUBJECT_LIST_KEEP),
                 provenance_suffix(origin)
             ),
             PackageAction::Skip {
@@ -638,7 +638,9 @@ fn format_module_action_body(action: &ModuleAction) -> String {
             }
             let parts: Vec<String> = by_manager
                 .iter()
-                .map(|(mgr, pkgs)| format!("{} install {}", mgr, pkgs.join(", ")))
+                .map(|(mgr, pkgs)| {
+                    format!("{} install {}", mgr, elided_list(pkgs, SUBJECT_LIST_KEEP))
+                })
                 .collect();
             parts.join("; ")
         }
@@ -676,9 +678,15 @@ fn format_module_action_body(action: &ModuleAction) -> String {
 /// short. A list short enough to state in full carries no marker, having
 /// elided nothing.
 ///
-/// The ONE elision in this file: every other subject builder names every
-/// operand it holds, which is what `every_elided_operand_list_says_so` walks
-/// the module-action kinds to keep true.
+/// The ONE elision in this file, read by every subject over an operand LIST
+/// — a module's package segments (one cut per manager, so neither list
+/// vanishes behind the other's marker), its file targets, and a profile's
+/// own install and uninstall. A list named in full instead was cut by the
+/// terminal mid-token (`…, eza, carg…`) with no count anywhere. Every other
+/// subject builder names every operand it holds:
+/// `every_elided_operand_list_says_so` walks the module-action kinds and
+/// `every_operand_list_a_subject_renders_is_cut_with_a_marker` the rendered
+/// string of every list-bearing shape.
 /// How many operands a subject names before `elided_list` cuts, and so the
 /// ONE threshold every detail arm reasons about: a list at most one longer is
 /// stated in full, and a longer one carries `+N more`, which with the named
@@ -767,9 +775,11 @@ mod tests {
     use super::super::types::{
         Action, DeclaredProvision, EnvAction, ManagerAction, ModuleAction, ModuleActionKind,
     };
+    use crate::providers::PackageAction;
+
     use super::{
-        action_display_subject, elided_list, format_manager_action_item, format_module_action_item,
-        parse_package_description, pre_skip_doubling_error,
+        SUBJECT_LIST_KEEP, action_display_subject, elided_list, format_manager_action_item,
+        format_module_action_item, parse_package_description, pre_skip_doubling_error,
     };
 
     /// No withheld row states one noun twice.
@@ -884,6 +894,88 @@ mod tests {
                 named == names.len() || subject.contains(ELIDED),
                 "a subject that names only {named} of {} operands must say so: {subject}",
                 names.len()
+            );
+        }
+    }
+
+    /// Every subject over an operand LIST cuts it at `SUBJECT_LIST_KEEP` and
+    /// says so on the RENDERED string — the one every tree paints, and the
+    /// one a live row clamps to its width. Naming all of them had a module's
+    /// package row read `brew install neovim, ripgrep, fd, bat, eza, carg…`,
+    /// cut mid-token by the terminal with no count anywhere; the marker is
+    /// what a reader gets instead of the clamp. Walked over every list-
+    /// bearing shape: the module package and file kinds, and a profile's own
+    /// install and uninstall; a module naming two managers is cut per manager
+    /// segment, so neither manager's list vanishes behind the other's marker.
+    #[test]
+    fn every_operand_list_a_subject_renders_is_cut_with_a_marker() {
+        let pkg = |name: &str, manager: &str| crate::modules::ResolvedPackage {
+            canonical_name: name.to_string(),
+            resolved_name: name.to_string(),
+            manager: manager.to_string(),
+            manager_declared: false,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: None,
+        };
+        let file = |target: &str| crate::modules::ResolvedFile {
+            source: std::path::PathBuf::from("src"),
+            target: std::path::PathBuf::from(target),
+            is_git_source: false,
+            strategy: None,
+            encryption: None,
+            permissions: None,
+            patch: None,
+        };
+        let total = SUBJECT_LIST_KEEP + 3;
+        let names: Vec<String> = (0..total).map(|i| format!("op{i}")).collect();
+        let package = |manager: &str| PackageAction::Install {
+            manager: manager.to_string(),
+            packages: names.clone(),
+            origin: "local".to_string(),
+        };
+        let actions = [
+            Action::Module(ModuleAction::local(
+                "m",
+                ModuleActionKind::InstallPackages {
+                    resolved: names
+                        .iter()
+                        .map(|n| pkg(n, "brew"))
+                        .chain(names.iter().map(|n| pkg(n, "apt")))
+                        .collect(),
+                },
+            )),
+            Action::Module(ModuleAction::local(
+                "m",
+                ModuleActionKind::DeployFiles {
+                    files: names.iter().map(|n| file(n)).collect(),
+                    declared_total: total,
+                },
+            )),
+            Action::Package(package("brew")),
+            Action::Package(PackageAction::Uninstall {
+                manager: "brew".to_string(),
+                packages: names.clone(),
+                origin: "local".to_string(),
+            }),
+        ];
+        for action in &actions {
+            let subject = action_display_subject(action).to_string();
+            let segments = subject.matches(" install ").count()
+                + subject.matches(" uninstall ").count()
+                + usize::from(subject.starts_with("deploy "));
+            let marker = format!("+{} more", total - SUBJECT_LIST_KEEP);
+            assert_eq!(
+                subject.matches(&marker).count(),
+                segments.max(1),
+                "every operand list on the row is cut with its own marker: {subject}"
+            );
+            assert!(
+                !subject.contains(&names[SUBJECT_LIST_KEEP + 1]),
+                "an operand past the keep is not named: {subject}"
             );
         }
     }
