@@ -225,14 +225,16 @@ pub fn format_action_description(action: &Action) -> String {
 }
 
 /// Condense `desc` for a status-subject/error-message/bullet display only
-/// when `action` can embed a raw, potentially multi-line script body:
-/// `format_action_description`'s `Action::Script` arm and
-/// `format_module_action_body`'s `ModuleActionKind::RunScript` arm both embed
-/// `entry.run_str()`/`script.run_str()` verbatim so `-o json` payloads and
-/// `ActionResult.description` stay byte-identical to the source body. Every
-/// other action kind's description is already condensed/newline-free.
-/// Callers must keep the raw `desc` for `ActionResult.description` / journal
-/// persistence / the `-o json` plan payload — this helper is display-only.
+/// when `action` carries something the wire keeps whole and a row cannot:
+/// a raw, potentially multi-line script body (`format_action_description`'s
+/// `Action::Script` arm and `format_module_action_body`'s
+/// `ModuleActionKind::RunScript` arm both embed `run_str()` verbatim), or an
+/// operand LIST longer than a row states (every package and file subject,
+/// cut by [`elided_list`] into [`action_display_subject`]). `-o json`
+/// payloads and `ActionResult.description` stay byte-identical to the
+/// source body and name every operand. Callers must keep the raw `desc` for
+/// `ActionResult.description` / journal persistence / the `-o json` plan
+/// payload — this helper is display-only.
 pub fn condense_action_desc_for_display(action: &Action, desc: &str) -> String {
     let embeds_raw_script = matches!(action, Action::Script(_))
         || matches!(
@@ -244,8 +246,43 @@ pub fn condense_action_desc_for_display(action: &Action, desc: &str) -> String {
         );
     if embeds_raw_script {
         crate::output::condense_script_label(desc)
+    } else if carries_operand_list(action) {
+        action_display_subject(action).body
     } else {
         desc.to_string()
+    }
+}
+
+/// Whether `action`'s subject is built over an operand LIST — the shapes
+/// whose display subject is cut by [`elided_list`] while their wire string
+/// names every operand.
+fn carries_operand_list(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Package(PackageAction::Install { .. } | PackageAction::Uninstall { .. })
+            | Action::Module(ModuleAction {
+                kind: ModuleActionKind::InstallPackages { .. }
+                    | ModuleActionKind::DeployFiles { .. },
+                ..
+            })
+    )
+}
+
+/// How a subject builder renders an operand list: in full for a WIRE string
+/// (`PlanActionOutput.description`, `ActionResult.description`), or cut with
+/// a `+N more` marker for a ROW ([`action_display_subject`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListRender {
+    Full,
+    Elided,
+}
+
+impl ListRender {
+    fn join(self, items: &[String]) -> String {
+        match self {
+            ListRender::Full => items.join(", "),
+            ListRender::Elided => elided_list(items, SUBJECT_LIST_KEEP),
+        }
     }
 }
 
@@ -300,7 +337,7 @@ pub fn action_display_subject(action: &Action) -> DisplaySubject {
         ) => module_script_subject(script.run_str(), phase, ma.origin.as_deref()),
         _ => DisplaySubject {
             marker: None,
-            body: format_plan_item(action),
+            body: plan_item(action, ListRender::Elided),
         },
     }
 }
@@ -364,6 +401,11 @@ fn script_body_display(run: &str, origin: &str) -> String {
 
 /// Format one plan item for display.
 pub fn format_plan_item(action: &Action) -> String {
+    plan_item(action, ListRender::Full)
+}
+
+/// [`format_plan_item`] with the operand lists rendered as `render` says.
+fn plan_item(action: &Action, render: ListRender) -> String {
     match action {
         Action::File(fa) => match fa {
             FileAction::Create { target, origin, .. } => {
@@ -407,7 +449,7 @@ pub fn format_plan_item(action: &Action) -> String {
             } => format!(
                 "{} install {}{}",
                 manager,
-                elided_list(packages, SUBJECT_LIST_KEEP),
+                render.join(packages),
                 provenance_suffix(origin)
             ),
             PackageAction::Uninstall {
@@ -418,7 +460,7 @@ pub fn format_plan_item(action: &Action) -> String {
             } => format!(
                 "{} uninstall {}{}",
                 manager,
-                elided_list(packages, SUBJECT_LIST_KEEP),
+                render.join(packages),
                 provenance_suffix(origin)
             ),
             PackageAction::Skip {
@@ -528,7 +570,7 @@ pub fn format_plan_item(action: &Action) -> String {
                 )
             }
         },
-        Action::Module(ma) => format_module_action_item(ma),
+        Action::Module(ma) => module_action_item(ma, render),
         Action::Env(ea) => match ea {
             EnvAction::WriteEnvFile { path, .. } => {
                 format!("write {}", path.posix())
@@ -602,13 +644,18 @@ pub fn format_plan_items(group: &OwnerGroup) -> Vec<String> {
 /// Source-delivered modules (`origin = Some`) get the same ` <- <source>`
 /// provenance suffix as source-delivered files/packages; consumer-local modules
 /// (`origin = None`) render with no suffix.
+#[cfg(test)]
 pub(super) fn format_module_action_item(action: &ModuleAction) -> String {
+    module_action_item(action, ListRender::Full)
+}
+
+fn module_action_item(action: &ModuleAction, render: ListRender) -> String {
     let suffix = provenance_suffix(action.origin.as_deref().unwrap_or(""));
-    let body = format_module_action_body(action);
+    let body = format_module_action_body(action, render);
     format!("{body}{suffix}")
 }
 
-fn format_module_action_body(action: &ModuleAction) -> String {
+fn format_module_action_body(action: &ModuleAction, render: ListRender) -> String {
     match &action.kind {
         ModuleActionKind::InstallPackages { resolved } => {
             // Group by manager in first-appearance order: this string is also
@@ -638,9 +685,7 @@ fn format_module_action_body(action: &ModuleAction) -> String {
             }
             let parts: Vec<String> = by_manager
                 .iter()
-                .map(|(mgr, pkgs)| {
-                    format!("{} install {}", mgr, elided_list(pkgs, SUBJECT_LIST_KEEP))
-                })
+                .map(|(mgr, pkgs)| format!("{} install {}", mgr, render.join(pkgs)))
                 .collect();
             parts.join("; ")
         }
@@ -650,7 +695,7 @@ fn format_module_action_body(action: &ModuleAction) -> String {
             // PRODUCES and so is the row's detail (`deploy_files_summary`),
             // the slot the sibling env-write row already puts its counts in.
             let targets: Vec<String> = files.iter().map(|f| f.target.display_posix()).collect();
-            format!("deploy {}", elided_list(&targets, SUBJECT_LIST_KEEP))
+            format!("deploy {}", render.join(&targets))
         }
         ModuleActionKind::RunScript { script, phase } => {
             // Raw body: this same string feeds both `ApplyRun::preview`
@@ -671,12 +716,20 @@ fn format_module_action_body(action: &ModuleAction) -> String {
 /// out (`a, b, +4 more`).
 ///
 /// The marker is not decoration: this string is the action's subject in every
-/// tree AND `PlanActionOutput.description` in `-o json`, so a silent cut left
-/// `deploy …/init.lua, …/lazy-lock.json — 6 files` reading as two deploys that
-/// produced six files, beside sibling rows naming all twelve of their own
-/// operands, and left a structured consumer with no way to know the list was
-/// short. A list short enough to state in full carries no marker, having
-/// elided nothing.
+/// tree, so a silent cut left `deploy …/init.lua, …/lazy-lock.json — 6 files`
+/// reading as two deploys that produced six files, beside sibling rows naming
+/// all twelve of their own operands. A list short enough to state in full
+/// carries no marker, having elided nothing.
+///
+/// DISPLAY only, through [`ListRender::Elided`]: the wire strings —
+/// `PlanActionOutput.description` in `-o json`, `ActionResult.description`,
+/// the recorded resource id — name every operand ([`ListRender::Full`]). The
+/// cut once lived in the builders that feed both, so `cfgd plan -o json`
+/// emitted `apt install unzip, ripgrep, +9 more` and nine names reached no
+/// wire at all: `action_targets` is empty for both package shapes, so nothing
+/// compensated the way `targets` does for a deploy.
+/// `every_operand_a_plan_action_holds_reaches_the_json_payload` (the cfgd
+/// crate) walks every list-bearing shape's serialized payload.
 ///
 /// The ONE elision in this file, read by every subject over an operand LIST
 /// — a module's package segments (one cut per manager, so neither list
