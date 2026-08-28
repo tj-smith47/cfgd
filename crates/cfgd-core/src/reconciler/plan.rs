@@ -184,6 +184,7 @@ impl<'a> super::Reconciler<'a> {
             &profile_packages,
             &module_routed,
             &declared_routes,
+            &[],
         );
         // A tool this plan's own cascade provisions as a MANAGER is already
         // the run's statement about that tool; a bare module entry naming it
@@ -193,12 +194,14 @@ impl<'a> super::Reconciler<'a> {
         // slot the apply fills from what actually landed. Dropping an entry
         // can retire a manager's last consumer, so the nodes are planned
         // again over what survived.
-        if self.elide_provisioned_tools(&mut module_routed, &manager_actions) {
+        if let Some(mediators) = self.elide_provisioned_tools(&mut module_routed, &manager_actions)
+        {
             manager_actions = super::managers::plan_managers_with_routes(
                 self.registry,
                 &profile_packages,
                 &module_routed,
                 &declared_routes,
+                &mediators,
             );
         }
 
@@ -975,7 +978,10 @@ impl<'a> super::Reconciler<'a> {
 
     /// Drop every module entry a `ManagerAction::Provision` in
     /// `manager_actions` already delivers, emptying and removing the install
-    /// actions that held nothing else. `true` when anything was dropped.
+    /// actions that held nothing else. `Some` when anything was dropped,
+    /// naming the mediators the delivered pairs were installed through — the
+    /// membership a re-plan must keep, see
+    /// [`super::managers::plan_managers_with_routes`].
     ///
     /// Two shapes, because a provision delivers a tool under two different
     /// names. An undeclared entry naming the provisioned MANAGER's own
@@ -994,11 +1000,19 @@ impl<'a> super::Reconciler<'a> {
     /// naming it again promises an install the run never performs and left the
     /// hero's `brew install …` naming the `node` and `pipx` the two rows above
     /// it had landed.
+    ///
+    /// That second shape is asked of BOTH of the entry's names. A declared
+    /// route carries the module's own alias (`route.package` IS the entry's
+    /// `resolved_name`), while a cascade delivers the MANAGER's literal
+    /// (`mediated_packages("brew") == ["node"]`), which an entry writing
+    /// `aliases: {brew: nodejs}` does not spell — so the canonical name the
+    /// alias resolves to is asked too, and the aliased entry is elided like
+    /// the plain one instead of returning the hero's two-rows-one-tool shape.
     fn elide_provisioned_tools(
         &self,
         module_routed: &mut Vec<(PhaseName, Action)>,
         manager_actions: &[Action],
-    ) -> bool {
+    ) -> Option<Vec<String>> {
         let mut provisions: Vec<String> = Vec::new();
         let mut delivered: Vec<(String, String)> = Vec::new();
         for action in manager_actions {
@@ -1013,10 +1027,11 @@ impl<'a> super::Reconciler<'a> {
             ));
         }
         if provisions.is_empty() {
-            return false;
+            return None;
         }
         let none = crate::providers::InstalledPackages::default();
         let mut dropped = false;
+        let mut mediators: Vec<String> = Vec::new();
         module_routed.retain_mut(|(_, action)| {
             let Action::Module(ModuleAction {
                 kind: ModuleActionKind::InstallPackages { resolved },
@@ -1027,7 +1042,19 @@ impl<'a> super::Reconciler<'a> {
             };
             let before = resolved.len();
             resolved.retain(|pkg| {
-                if Self::delivered_by_this_run(&delivered, &pkg.manager, &pkg.resolved_name) {
+                if let Some(installer) =
+                    Self::delivering_installer(&delivered, &pkg.manager, &pkg.resolved_name)
+                        .or_else(|| {
+                            Self::delivering_installer(
+                                &delivered,
+                                &pkg.manager,
+                                &pkg.canonical_name,
+                            )
+                        })
+                {
+                    if !mediators.iter().any(|m| m == installer) {
+                        mediators.push(installer.to_string());
+                    }
                     return false;
                 }
                 self.registry
@@ -1041,7 +1068,7 @@ impl<'a> super::Reconciler<'a> {
             dropped |= resolved.len() != before;
             !resolved.is_empty()
         });
-        dropped
+        dropped.then_some(mediators)
     }
 
     /// Whether `pkg` survives the installed-state elision: not installed under
@@ -1102,9 +1129,25 @@ impl<'a> super::Reconciler<'a> {
         manager: &str,
         package: &str,
     ) -> bool {
-        provisioned_packages.iter().any(|(installer, name)| {
-            crate::manager_family(installer) == crate::manager_family(manager) && name == package
-        })
+        Self::delivering_installer(provisioned_packages, manager, package).is_some()
+    }
+
+    /// WHICH of `provisioned_packages` delivered it, for a caller that has to
+    /// name the mediator rather than only know there was one.
+    /// [`Self::delivered_by_this_run`] is the `is_some()` view, so the family
+    /// fold is written once.
+    pub(super) fn delivering_installer<'p>(
+        provisioned_packages: &'p [(String, String)],
+        manager: &str,
+        package: &str,
+    ) -> Option<&'p str> {
+        provisioned_packages
+            .iter()
+            .find(|(installer, name)| {
+                crate::manager_family(installer) == crate::manager_family(manager)
+                    && name == package
+            })
+            .map(|(installer, _)| installer.as_str())
     }
 
     /// Price the packages this run's plan will actually surface, and no others.

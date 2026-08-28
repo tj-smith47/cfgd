@@ -171,27 +171,37 @@ pub fn plan_managers(
     module_routed: &[(PhaseName, Action)],
 ) -> Vec<Action> {
     let declared = declared_manager_routes(module_routed);
-    plan_managers_with_routes(registry, package_actions, module_routed, &declared)
+    plan_managers_with_routes(registry, package_actions, module_routed, &declared, &[])
 }
 
-/// [`plan_managers`] over routes derived somewhere else.
+/// [`plan_managers`] over routes derived somewhere else, and over a membership
+/// the caller widens.
 ///
 /// The elision that follows a first pass DROPS the very entries the routes were
 /// minted from, so a second pass re-deriving them off the survivors would hand
 /// back a cascade where the module had named a route. The caller derives once,
 /// before anything is elided, and both passes read that one answer.
+///
+/// `extra_wanted` is the same defect one layer out. Membership starts from what
+/// the run's SURVIVING work names, and a cascade's arm is then priced off the
+/// managers already settled, so eliding a mediator's last consuming entry
+/// retires that mediator and drops the cascade to its host arm — leaving the
+/// package the elision dropped delivered by nothing. The elision names the
+/// mediators its own pairs were installed through, and they stay members.
 pub(super) fn plan_managers_with_routes(
     registry: &ProviderRegistry,
     package_actions: &[PackageAction],
     module_routed: &[(PhaseName, Action)],
     declared: &BTreeMap<String, DeclaredProvision>,
+    extra_wanted: &[String],
 ) -> Vec<Action> {
     // The one system manager every prerequisite in this run is installed from,
     // resolved once so two prerequisites can never name two installers on the
     // same host.
     let installer = prerequisite_installer(registry).map(|pm| pm.name().to_string());
 
-    let mut queue: VecDeque<String> = wanted_managers(registry, package_actions, module_routed);
+    let mut queue: VecDeque<String> =
+        wanted_managers(registry, package_actions, module_routed, extra_wanted);
 
     let mut graph = Graph::default();
     while let Some(name) = queue.pop_front() {
@@ -320,6 +330,17 @@ pub(super) fn plan_managers_with_routes(
 /// worded `provisioned by this run`). Empty for anything but a provision, and
 /// for a cascade whose bootstrap is a vendor script rather than a package
 /// install.
+///
+/// The PLANNED `via` is what a settled node ran: the executor hands it down as
+/// [`crate::providers::PackageContext::planned_method`], which a cascade honors
+/// as BINDING — a mediator that became unavailable after planning fails the
+/// provision (`planned_method_unavailable`) rather than substituting another
+/// arm, and a failure never reaches the settle. So a recorded pair can never
+/// credit the run with a package some other route installed.
+///
+/// A cascade's names are the MEDIATOR's own (`mediated_packages("brew") ==
+/// ["node"]`), never the module's `aliases:` spelling for the same package;
+/// the elision asks the entry's canonical name for exactly that reason.
 pub(super) fn provision_delivered_packages(
     registry: &ProviderRegistry,
     node: &ManagerAction,
@@ -344,17 +365,26 @@ pub(super) fn provision_delivered_packages(
 
 /// The managers this run's own work names, family-folded and deduplicated.
 ///
-/// Two shapes count, and no others. A planned INSTALL — profile-level or a
-/// module's — is a consumer of the manager's index and so earns a refresh. A
-/// profile-level SKIP is a manager the run wanted and could not plan for, which
-/// is where a refusal gets named. An uninstall consumes no index and a manager
-/// nothing in the run touches has nothing to refresh for.
+/// Two shapes of ACTION count, and no others. A planned INSTALL —
+/// profile-level or a module's — is a consumer of the manager's index and so
+/// earns a refresh. A profile-level SKIP is a manager the run wanted and could
+/// not plan for, which is where a refusal gets named. An uninstall consumes no
+/// index and a manager nothing in the run touches has nothing to refresh for.
+///
+/// `extra` is the caller's own claim on membership, folded through the same
+/// family node so it cannot mint a second node for a sub-manager: the
+/// mediators a re-plan must keep, named by the elision that removed the
+/// entries which had been naming them.
 fn wanted_managers(
     registry: &ProviderRegistry,
     package_actions: &[PackageAction],
     module_routed: &[(PhaseName, Action)],
+    extra: &[String],
 ) -> VecDeque<String> {
-    let mut wanted: BTreeSet<String> = BTreeSet::new();
+    let mut wanted: BTreeSet<String> = extra
+        .iter()
+        .map(|m| node_manager(registry, m).to_string())
+        .collect();
     for action in package_actions {
         let manager = match action {
             PackageAction::Install { manager, .. } | PackageAction::Skip { manager, .. } => manager,
@@ -1082,6 +1112,83 @@ mod tests {
                 _ => None,
             })
             .expect("the absent manager is provisioned")
+    }
+
+    /// What a provision node DELIVERS is read off the route the PLAN settled.
+    ///
+    /// A declared route speaks for the whole node (it is never batched) and
+    /// delivers the module's own package name through its own installer; a
+    /// cascade delivers each member's `mediated_packages` under the mediator
+    /// the plan named. Both halves are what the apply's settle records into
+    /// `provisioned_packages` and what the plan's elision judges an entry by,
+    /// so the two cannot disagree about which package a row above landed.
+    ///
+    /// The planned `via` is the truth about what ran because
+    /// `PackageContext::planned_method` is binding on the cascade — the arm it
+    /// names is the only one attempted, and a host that lost that mediator
+    /// between plan and apply fails the node instead of silently taking
+    /// another route (pinned in `packages::shared`).
+    #[test]
+    fn a_provisions_delivered_pair_is_read_off_the_planned_route() {
+        let mut builder = ReconcilerTestHarness::builder();
+        for pm in [
+            MockPackageManager::new("alt"),
+            MockPackageManager::new("sys"),
+            MockPackageManager::new("tool")
+                .unavailable()
+                .mediated_by("sys", &["tool-pkg"]),
+            MockPackageManager::new("mate")
+                .unavailable()
+                .mediated_by("sys", &["mate-pkg"]),
+        ] {
+            builder = builder.with_package_manager(pm);
+        }
+        let harness = builder.build();
+        let registry = &harness.registry;
+
+        let cascade = ManagerAction::Provision {
+            manager: "tool".to_string(),
+            via: "sys".to_string(),
+            declared: None,
+            batched: vec!["mate".to_string()],
+            depends_on: Vec::new(),
+        };
+        assert_eq!(
+            provision_delivered_packages(registry, &cascade),
+            vec![
+                ("sys".to_string(), "tool-pkg".to_string()),
+                ("sys".to_string(), "mate-pkg".to_string()),
+            ],
+            "a cascade delivers every member's mediated packages under the planned mediator"
+        );
+
+        let routed = ManagerAction::Provision {
+            manager: "tool".to_string(),
+            via: "alt".to_string(),
+            declared: Some(DeclaredProvision {
+                installer: "alt".to_string(),
+                package: "tool-alias".to_string(),
+            }),
+            batched: Vec::new(),
+            depends_on: Vec::new(),
+        };
+        assert_eq!(
+            provision_delivered_packages(registry, &routed),
+            vec![("alt".to_string(), "tool-alias".to_string())],
+            "a declared route delivers the module's own name through its own installer"
+        );
+
+        assert!(
+            provision_delivered_packages(
+                registry,
+                &ManagerAction::Refuse {
+                    manager: "tool".to_string(),
+                    reason: "no cascade".to_string(),
+                },
+            )
+            .is_empty(),
+            "a node that provisions nothing delivers nothing"
+        );
     }
 
     /// `ResolvedPackage::manager` is what RESOLUTION chose, not what the module
