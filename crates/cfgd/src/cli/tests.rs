@@ -29678,7 +29678,7 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
 /// before it returns — or the daemon's first tick after it backfills the
 /// rows and reports the backfill as deployed files having moved. `init
 /// --apply` skipped the seam `apply` used, which is how a freshly bootstrapped
-/// machine's first idle tick read `1 deployed file refreshed`. A preview
+/// machine's first idle tick reported a deployed file having changed. A preview
 /// writes no row and needs no refresh; it hatches with
 /// `// no-hash-refresh-ok: <why>` on the `ApplyRun::new` line or the one above.
 #[test]

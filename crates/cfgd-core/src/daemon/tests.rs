@@ -8767,7 +8767,9 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
 
     let logs = daemon_log();
     assert!(
-        logs.contains("reconcile: complete — nothing to do, 1 deployed file refreshed"),
+        logs.contains(
+            "reconcile: complete — nothing to do, 1 deployed file changed upstream, already live through its link"
+        ),
         "the tick that carried the sync must not read like an idle one: {logs}"
     );
 }
@@ -20339,6 +20341,11 @@ mod log_dialect {
 /// `1 deployed file refreshed` stood for a six-entry tree. Every `pluralize`
 /// in the tick is classified here by the binding it counts; a new clause
 /// fails until its binding and noun are paired.
+///
+/// And every clause the tick folds onto `reconcile: complete — …` describes
+/// the MACHINE, never cfgd's bookkeeping about it: `nothing to do, N deployed
+/// files refreshed` named a record update as work and contradicted the verdict
+/// beside it. A clause literal carrying a bookkeeping verb fails here.
 #[test]
 fn every_counted_clause_names_the_unit_it_counts() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/reconcile.rs");
@@ -20372,5 +20379,27 @@ fn every_counted_clause_names_the_unit_it_counts() {
         "a counted clause names a unit its binding is not in — classify the pair here, \
          or count the unit the noun names:\n{}",
         wrong.join("\n")
+    );
+
+    // The folded clauses: every `format!("{sentence}, …")` literal.
+    let clause = regex::Regex::new(r#""\{sentence\}, ([^"]+)""#).unwrap();
+    let bookkeeping = ["refreshed", "recorded", "backfilled", "hash", "row"];
+    let mut clauses = 0usize;
+    let mut record_worded = Vec::new();
+    for cap in clause.captures_iter(&body) {
+        clauses += 1;
+        if bookkeeping.iter().any(|verb| cap[1].contains(verb)) {
+            record_worded.push(cap[1].to_string());
+        }
+    }
+    assert!(
+        clauses >= 2,
+        "the walk no longer reaches the folded clauses — it found {clauses}"
+    );
+    assert!(
+        record_worded.is_empty(),
+        "a completion clause names cfgd's bookkeeping rather than the machine's state — \
+         word it from what the reader can see on the machine:\n{}",
+        record_worded.join("\n")
     );
 }

@@ -864,7 +864,7 @@ fn register_abort_handlers(_abort: &cfgd_core::AbortFlag) {
 /// seam directly, holding its file manager apart from the registry. An apply
 /// writes every row with no hash, so a verb that skipped
 /// this left NULLs for the daemon's first tick to backfill — and report as
-/// `N deployed files refreshed` on a machine nobody had touched.
+/// deployed files having changed upstream on a machine nobody had touched.
 /// `every_plan_running_verb_settles_its_link_deployed_hashes` walks the
 /// population.
 ///

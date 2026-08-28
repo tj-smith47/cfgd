@@ -5825,7 +5825,7 @@ fn every_checkout_row_spells_its_revision_through_the_one_derivation() {
 /// `init --apply` records the same hashless rows `apply` does, and `apply`
 /// settles them before it returns; `init` did not, so the daemon's first tick
 /// on a freshly bootstrapped machine backfilled them and reported the backfill
-/// as `N deployed files refreshed`. One seam for every verb that applies.
+/// as deployed files having changed upstream. One seam for every verb that applies.
 #[test]
 #[cfg(unix)]
 fn init_apply_settles_the_hash_of_every_link_deployed_row_before_it_returns() {
