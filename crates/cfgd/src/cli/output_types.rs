@@ -454,7 +454,7 @@ pub struct PlanActionOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manager: Option<ManagerActionOutput>,
     /// What the action PRODUCES, as the tree states it beside the subject
-    /// (`6 files`, `1 of 6 files`, `3 vars, 3 aliases`) — the plan preview's
+    /// (`5 already deployed`, `3 vars, 3 aliases`) — the plan preview's
     /// bullet detail and the apply row's detail are this one string. Omitted
     /// for an action with no produced count; never folded into
     /// `description`.

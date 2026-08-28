@@ -100,15 +100,21 @@ fn env_write_summary(action: &Action) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(", "))
 }
 
-/// What a module file deploy puts on the machine, for the detail beside its
-/// own line: `deploy init.lua — 1 of 6 files` for a subset.
+/// What a module file deploy leaves alone, for the detail beside its own
+/// line: `deploy init.lua — 5 already deployed` for a subset.
 ///
-/// A subset counts against the DECLARED set, so "one file changed" and
+/// A subset is stated against the DECLARED set, so "one file changed" and
 /// "nothing changed" (no action at all) can never render alike. A full deploy
 /// carries no count at all: a subject short enough names every target, and a
 /// longer one's `+N more` marker ([`SUBJECT_LIST_KEEP`]) already gives the
 /// total with the names before it, so `deploy a, b, +4 more — 6 files` stated
 /// six twice.
+///
+/// The COMPLEMENT, never a ratio: the detail names only what the subject
+/// cannot. `deploy a, b, +4 more — 6 of 12 files` restated the six the marker
+/// already gave, and beside a `+N more` a second number over the same set
+/// invites pairing the wrong two. What the subject cannot say is how many
+/// declared entries were already in place, so that is the number.
 ///
 /// [`SUBJECT_LIST_KEEP`]: super::format::SUBJECT_LIST_KEEP
 fn deploy_files_summary(action: &Action) -> Option<String> {
@@ -124,11 +130,11 @@ fn deploy_files_summary(action: &Action) -> Option<String> {
         return None;
     };
     let written = files.len();
-    (written < *declared_total).then(|| format!("{written} of {declared_total} files"))
+    (written < *declared_total).then(|| format!("{} already deployed", declared_total - written))
 }
 
-/// What a package install actually landed, for the detail beside its own line:
-/// `apt install ripgrep, fd-find — 1 of 2 packages`.
+/// What a package install found already on the machine, for the detail beside
+/// its own line: `apt install ripgrep, fd-find — 1 already installed`.
 ///
 /// The subject stays the PLANNED set in every tree ([`action_display_subject`]
 /// is one string across the preview bullet, the alignment column and the
@@ -140,10 +146,18 @@ fn deploy_files_summary(action: &Action) -> Option<String> {
 /// [`ActionRun`]; `None` is a preview, which has no answer yet.
 ///
 /// No plain count on a full install: a package subject names every entry it
-/// installs — neither `format_module_action_body` nor `format_plan_item`
-/// truncates one — so a trailing `— 6 packages` could only ever restate the
-/// row. The same rule the deploy arm holds, whose elided subject gives its
-/// total through the `+N more` marker instead.
+/// installs, or gives the total through its `+N more` marker
+/// ([`elided_list`]), so a trailing `— 6 packages` could only ever restate
+/// the row. And the shortfall is the COMPLEMENT, never a ratio, for the reason
+/// the deploy arm states: `brew install neovim, fd, +7 more — 7 of 9
+/// packages` put two different sevens on one row, and the available reading
+/// was that the unnamed seven landed and `neovim` and `fd` did not — the
+/// opposite of the truth. The shortfall on this arm is never a failure (a
+/// failed install fails the action; `installed_now` drops exactly what an
+/// earlier phase already put on the machine), so the un-said number is what
+/// was already there.
+///
+/// [`elided_list`]: super::format::elided_list
 ///
 /// [`action_display_subject`]: super::format::action_display_subject
 fn installed_packages_summary(action: &Action, installed: Option<usize>) -> Option<String> {
@@ -157,7 +171,7 @@ fn installed_packages_summary(action: &Action, installed: Option<usize>) -> Opti
     };
     installed
         .filter(|landed| *landed < planned)
-        .map(|landed| format!("{landed} of {} packages", planned))
+        .map(|landed| format!("{} already installed", planned - landed))
 }
 
 /// What a provision actually had to install, for the detail beside its own

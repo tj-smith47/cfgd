@@ -1861,7 +1861,7 @@ fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        out.contains("- deploy /home/u/.f0, /home/u/.f1 — 2 of 5 files"),
+        out.contains("- deploy /home/u/.f0, /home/u/.f1 — 3 already deployed"),
         "the count sits after the em-dash, beside the subject: {out}"
     );
     assert!(

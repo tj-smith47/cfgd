@@ -477,7 +477,7 @@ pub enum ModuleActionKind {
         /// entries whose deployed target already matches.
         files: Vec<crate::modules::ResolvedFile>,
         /// How many files the module DECLARES, converged entries included.
-        /// The pair is what lets a row's detail say `1 of 6 files`
+        /// The pair is what lets a row's detail say `5 already deployed`
         /// and the persisted `module:<name>:files:<n>` id keep naming the
         /// declared set whatever subset survived elision.
         declared_total: usize,
