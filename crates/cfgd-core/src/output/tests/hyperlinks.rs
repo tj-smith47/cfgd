@@ -26,8 +26,21 @@ fn cleared() -> Vec<EnvVarGuard> {
 /// direct read added to the function (`TERM`, `TERMINAL_EMULATOR`) and to
 /// neither table would leave the negative case below asserting against the
 /// developer's own terminal — the exact failure that pin exists to prevent.
+///
+/// Two halves, because a read the predicate DELEGATES is as unclearable as one
+/// it names. The whole of `output/mod.rs` is scanned, so a helper extracted
+/// beside the predicate is still seen; and the predicate's own body may reach
+/// nothing by path but `std::env::var`/`var_os`, so a helper moved OUT of the
+/// file — the one shape the scan cannot follow — fails here instead. An
+/// unqualified call resolves to an item of this module, which the file scan
+/// already covers.
 #[test]
 fn every_variable_the_detection_reads_is_one_a_test_can_clear() {
+    const READS: [&str; 2] = ["std::env::var(\"", "std::env::var_os(\""];
+    // A turbofish is a path that reaches no function; the two reads above are
+    // the only ones that may.
+    const REACHABLE_PATHS: [&str; 3] = ["std::env::var(", "std::env::var_os(", "parse::<"];
+
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/output/mod.rs");
     let body = std::fs::read_to_string(&src).unwrap_or_default();
     let Some(start) = body.find("pub fn terminal_supports_hyperlinks()") else {
@@ -38,8 +51,8 @@ fn every_variable_the_detection_reads_is_one_a_test_can_clear() {
         .map_or(body.len(), |at| start + at);
 
     let mut unclearable = Vec::new();
-    for (n, line) in body[start..end].lines().enumerate() {
-        for call in ["std::env::var(\"", "std::env::var_os(\""] {
+    for (n, line) in body.lines().enumerate() {
+        for call in READS {
             let Some(at) = line.find(call) else {
                 continue;
             };
@@ -48,16 +61,42 @@ fn every_variable_the_detection_reads_is_one_a_test_can_clear() {
                 .next()
                 .unwrap_or_default();
             if !HYPERLINK_DIRECT_VARS.contains(&name) {
-                unclearable.push(format!("{name} (line {} of the predicate)", n + 1));
+                unclearable.push(format!("{}:{}: {name}", src.display(), n + 1));
             }
         }
     }
     assert!(
         unclearable.is_empty(),
-        "every variable the predicate names directly belongs in HYPERLINK_DIRECT_VARS, \
+        "every variable this module reads by name belongs in HYPERLINK_DIRECT_VARS, \
          so a test can clear it:\n{}",
         unclearable.join("\n")
     );
+
+    let mut delegated = Vec::new();
+    for line in body[start..end].lines() {
+        let code = line.trim_start();
+        if code.starts_with("//") {
+            continue;
+        }
+        for (at, _) in code.match_indices("::") {
+            let from = code[..at].rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != ':');
+            let path = &code[from.map_or(0, |i| i + 1)..];
+            if !REACHABLE_PATHS.iter().any(|ok| path.starts_with(ok)) {
+                delegated.push(format!(
+                    "{}: {code}",
+                    path.split('(').next().unwrap_or(path)
+                ));
+            }
+        }
+    }
+    assert!(
+        delegated.is_empty(),
+        "the predicate reads the environment itself, or through a helper in its own \
+         module where the scan above still sees it — never through a path into another \
+         module, which no scan can follow:\n{}",
+        delegated.join("\n")
+    );
+
     assert!(
         !HYPERLINK_DIRECT_VARS
             .iter()
