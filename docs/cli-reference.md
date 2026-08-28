@@ -1060,9 +1060,11 @@ schema that binary just explained.
 
 Hyperlinks are detected from the terminal, never from a flag: iTerm2, WezTerm,
 VS Code's terminal, Ghostty, Hyper, Windows Terminal, kitty, Alacritty, Konsole,
-and any VTE-based terminal (GNOME Terminal, Tilix) from VTE 0.50 on. Colour is a
-separate gate — `--color never`, `NO_COLOR` and a non-terminal stdout all
-withhold the escape along with every other one.
+and any VTE-based terminal (GNOME Terminal, Tilix) from VTE 0.50 on. Inside `tmux`
+or `screen` the row is the plain URL whatever the outer terminal is, since a
+multiplexer may not forward the escape. Colour is a separate gate —
+`--color never`, `NO_COLOR` and a non-terminal stdout all withhold the escape
+along with every other one.
 
 `-o json` carries the bare pointer as `docs` and the same release-pinned URL as
 an additive `docsUrl` field beside it.
