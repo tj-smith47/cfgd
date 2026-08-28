@@ -175,8 +175,16 @@ impl<'a> super::Reconciler<'a> {
         // host plans nothing, which is what keeps a daemon tick from running
         // `apt update` on every interval.
         observe(PhaseName::Prerequisites);
-        let mut manager_actions =
-            super::managers::plan_managers(self.registry, &profile_packages, &module_routed);
+        // Read once, from the resolution that already applied every `prefer`
+        // and `aliases` the module wrote, and BEFORE the elision below drops
+        // the entries those routes were minted from.
+        let declared_routes = super::managers::declared_manager_routes(&module_routed);
+        let mut manager_actions = super::managers::plan_managers_with_routes(
+            self.registry,
+            &profile_packages,
+            &module_routed,
+            &declared_routes,
+        );
         // A tool this plan's own cascade provisions as a MANAGER is already
         // the run's statement about that tool; a bare module entry naming it
         // under the platform default is a second, weaker one and would land a
@@ -186,8 +194,12 @@ impl<'a> super::Reconciler<'a> {
         // can retire a manager's last consumer, so the nodes are planned
         // again over what survived.
         if self.elide_provisioned_tools(&mut module_routed, &manager_actions) {
-            manager_actions =
-                super::managers::plan_managers(self.registry, &profile_packages, &module_routed);
+            manager_actions = super::managers::plan_managers_with_routes(
+                self.registry,
+                &profile_packages,
+                &module_routed,
+                &declared_routes,
+            );
         }
 
         // The env file publishes where a manager's binaries live, so it has to
@@ -961,27 +973,45 @@ impl<'a> super::Reconciler<'a> {
         }
     }
 
-    /// Drop every undeclared module entry whose canonical tool a
-    /// `ManagerAction::Provision` in `manager_actions` delivers, emptying and
-    /// removing the install actions that held nothing else. `true` when
-    /// anything was dropped. The plan-time reading of
+    /// Drop every module entry a `ManagerAction::Provision` in
+    /// `manager_actions` already delivers, emptying and removing the install
+    /// actions that held nothing else. `true` when anything was dropped.
+    ///
+    /// Two shapes, because a provision delivers a tool under two different
+    /// names. An undeclared entry naming the provisioned MANAGER's own
+    /// canonical tool is the plan-time reading of
     /// [`Self::package_survives_elision`]'s provisioned arm, over an EMPTY
     /// listing so only that arm can speak: the installed arm already ran in
-    /// `Self::plan_modules`.
+    /// `Self::plan_modules`. An entry naming a PACKAGE the provision installs
+    /// — the module's own route (`provision pipx via brew` IS the entry's
+    /// `brew install pipx`) or the cascade's mediated package (`provision npm
+    /// via brew` IS a `brew install node`) — is judged by
+    /// [`Self::delivered_by_this_run`] over
+    /// [`super::managers::provision_delivered_packages`], the same pair the
+    /// apply records at a provision's settle. `manager_declared` does not
+    /// enter it: the provision row above already names the package and
+    /// installs it through the entry's own installer, so a `Packages` row
+    /// naming it again promises an install the run never performs and left the
+    /// hero's `brew install …` naming the `node` and `pipx` the two rows above
+    /// it had landed.
     fn elide_provisioned_tools(
         &self,
         module_routed: &mut Vec<(PhaseName, Action)>,
         manager_actions: &[Action],
     ) -> bool {
-        let provisions: Vec<String> = manager_actions
-            .iter()
-            .filter_map(|a| match a {
-                Action::Manager(super::ManagerAction::Provision { manager, .. }) => {
-                    Some(manager.clone())
-                }
-                _ => None,
-            })
-            .collect();
+        let mut provisions: Vec<String> = Vec::new();
+        let mut delivered: Vec<(String, String)> = Vec::new();
+        for action in manager_actions {
+            let Action::Manager(node @ super::ManagerAction::Provision { manager, .. }) = action
+            else {
+                continue;
+            };
+            provisions.push(manager.clone());
+            delivered.extend(super::managers::provision_delivered_packages(
+                self.registry,
+                node,
+            ));
+        }
         if provisions.is_empty() {
             return false;
         }
@@ -997,6 +1027,9 @@ impl<'a> super::Reconciler<'a> {
             };
             let before = resolved.len();
             resolved.retain(|pkg| {
+                if Self::delivered_by_this_run(&delivered, &pkg.manager, &pkg.resolved_name) {
+                    return false;
+                }
                 self.registry
                     .package_managers()
                     .iter()
