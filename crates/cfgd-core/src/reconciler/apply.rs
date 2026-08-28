@@ -9,7 +9,7 @@ use crate::to_posix_string;
 
 use super::env_engine::ManagerPathDir;
 use super::format::{
-    action_display_subject, condense_action_desc_for_display, format_action_description,
+    action_display_subject_within, condense_action_desc_for_display, format_action_description,
     parse_package_description, parse_resource_from_description,
 };
 use super::restore::action_target_path;
@@ -1104,7 +1104,8 @@ impl<'a> super::Reconciler<'a> {
         // skeleton claims a report-wide column over this and its
         // pseudo-phases; this is the value when a caller drives the reconciler
         // without one.
-        let width = super::run::report_align_width(plan, phase_filter);
+        let budget = printer.subject_budget();
+        let width = super::run::report_align_width(plan, phase_filter, budget);
 
         'phases: for phase in &plan.phases {
             // Plan positions of the actions in this phase that survive
@@ -1154,7 +1155,7 @@ impl<'a> super::Reconciler<'a> {
                 .map(|action| {
                     (
                         action_key(action),
-                        action_display_subject(action).to_string(),
+                        action_display_subject_within(action, budget).to_string(),
                     )
                 })
                 .collect();

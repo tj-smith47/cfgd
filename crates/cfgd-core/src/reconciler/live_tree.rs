@@ -65,7 +65,7 @@ use crate::output::live_row::{LiveRow, RowStatus};
 use crate::output::{OwnerLabel, Printer, Role, SectionGuard};
 
 use super::apply::{ActionOutcome, emit_action_line};
-use super::format::action_display_subject;
+use super::format::action_display_subject_within;
 use super::types::{Action, Owner};
 
 /// One line the scheduler wants on screen for work it has not started.
@@ -200,6 +200,12 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
         self
     }
 
+    /// The subject budget every row of this tree — and every wait line the
+    /// dispatcher words about one — renders within.
+    pub(super) fn subject_budget(&self) -> Option<usize> {
+        self.printer.subject_budget()
+    }
+
     /// Whether outcomes settle HERE, in the rows the region already shows.
     ///
     /// The negative answer is the whole off-TTY contract: the caller holds each
@@ -215,7 +221,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
     /// that row is where the reader has been watching it, and starting it
     /// somewhere else is the jump this whole module exists to prevent.
     pub(super) fn dispatched(&mut self, owner: &'p Owner, action: &'p Action) -> LaneHandle<'p> {
-        let subject = action_display_subject(action).to_string();
+        let subject = action_display_subject_within(action, self.subject_budget()).to_string();
         if !self.live {
             return self.printer.lane_at(self.depth, subject);
         }

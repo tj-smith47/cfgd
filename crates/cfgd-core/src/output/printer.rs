@@ -151,6 +151,11 @@ pub(crate) fn colors_must_be_disabled(output_format: &OutputFormat) -> bool {
         || output_format.is_structured()
 }
 
+/// The depth an action row renders at in a report: under its phase's section
+/// and its owner's group. A sole-lane phase draws a level shallower, which
+/// only leaves such a row more room than it was budgeted.
+pub const ACTION_ROW_DEPTH: usize = 2;
+
 impl Printer {
     /// Production constructor: stderr/stdout via `console::Term`.
     pub fn new(verbosity: Verbosity) -> Self {
@@ -584,6 +589,25 @@ impl Printer {
     #[must_use = "inheritance ends when the guard drops; bind it"]
     pub fn depth_inheritance(&self) -> super::renderer::DepthInheritGuard<'_> {
         super::renderer::DepthInheritGuard::acquire(&self.renderer)
+    }
+
+    /// The columns an action row's SUBJECT may occupy on this printer's
+    /// terminal before its operand list is cut, or `None` for a sink that
+    /// never wraps (a capture, a redirected stream), where the list is cut at
+    /// the floor alone.
+    ///
+    /// Half the complete-line budget at [`ACTION_ROW_DEPTH`]: the other half
+    /// is what the row has to say beside the subject — the glyph, the
+    /// em-dash, a wait reason naming ANOTHER subject, a produced count, the
+    /// duration — and a subject that took more would leave that half cut
+    /// mid-token by the live repaint. Read once per report and threaded to
+    /// every reader of `action_display_subject_within`, so the preview, the
+    /// alignment column, the apply ledger, the live tree and the wait lines
+    /// name one action one way.
+    pub fn subject_budget(&self) -> Option<usize> {
+        self.sink_stderr
+            .wrap_columns()
+            .map(|cols| super::renderer::wrap::line_budget(cols, ACTION_ROW_DEPTH) / 2)
     }
 
     /// Declare the alignment column every action row of THIS report pads to,

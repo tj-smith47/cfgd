@@ -17,7 +17,7 @@ use crate::pluralize;
 use crate::state::{ApplyStatus, StateStore};
 
 use super::apply::action_matches_phase_filter;
-use super::format::action_display_subject;
+use super::format::action_display_subject_within;
 use super::types::{
     Action, ApplyResult, Owner, OwnerGroup, Phase, PhaseFilter, PhaseName, Plan, SystemAction,
 };
@@ -675,8 +675,10 @@ impl<'a> ApplyRun<'a> {
         // the apply tree the executor writes, and the `Backups` pseudo-phase
         // after it are one page, and each measuring its own part of it puts
         // the trailing column at a different x position in each.
-        let _column = printer
-            .report_column(report_align_width(plan, self.filter).max(self.backup_align_width()));
+        let _column = printer.report_column(
+            report_align_width(plan, self.filter, printer.subject_budget())
+                .max(self.backup_align_width()),
+        );
         if self.preview_only {
             self.preview(printer);
             return Ok(RunDisposition::Previewed);
@@ -938,7 +940,8 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
     // a reader scans down, and a column measured inside each phase moves x
     // position mid-report. A run that already claimed one — an apply, which saw
     // its backup labels too — keeps it, so its preview and its tree agree.
-    let width = report_align_width(plan, filter);
+    let budget = printer.subject_budget();
+    let width = report_align_width(plan, filter, budget);
     let _column = printer.report_column(width);
     for (phase, groups) in in_scope_tree(plan, filter, PhaseCoverage::Rendered) {
         let phase_section = printer.section_phase(&phase.name.section_label());
@@ -947,7 +950,7 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
             let owner_section = phase_section.section_owner(&label);
             owner_section.live_column(width);
             for action in actions {
-                let subject = action_display_subject(action);
+                let subject = action_display_subject_within(action, budget);
                 // Both settled rows go through `action_status`, the seam the
                 // apply tree settles through, so the two trees paint the same
                 // action identically one beat apart.
@@ -1117,12 +1120,22 @@ pub fn align_width_of<'s>(labels: impl Iterator<Item = &'s str>) -> usize {
 /// `Emitting::bullet_column` the way a status row does through `route_status`.
 /// Ignoring the claim on the bullet put a preview's em-dashes in two places
 /// and neither at the apply's.
-pub fn report_align_width(plan: &Plan, filter: Option<&PhaseFilter>) -> usize {
+///
+/// `budget` is the printer's [`Printer::subject_budget`], the same one every
+/// row of the report renders its subject within, so the column is measured
+/// over the strings the rows will actually carry.
+///
+/// [`Printer::subject_budget`]: crate::output::Printer::subject_budget
+pub fn report_align_width(
+    plan: &Plan,
+    filter: Option<&PhaseFilter>,
+    budget: Option<usize>,
+) -> usize {
     let items: Vec<String> = in_scope_tree(plan, filter, PhaseCoverage::Rendered)
         .iter()
         .flat_map(|(_, groups)| groups.iter())
         .flat_map(|(_, actions)| actions.iter())
-        .map(|action| action_display_subject(action).to_string())
+        .map(|action| action_display_subject_within(action, budget).to_string())
         .collect();
     align_width_of(items.iter().map(String::as_str))
 }

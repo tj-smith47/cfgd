@@ -879,8 +879,8 @@ fn report_align_width_spans_every_phase() {
         ),
     ]);
 
-    let wide_width = report_align_width(&wide, None);
-    let narrow_width = report_align_width(&narrow, None);
+    let wide_width = report_align_width(&wide, None, None);
+    let narrow_width = report_align_width(&narrow, None, None);
     assert!(
         wide_width > narrow_width,
         "the long subject in the first phase must widen the report column: \
@@ -907,7 +907,9 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
         vars: 3,
         aliases: 3,
     });
-    let subject = action_display_subject(&write_env).body.clone();
+    let subject = super::action_display_subject_within(&write_env, None)
+        .body
+        .clone();
     let detail = super::super::action_produced_detail(&write_env, None, &[])
         .expect("a write of 3 vars and 3 aliases states what it produced");
     // A far longer sibling in the SAME report, so the column the short row
@@ -922,7 +924,7 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
             ),
         ],
     )]);
-    let width = report_align_width(&plan, None);
+    let width = report_align_width(&plan, None, None);
 
     let dash_column = |render: &dyn Fn(&Printer)| -> usize {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -987,9 +989,10 @@ fn report_align_width_ignores_a_filtered_out_phase() {
     ]);
     let filter = PhaseFilter::Phase(PhaseName::Files);
     assert_eq!(
-        report_align_width(&plan, Some(&filter)),
+        report_align_width(&plan, Some(&filter), None),
         report_align_width(
             &plan_of(vec![phase(PhaseName::Files, vec![create("dotfile")])]),
+            None,
             None
         ),
         "an excluded phase's widest action must not pad the phase that renders"
@@ -1371,7 +1374,7 @@ fn preview_bullet_matches_the_execution_subject_for_a_sourced_script() {
         "preview bullet must be the execution subject verbatim: {out:?}"
     );
     assert_eq!(
-        report_align_width(&plan, None),
+        report_align_width(&plan, None, None),
         measure_width(&executed),
         "the alignment column must measure the subject the execution renders"
     );
@@ -1411,7 +1414,7 @@ fn preview_bullet_matches_the_execution_subject_for_a_condensed_script() {
         "preview bullet must be the condensed execution subject verbatim: {out:?}"
     );
     assert_eq!(
-        report_align_width(&plan, None),
+        report_align_width(&plan, None, None),
         measure_width(&executed),
         "the alignment column must measure the condensed subject"
     );
