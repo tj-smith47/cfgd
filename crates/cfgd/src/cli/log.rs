@@ -132,7 +132,7 @@ pub fn build_log_doc(output: &LogOutput, now: &str) -> Doc {
                     // carries `timestamp` for a consumer that needs the exact
                     // moment, and the column a reader scans is answering "how
                     // long ago". The `ID` beside it is the correlation key.
-                    cfgd_core::humanize_age_cell(Some(&record.timestamp), now),
+                    cfgd_core::humanize_age_magnitude_cell(Some(&record.timestamp), now),
                     // What the run was scoped to: a profile name, or the
                     // `module:<name>` list an isolated run records instead.
                     // Judged by the same predicate the status dashboard uses,

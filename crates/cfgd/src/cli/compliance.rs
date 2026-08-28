@@ -379,7 +379,7 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str) ->
         // summary is asking how fresh it is.
         (
             "Age",
-            cfgd_core::humanize_age_cell(Some(&snapshot.timestamp), now),
+            cfgd_core::humanize_age_magnitude_cell(Some(&snapshot.timestamp), now),
         ),
         ("Machine", snapshot.machine.hostname.clone()),
         ("Profile", snapshot.profile.clone()),
@@ -486,7 +486,7 @@ pub fn build_compliance_history_doc(entries: &[ComplianceHistoryRow], now: &str)
         for row in entries {
             table = table.row([
                 row.id.to_string(),
-                cfgd_core::humanize_age_cell(Some(&row.timestamp), now),
+                cfgd_core::humanize_age_magnitude_cell(Some(&row.timestamp), now),
                 row.compliant.to_string(),
                 row.warning.to_string(),
                 row.violation.to_string(),
@@ -886,11 +886,21 @@ mod tests {
             output.contains("Compliance History"),
             "should print history heading, got: {output}"
         );
-        // The column reads as an age, not as the stored instant — the stamp
-        // itself stays in `-o json`.
+        // The column reads as a bare magnitude under its `Age` header — the
+        // header is the dimension, so the cell carries no `ago` — and never
+        // as the stored instant, which stays in `-o json`.
+        let age_row = output
+            .lines()
+            .find(|l| l.trim_start().starts_with("1 "))
+            .unwrap_or_else(|| panic!("no row for the seeded snapshot: {output}"));
+        let age_cell = age_row.split_whitespace().nth(1).unwrap_or_default();
         assert!(
-            output.contains(" ago") && !output.contains("2026-05-12T00:00:00Z"),
-            "should age the seeded timestamp, got: {output}"
+            age_cell.ends_with('d') && age_cell[..age_cell.len() - 1].parse::<u64>().is_ok(),
+            "should age the seeded timestamp as a magnitude, got: {output}"
+        );
+        assert!(
+            !output.contains(" ago") && !output.contains("2026-05-12T00:00:00Z"),
+            "an `Age` column neither restates its header nor prints the instant, got: {output}"
         );
     }
 
