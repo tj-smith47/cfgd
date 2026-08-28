@@ -1264,12 +1264,12 @@ continueOnError: true
 "#;
     let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
     match entry {
-        ScriptEntry::Full {
+        ScriptEntry::Full(ScriptCommand {
             run,
             timeout,
             continue_on_error,
             ..
-        } => {
+        }) => {
             assert_eq!(run, "scripts/check.sh");
             assert_eq!(timeout, Some("30s".to_string()));
             assert_eq!(continue_on_error, Some(true));

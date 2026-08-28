@@ -139,7 +139,7 @@ fn execute_script_workdir_override_absolute() {
     let printer = crate::test_helpers::test_printer();
     let default_dir = tempfile::tempdir().unwrap();
     let override_dir = tempfile::tempdir().unwrap();
-    let entry = ScriptEntry::Full {
+    let entry = ScriptEntry::Full(ScriptCommand {
         run: "touch ran.marker".into(),
         timeout: None,
         idle_timeout: None,
@@ -150,7 +150,7 @@ fn execute_script_workdir_override_absolute() {
         creates: None,
         interactive: false,
         workdir: Some(override_dir.path().display().to_string()),
-    };
+    });
     execute_script(
         &entry,
         default_dir.path(),
@@ -184,7 +184,7 @@ fn execute_script_workdir_override_expands_tilde_and_vars() {
     let module_dir = tempfile::tempdir().unwrap();
     crate::with_test_home(home.path(), || {
         // `~` form → home.
-        let entry_home = ScriptEntry::Full {
+        let entry_home = ScriptEntry::Full(ScriptCommand {
             run: "touch from_tilde".into(),
             timeout: None,
             idle_timeout: None,
@@ -195,7 +195,7 @@ fn execute_script_workdir_override_expands_tilde_and_vars() {
             creates: None,
             interactive: false,
             workdir: Some("~".into()),
-        };
+        });
         execute_script(
             &entry_home,
             module_dir.path(),
@@ -211,7 +211,7 @@ fn execute_script_workdir_override_expands_tilde_and_vars() {
         assert!(home.path().join("from_tilde").exists());
 
         // `$CFGD_MODULE_DIR` form → the module dir from the script env.
-        let entry_var = ScriptEntry::Full {
+        let entry_var = ScriptEntry::Full(ScriptCommand {
             run: "touch from_var".into(),
             timeout: None,
             idle_timeout: None,
@@ -222,7 +222,7 @@ fn execute_script_workdir_override_expands_tilde_and_vars() {
             creates: None,
             interactive: false,
             workdir: Some("$CFGD_MODULE_DIR".into()),
-        };
+        });
         let env = vec![(
             "CFGD_MODULE_DIR".to_string(),
             module_dir.path().display().to_string(),
@@ -621,7 +621,7 @@ fn shell_bash_runs_inline_with_bash() {
     }
     let printer = crate::test_helpers::test_printer();
     let tmp = tempfile::tempdir().unwrap();
-    let entry = ScriptEntry::Full {
+    let entry = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "echo hello".into(),
         timeout: None,
@@ -632,7 +632,7 @@ fn shell_bash_runs_inline_with_bash() {
         unless: None,
         creates: None,
         interactive: false,
-    };
+    });
 
     let (label, changed, captured) = execute_script(
         &entry,
@@ -664,7 +664,7 @@ fn shell_field_rejected_on_file_scripts() {
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    let entry = ScriptEntry::Full {
+    let entry = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "myscript.sh".into(),
         timeout: None,
@@ -675,7 +675,7 @@ fn shell_field_rejected_on_file_scripts() {
         unless: None,
         creates: None,
         interactive: false,
-    };
+    });
 
     let err = execute_script(
         &entry,
@@ -892,7 +892,7 @@ fn shell_auto_on_file_scripts_allowed() {
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    let entry = ScriptEntry::Full {
+    let entry = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "ok.sh".into(),
         timeout: None,
@@ -903,7 +903,7 @@ fn shell_auto_on_file_scripts_allowed() {
         unless: None,
         creates: None,
         interactive: false,
-    };
+    });
 
     let result = execute_script(
         &entry,
@@ -1006,7 +1006,7 @@ fn execute_script_entry_shell_on_file_script_still_errors_with_override() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let entry = ScriptEntry::Full {
+    let entry = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "buggy.sh".into(),
         timeout: None,
@@ -1017,7 +1017,7 @@ fn execute_script_entry_shell_on_file_script_still_errors_with_override() {
         unless: None,
         creates: None,
         interactive: false,
-    };
+    });
 
     let err = execute_script(
         &entry,
@@ -1056,7 +1056,7 @@ fn guarded_entry(
     unless: Option<&str>,
     creates: Option<&str>,
 ) -> ScriptEntry {
-    ScriptEntry::Full {
+    ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "touch ran.marker".into(),
         timeout: None,
@@ -1067,7 +1067,7 @@ fn guarded_entry(
         unless: unless.map(String::from),
         creates: creates.map(String::from),
         interactive: false,
-    }
+    })
 }
 
 #[cfg(unix)]
@@ -1251,7 +1251,7 @@ fn execute_script_guard_timeout_returns_err() {
     let printer = crate::test_helpers::test_printer();
     let tmp = tempfile::tempdir().unwrap();
     let sentinel = tmp.path().join("body-ran");
-    let entry = ScriptEntry::Full {
+    let entry = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: format!("touch {}", sentinel.display()),
         timeout: None,
@@ -1262,7 +1262,7 @@ fn execute_script_guard_timeout_returns_err() {
         unless: None,
         creates: None,
         interactive: false,
-    };
+    });
 
     let result = execute_script(
         &entry,
@@ -1327,7 +1327,7 @@ fn interactive_script_without_tty_skips_with_warn() {
     let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
     let tmp = tempfile::tempdir().unwrap();
     let sentinel = tmp.path().join("body-ran");
-    let entry = ScriptEntry::Full {
+    let entry = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: format!("touch {}", sentinel.display()),
         timeout: None,
@@ -1338,7 +1338,7 @@ fn interactive_script_without_tty_skips_with_warn() {
         unless: None,
         creates: None,
         interactive: true,
-    };
+    });
 
     let (_label, changed, captured) = execute_script_with_tty(
         false,
@@ -1395,7 +1395,7 @@ fn a_script_that_installs_a_tool_retires_the_memoized_miss() {
     );
 
     let installer = tmp.path().join(stem);
-    let entry = ScriptEntry::Full {
+    let entry = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: format!(
             "printf '#!/bin/sh\\nexit 0\\n' > {p} && chmod 755 {p}",
@@ -1412,7 +1412,7 @@ fn a_script_that_installs_a_tool_retires_the_memoized_miss() {
         unless: None,
         creates: None,
         interactive: false,
-    };
+    });
     execute_script_with_tty(
         false,
         &entry,
@@ -1954,7 +1954,7 @@ fn execute_script_spawn_enoent_maps_to_interpreter_hint() {
     }
     let printer = crate::test_helpers::test_printer();
     let work = tempfile::tempdir().unwrap();
-    let entry = ScriptEntry::Full {
+    let entry = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "Write-Output hi".into(),
         timeout: None,
@@ -1965,7 +1965,7 @@ fn execute_script_spawn_enoent_maps_to_interpreter_hint() {
         unless: None,
         creates: None,
         interactive: false,
-    };
+    });
 
     let err = execute_script(
         &entry,
@@ -2136,7 +2136,7 @@ fn build_script_env_reconcile_context_and_module_dir() {
 fn multi_line_inline_script_never_reaches_status_subject_with_newline() {
     let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
     let tmp = tempfile::tempdir().unwrap();
-    let entry = ScriptEntry::Full {
+    let entry = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: "echo one\necho two\necho three".into(),
         timeout: None,
@@ -2149,7 +2149,7 @@ fn multi_line_inline_script_never_reaches_status_subject_with_newline() {
         // unconditionally without ever spawning the (never-executed) body.
         creates: Some(".".to_string()),
         interactive: false,
-    };
+    });
 
     let (desc, changed, _captured) = execute_script(
         &entry,
@@ -2186,7 +2186,7 @@ fn multi_line_inline_script_never_reaches_status_subject_with_newline() {
 use crate::test_helpers::settled_status_lines as settled_lines;
 
 fn script(run: &str) -> ScriptEntry {
-    ScriptEntry::Full {
+    ScriptEntry::Full(ScriptCommand {
         run: run.into(),
         timeout: None,
         idle_timeout: None,
@@ -2197,7 +2197,7 @@ fn script(run: &str) -> ScriptEntry {
         creates: None,
         interactive: false,
         workdir: None,
-    }
+    })
 }
 
 fn with_guard(mut entry: ScriptEntry, f: impl FnOnce(&mut ScriptEntry)) -> ScriptEntry {
@@ -2285,7 +2285,7 @@ fn every_script_exit_emits_one_status() {
         (
             "creates path exists",
             with_guard(script(body::OK), |e| {
-                if let ScriptEntry::Full { creates, .. } = e {
+                if let ScriptEntry::Full(ScriptCommand { creates, .. }) = e {
                     *creates = Some(creates_path.display().to_string());
                 }
             }),
@@ -2296,7 +2296,7 @@ fn every_script_exit_emits_one_status() {
         (
             "onlyIf fails",
             with_guard(script(body::OK), |e| {
-                if let ScriptEntry::Full { only_if, .. } = e {
+                if let ScriptEntry::Full(ScriptCommand { only_if, .. }) = e {
                     *only_if = Some(body::FAIL.to_string());
                 }
             }),
@@ -2307,7 +2307,7 @@ fn every_script_exit_emits_one_status() {
         (
             "unless holds",
             with_guard(script(body::OK), |e| {
-                if let ScriptEntry::Full { unless, .. } = e {
+                if let ScriptEntry::Full(ScriptCommand { unless, .. }) = e {
                     *unless = Some(body::OK.to_string());
                 }
             }),
@@ -2318,7 +2318,7 @@ fn every_script_exit_emits_one_status() {
         (
             "interactive without a tty",
             with_guard(script(body::OK), |e| {
-                if let ScriptEntry::Full { interactive, .. } = e {
+                if let ScriptEntry::Full(ScriptCommand { interactive, .. }) = e {
                     *interactive = true;
                 }
             }),
@@ -2329,7 +2329,7 @@ fn every_script_exit_emits_one_status() {
         (
             "interactive success",
             with_guard(script(body::OK), |e| {
-                if let ScriptEntry::Full { interactive, .. } = e {
+                if let ScriptEntry::Full(ScriptCommand { interactive, .. }) = e {
                     *interactive = true;
                 }
             }),
@@ -2340,7 +2340,7 @@ fn every_script_exit_emits_one_status() {
         (
             "interactive failure",
             with_guard(script(body::FAIL_3), |e| {
-                if let ScriptEntry::Full { interactive, .. } = e {
+                if let ScriptEntry::Full(ScriptCommand { interactive, .. }) = e {
                     *interactive = true;
                 }
             }),
@@ -2369,7 +2369,7 @@ fn every_script_exit_emits_one_status() {
             // binary is needed and nothing spawned can hang the suite.
             "guard command times out",
             with_guard(script(body::OK), |e| {
-                if let ScriptEntry::Full { only_if, .. } = e {
+                if let ScriptEntry::Full(ScriptCommand { only_if, .. }) = e {
                     *only_if = Some(body::SLOW.to_string());
                 }
             }),
@@ -2398,7 +2398,7 @@ fn every_script_exit_emits_one_status() {
     // to prevent, so it must carry a duration and no ` — ` detail.
     let interactive_ok = drive(
         &with_guard(script(body::OK), |e| {
-            if let ScriptEntry::Full { interactive, .. } = e {
+            if let ScriptEntry::Full(ScriptCommand { interactive, .. }) = e {
                 *interactive = true;
             }
         }),

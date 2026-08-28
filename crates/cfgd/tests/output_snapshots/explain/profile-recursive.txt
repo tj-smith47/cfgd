@@ -17,7 +17,7 @@ Fields (under spec)
     namePattern  <string>
     postBackup   <[]ScriptEntry>
       string
-      object
+      ScriptCommand
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
@@ -31,7 +31,7 @@ Fields (under spec)
         workdir          <string>
     preBackup    <[]ScriptEntry>
       string
-      object
+      ScriptCommand
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
@@ -73,9 +73,9 @@ Fields (under spec)
   inherits  <[]string>
   modules   <[]string>
   packages  <PackagesSpec>
-    apk         <([]string | object)>
+    apk         <([]string | PackageListSpec)>
       []string
-      object
+      PackageListSpec
         packages  <[]string>
     apt         <([]string | AptSpec)>
       []string
@@ -94,9 +94,9 @@ Fields (under spec)
       CargoSpec
         file      <string>
         packages  <[]string>
-    chocolatey  <([]string | object)>
+    chocolatey  <([]string | PackageListSpec)>
       []string
-      object
+      PackageListSpec
         packages  <[]string>
     custom      <[]CustomManagerSpec>
       check          <string>   (required)
@@ -106,65 +106,65 @@ Fields (under spec)
       packages       <[]string>
       uninstall      <string>   (required)
       update         <string>
-    dnf         <([]string | object)>
+    dnf         <([]string | PackageListSpec)>
       []string
-      object
+      PackageListSpec
         packages  <[]string>
     flatpak     <([]string | FlatpakSpec)>
       []string
       FlatpakSpec
         packages  <[]string>
         remote    <string>
-    go          <([]string | object)>
+    go          <([]string | PackageListSpec)>
       []string
-      object
+      PackageListSpec
         packages  <[]string>
-    nix         <([]string | object)>
+    nix         <([]string | PackageListSpec)>
       []string
-      object
+      PackageListSpec
         packages  <[]string>
     npm         <([]string | NpmSpec)>
       []string
       NpmSpec
         file    <string>
         global  <[]string>
-    pacman      <([]string | object)>
+    pacman      <([]string | PackageListSpec)>
       []string
-      object
+      PackageListSpec
         packages  <[]string>
-    pipx        <([]string | object)>
+    pipx        <([]string | PackageListSpec)>
       []string
-      object
+      PackageListSpec
         packages  <[]string>
-    pkg         <([]string | object)>
+    pkg         <([]string | PackageListSpec)>
       []string
-      object
+      PackageListSpec
         packages  <[]string>
-    scoop       <([]string | object)>
+    scoop       <([]string | PackageListSpec)>
       []string
-      object
+      PackageListSpec
         packages  <[]string>
     snap        <([]string | SnapSpec)>
       []string
       SnapSpec
         classic   <[]string>
         packages  <[]string>
-    winget      <([]string | object)>
+    winget      <([]string | PackageListSpec)>
       []string
-      object
+      PackageListSpec
         packages  <[]string>
-    yum         <([]string | object)>
+    yum         <([]string | PackageListSpec)>
       []string
-      object
+      PackageListSpec
         packages  <[]string>
-    zypper      <([]string | object)>
+    zypper      <([]string | PackageListSpec)>
       []string
-      object
+      PackageListSpec
         packages  <[]string>
   scripts   <ScriptSpec>
     onChange       <[]ScriptEntry>
       string
-      object
+      ScriptCommand
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
@@ -178,7 +178,7 @@ Fields (under spec)
         workdir          <string>
     onDrift        <[]ScriptEntry>
       string
-      object
+      ScriptCommand
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
@@ -192,7 +192,7 @@ Fields (under spec)
         workdir          <string>
     postApply      <[]ScriptEntry>
       string
-      object
+      ScriptCommand
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
@@ -206,7 +206,7 @@ Fields (under spec)
         workdir          <string>
     postReconcile  <[]ScriptEntry>
       string
-      object
+      ScriptCommand
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
@@ -220,7 +220,7 @@ Fields (under spec)
         workdir          <string>
     preApply       <[]ScriptEntry>
       string
-      object
+      ScriptCommand
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
@@ -234,7 +234,7 @@ Fields (under spec)
         workdir          <string>
     preReconcile   <[]ScriptEntry>
       string
-      object
+      ScriptCommand
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>

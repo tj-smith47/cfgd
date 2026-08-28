@@ -1,5 +1,5 @@
 Explain: profile.spec.packages.brew <([]string | BrewSpec)>
-  Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.
+  Homebrew packages (macOS/Linux).
 
 Variants
   []string — Package names, as a bare list.

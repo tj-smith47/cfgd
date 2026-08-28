@@ -518,6 +518,21 @@
       },
       "type": "object"
     },
+    "PackageListSpec": {
+      "additionalProperties": false,
+      "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key. Both the deserializer ([`list_or_packages_vec`]) and the schema ([`list_or_packages_vec_schema`]) read this one type, so the map a config may write and the map `cfgd explain` documents cannot drift.",
+      "properties": {
+        "packages": {
+          "default": [],
+          "description": "Package names.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "PackagesSpec": {
       "additionalProperties": false,
       "description": "`spec.packages`: packages to install, grouped by package manager. Every manager field accepts either a bare list of names or (for the managers with options of their own) a mapping: ```yaml packages: brew: formulae: [ripgrep, fzf] casks: [alacritty] apt: [curl, git] cargo: [ripgrep] ```",
@@ -532,18 +547,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -569,7 +573,7 @@
             }
           ],
           "default": null,
-          "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping."
+          "description": "APT packages (Debian/Ubuntu)."
         },
         "brew": {
           "anyOf": [
@@ -588,7 +592,7 @@
             }
           ],
           "default": null,
-          "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping."
+          "description": "Homebrew packages (macOS/Linux)."
         },
         "cargo": {
           "anyOf": [
@@ -607,7 +611,7 @@
             }
           ],
           "default": null,
-          "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping."
+          "description": "Cargo packages (`cargo install`)."
         },
         "chocolatey": {
           "anyOf": [
@@ -619,18 +623,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -657,18 +650,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -694,7 +676,7 @@
             }
           ],
           "default": null,
-          "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping."
+          "description": "Flatpak packages (Linux)."
         },
         "go": {
           "anyOf": [
@@ -706,18 +688,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -736,18 +707,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -773,7 +733,7 @@
             }
           ],
           "default": null,
-          "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping."
+          "description": "npm global packages."
         },
         "pacman": {
           "anyOf": [
@@ -785,18 +745,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -815,18 +764,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -845,18 +783,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -875,18 +802,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -912,7 +828,7 @@
             }
           ],
           "default": null,
-          "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping."
+          "description": "Snap packages (Linux)."
         },
         "winget": {
           "anyOf": [
@@ -924,18 +840,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -954,18 +859,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -984,18 +878,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
