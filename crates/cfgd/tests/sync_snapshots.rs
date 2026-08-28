@@ -136,6 +136,29 @@ fn sync_no_sources_human() {
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "sync/no_sources.txt", &stripped);
 }
 
+/// The closing `Modules` row names what the synced config RESOLVES to, not
+/// what its profile declares: `editor` alone is in `spec.modules`, and the row
+/// reads `core, editor`.
+#[test]
+#[serial]
+fn sync_module_dependency_header_human() {
+    let (config_dir, state_dir) = common::profile_with_module_dependency_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_sync(&cli, &printer).unwrap();
+    drop(printer);
+
+    let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "sync/module_dependency.txt",
+        &stripped
+    );
+}
+
 /// Permission-rejection path skips the source and prints a Skipped status.
 #[test]
 #[serial]
@@ -328,6 +351,7 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
     let (status_printer, status_cap) = Printer::for_test_doc();
     status_printer.emit(cfgd::cli::status::build_fleet_status_doc(
         &output,
+        &[],
         &declared,
         Path::new("/tmp/cfgd.yaml"),
         "default",

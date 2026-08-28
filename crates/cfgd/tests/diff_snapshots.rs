@@ -306,6 +306,28 @@ fn diff_system_drift_human() {
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "diff/system_drift.txt", &stripped);
 }
 
+/// The full-report header names what the profile RESOLVES to, not what it
+/// declares: `editor` alone is in `spec.modules`, and the row reads
+/// `core, editor`.
+#[test]
+fn diff_module_dependency_header_human() {
+    let (config_dir, state_dir) = common::profile_with_module_dependency_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_diff(&cli, &printer, None, false).unwrap();
+    drop(printer);
+
+    let normalized = normalize(&cap.human(), config_dir.path(), &[]);
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "diff/module_dependency.txt",
+        &stripped
+    );
+}
+
 /// `--module <name>` branch of `cmd_diff` — the heading carries the module
 /// (`Diff: diff-mod`), the one drifted file renders under its owner group,
 /// and the closing line calls `packages` and `env` clean without claiming

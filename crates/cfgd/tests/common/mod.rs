@@ -47,6 +47,47 @@ pub fn tiny_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     (config_dir, state_dir, target)
 }
 
+/// Build a tempdir-backed profile that resolves to more modules than it
+/// declares: `editor` is the only name in `spec.modules`, and it `depends` on
+/// `core`.
+///
+/// The declared list and the resolved one differ in membership AND order
+/// (`resolve_dependency_order` returns dependencies first), which is what lets
+/// a golden tell the two apart.
+///
+/// Returns `(config_dir, state_dir)`.
+pub fn profile_with_module_dependency_setup() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let module = |name: &str, body: &str| {
+        let dir = config_dir.path().join("modules").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n{body}"
+            ),
+        )
+        .unwrap();
+    };
+    module("core", "  packages: []\n");
+    module("editor", "  depends:\n    - core\n  packages: []\n");
+
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("tiny.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules:\n    - editor\n",
+    )
+    .unwrap();
+
+    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n";
+    std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+
+    (config_dir, state_dir)
+}
+
 /// Build a tempdir-backed profile whose plan carries every shape the phase
 /// tree renders: a `Prerequisites` manager node, a `Packages` install, and a
 /// serially-applied file write.

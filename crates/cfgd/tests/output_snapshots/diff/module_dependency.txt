@@ -1,0 +1,6 @@
+Diff
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  tiny
+  Modules  core, editor
+
+✓ No drift detected

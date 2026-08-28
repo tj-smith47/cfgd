@@ -609,10 +609,14 @@ pub(super) fn recorded_scope_row(recorded: &str) -> Option<(&'static str, &str)>
 const SCAN_STALENESS_SECS: i64 = cfgd_core::daemon::DEFAULT_RECONCILE_SECS as i64;
 
 /// Build the fleet-wide `cfgd status` Doc. Caller supplies the precomputed
-/// payload and the declared source catalog, which carries the columns the
-/// status payload does not (priority, origin, signing demand).
+/// payload, the resolved modules the header names
+/// ([`cfgd_core::output::HeaderModule::of_resolved`], the same derivation every
+/// other surface reporting on a resolved profile reads) and the declared source
+/// catalog, which carries the columns the status payload does not (priority,
+/// origin, signing demand).
 pub fn build_fleet_status_doc(
     output: &StatusOutput,
+    header_modules: &[cfgd_core::output::HeaderModule],
     configured_sources: &[SourceListEntry],
     config_path: &Path,
     profile_name: &str,
@@ -621,12 +625,7 @@ pub fn build_fleet_status_doc(
 ) -> Doc {
     let mut header =
         cfgd_core::output::config_profile_rows(Some(config_path), derivable_profile(profile_name));
-    // The names the payload's `modules` array already carries, in the order the
-    // resolved profile lists them, through the builder every run header reads:
-    // a dashboard that named the profile and nothing it resolves to sat two
-    // commands above an apply header that named them.
-    let module_names: Vec<String> = output.modules.iter().map(|m| m.name.clone()).collect();
-    header.extend(cfgd_core::output::modules_header_row(&module_names, &[]));
+    header.extend(cfgd_core::output::modules_header_row_for(header_modules));
     let mut doc = Doc::new().heading("Status").kv_rows(header);
 
     // Only the recorded-state dashboard needs a staleness signal: a `--scan`/
@@ -1624,6 +1623,7 @@ pub(super) fn cmd_status(
     );
     printer.emit(build_fleet_status_doc(
         &output,
+        &cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
         &configured_sources,
         &cli.config,
         profile_name,
@@ -2295,87 +2295,159 @@ mod tests {
         assert_eq!(display_type("Running script"), display_type("script"));
     }
 
-    /// The dashboard opens on the same `Modules` row a run header does.
+    /// A config dir whose profile resolves to something its DECLARED list does
+    /// not say: one module pulled in by a `depends`, and one gated off this
+    /// host. Returns `(config_dir, state_dir, config_path)`.
+    fn setup_env_with_resolved_modules()
+    -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - editor\n    - off-host\n",
+        )
+        .unwrap();
+        let module = |name: &str, body: &str| {
+            let dir = config_dir.path().join("modules").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("module.yaml"),
+                format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n{body}"
+                ),
+            )
+            .unwrap();
+        };
+        module("core", "  packages: []\n");
+        module("editor", "  depends:\n    - core\n  packages: []\n");
+        // The tag this host is not, so the gate fires wherever the suite runs.
+        let elsewhere = if cfg!(windows) { "linux" } else { "windows" };
+        module(
+            "off-host",
+            &format!("  platforms:\n    - {elsewhere}\n  packages: []\n"),
+        );
+        (config_dir, state_dir, config_path)
+    }
+
+    /// The `Modules` row a rendered report carries, whitespace-collapsed.
+    fn rendered_modules_row(out: &str) -> String {
+        out.lines()
+            .find(|l| l.trim_start().starts_with("Modules"))
+            .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_else(|| panic!("no Modules row rendered: {out}"))
+    }
+
+    /// The dashboard opens on the same `Modules` row `cfgd diff` does — two
+    /// surfaces, two independent resolutions of one profile.
     ///
     /// The README demo opened on a `cfgd status` naming a profile and nothing
     /// it resolved to, two commands above an apply header that named `nvim` —
-    /// one machine, two headers, only one of which said what was on it. Both
-    /// rows come from `cfgd_core::output::modules_header_row`, so this asserts
-    /// the two renders carry the same value rather than the same literal.
+    /// one machine, two headers, only one of which said what was on it. The
+    /// fixture is what makes the two capable of DISAGREEING: `editor` pulls
+    /// `core` in through `depends`, so the resolved set differs from the
+    /// declared list in membership and in order, and `off-host` is gated off
+    /// this host, so a surface passing no skips would list it as an ordinary
+    /// member.
     #[test]
     fn status_header_names_the_profiles_modules_like_the_apply_header() {
-        let entry = |name: &str| ModuleStatusEntry {
-            name: name.to_string(),
-            packages: 0,
-            files: 0,
-            scripts: 0,
-            status: "installed".to_string(),
-            declared: ModuleDeclared::default(),
-        };
-        let output = StatusOutput {
-            last_apply: None,
-            drift: Vec::new(),
-            sources: Vec::new(),
-            pending_decisions: Vec::new(),
-            modules: vec![entry("nvim"), entry("tools")],
-            managed_resources: Vec::new(),
-            warnings: Vec::new(),
-            classification_degraded: false,
-            classification_degraded_code: None,
-            classification_degraded_reason: None,
-            drift_checked_live: false,
-            last_scan_at: None,
-        };
-        let config = std::path::Path::new("/etc/cfgd/cfgd.yaml");
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let (config_dir, state_dir, config_path) = setup_env_with_resolved_modules();
+        let mut cli = test_cli_for(config_path, state_dir.path());
+        cli.cache_dir = Some(state_dir.path().to_path_buf());
 
-        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        printer.emit(build_fleet_status_doc(
-            &output,
-            &[],
-            config,
-            "work",
-            "2026-05-12T14:30:25Z",
-            &Default::default(),
-        ));
+        let (printer, buf) = test_printers();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
         let dashboard = cfgd_core::test_helpers::captured_text(&buf);
 
-        let names: Vec<String> = output.modules.iter().map(|m| m.name.clone()).collect();
-        let plan = cfgd_core::reconciler::Plan {
-            phases: Vec::new(),
-            warnings: Vec::new(),
-        };
-        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        cfgd_core::reconciler::ApplyRun::new(
-            cfgd_core::reconciler::RunContext {
-                title: cfgd_core::reconciler::RunTitle::Apply,
-                config_path: Some(config),
-                profile: Some("work"),
-                sources: &[],
-                modules: &names,
-                trigger: None,
-                subject: None,
-                unit_source: None,
-            },
-            &plan,
-        )
-        .header(&printer);
+        let (printer, buf) = test_printers();
+        crate::cli::diff::cmd_diff(&cli, &printer, None, false).unwrap();
         drop(printer);
-        let run = cfgd_core::test_helpers::captured_text(&buf);
+        let diff = cfgd_core::test_helpers::captured_text(&buf);
 
-        let modules_row = |out: &str| {
-            out.lines()
-                .find(|l| l.trim_start().starts_with("Modules"))
-                .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
-                .unwrap_or_else(|| panic!("no Modules row rendered: {out}"))
+        let expected = "Modules core, editor (off-host skipped: platform not matched \
+                        (requires: windows))";
+        let expected = if cfg!(windows) {
+            expected.replace("windows", "linux")
+        } else {
+            expected.to_string()
         };
         assert_eq!(
-            modules_row(&dashboard),
-            modules_row(&run),
-            "the dashboard and the run header must name the profile's modules \
-             identically:\n{dashboard}\n---\n{run}"
+            rendered_modules_row(&dashboard),
+            rendered_modules_row(&diff),
+            "two surfaces reporting on one profile must name its modules \
+             identically:\n{dashboard}\n---\n{diff}"
         );
-        assert_eq!(modules_row(&dashboard), "Modules nvim, tools");
+        assert_eq!(rendered_modules_row(&dashboard), expected);
+        drop(config_dir);
+    }
+
+    /// Every surface reporting on a resolved profile names one identical set
+    /// of modules.
+    ///
+    /// The class, not the pair: `status`, `diff`, `sync` and `daemon status`
+    /// each reach their own resolution, and three of them once named the
+    /// profile's DECLARED list — so a profile of one module that `depends` on
+    /// another read `editor` on three surfaces and `core, editor` on two.
+    #[test]
+    fn every_surface_reporting_a_resolved_profile_names_the_same_modules() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let (config_dir, state_dir, config_path) = setup_env_with_resolved_modules();
+        let mut cli = test_cli_for(config_path, state_dir.path());
+        cli.cache_dir = Some(state_dir.path().to_path_buf());
+
+        let render = |run: &dyn Fn(&Printer)| {
+            let (printer, buf) = test_printers();
+            run(&printer);
+            drop(printer);
+            rendered_modules_row(&cfgd_core::test_helpers::captured_text(&buf))
+        };
+
+        let status = render(&|p| cmd_status(&cli, p, None, false, false, false).unwrap());
+        let diff = render(&|p| crate::cli::diff::cmd_diff(&cli, p, None, false).unwrap());
+        let sync = render(&|p| crate::cli::sync::cmd_sync(&cli, p).unwrap());
+
+        // The daemon's reader is another process, so it renders what the
+        // reconcile tick put on the wire: the same derivation, carried.
+        let (probe, _) = test_printers();
+        let ctx = crate::cli::RunContext::new(&cli, &probe);
+        let (cfg, _, local_resolved) = ctx.config_and_profile().unwrap();
+        let desired = crate::cli::helpers::resolve_desired_state(
+            &ctx,
+            cfg,
+            local_resolved,
+            &[],
+            false,
+            &probe,
+            false,
+            cfgd_core::composition::ConstraintMode::Report,
+        )
+        .unwrap();
+        let mut response = crate::cli::daemon::placeholder_status();
+        response.running = true;
+        response.modules = cfgd_core::output::HeaderModule::of_resolved(&desired.modules);
+        let daemon = render(&|p| {
+            p.emit(crate::cli::daemon::build_daemon_status_doc(
+                Some(&response),
+                &[],
+                "2026-05-12T14:30:25Z",
+            ))
+        });
+
+        for (surface, row) in [("diff", &diff), ("sync", &sync), ("daemon status", &daemon)] {
+            assert_eq!(
+                &status, row,
+                "`cfgd {surface}` names the profile's modules differently from \
+                 `cfgd status`"
+            );
+        }
+        drop(config_dir);
     }
 
     /// The module health line's units agree with their own counts: a module
@@ -2426,6 +2498,7 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         printer.emit(build_fleet_status_doc(
             &output,
+            &[],
             &[],
             std::path::Path::new("/etc/cfgd/cfgd.yaml"),
             "default",
@@ -2483,6 +2556,7 @@ mod tests {
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             printer.emit(build_fleet_status_doc(
                 &output,
+                &[],
                 &[],
                 std::path::Path::new("/etc/cfgd/cfgd.yaml"),
                 "default",
@@ -2569,6 +2643,7 @@ mod tests {
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             printer.emit(build_fleet_status_doc(
                 &output,
+                &[],
                 &[],
                 std::path::Path::new("/etc/cfgd/cfgd.yaml"),
                 "default",
@@ -2738,6 +2813,7 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         printer.emit(build_fleet_status_doc(
             output,
+            &[],
             &[],
             std::path::Path::new("/etc/cfgd/cfgd.yaml"),
             "default",

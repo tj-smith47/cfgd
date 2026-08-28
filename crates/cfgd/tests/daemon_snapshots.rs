@@ -54,7 +54,6 @@ const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
 fn sample_status_basic() -> DaemonStatusResponse {
     DaemonStatusResponse {
-        modules: vec!["base".to_string(), "dev-tools".to_string()],
         running: true,
         pid: 4242,
         uptime_secs: 3600,
@@ -86,6 +85,13 @@ fn sample_status_basic() -> DaemonStatusResponse {
         sync_interval_secs: Some(900),
         config_path: Some("/home/u/.config/cfgd/cfgd.yaml".to_string()),
         profile: Some("work".to_string()),
+        modules: ["base", "dev-tools"]
+            .into_iter()
+            .map(|name| cfgd_core::output::HeaderModule {
+                name: name.to_string(),
+                platform_skip_reason: None,
+            })
+            .collect(),
     }
 }
 
@@ -97,7 +103,6 @@ fn sample_status_with_update() -> DaemonStatusResponse {
 
 fn sample_status_no_timestamps() -> DaemonStatusResponse {
     DaemonStatusResponse {
-        modules: vec![],
         running: true,
         pid: 1,
         uptime_secs: 1,
@@ -111,6 +116,7 @@ fn sample_status_no_timestamps() -> DaemonStatusResponse {
         sync_interval_secs: None,
         config_path: None,
         profile: None,
+        modules: vec![],
     }
 }
 

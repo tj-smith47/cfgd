@@ -4,8 +4,12 @@
   "lastReconcile": "2026-05-12T10:00:00Z",
   "lastSync": "2026-05-12T09:55:00Z",
   "modules": [
-    "base",
-    "dev-tools"
+    {
+      "name": "base"
+    },
+    {
+      "name": "dev-tools"
+    }
   ],
   "pid": 4242,
   "profile": "work",

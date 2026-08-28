@@ -430,12 +430,16 @@ pub struct DaemonStatusResponse {
     pub config_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
-    /// The modules that profile resolves to, in the order it lists them — the
-    /// row every other surface reporting on a resolved profile opens with.
-    /// Empty from a daemon that predates the field, and from a profile that
-    /// resolves to none.
+    /// Every module that profile resolves to, in the resolver's own order —
+    /// the row every other surface reporting on a resolved profile opens with,
+    /// derived through the same [`crate::output::HeaderModule::of_resolved`]
+    /// they read. Written by the reconcile tick, so it is empty until the
+    /// first one completes, and from a profile that resolves to none.
+    ///
+    /// Not a duplicate of [`Self::module_reconcile`], which lists only the
+    /// modules whose resolved reconcile settings earned them a dedicated timer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub modules: Vec<String>,
+    pub modules: Vec<crate::output::HeaderModule>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -458,7 +462,7 @@ pub(super) struct DaemonState {
     // reload re-reads the same file under the same profile.
     config_path: Option<String>,
     profile: Option<String>,
-    modules: Vec<String>,
+    pub(super) modules: Vec<crate::output::HeaderModule>,
     update_available: Option<String>,
     // The stale-skill signature ("user:N,project:M") last surfaced via the
     // notifier, so the consolidated skill-stale notice fires at most once per
@@ -752,10 +756,6 @@ pub(super) struct PreLoopSetup {
     /// The profile the loop resolved — `--profile`, then `spec.profile`, then
     /// `default`. What `daemon status` names beside the config path.
     pub profile_name: String,
-    /// The modules that profile resolves to, in its own order — the row
-    /// `daemon status` names under the profile. Empty when the profile did not
-    /// resolve, which is the same row a profile with no modules prints: none.
-    pub profile_modules: Vec<String>,
 }
 
 /// Build everything `run_daemon` needs before it starts spawning tasks.
@@ -894,10 +894,6 @@ pub(super) fn build_pre_loop_setup(
         shortest_sync,
         server_checkin_url,
         profile_name: resolved_profile_name,
-        profile_modules: resolved_profile
-            .as_ref()
-            .map(|r| r.merged.modules.clone())
-            .unwrap_or_default(),
     })
 }
 
@@ -1070,7 +1066,6 @@ pub(super) async fn run_daemon_with(
         let mut st = state.lock().await;
         st.config_path = Some(crate::PathDisplayExt::display_posix(&config_path));
         st.profile = Some(setup.profile_name.clone());
-        st.modules = setup.profile_modules.clone();
         for s in st.sources.iter_mut().filter(|s| s.name == LOCAL_LAYER) {
             s.last_commit = setup.local_head_commit.clone();
         }

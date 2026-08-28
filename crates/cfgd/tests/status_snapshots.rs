@@ -468,12 +468,26 @@ fn declared_sources() -> Vec<cfgd::cli::output_types::SourceListEntry> {
     }]
 }
 
+/// The header's view of the fixture's resolved modules, the shape
+/// `cmd_status` derives from its own resolution.
+fn header_modules(output: &StatusOutput) -> Vec<cfgd_core::output::HeaderModule> {
+    output
+        .modules
+        .iter()
+        .map(|m| cfgd_core::output::HeaderModule {
+            name: m.name.clone(),
+            platform_skip_reason: None,
+        })
+        .collect()
+}
+
 #[test]
 fn status_clean_human() {
     let output = clean_output();
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_fleet_status_doc(
         &output,
+        &header_modules(&output),
         &[],
         Path::new("/etc/cfgd/cfgd.yaml"),
         "default",
@@ -490,6 +504,7 @@ fn status_clean_json() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_fleet_status_doc(
         &output,
+        &header_modules(&output),
         &[],
         Path::new("/etc/cfgd/cfgd.yaml"),
         "default",
@@ -513,6 +528,7 @@ fn status_drift_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_fleet_status_doc(
         &output,
+        &header_modules(&output),
         &sources,
         Path::new("/etc/cfgd/cfgd.yaml"),
         "default",
@@ -530,6 +546,7 @@ fn status_drift_json() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_fleet_status_doc(
         &output,
+        &header_modules(&output),
         &sources,
         Path::new("/etc/cfgd/cfgd.yaml"),
         "default",

@@ -5,15 +5,11 @@ use cfgd_core::output::{Doc, OwnerLabel, Role};
 pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
     printer.heading("Sync");
 
-    let (cfg, profile_name, resolved) = load_config_and_profile(cli, printer)?;
-    let mut rows = cfgd_core::output::config_profile_rows(Some(&cli.config), Some(&profile_name));
-    // The profile's own module list, through the builder every run header
-    // reads: what a sync pulls is what those modules will be applied from.
-    rows.extend(cfgd_core::output::modules_header_row(
-        &resolved.merged.modules,
-        &[],
+    let (cfg, profile_name, _resolved) = load_config_and_profile(cli, printer)?;
+    printer.kv_rows(cfgd_core::output::config_profile_rows(
+        Some(&cli.config),
+        Some(&profile_name),
     ));
-    printer.kv_rows(rows);
 
     let config_dir = config_dir(cli);
 
@@ -283,6 +279,13 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         }
     }
 
+    // Resolved AFTER the pull and the source fetches, never from the config
+    // loaded above: a sync exists to bring a changed config down, so the set
+    // the closing `cfgd apply` hint acts on is the one on disk now. A config
+    // the pull left unloadable prints no row and is reported, loudly, by the
+    // command that hint names.
+    let header_modules = post_sync_modules(cli, printer);
+
     let (verdict_role, verdict, verdict_detail) = sync_verdict(&sync_payload.sources);
     match verdict_detail {
         Some(detail) => {
@@ -291,17 +294,50 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         None => printer.status_simple(verdict_role, verdict),
     }
 
-    let doc = if changes_detected {
+    let mut doc = Doc::new().kv_rows(cfgd_core::output::modules_header_row_for(&header_modules));
+    if changes_detected {
         // The `source:<name>` rows above already said the sources updated; all
         // that is left to say is what to run next, in the one spelling every
         // other command uses for it.
-        Doc::new().hint(MSG_RUN_APPLY).with_data(&sync_payload)
-    } else {
-        Doc::new().with_data(&sync_payload)
-    };
-    printer.emit(doc);
+        doc = doc.hint(MSG_RUN_APPLY);
+    }
+    printer.emit(doc.with_data(&sync_payload));
 
     Ok(())
+}
+
+/// The modules the freshly synced config resolves to, for the closing header
+/// row.
+///
+/// Best-effort by design: the row is the only thing that depends on it, and a
+/// sync that fetched everything it was asked to has succeeded whatever the
+/// pulled config now says.
+fn post_sync_modules(
+    cli: &Cli,
+    printer: &cfgd_core::output::Printer,
+) -> Vec<cfgd_core::output::HeaderModule> {
+    // Quiet: every advisory this second load can raise was already drained by
+    // the load at the top of the command.
+    let quiet = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
+    let ctx = RunContext::new(cli, &quiet);
+    let Ok((cfg, _, local_resolved)) = ctx.config_and_profile() else {
+        return Vec::new();
+    };
+    // Cache-only: the fetches above already populated it, and a sync never
+    // reaches the network twice for one source.
+    let Ok(desired) = resolve_desired_state(
+        &ctx,
+        cfg,
+        local_resolved,
+        &[],
+        false,
+        &quiet,
+        false,
+        composition::ConstraintMode::Report,
+    ) else {
+        return Vec::new();
+    };
+    cfgd_core::output::HeaderModule::of_resolved(&desired.modules)
 }
 
 /// The one line `cfgd sync` closes on, whichever way the run went.

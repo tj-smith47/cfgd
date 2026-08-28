@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::Role;
 
@@ -309,6 +309,60 @@ pub fn modules_header_row(names: &[String], skips: &[(&str, &str)]) -> Option<Kv
         return None;
     }
     Some(KvPair::annotated("Modules", listed.join(", "), annotation))
+}
+
+/// One module a `Modules` header row names: the module itself, and the reason
+/// this host contributes no work for it.
+///
+/// [`HeaderModule::of_resolved`] is the ONE derivation of a header row's
+/// inputs from a resolution, and every surface reporting on a resolved profile
+/// reads it — so membership (a `dependsOn` pulls its dependency into the set),
+/// ORDER (the resolver returns them dependency-first) and GATING cannot differ
+/// between two reports about one machine. `status` and the apply header
+/// derived their own and named the profile's DECLARED list, so a profile of
+/// one module that depends on another read `nvim` on three surfaces and
+/// `base, nvim` on two.
+///
+/// Carried over the daemon's status wire because that reader is another
+/// process: it holds no `ResolvedModule` of its own and must not re-derive one
+/// from the declared list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeaderModule {
+    pub name: String,
+    /// The `spec.platforms` gate that took this module out of the run, as
+    /// `ResolvedModule` recorded it — the same string the plan's `Skip` action
+    /// carries, so the two renders of one gated module agree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_skip_reason: Option<String>,
+}
+
+impl HeaderModule {
+    /// The header's view of a resolution, in the resolver's own order.
+    pub fn of_resolved(modules: &[crate::modules::ResolvedModule]) -> Vec<Self> {
+        modules
+            .iter()
+            .map(|module| Self {
+                name: module.name.clone(),
+                platform_skip_reason: module.platform_skip_reason.clone(),
+            })
+            .collect()
+    }
+}
+
+/// The `Modules` header row for a caller holding a resolution — what every
+/// surface but the run header reads.
+///
+/// The run header keeps [`modules_header_row`] itself: its skips come from the
+/// plan's own `Skip` actions, which `Reconciler::plan` builds from the very
+/// `platform_skip_reason` this reads, so the two cannot disagree.
+pub fn modules_header_row_for(modules: &[HeaderModule]) -> Option<KvPair> {
+    let names: Vec<String> = modules.iter().map(|m| m.name.clone()).collect();
+    let skips: Vec<(&str, &str)> = modules
+        .iter()
+        .filter_map(|m| Some((m.name.as_str(), m.platform_skip_reason.as_deref()?)))
+        .collect();
+    modules_header_row(&names, &skips)
 }
 
 /// A `command_list` row: a shell command (or a `name <type>` pair) and its

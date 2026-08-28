@@ -29506,6 +29506,7 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
     printer.emit(super::status::build_fleet_status_doc(
         &output,
         &[],
+        &[],
         std::path::Path::new("/etc/cfgd/cfgd.yaml"),
         "default",
         "2026-05-12T14:30:25Z",
@@ -29695,7 +29696,23 @@ fn every_resolved_profile_header_names_its_modules_through_the_one_builder() {
         "kv(\"Modules\"",
         "KvPair::new(\"Modules\"",
         "KvPair::annotated(\"Modules\"",
+        "KvPair::role_valued(\"Modules\"",
         "(\"Modules\", ",
+        "(\"Modules\".to_string(), ",
+    ];
+    // A heading, a section or an owner label legitimately takes the same name
+    // and is not a row. Judged on the CALL, never on the word: the substring
+    // `section` matched an identifier, so `KvPair::new("Modules",
+    // section_names)` walked straight past.
+    const NOT_A_ROW: &[&str] = &[
+        ".section(",
+        ".section_if_nonempty(",
+        ".section_or_collapse(",
+        ".heading(",
+        ".heading_title(",
+        "section_owner",
+        "subsection_owner",
+        "heading_owner_prefixed",
     ];
     let mut checked: Vec<String> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
@@ -29714,8 +29731,7 @@ fn every_resolved_profile_header_names_its_modules_through_the_one_builder() {
             if code.starts_with("//") {
                 continue;
             }
-            // A section heading takes the same name and is not a row.
-            if code.contains("section") || code.contains("heading") {
+            if NOT_A_ROW.iter().any(|call| code.contains(call)) {
                 continue;
             }
             if !NEEDLES.iter().any(|needle| line.contains(needle)) {
@@ -30076,6 +30092,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
             "cfgd status",
             super::status::build_fleet_status_doc(
                 &fleet,
+                &[],
                 &[],
                 &config_path,
                 "base",

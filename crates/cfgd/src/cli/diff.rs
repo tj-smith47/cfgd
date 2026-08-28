@@ -106,13 +106,6 @@ pub fn cmd_diff(
 
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let mut rows = cfgd_core::output::config_profile_rows(Some(&cli.config), Some(profile_name));
-    // What that profile resolves to, on the same terms the run header this
-    // report's fix will print names them.
-    rows.extend(cfgd_core::output::modules_header_row(
-        &local_resolved.merged.modules,
-        &[],
-    ));
-    printer.kv_rows(rows);
     // Drift is reported under the same owner that would be named in the plan
     // that fixes it, so the two surfaces read as one coordinate system.
     let profile_owner = Owner::profile(profile_name.to_string());
@@ -139,6 +132,14 @@ pub fn cmd_diff(
     let registry = desired.take_registry(cfg);
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
+
+    // Emitted after the resolve, not before it: the header names what the
+    // profile RESOLVES to, and a `depends` pulls a module the declared list
+    // never mentions into the set the findings below are reported against.
+    rows.extend(cfgd_core::output::modules_header_row_for(
+        &cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
+    ));
+    printer.kv_rows(rows);
 
     ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
 
