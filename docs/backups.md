@@ -111,9 +111,9 @@ $ cfgd --output json backup run missing-name
 
 $ cfgd backup rollback
 Rollback Copies
-Name      Copy                                          Created  Size
-─────────────────────────────────────────────────────────────────────────
-notes-db  ~/.local/share/notes/notes.db.cfgd-backup     6m ago   8.0 KB
+Name      Copy                                       Created  Size  
+────────────────────────────────────────────────────────────────────
+notes-db  ~/.local/share/notes/notes.db.cfgd-backup  6h ago   8.0 KB
 ```
 
 `cfgd backup run [name]` runs every declared backup when `name` is omitted, or the named one.
@@ -685,6 +685,7 @@ Rollback: notes-db
 
 backup:notes-db
   ✓ rollback /home/me/.local/share/notes/notes.db from notes.db.cfgd-backup — 8.0 KB
+  → Previous contents backed up to /home/me/.local/share/notes/notes.db.cfgd-backup.20260101T120000Z; put them back with `cfgd backup rollback notes-db`
 
 ✓ Rollback complete — 1 action succeeded (0.2s wall)
 
@@ -701,15 +702,16 @@ cfgd --output json backup rollback       # the same listing, as an array
 ```
 
 The rollback runs through the same envelope a restore does: the unit's lock, its one
-`preBackup` / `postBackup` hook list (with `CFGD_OPERATION=rollback`), and the same confirmation.
-It takes no safety copy of its own — what it displaces is what the restore just wrote, which is
-still in the snapshot store — and it leaves the sidecar in place, so rolling back twice lands the
-same bytes as rolling back once.
+`preBackup` / `postBackup` hook list (with `CFGD_OPERATION=rollback`), the same confirmation, and
+the same safety copy. The contents the rollback displaces are copied aside as their own sidecar
+first, so work written after the restore is never lost and the rollback is itself reversible:
+rolling back twice returns the source to where it started.
 
 **One copy is retained per source.** When a displacement writes a new copy, the older stamped
 sidecars for that path are pruned, so a rollback always undoes the *most recent* displacement.
 Only names cfgd itself would have written are pruned; anything else beside the source is left
-alone.
+alone — and the same rule decides what a rollback will put back, so a file cfgd never wrote is
+never published over your live source either.
 
 A unit with no copy beside its source is refused, exit `6`, naming the verb that leaves one:
 

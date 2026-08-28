@@ -536,8 +536,8 @@ pub(super) fn report_path(path: &Path) -> String {
     crate::strip_windows_verbatim(&crate::to_posix_string(path)).to_string()
 }
 
-/// Copy the source's current contents aside before it is overwritten,
-/// returning what the sidecar writer did, its path posix-folded.
+/// Copy the source's current contents aside before a restore or a rollback
+/// overwrites it, returning what the sidecar writer did, its path posix-folded.
 ///
 /// The sidecar writer, not the snapshot writer: a restore is cfgd about to
 /// displace data it did not write, which is exactly what the `.cfgd-backup`
@@ -556,7 +556,10 @@ pub(super) fn report_path(path: &Path) -> String {
 /// The sidecar writer reads a regular file whole to verify the copy's hash.
 /// ponytail: a multi-gigabyte single-file unit is held in memory here;
 /// stream-and-hash it if one ever turns up.
-fn take_safety_copy(unit: &BackupUnit<'_>, target: &Path) -> Result<Option<SidecarOutcome>> {
+pub(super) fn take_safety_copy(
+    unit: &BackupUnit<'_>,
+    target: &Path,
+) -> Result<Option<SidecarOutcome>> {
     if !overwrites_source(unit, target) {
         return Ok(None);
     }

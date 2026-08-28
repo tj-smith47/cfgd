@@ -3200,6 +3200,104 @@ fn a_rollback_runs_the_units_hooks_with_the_rollback_operation() {
     assert_eq!(marker_contents(&post), "rollback");
 }
 
+/// A rollback is itself reversible: the contents it displaces — work made after
+/// the restore, which no snapshot and no sidecar would otherwise hold — are
+/// copied aside through the same sidecar writer before the copy goes back.
+#[test]
+fn a_rollback_copies_the_contents_it_displaces_aside_so_it_can_be_undone() {
+    let h = Harness::new();
+    let source = h.seed_file("notes.txt", b"snapshot era");
+    let s = spec("docs", &source);
+    h.run(&s);
+
+    std::fs::write(&source, b"pre-restore").expect("edit source");
+    h.restore(&s, None, None).expect("restore runs");
+    std::fs::write(&source, b"written after the restore").expect("the operator's own work");
+
+    let outcome = h.rollback(&s).expect("rollback runs");
+    assert!(outcome.is_clean(), "{outcome:?}");
+    assert_eq!(std::fs::read(&source).unwrap(), b"pre-restore");
+
+    let safety = outcome.safety_copy.expect("a rollback takes a safety copy");
+    assert_eq!(
+        std::fs::read(&safety.path).unwrap(),
+        b"written after the restore",
+        "the bytes the rollback displaced are in the copy it left"
+    );
+    assert_eq!(
+        h.rollback_copy(&s).expect("a copy to roll back").path,
+        safety.path,
+        "and that copy is what a second rollback would put back"
+    );
+}
+
+/// A `preBackup` failure stops the rollback before any byte moves, and the
+/// `postBackup` counterpart still runs — the same envelope a restore holds.
+#[test]
+fn a_rollback_whose_pre_backup_hook_failed_writes_nothing() {
+    let h = Harness::new();
+    let source = h.seed_file("notes.txt", b"snapshot era");
+    let s = spec("docs", &source);
+    h.run(&s);
+    std::fs::write(&source, b"live").expect("edit source");
+    h.restore(&s, None, None).expect("restore runs");
+
+    let post = h.root.join("post.marker");
+    let mut hooked = spec("docs", &source);
+    hooked.pre_backup = vec![hook("exit 4")];
+    hooked.post_backup = vec![touch_hook(&post)];
+
+    let outcome = h
+        .rollback(&hooked)
+        .expect("a hook failure is reported through the outcome, not as Err");
+    assert!(
+        !outcome.restored,
+        "a failed preBackup must skip the overlay"
+    );
+    assert!(!outcome.is_clean());
+    assert!(
+        outcome.error.unwrap_or_default().contains("preBackup"),
+        "the hook failure must reach the outcome"
+    );
+    assert!(
+        outcome.safety_copy.is_none(),
+        "no safety copy is taken for a write that never happens"
+    );
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        b"snapshot era",
+        "the source is whatever the restore left"
+    );
+    assert!(post.exists(), "postBackup runs on every path");
+    assert!(staging_leftovers(&h.root).is_empty());
+}
+
+/// A file cfgd did not write is a file cfgd will not publish. The pruner
+/// protects `<source>.cfgd-backup.mine` from deletion; the read side must
+/// refuse it for the same reason, however new its mtime.
+#[test]
+fn a_hand_written_neighbour_is_never_the_copy_a_rollback_puts_back() {
+    let h = Harness::new();
+    let source = h.seed_file("notes.txt", b"live");
+    let s = spec("docs", &source);
+    h.run(&s);
+    h.restore(&s, None, None).expect("restore runs");
+
+    let mine = h.root.join("notes.txt.cfgd-backup.mine");
+    std::fs::write(&mine, b"somebody else's file").expect("hand-written neighbour");
+
+    let copy = h
+        .rollback_copy(&s)
+        .expect("the real sidecar is still found");
+    assert_ne!(copy.path, mine, "a name cfgd never minted is not a sidecar");
+    h.rollback(&s).expect("rollback runs");
+    assert_ne!(
+        std::fs::read(&source).unwrap(),
+        b"somebody else's file",
+        "and its contents never reach the live source"
+    );
+}
+
 /// The row a rollback settles on is an action row: a lowercase verb head, the
 /// target it writes, and the copy it wrote from.
 #[test]

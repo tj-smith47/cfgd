@@ -6,6 +6,7 @@ Rollback: docs
 
 backup:docs
   ✓ rollback <SOURCE> from notes.txt.cfgd-backup — 4 B
+  → Previous contents backed up to <SOURCE>.cfgd-backup.<TIMESTAMP>; put them back with `cfgd backup rollback docs`
 
 ✓ Rollback complete — 1 action succeeded (XXs wall)
 

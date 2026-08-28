@@ -838,6 +838,14 @@ pub struct BackupRollbackOutput {
     /// The overlay completed AND every hook succeeded.
     pub clean: bool,
     pub size_bytes: u64,
+    /// Where the contents the rollback displaced were copied aside — what makes
+    /// the rollback itself reversible. Absent when the source did not exist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_copy: Option<String>,
+    /// Whether `safety_copy` already held those bytes from an earlier
+    /// displacement. Present exactly when `safety_copy` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_copy_reused: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -851,6 +859,11 @@ impl From<&cfgd_core::backup::RollbackOutcome> for BackupRollbackOutput {
             restored: outcome.restored,
             clean: outcome.is_clean(),
             size_bytes: outcome.size_bytes,
+            safety_copy: outcome
+                .safety_copy
+                .as_ref()
+                .map(|s| cfgd_core::to_posix_string(&s.path)),
+            safety_copy_reused: outcome.safety_copy.as_ref().map(|s| s.reused),
             error: outcome.error.clone(),
         }
     }

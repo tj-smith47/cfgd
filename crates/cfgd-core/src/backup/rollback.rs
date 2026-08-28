@@ -15,16 +15,17 @@
 //! - **The payload is a sidecar, not a snapshot.** It has no `backup_runs` row,
 //!   so there is nothing to re-resolve under the lock; the newest copy beside
 //!   the source is looked up again there instead.
-//! - **No safety copy of its own.** Taking one would write a second sidecar
-//!   beside the very copy being consumed, and the retention rule keeps one
-//!   stamped copy per target — so the rollback would either supersede its own
-//!   payload or leave two copies where the rule says one. What a rollback
-//!   displaces is what a restore just wrote, which is still in the unit's
-//!   snapshot store; the confirmation prompt is the gate.
+//! - **The payload is staged before the safety copy is taken.** A rollback
+//!   takes one exactly as a restore does, through the same sidecar writer, so
+//!   the bytes it displaces are recoverable — an operator who edits the source
+//!   after a restore and then rolls back would otherwise lose work no snapshot
+//!   and no sidecar holds. The retention rule keeps one stamped copy per
+//!   target, so writing that copy may prune the very sidecar being put back;
+//!   staging runs first, which is what makes the order safe.
 //!
-//! The sidecar is LEFT in place afterwards. It is what `cfgd profile update`
-//! and module removal restore from when it is the primary copy, and leaving it
-//! makes a repeated rollback a no-op rather than a flip-flop.
+//! A rollback is therefore its own inverse: it leaves the displaced contents in
+//! the sidecar it just wrote, so rolling back twice returns the machine to
+//! where it started rather than being a second no-op.
 
 use std::path::{Path, PathBuf};
 
@@ -68,6 +69,9 @@ pub struct RollbackOutcome {
     pub restored: bool,
     /// Size of the copy that was put back.
     pub size_bytes: u64,
+    /// Where the contents the rollback displaced were copied aside. `None`
+    /// when the source did not exist to be copied.
+    pub safety_copy: Option<crate::reconciler::SidecarOutcome>,
     /// Every failure of the rollback, joined with `; `.
     pub error: Option<String>,
 }
@@ -117,7 +121,10 @@ fn newest_sidecar(source: &Path) -> Option<RollbackCopy> {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if !(name == base || name.starts_with(&format!("{base}."))) {
+        // The pruner's own predicate: a name cfgd did not write is a file it
+        // will not delete, so it must not be a file it publishes over live
+        // data either. One meaning of "a sidecar cfgd wrote", both directions.
+        if !(name == base || crate::reconciler::is_stamped_sidecar_name(&name, &base)) {
             continue;
         }
         let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
@@ -161,9 +168,12 @@ fn sidecar_size(path: &Path) -> u64 {
 ///    underneath the rollback, and look the copy up again inside it — the
 ///    caller resolved one before prompting, and a concurrent displacement may
 ///    have superseded it since;
-/// 2. stage the copy into a temp directory beside the target;
+/// 2. stage the copy into a temp directory beside the target, which is also
+///    what puts it out of reach of the retention prune the next step runs;
 /// 3. `preBackup` hooks;
-/// 4. the overlay, then `postBackup` hooks;
+/// 4. copy the source's CURRENT contents aside through the sidecar writer, so
+///    the rollback is itself reversible, then the overlay, then `postBackup`
+///    hooks;
 /// 5. staging is removed on every path, success or failure.
 ///
 /// # Failure semantics
@@ -171,9 +181,9 @@ fn sidecar_size(path: &Path) -> u64 {
 /// [`super::run_backup`]'s: an operational failure is reported through the
 /// returned [`RollbackOutcome`], and `Err` is reserved for failures that stop
 /// the rollback before it can begin (a held lock, no copy to put back, a
-/// kind mismatch, a failed staging). A `preBackup` failure skips the overlay;
-/// `postBackup` hooks run on every path, because they are the counterpart that
-/// restarts whatever `preBackup` stopped.
+/// kind mismatch, a failed staging, a safety copy that would not verify). A
+/// `preBackup` failure skips the overlay; `postBackup` hooks run on every path,
+/// because they are the counterpart that restarts whatever `preBackup` stopped.
 pub fn rollback_backup(unit: &BackupUnit<'_>, printer: &Printer) -> Result<RollbackOutcome> {
     let spec = unit.spec();
     let name = spec.name.clone();
@@ -209,17 +219,29 @@ pub fn rollback_backup(unit: &BackupUnit<'_>, printer: &Printer) -> Result<Rollb
     // A failed `preBackup` leaves the source in whatever state the hook stopped
     // in — a service still writing to the file being replaced, most of the
     // time. Overwriting it then is exactly what the hook existed to prevent.
-    let overlay = match pre_error {
-        Some(_) => None,
-        None => {
-            // Retired silently: the rollback's own status row is rendered after
-            // this function returns.
-            let sp = printer.spinner(format!("Rolling back {name}: overlaying files"));
-            let done = super::restore::overlay_restore(&name, &staged.payload, &target);
-            sp.finish_silent();
-            Some(done)
+    let mut safety = None;
+    let mut fatal = None;
+    let mut overlay = None;
+    if pre_error.is_none() {
+        // Retired silently: the rollback's own status row is rendered after
+        // this function returns.
+        let mut sp = printer.spinner(format!(
+            "Rolling back {name}: copying current contents aside"
+        ));
+        match super::restore::take_safety_copy(unit, &target) {
+            Ok(taken) => {
+                safety = taken;
+                sp.set_message(format!("Rolling back {name}: overlaying files"));
+                overlay = Some(super::restore::overlay_restore(
+                    &name,
+                    &staged.payload,
+                    &target,
+                ));
+            }
+            Err(e) => fatal = Some(e),
         }
-    };
+        sp.finish_silent();
+    }
 
     let post_error = super::run_hooks(
         unit,
@@ -230,6 +252,20 @@ pub fn rollback_backup(unit: &BackupUnit<'_>, printer: &Printer) -> Result<Rollb
         &mut items,
     )
     .err();
+
+    if let Some(fatal) = fatal {
+        // A `postBackup` failure on the way out must reach the structured
+        // error itself, not just stderr, exactly as a restore's does.
+        if let Some(e) = post_error {
+            return Err(crate::errors::CfgdError::Backup(
+                BackupError::RestoreAbortHookFailed {
+                    fatal: Box::new(fatal),
+                    post_message: collapse_to_subject_line(&e),
+                },
+            ));
+        }
+        return Err(fatal);
+    }
 
     if let Some(e) = pre_error {
         failures.push(collapse_to_subject_line(&e));
@@ -252,6 +288,7 @@ pub fn rollback_backup(unit: &BackupUnit<'_>, printer: &Printer) -> Result<Rollb
         restored_to: super::restore::report_path(&target),
         restored,
         size_bytes: copy.size_bytes,
+        safety_copy: safety,
         error: (!failures.is_empty()).then(|| failures.join("; ")),
     })
 }
@@ -281,6 +318,16 @@ pub fn report_rollback(
         None => {
             group.status_simple(role, subject);
         }
+    }
+    if let Some(safety) = &outcome.safety_copy {
+        // The same slot a restore closes on, for the same reason: a rollback
+        // displaces live data too, and the operator who regrets it needs to be
+        // told where it went. Worded by the sidecar's own outcome.
+        group.hint(format!(
+            "Previous contents {}; put them back with `cfgd backup rollback {}`",
+            safety.detail(),
+            outcome.name
+        ));
     }
     crate::reconciler::RunTally {
         succeeded: usize::from(outcome.restored),

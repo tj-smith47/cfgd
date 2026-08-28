@@ -204,7 +204,13 @@ fn prune_stamped_sidecars(target: &Path, keep: &Path) {
 ///
 /// The primary `<base>` itself answers `false`: it is the content that predates
 /// cfgd, and nothing prunes it.
-fn is_stamped_sidecar_name(name: &str, base: &str) -> bool {
+///
+/// The ONE meaning of "a sidecar cfgd wrote", in both directions: the pruner
+/// deletes nothing this does not name, and `cfgd backup rollback` publishes
+/// nothing this does not name either. Protecting a hand-written
+/// `<base>.mine` from deletion and then writing its contents over the
+/// operator's live source would be two answers to one question.
+pub(crate) fn is_stamped_sidecar_name(name: &str, base: &str) -> bool {
     let Some(rest) = name.strip_prefix(base).and_then(|r| r.strip_prefix('.')) else {
         return false;
     };
@@ -236,8 +242,13 @@ fn is_backup_stamp(s: &str) -> bool {
 /// The primary `<target>.cfgd-backup` is what `profile update` and module
 /// removal offer to restore, so it keeps the FIRST content adopted there — the
 /// one that predates cfgd. A second, different original is stamped instead of
-/// clobbering it, because a sidecar overwritten by the file that displaced it
-/// is the same data loss the copy exists to prevent.
+/// clobbering it, so THIS write never lands on an occupied name: for a
+/// directory that would silently merge two different originals into one tree,
+/// and for a file it would destroy the copy in the same instant as the target.
+///
+/// How many stamped copies survive afterwards is a separate rule, stated at
+/// [`prune_stamped_sidecars`] and bounded to one — the reservation finds a free
+/// name, the prune decides what is still worth keeping.
 ///
 /// The stamp has one-second resolution, so it is a hint at a free name and
 /// never a guarantee of one: two adoptions of the same target inside one second

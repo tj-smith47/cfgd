@@ -1934,9 +1934,9 @@ without `--yes` is an error rather than a silent no-op. See [Restoring](backups.
 `backup rollback <name>` puts the safety copy back over the source, undoing a restore of the
 wrong snapshot. It runs through the same envelope: the unit's lock, the one `preBackup` /
 `postBackup` hook list (seeing `CFGD_OPERATION=rollback`), and the same confirmation and `--yes`
-rule. It takes no safety copy of its own — what it displaces is what the restore just wrote,
-still in the snapshot store — and leaves the sidecar in place, so a second rollback lands the
-same bytes. One copy is retained per source: a new displacement prunes the older stamped
+rule, including the safety copy: the contents it displaces are copied aside as their own sidecar
+first, so a rollback is itself reversible and a second one returns the source to where it
+started. One copy is retained per source: a new displacement prunes the older stamped
 sidecars cfgd itself wrote for that path, and nothing else in the directory. With no name it
 lists what it could put back and changes nothing; a unit with no copy beside its source is exit
 `6` with a `cfgd backup restore <name>` hint. See
@@ -1963,7 +1963,8 @@ when the operator declines at the confirmation prompt,
 `clean` deliberately: a decline exits `0`, and reporting `clean: false` beside a zero exit would
 contradict whichever of the two a consumer trusted.
 For `backup rollback <name>`: a single
-`{ name, copy, restoredTo, restored, clean, sizeBytes, error? }`, and on a decline
+`{ name, copy, restoredTo, restored, clean, sizeBytes, safetyCopy?, safetyCopyReused?, error? }`,
+and on a decline
 `{ name, copy, restoredTo, restored: false, declined: true }` — the same split, for the same
 reason. For `backup rollback` with no name: an array of `{ name, copy, created, sizeBytes }`,
 one per unit that has a copy beside its source, where `created` is the copy's modification time
