@@ -29673,6 +29673,75 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
     );
 }
 
+/// Every header kv row that names a path under home folds it to `~/`, the
+/// way the action rows under it do — the `Config` row every run header,
+/// `status`, `diff`, `sync`, `daemon status` and `profile show` open on, the
+/// `Source` row `backup run <name>` / `backup restore` hang above a
+/// `restore ~/… from …` subject, and every directory `cfgd paths` lists.
+/// `-o json` keeps the absolute path on all three.
+#[test]
+#[serial_test::serial]
+fn no_header_row_spells_the_home_directory_absolutely() {
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let home_posix = home.path().posix().to_string();
+    let config_path = home.path().join(".config/cfgd/cfgd.yaml");
+    let source = home.path().join("notes");
+    let source_posix = source.posix().to_string();
+
+    let rows = cfgd_core::output::config_profile_rows(Some(&config_path), Some("base"));
+    let ctx = cfgd_core::reconciler::RunContext {
+        title: cfgd_core::reconciler::RunTitle::Restore,
+        config_path: Some(&config_path),
+        profile: Some("base"),
+        sources: &[],
+        modules: &[],
+        trigger: None,
+        subject: Some("notes"),
+        unit_source: Some(&source_posix),
+    };
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cfgd_core::reconciler::ApplyRun::unplanned(ctx, 1).header(&printer);
+    let header = cfgd_core::test_helpers::captured_text(&buf);
+
+    let mut cli = test_cli_with_state(home.path(), Some(home.path().join("state")));
+    cli.config = config_path.clone();
+    let paths = super::paths::collect_paths_output(&cli, &super::paths::DirSources::all_default())
+        .expect("paths collect");
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    printer.emit(super::paths::build_paths_doc(&paths));
+    let paths_doc = cfgd_core::test_helpers::captured_text(&buf);
+
+    for (surface, text) in [
+        (
+            "config_profile_rows",
+            rows.iter()
+                .map(|r| format!("{} {}", r.key, r.value))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        ("ApplyRun::header", header),
+        ("cfgd paths", paths_doc),
+    ] {
+        assert!(
+            !text.contains(&home_posix),
+            "{surface} spells a path under home absolutely where the rows beside it fold it:\n{text}"
+        );
+    }
+    assert!(
+        rows[0].value == "~/.config/cfgd/cfgd.yaml",
+        "the `Config` row folds: {:?}",
+        rows[0].value
+    );
+    assert_eq!(
+        paths.config.file,
+        config_path.posix().to_string(),
+        "the `-o json` payload keeps the absolute path"
+    );
+}
+
 /// Every verb that runs a plan records `managed_resources` rows with no hash,
 /// and settles them through the ONE `refresh_link_deployed_hashes` seam
 /// before it returns — or the daemon's first tick after it backfills the

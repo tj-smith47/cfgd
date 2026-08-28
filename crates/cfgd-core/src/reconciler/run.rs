@@ -511,8 +511,9 @@ impl<'a> ApplyRun<'a> {
         if let Some(trigger) = self.ctx.trigger {
             rows.push(KvPair::new("Trigger", trigger.to_string()));
         }
+        // Folded like the `restore ~/… from …` row directly under it.
         if let Some(source) = self.ctx.unit_source {
-            rows.push(KvPair::new("Source", source.to_string()));
+            rows.push(KvPair::new("Source", crate::fold_home_in_text(source)));
         }
         // The `Phases` row names exactly the blocks the tree will print, so it
         // is read off the tree rather than recomputed from the plan.

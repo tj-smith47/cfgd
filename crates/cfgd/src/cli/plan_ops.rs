@@ -97,7 +97,7 @@ fn shell_env_reminder_note(
         .find(|p| p.ends_with(preferred))
         .or_else(|| candidates.first())
     {
-        Some(path) => fold_home_to_tilde(path),
+        Some(path) => cfgd_core::fold_home_in_text(path),
         None => format!("~/{preferred}"),
     };
     let command = if shown.ends_with(PS_ENV_FILE) {
@@ -148,16 +148,6 @@ fn current_shell_env_file() -> &'static str {
         std::env::var("MSYSTEM").ok().as_deref(),
         std::env::var("SHELL").ok().as_deref(),
     )
-}
-
-/// Render an absolute env-file path as `~/…` when it sits under the current
-/// home, so the reminder shows a command the user can retype verbatim.
-fn fold_home_to_tilde(path: &str) -> String {
-    let home = cfgd_core::to_posix_string(cfgd_core::expand_tilde(std::path::Path::new("~")));
-    match path.strip_prefix(&format!("{}/", home.trim_end_matches('/'))) {
-        Some(rest) if !home.is_empty() => format!("~/{rest}"),
-        _ => path.to_string(),
-    }
 }
 
 /// Derive a short action type string from a reconciler Action.

@@ -168,7 +168,7 @@ pub struct RuntimePaths {
 /// override) reports `null` for that root rather than failing the whole command,
 /// while the home-independent socket fallback (`/tmp/cfgd.sock` / named pipe) is
 /// still reported.
-fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<PathsOutput> {
+pub(crate) fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<PathsOutput> {
     let scope = cli.scope();
     // `cli.config` is the already-resolved config FILE (main.rs folds --config /
     // --config-dir / resolve_config_path / macOS migration into it); the config
@@ -255,9 +255,10 @@ fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<Paths
 /// Render an `Option<String>` path for the human Doc: the path, or a clear
 /// unavailable marker when the root could not be resolved.
 fn or_unavailable(value: &Option<String>) -> String {
-    value
-        .clone()
-        .unwrap_or_else(|| "(no home — unavailable)".to_string())
+    value.as_deref().map_or_else(
+        || "(no home — unavailable)".to_string(),
+        cfgd_core::fold_home_in_text,
+    )
 }
 
 /// Build the `paths` human + structured `Doc` from a collected payload.
@@ -268,9 +269,9 @@ pub fn build_paths_doc(output: &PathsOutput) -> Doc {
     let config = &output.config;
     doc = doc.section("Config", |s| {
         s.kv_block([
-            ("Directory", config.dir.clone()),
+            ("Directory", cfgd_core::fold_home_in_text(&config.dir)),
             ("Source", config.source.label().to_string()),
-            ("File", config.file.clone()),
+            ("File", cfgd_core::fold_home_in_text(&config.file)),
         ])
     });
 
@@ -299,7 +300,7 @@ pub fn build_paths_doc(output: &PathsOutput) -> Doc {
         s.kv_block([
             ("Directory", or_unavailable(&runtime.dir)),
             ("Source", runtime.source.label().to_string()),
-            ("Socket", runtime.socket.clone()),
+            ("Socket", cfgd_core::fold_home_in_text(&runtime.socket)),
         ])
     });
 

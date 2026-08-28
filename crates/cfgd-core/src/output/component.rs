@@ -239,9 +239,12 @@ pub fn config_profile_rows(
 ) -> Vec<KvPair> {
     let mut rows = Vec::new();
     if let Some(path) = config_path {
+        // Folded like every action row under it: a header that spelled
+        // `/home/tj/.config/cfgd/cfgd.yaml` six lines above `write ~/.cfgd.env`
+        // named one directory two ways in one report.
         rows.push(KvPair::new(
             "Config",
-            crate::PathDisplayExt::display_posix(&path),
+            crate::fold_home_in_text(&crate::PathDisplayExt::display_posix(&path)),
         ));
     }
     if let Some(profile) = profile {
