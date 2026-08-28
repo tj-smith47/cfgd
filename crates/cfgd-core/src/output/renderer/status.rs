@@ -216,6 +216,16 @@ pub(crate) fn compose_status_split(
 /// decision.
 pub(crate) const GLYPH_PREFIX_WIDTH: usize = 2;
 
+/// The columns a wait row spends between its own subject and the OTHER
+/// subject it names: ` — queued behind `, the wider of the two hold
+/// wordings. What `Printer::subject_budget` subtracts before it halves the
+/// line, so a subject filled to the budget and a wait reason naming another
+/// subject filled to the same budget still share one line — and so a report
+/// filled to its budget can always claim its column. Pinned against the
+/// reconciler's own `wait_reason` by
+/// `the_subject_budget_reserves_exactly_the_wait_framing`.
+pub const WAIT_FRAMING_WIDTH: usize = 17;
+
 /// The column every row of one group pads to at `depth` — the requested
 /// column, or none at all.
 ///
