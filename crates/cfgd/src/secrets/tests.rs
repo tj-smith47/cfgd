@@ -1016,6 +1016,7 @@ fn sops_command_sets_age_key_env() {
 }
 
 #[test]
+#[serial_test::serial]
 fn sops_command_without_age_key_has_no_env() {
     let backend = SopsBackend::new(None);
     let cmd = backend.sops_command();
