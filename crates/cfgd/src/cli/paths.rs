@@ -291,6 +291,7 @@ pub fn build_paths_doc(output: &PathsOutput) -> Doc {
             ("Directory", or_unavailable(&cache.dir)),
             ("Source", cache.source.label().to_string()),
             ("Sources", or_unavailable(&cache.sources)),
+            // modules-row-ok: the cache DIRECTORY modules are fetched into, not a resolved profile's module list
             ("Modules", or_unavailable(&cache.modules)),
         ])
     });

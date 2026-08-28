@@ -79,6 +79,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
                 Role::Ok,
                 format!("Generated release workflow at {}", workflow_path.posix()),
             )
+            // modules-row-ok: a COUNT of what the generated workflow covers, not the names
             .kv("Modules", module_names.len().to_string())
             .kv("Profiles", profile_names.len().to_string())
             .with_data(serde_json::json!({

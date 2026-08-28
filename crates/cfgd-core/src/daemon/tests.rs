@@ -2812,6 +2812,7 @@ fn daemon_state_to_response_propagates_fields() {
     state.last_sync = Some("2026-03-30T12:01:00Z".to_string());
     state.drift_count = 5;
     state.update_available = Some("2.0.0".to_string());
+    state.modules = vec!["base".to_string(), "dev-tools".to_string()];
 
     let response = state.to_response();
     assert!(response.running);
@@ -2824,6 +2825,9 @@ fn daemon_state_to_response_propagates_fields() {
     assert_eq!(response.update_available.as_deref(), Some("2.0.0"));
     assert_eq!(response.sources.len(), 1);
     assert_eq!(response.sources[0].name, "local");
+    // The `Modules` header row `daemon status` renders is read off the response,
+    // so the loop's resolved list has to survive the state → response hop.
+    assert_eq!(response.modules, vec!["base", "dev-tools"]);
 }
 
 // --- DaemonStatusResponse with module_reconcile and update_available ---
@@ -2831,6 +2835,7 @@ fn daemon_state_to_response_propagates_fields() {
 #[test]
 fn daemon_status_response_with_modules_round_trips() {
     let response = DaemonStatusResponse {
+        modules: vec![],
         running: true,
         pid: 42,
         uptime_secs: 100,
@@ -2877,6 +2882,7 @@ fn daemon_status_response_with_modules_round_trips() {
 #[test]
 fn daemon_status_response_skips_empty_module_reconcile() {
     let response = DaemonStatusResponse {
+        modules: vec![],
         running: true,
         pid: 1,
         uptime_secs: 0,
@@ -4321,6 +4327,7 @@ fn daemon_state_module_last_reconcile_tracking() {
 #[test]
 fn daemon_status_response_update_available_present() {
     let response = DaemonStatusResponse {
+        modules: vec![],
         running: true,
         pid: 99,
         uptime_secs: 600,
@@ -4858,6 +4865,7 @@ fn module_reconcile_status_camel_case_fields() {
 #[test]
 fn daemon_status_response_camel_case_uptime() {
     let response = DaemonStatusResponse {
+        modules: vec![],
         running: true,
         pid: 1,
         uptime_secs: 42,
@@ -7042,6 +7050,7 @@ fn notifier_all_methods_construct() {
 #[test]
 fn daemon_status_response_roundtrip_symmetry() {
     let original = DaemonStatusResponse {
+        modules: vec![],
         running: true,
         pid: 99999,
         uptime_secs: 86400,
@@ -11160,6 +11169,7 @@ fn git_auto_commit_push_with_no_changes_returns_false() {
 #[test]
 fn daemon_status_response_camel_case_keys() {
     let response = DaemonStatusResponse {
+        modules: vec![],
         running: true,
         pid: 100,
         uptime_secs: 3600,
@@ -17236,6 +17246,7 @@ mod query_daemon_status_paths {
         let server = std::thread::spawn(move || {
             if let Ok((mut s, _)) = listener.accept() {
                 let body = serde_json::to_string(&DaemonStatusResponse {
+                    modules: vec![],
                     running: true,
                     pid: 42,
                     uptime_secs: 99,

@@ -1,6 +1,7 @@
 Status
   Config   /etc/cfgd/cfgd.yaml
   Profile  default
+  Modules  shell-config
 
 Last Apply
   Age      35m

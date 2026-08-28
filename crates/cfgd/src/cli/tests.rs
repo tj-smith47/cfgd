@@ -19229,6 +19229,7 @@ fn sample_daemon_status(
     update_available: Option<String>,
 ) -> cfgd_core::daemon::DaemonStatusResponse {
     cfgd_core::daemon::DaemonStatusResponse {
+        modules: vec![],
         running: true,
         pid,
         uptime_secs,
@@ -19313,6 +19314,7 @@ fn render_daemon_status_human_running_with_sources_and_update() {
 fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     let status = cfgd_core::daemon::DaemonStatusResponse {
+        modules: vec![],
         running: true,
         pid: 1,
         uptime_secs: 1,
@@ -29670,6 +29672,81 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
          `cfgd_core::output::config_profile_rows`, so no two surfaces can name \
          the same pair with different keys or a host-native path (a row about \
          a different profile takes a `// header-row-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every header naming what a resolved profile puts on this machine builds
+/// that row through the one builder.
+///
+/// `cfgd status`, `cfgd diff`, `cfgd sync` and `cfgd daemon status` opened on
+/// `Config` / `Profile` and stopped there, while the apply header two commands
+/// later named `Modules  nvim` — one machine, two headers, only one of which
+/// said what was on it. `diff --module` did print the row, hand-built outside
+/// any builder.
+///
+/// The population is every production `.rs` in both crates. A `Modules` key/
+/// value row belongs to [`cfgd_core::output::modules_header_row`]; a row
+/// stating a COUNT of modules, a cache directory, or a set this host is not
+/// resolving from its own profile carries a `// modules-row-ok: <why>` marker.
+#[test]
+fn every_resolved_profile_header_names_its_modules_through_the_one_builder() {
+    const NEEDLES: &[&str] = &[
+        "kv(\"Modules\"",
+        "KvPair::new(\"Modules\"",
+        "KvPair::annotated(\"Modules\"",
+        "(\"Modules\", ",
+    ];
+    let mut checked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        // The builder IS the exception: its own row is the one every other
+        // site is required to come here for.
+        if path.ends_with("output/component.rs") {
+            continue;
+        }
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            // A section heading takes the same name and is not a row.
+            if code.contains("section") || code.contains("heading") {
+                continue;
+            }
+            if !NEEDLES.iter().any(|needle| line.contains(needle)) {
+                continue;
+            }
+            checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
+            let marked = code.contains("// modules-row-ok:")
+                || (0..n)
+                    .rev()
+                    .take_while(|&p| lines[p].trim_start().starts_with("//"))
+                    .any(|p| lines[p].trim_start().starts_with("// modules-row-ok:"));
+            if marked {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+        }
+    }
+    // The marked sites in the tree, so a gather that stopped reaching the CLI
+    // sources cannot pass by finding nothing at all.
+    assert!(
+        checked.iter().any(|c| c.contains("cli/workflow.rs"))
+            && checked.iter().any(|c| c.contains("cli/plugin/mod.rs")),
+        "the walk no longer reaches the hatched sites — it checked {checked:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a `Modules` header row comes from \
+         `cfgd_core::output::modules_header_row`, so no two surfaces can name \
+         a resolved profile's modules with different keys or a different \
+         elision (a row naming a count or a cache fact takes a \
+         `// modules-row-ok:` marker):\n{}",
         offenders.join("\n")
     );
 }

@@ -72,7 +72,7 @@ pub mod theme;
 pub use theme::Theme;
 
 pub mod component;
-pub use component::{CommandPair, Component, KvPair, config_profile_rows};
+pub use component::{CommandPair, Component, KvPair, config_profile_rows, modules_header_row};
 
 pub mod renderer;
 

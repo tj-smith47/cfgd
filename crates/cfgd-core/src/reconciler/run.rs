@@ -482,32 +482,10 @@ impl<'a> ApplyRun<'a> {
                     .join(", "),
             ));
         }
-        // A platform-gated module contributed no work, so it leaves the name
-        // list and returns as an annotation on it. That annotation IS the
-        // render of `PhaseName::Modules`, which prints no block of its own.
-        let skips = platform_skips(self.plan);
-        let names: Vec<&str> = self
-            .ctx
-            .modules
-            .iter()
-            .map(String::as_str)
-            .filter(|name| !skips.iter().any(|(skipped, _)| skipped == name))
-            .collect();
-        let annotation = skips
-            .iter()
-            .map(|(name, reason)| format!("{name} skipped: {reason}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        // The names and the annotation travel in separate slots: the renderer
-        // owns the muted coat and the parentheses, and folds the names — which
-        // are module-supplied — the way it folds every other value.
-        if !(names.is_empty() && annotation.is_empty()) {
-            rows.push(KvPair::annotated(
-                "Modules",
-                names.join(", "),
-                annotation.clone(),
-            ));
-        }
+        rows.extend(crate::output::modules_header_row(
+            self.ctx.modules,
+            &platform_skips(self.plan),
+        ));
         if let Some(trigger) = self.ctx.trigger {
             rows.push(KvPair::new("Trigger", trigger.to_string()));
         }
