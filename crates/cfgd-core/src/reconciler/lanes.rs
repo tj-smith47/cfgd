@@ -278,20 +278,28 @@ struct Slot<'p> {
 
 /// What holds a waiting row, and so which sentence its reason slot carries.
 ///
-/// Two holds, two verbs. A row behind an EDGE — a node it depends on, or the
-/// tier barrier ahead of its group — is waiting for that thing to finish
-/// before it can start at all: `waiting on <row>`. A row behind its family
-/// LANE depends on nothing the occupant produces; it is next in line for the
-/// lane the occupant is in: `queued behind <row>`. One verb for both had
-/// `brew install neovim — waiting on brew-tap install acme/tools` claim a
-/// dependency no edge declared, and a reader looking for why the install
-/// needed the tap.
+/// The verb names the RELATION, never the mechanism. A row behind an EDGE —
+/// a node it depends on, or the tier barrier ahead of its group — is waiting
+/// for that thing to finish before it can start at all: `waiting on <row>`.
+/// A row behind its family's SOURCE registration is waiting on it too: the
+/// hoist-and-hold in [`registers_family_sources`] exists because the formula
+/// may only exist in the repository the tap adds, a dependency expressed as
+/// lane precedence rather than as a DAG edge — so it takes the dependency's
+/// verb, whether the tap is running or merely hoisted ahead. A row behind its
+/// family LANE for any other reason depends on nothing the occupant produces;
+/// it is next in line for the lane the occupant is in: `queued behind <row>`
+/// (`brew-cask install firefox` behind `brew install neovim`). Reading the
+/// mechanism instead had `brew install gum — queued behind brew-tap install
+/// charmbracelet/tap` deny the one dependency the tap exists to satisfy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Hold<'a> {
     /// A DAG edge or tier barrier the row has not cleared, named by the row
     /// or tier word ahead of it.
     Edge(&'a str),
-    /// The family lane something else occupies, named by that occupant.
+    /// The family's source registration the row installs from, named by that
+    /// occupant — running, or hoisted ahead and not yet started.
+    Source(&'a str),
+    /// The family lane something unrelated occupies, named by that occupant.
     Lane(&'a str),
 }
 
@@ -319,7 +327,7 @@ enum Hold<'a> {
 /// leading em-dash.
 fn wait_reason(hold: Hold<'_>) -> String {
     match hold {
-        Hold::Edge(thing) => format!("waiting on {thing}"),
+        Hold::Edge(thing) | Hold::Source(thing) => format!("waiting on {thing}"),
         Hold::Lane(occupant) => format!("queued behind {occupant}"),
     }
 }
@@ -571,12 +579,11 @@ fn node_subject(action: &Action) -> Option<String> {
     }
 }
 
-/// The row occupying `lane`, for a wait line held by the lane rather than by
+/// The slot occupying `lane`, for a wait line held by the lane rather than by
 /// an edge: the action running in it, else the dispatchable tap holding it
-/// for its family. Named by its display subject for the same reason
-/// [`node_subject`] is; the bare lane name is the fallback for a lane the
-/// dispatcher reports busy with no row of its own to show for it.
-fn lane_occupant(slots: &[Slot<'_>], lane: &str) -> String {
+/// for its family. `None` for a lane the dispatcher reports busy with no row
+/// of its own to show for it.
+fn lane_occupant<'s, 'p>(slots: &'s [Slot<'p>], lane: &str) -> Option<&'s Slot<'p>> {
     slots
         .iter()
         .find(|s| s.state == SlotState::Running && s.lane() == Some(lane))
@@ -585,8 +592,25 @@ fn lane_occupant(slots: &[Slot<'_>], lane: &str) -> String {
                 s.state == SlotState::Waiting && s.registers_sources && s.lane() == Some(lane)
             })
         })
-        .map(|s| action_display_subject(s.action).to_string())
-        .unwrap_or_else(|| lane.to_string())
+}
+
+/// The wait reason for a row held by its family lane: [`Hold::Source`] when
+/// the occupant is the family's source registration, [`Hold::Lane`]
+/// otherwise. Named by the occupant's display subject for the same reason
+/// [`node_subject`] is; the bare lane name is the fallback when no row
+/// occupies it.
+fn lane_hold_reason(slots: &[Slot<'_>], lane: &str) -> String {
+    match lane_occupant(slots, lane) {
+        Some(occupant) => {
+            let name = action_display_subject(occupant.action).to_string();
+            if occupant.registers_sources {
+                wait_reason(Hold::Source(&name))
+            } else {
+                wait_reason(Hold::Lane(&name))
+            }
+        }
+        None => wait_reason(Hold::Lane(lane)),
+    }
 }
 
 /// Why a dispatch stopped with planned work still unanswered.
@@ -1378,8 +1402,9 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
                 };
                 // The lane's occupant, not the registered name: an action for
                 // `brew-cask` held back by a running `brew install neovim` is
-                // waiting on that row.
-                wait_reason(Hold::Lane(&lane_occupant(slots, lane)))
+                // queued behind that row, and one held for its family's tap
+                // is waiting on it.
+                lane_hold_reason(slots, lane)
             }
         };
         rows.push(Wait {
@@ -1669,18 +1694,80 @@ mod tests {
     /// bound without a wildcard, so a new one is worded before this compiles.
     #[test]
     fn every_hold_kind_carries_its_own_wording() {
-        let kinds = [Hold::Edge("x"), Hold::Lane("x")];
+        // Three holds, two relations: an edge and a source registration are
+        // both something the waiter NEEDS, a lane turn is not. The verb is
+        // the relation's, so the two dependency holds share one and the lane
+        // hold has its own.
+        let kinds = [Hold::Edge("x"), Hold::Source("x"), Hold::Lane("x")];
         let mut verbs = std::collections::BTreeSet::new();
         for hold in kinds {
             let expected = match hold {
-                Hold::Edge(_) => "waiting on x",
+                Hold::Edge(_) | Hold::Source(_) => "waiting on x",
                 Hold::Lane(_) => "queued behind x",
             };
             let worded = wait_reason(hold);
             assert_eq!(worded, expected);
             verbs.insert(worded.split(" x").next().unwrap_or_default().to_string());
         }
-        assert_eq!(verbs.len(), 2, "two hold kinds, two sentences: {verbs:?}");
+        assert_eq!(
+            verbs.len(),
+            2,
+            "two relations, two sentences; a hold whose occupant produces what the waiter \
+             needs reads `waiting on`, a lane turn behind unrelated work `queued behind`: {verbs:?}"
+        );
+    }
+
+    /// A formula held behind its family's tap is waiting ON the tap — the
+    /// hoist exists because the formula may only exist in the repository the
+    /// tap adds — whether the tap is running (`lanes_busy`) or merely hoisted
+    /// ahead of it (`source_held`). A `brew-cask` row behind an unrelated
+    /// `brew install` stays `queued behind`.
+    #[test]
+    fn a_row_held_by_its_familys_source_registration_says_waiting_on() {
+        let nvim = Owner::module("nvim");
+        let profile = Owner::profile("work");
+        let formula = install("brew", "gum");
+        let tap = install("brew-tap", "charmbracelet/tap");
+        let expected = (
+            "module:nvim".to_string(),
+            "brew install gum — waiting on brew-tap install charmbracelet/tap".to_string(),
+        );
+
+        let mut slots = vec![
+            slot(&nvim, Tier::Modules, "brew", &formula),
+            slot(&profile, Tier::Rest, "brew-tap", &tap),
+        ];
+        slots[1].registers_sources = true;
+        let groups = groups_of(&slots);
+        let hoisted = held(&slots, &groups, &HashMap::new(), &HashSet::new());
+        assert!(
+            rows(&hoisted).contains(&expected),
+            "a tap hoisted ahead of the formula is a dependency: {:?}",
+            rows(&hoisted)
+        );
+
+        slots[1].state = SlotState::Running;
+        let running = held(&slots, &groups, &HashMap::new(), &busy(&["brew"]));
+        assert!(
+            rows(&running).contains(&expected),
+            "a tap running in the lane is the same dependency: {:?}",
+            rows(&running)
+        );
+
+        let neovim = probe_action();
+        let cask = install("brew-cask", "firefox");
+        let mut unrelated = vec![
+            slot(&profile, Tier::Rest, "brew", &neovim),
+            slot(&profile, Tier::Rest, "brew-cask", &cask),
+        ];
+        unrelated[0].state = SlotState::Running;
+        let groups = groups_of(&unrelated);
+        let turn = held(&unrelated, &groups, &HashMap::new(), &busy(&["brew"]));
+        assert_eq!(
+            lines(&turn),
+            vec!["brew-cask install firefox — queued behind brew install neovim"],
+            "a lane turn behind unrelated work is not a dependency"
+        );
     }
 
     /// One waiting slot: an owner, a tier, and the manager whose lane it wants.
@@ -1924,7 +2011,7 @@ mod tests {
         assert!(
             rows(&held).contains(&(
                 "module:nvim".to_string(),
-                "brew install neovim — queued behind brew-tap install acme/tools".to_string()
+                "brew install neovim — waiting on brew-tap install acme/tools".to_string()
             )),
             "a source-held install names the tap holding its family's lane: {:?}",
             rows(&held)
