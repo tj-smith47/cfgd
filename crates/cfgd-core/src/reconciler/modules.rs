@@ -321,6 +321,7 @@ impl<'a> super::Reconciler<'a> {
                         abort,
                         path_dirs: &super::all_recorded_path_dirs(self.state),
                         provisioned: &self.provisioned.borrow(),
+                        provisioned_packages: &self.provisioned_packages.borrow(),
                     },
                 );
                 self.persist_bootstraps(exec.take_bootstrapped());

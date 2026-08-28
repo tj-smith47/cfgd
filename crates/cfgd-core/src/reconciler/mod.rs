@@ -38,7 +38,9 @@ pub use adopt::{
     apply_conflict_policy, is_unmanaged_file, mark_unmanaged_drift, module_file_desired_hash,
     sweep_label, sweep_unmanaged_file_targets, unmanaged_conflict_error,
 };
-pub use apply::{action_matches_phase_filter, action_produced_detail, render_caveats};
+pub use apply::{
+    action_matches_phase_filter, action_produced_detail, render_caveats, widest_produced_detail,
+};
 pub use env::recorded_manager_path_dirs;
 #[cfg(any(test, feature = "test-helpers"))]
 pub use env_engine::{
@@ -217,6 +219,12 @@ pub struct Reconciler<'a> {
     /// cannot tell a tool this run installed from one that was here all along,
     /// and only the former makes the entry beside it a duplicate.
     provisioned: std::cell::RefCell<Vec<String>>,
+    /// The `(installer, package)` pairs those provisions INSTALLED — `("brew",
+    /// "node")` for `provision npm via brew` — recorded from the node's own
+    /// success beside [`Self::provisioned`], so an install row can tell an
+    /// entry this run delivered from one the machine arrived with
+    /// ([`Self::delivered_by_this_run`]).
+    provisioned_packages: std::cell::RefCell<Vec<(String, String)>>,
     /// What this run is scoped to, for the `applies` row it records.
     ///
     /// `None` falls back to the resolved profile's own name, which is what
@@ -247,6 +255,7 @@ impl<'a> Reconciler<'a> {
             sidecar_backups: std::collections::HashSet::new(),
             unprovisioned: std::cell::RefCell::new(Vec::new()),
             provisioned: std::cell::RefCell::new(Vec::new()),
+            provisioned_packages: std::cell::RefCell::new(Vec::new()),
             recorded_scope: None,
         }
     }
@@ -343,6 +352,7 @@ impl<'a> Reconciler<'a> {
             sidecar_backups: std::collections::HashSet::new(),
             unprovisioned: std::cell::RefCell::new(Vec::new()),
             provisioned: std::cell::RefCell::new(Vec::new()),
+            provisioned_packages: std::cell::RefCell::new(Vec::new()),
             recorded_scope: None,
         }
     }

@@ -160,18 +160,41 @@ fn deploy_files_summary(action: &Action) -> Option<String> {
 /// [`elided_list`]: super::format::elided_list
 ///
 /// [`action_display_subject`]: super::format::action_display_subject
-fn installed_packages_summary(action: &Action, installed: Option<usize>) -> Option<String> {
-    let planned = match action {
-        Action::Package(PackageAction::Install { packages, .. }) => packages.len(),
+fn installed_packages_summary(
+    action: &Action,
+    installed: Option<usize>,
+    delivered: usize,
+) -> Option<String> {
+    let planned = planned_package_count(action)?;
+    let landed = installed.filter(|landed| *landed < planned)?;
+    // `already installed` is the vocabulary for state this run did not
+    // create. An entry the run's own `Prerequisites` phase put on the machine
+    // (`provision npm via brew` IS a `brew install node`) reads as delivered
+    // by the run, or the row says cfgd declared one tool twice and wasted
+    // half the install twelve lines under the provision that landed it.
+    let delivered = delivered.min(planned - landed);
+    let already = planned - landed - delivered;
+    let mut parts = Vec::new();
+    if already > 0 {
+        parts.push(format!("{already} already installed"));
+    }
+    if delivered > 0 {
+        parts.push(format!("{delivered} provisioned by this run"));
+    }
+    Some(parts.join(", "))
+}
+
+/// How many entries an install NAMES, for the two shapes whose executed set
+/// can be narrower than their planned one.
+fn planned_package_count(action: &Action) -> Option<usize> {
+    match action {
+        Action::Package(PackageAction::Install { packages, .. }) => Some(packages.len()),
         Action::Module(ModuleAction {
             kind: ModuleActionKind::InstallPackages { resolved },
             ..
-        }) => resolved.len(),
-        _ => return None,
-    };
-    installed
-        .filter(|landed| *landed < planned)
-        .map(|landed| format!("{} already installed", planned - landed))
+        }) => Some(resolved.len()),
+        _ => None,
+    }
 }
 
 /// What a provision actually had to install, for the detail beside its own
@@ -238,21 +261,40 @@ fn provisioned_managers_summary(
 /// status line state the same count one beat apart, and `-o json`'s plan
 /// payload carries it as `detail` rather than folded into `description`.
 ///
-/// `installed` and `versions` are the facts a preview cannot supply: how many
-/// of the entries an install NAMED it still had to land, and what version each
-/// manager a provision landed reports. A plan passes `None` and `&[]` and gets
-/// the same detail it always did.
+/// `installed`, `delivered` and `versions` are the facts a preview cannot
+/// supply: how many of the entries an install NAMED it still had to land, how
+/// many of the rest this run's own provisions put there
+/// (`Reconciler::delivered_by_this_run`), and what version each manager a
+/// provision landed reports. A plan passes `None`, `0` and `&[]` and gets the
+/// same detail it always did.
 ///
 /// `None` for an action that produces nothing worth stating.
 pub fn action_produced_detail(
     action: &Action,
     installed: Option<usize>,
+    delivered: usize,
     versions: &[(String, String)],
 ) -> Option<String> {
     env_write_summary(action)
         .or_else(|| deploy_files_summary(action))
-        .or_else(|| installed_packages_summary(action, installed))
+        .or_else(|| installed_packages_summary(action, installed, delivered))
         .or_else(|| provisioned_managers_summary(action, installed, versions))
+}
+
+/// The widest detail [`action_produced_detail`] can settle `action`'s row
+/// with, for a report pricing its column BEFORE the run: every shortfall the
+/// executor may re-read, worded through the same producer. A preview's own
+/// `None` priced `— 2 already installed` at nothing, so the moment the wait
+/// term stopped dominating the allowance the produced term was the binding
+/// one and under-priced. Versions are not priced: a manager answers one only
+/// after it is here, and a provision row carries no other detail to compete
+/// with.
+pub fn widest_produced_detail(action: &Action) -> Option<String> {
+    let planned = planned_package_count(action).unwrap_or(0);
+    // A provision prices its own shortfall through `installed` alone.
+    (0..=planned)
+        .filter_map(|delivered| action_produced_detail(action, Some(0), delivered, &[]))
+        .max_by_key(|detail| crate::output::measure_width(detail))
 }
 
 /// A planned action that is a no-op by construction. Its subject already states
@@ -355,6 +397,10 @@ pub(super) struct ActionRun {
     /// one and only knows by how much once it has run. `None` for every action
     /// that installs nothing and for a preview, which has not run yet.
     pub installed: Option<usize>,
+    /// How many of the entries it did NOT install were put there by THIS
+    /// run's own provisions (`Reconciler::delivered_by_this_run`), so the row
+    /// can tell `already installed` from `provisioned by this run`.
+    pub delivered: usize,
     /// The version each manager a provision LANDED reports, `(manager,
     /// version)` in provision order — the executor's re-read after its
     /// verification, and empty for every other action and for a member that
@@ -369,6 +415,7 @@ impl ActionRun {
             changed,
             script_output: None,
             installed: None,
+            delivered: 0,
             versions: Vec::new(),
         }
     }
@@ -378,10 +425,12 @@ impl ActionRun {
         Self { versions, ..self }
     }
 
-    /// The same run, carrying the count the executor re-read off the machine.
-    pub(super) fn installed(self, installed: usize) -> Self {
+    /// The same run, carrying the count the executor re-read off the machine,
+    /// and how many of the rest this run itself delivered.
+    pub(super) fn installed(self, installed: usize, delivered: usize) -> Self {
         Self {
             installed: Some(installed),
+            delivered,
             ..self
         }
     }
@@ -1247,6 +1296,7 @@ impl<'a> super::Reconciler<'a> {
                 // writing to the list while these lanes run.
                 let unprovisioned = self.unprovisioned.borrow().clone();
                 let provisioned = self.provisioned.borrow().clone();
+                let provisioned_packages = self.provisioned_packages.borrow().clone();
                 let run = super::lanes::LaneRun {
                     printer,
                     apply_id,
@@ -1261,6 +1311,7 @@ impl<'a> super::Reconciler<'a> {
                     action_depth: phase_section.as_ref().map_or(0, |s| s.depth + 1),
                     unprovisioned: &unprovisioned,
                     provisioned: &provisioned,
+                    provisioned_packages: &provisioned_packages,
                 };
                 let mut tree = super::live_tree::PhaseTree::new(
                     printer,
@@ -2102,94 +2153,120 @@ impl<'a> super::Reconciler<'a> {
         // detail rather than as a status line above it — on the failure row as
         // much as the success one, since the copy was taken either way.
         let sidecar_detail = sidecar_detail(&sidecars);
-        let (desc, success, action_changed, installed, versions, error, should_abort) = match result
-        {
-            Ok(run) => {
-                if let Some(jid) = journal_id
-                    && let Err(e) = self.state.journal_complete(
-                        jid,
-                        finished,
+        let (desc, success, action_changed, installed, delivered, versions, error, should_abort) =
+            match result {
+                Ok(run) => {
+                    if let Some(jid) = journal_id
+                        && let Err(e) = self.state.journal_complete(
+                            jid,
+                            finished,
+                            None,
+                            run.script_output.as_deref(),
+                        )
+                    {
+                        // tracing-ok: the journal row could not be closed; the action's own line is settled either way
+                        tracing::warn!("failed to record journal completion: {e}");
+                    }
+                    // The mirror of the failure arm's record below: a manager this
+                    // run PUT on the machine, so a later phase can tell a tool it
+                    // delivered from one that was already here. See
+                    // `Reconciler::provisioned`.
+                    if let Action::Manager(node @ ManagerAction::Provision { via, declared, .. }) =
+                        action
+                    {
+                        let mut landed = self.provisioned.borrow_mut();
+                        let mut packages = self.provisioned_packages.borrow_mut();
+                        for manager in node.provisioned_managers() {
+                            if !landed.iter().any(|m| m == manager) {
+                                landed.push(manager.to_string());
+                            }
+                            // The PACKAGES the provision installed, under the
+                            // manager that installed them: `provision npm via brew`
+                            // is a `brew install node`, and a module's own `brew:
+                            // [node]` beside it was delivered by this run.
+                            let mediated = match declared {
+                                Some(route) => {
+                                    Some((route.installer.clone(), vec![route.package.clone()]))
+                                }
+                                None => self
+                                    .registry
+                                    .package_managers()
+                                    .iter()
+                                    .find(|pm| pm.name() == manager)
+                                    .and_then(|pm| pm.mediated_packages(via))
+                                    .map(|names| (via.clone(), names)),
+                            };
+                            if let Some((installer, names)) = mediated {
+                                for name in names {
+                                    packages.push((installer.clone(), name));
+                                }
+                            }
+                        }
+                    }
+                    (
+                        run.description,
+                        true,
+                        run.changed,
+                        run.installed,
+                        run.delivered,
+                        run.versions,
                         None,
-                        run.script_output.as_deref(),
+                        false,
                     )
-                {
-                    // tracing-ok: the journal row could not be closed; the action's own line is settled either way
-                    tracing::warn!("failed to record journal completion: {e}");
                 }
-                // The mirror of the failure arm's record below: a manager this
-                // run PUT on the machine, so a later phase can tell a tool it
-                // delivered from one that was already here. See
-                // `Reconciler::provisioned`.
-                if let Action::Manager(node) = action {
-                    let mut landed = self.provisioned.borrow_mut();
-                    for manager in node.provisioned_managers() {
-                        if !landed.iter().any(|m| m == manager) {
-                            landed.push(manager.to_string());
+                Err(e) => {
+                    let desc = format_action_description(action);
+
+                    // Check if this is a script action with continueOnError
+                    let continue_on_err = if let Action::Script(ScriptAction::Run {
+                        entry,
+                        phase: script_phase,
+                        ..
+                    }) = action
+                    {
+                        effective_continue_on_error(entry, script_phase)
+                    } else {
+                        false
+                    };
+
+                    failure_detail = Some(FailureDisplay {
+                        // The DETAIL fold, not the subject one: a failed command's
+                        // message carries the child's own lines, and the renderer
+                        // already lays them out as indented continuations. Flattening
+                        // them here spent the row's ` — ` separator once per line.
+                        detail: crate::output::captured_output_detail(&e),
+                        continue_on_err,
+                        ran: failed_action_ran(action, &e),
+                    });
+                    if let Some(jid) = journal_id
+                        && let Err(je) = self.state.journal_fail(jid, finished, &e.to_string())
+                    {
+                        // tracing-ok: same, for the failure half
+                        tracing::warn!("failed to record journal failure: {je}");
+                    }
+                    // The run's own verdict about what is on the machine, recorded
+                    // where every finish lands so a later phase answers from it
+                    // instead of re-probing: see `Reconciler::unprovisioned`.
+                    if let Action::Manager(node) = action {
+                        let mut withheld = self.unprovisioned.borrow_mut();
+                        for manager in node.managers_left_unavailable() {
+                            if !withheld.iter().any(|m| m == manager) {
+                                withheld.push(manager.to_string());
+                            }
                         }
                     }
+                    (
+                        desc,
+                        false,
+                        false,
+                        None,
+                        0,
+                        Vec::new(),
+                        Some(e.to_string()),
+                        !continue_on_err,
+                    )
                 }
-                (
-                    run.description,
-                    true,
-                    run.changed,
-                    run.installed,
-                    run.versions,
-                    None,
-                    false,
-                )
-            }
-            Err(e) => {
-                let desc = format_action_description(action);
-
-                // Check if this is a script action with continueOnError
-                let continue_on_err = if let Action::Script(ScriptAction::Run {
-                    entry,
-                    phase: script_phase,
-                    ..
-                }) = action
-                {
-                    effective_continue_on_error(entry, script_phase)
-                } else {
-                    false
-                };
-
-                failure_detail = Some(FailureDisplay {
-                    // The DETAIL fold, not the subject one: a failed command's
-                    // message carries the child's own lines, and the renderer
-                    // already lays them out as indented continuations. Flattening
-                    // them here spent the row's ` — ` separator once per line.
-                    detail: crate::output::captured_output_detail(&e),
-                    continue_on_err,
-                    ran: failed_action_ran(action, &e),
-                });
-                if let Some(jid) = journal_id
-                    && let Err(je) = self.state.journal_fail(jid, finished, &e.to_string())
-                {
-                    // tracing-ok: same, for the failure half
-                    tracing::warn!("failed to record journal failure: {je}");
-                }
-                // The run's own verdict about what is on the machine, recorded
-                // where every finish lands so a later phase answers from it
-                // instead of re-probing: see `Reconciler::unprovisioned`.
-                if let Action::Manager(node) = action {
-                    let mut withheld = self.unprovisioned.borrow_mut();
-                    for manager in node.managers_left_unavailable() {
-                        if !withheld.iter().any(|m| m == manager) {
-                            withheld.push(manager.to_string());
-                        }
-                    }
-                }
-                (
-                    desc,
-                    false,
-                    false,
-                    None,
-                    Vec::new(),
-                    Some(e.to_string()),
-                    !continue_on_err,
-                )
-            }
-        };
+            };
 
         let changed = success && action_changed;
         // The ONE predicate the header priced the plan with decides the tally
@@ -2219,7 +2296,7 @@ impl<'a> super::Reconciler<'a> {
             // Judged by the same producers the row's detail is worded from, so
             // a count `-o json` carries is one the report also states.
             installed: installed.filter(|_| {
-                installed_packages_summary(action, installed).is_some()
+                installed_packages_summary(action, installed, delivered).is_some()
                     || provisioned_managers_summary(action, installed, &[]).is_some()
             }),
             versions: versions.iter().cloned().collect(),
@@ -2277,7 +2354,7 @@ impl<'a> super::Reconciler<'a> {
                         "unchanged".to_string()
                     })
                 } else {
-                    action_produced_detail(action, installed, &versions)
+                    action_produced_detail(action, installed, delivered, &versions)
                 };
                 // Every action that DID something is timed, however briefly: a
                 // threshold makes the suffix's absence ambiguous between "fast"
