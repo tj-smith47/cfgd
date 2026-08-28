@@ -28,73 +28,123 @@ fn cleared() -> Vec<EnvVarGuard> {
 /// developer's own terminal — the exact failure that pin exists to prevent.
 ///
 /// Two halves, because a read the predicate DELEGATES is as unclearable as one
-/// it names. The whole of `output/mod.rs` is scanned, so a helper extracted
-/// beside the predicate is still seen; and the predicate's own body may reach
-/// nothing by path but `std::env::var`/`var_os`, so a helper moved OUT of the
-/// file — the one shape the scan cannot follow — fails here instead. An
-/// unqualified call resolves to an item of this module, which the file scan
-/// already covers.
+/// it names. The scanned scope is the predicate plus, transitively, every
+/// helper it calls by name, so a read extracted into a sibling function is
+/// still seen while an unrelated read elsewhere in the module stays none of
+/// this table's business; and the predicate's own body may name no path but
+/// `std::env::var`/`var_os` and a turbofish, so a helper moved OUT of the file
+/// — the one shape the scan cannot follow — fails there instead.
 #[test]
 fn every_variable_the_detection_reads_is_one_a_test_can_clear() {
+    const PREDICATE: &str = "terminal_supports_hyperlinks";
     const READS: [&str; 2] = ["std::env::var(\"", "std::env::var_os(\""];
-    // A turbofish is a path that reaches no function; the two reads above are
-    // the only ones that may.
+    // A turbofish names a TYPE, not a module that could read the environment.
     const REACHABLE_PATHS: [&str; 3] = ["std::env::var(", "std::env::var_os(", "parse::<"];
+
+    // A trailing comment is prose, not a path or a read; split on the SPACE
+    // before it so a `://` inside a literal survives.
+    fn code(line: &str) -> &str {
+        let head = line.split(" //").next().unwrap_or_default().trim_start();
+        if head.starts_with("//") { "" } else { head }
+    }
+
+    fn fn_body(src: &str, name: &str) -> Option<(usize, usize)> {
+        let at = src.find(&format!("fn {name}("))?;
+        let end = src[at..].find("\n}\n").map_or(src.len(), |off| at + off);
+        Some((at, end))
+    }
+
+    fn calls_in(src: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for line in src.lines() {
+            let line = code(line);
+            for (at, _) in line.match_indices('(') {
+                let head = &line[..at];
+                let from = head
+                    .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+                    .map_or(0, |i| i + 1);
+                let name = &head[from..];
+                if name.is_empty() || matches!(head[..from].chars().next_back(), Some('.' | ':')) {
+                    continue;
+                }
+                out.push(name.to_string());
+            }
+        }
+        out
+    }
 
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/output/mod.rs");
     let body = std::fs::read_to_string(&src).unwrap_or_default();
-    let Some(start) = body.find("pub fn terminal_supports_hyperlinks()") else {
-        panic!("the predicate is no longer at {}", src.display());
-    };
-    let end = body[start..]
-        .find("\n}\n")
-        .map_or(body.len(), |at| start + at);
+
+    let mut scopes = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    let mut queue = vec![PREDICATE.to_string()];
+    while let Some(name) = queue.pop() {
+        if seen.contains(&name) {
+            continue;
+        }
+        seen.push(name.clone());
+        let Some((start, end)) = fn_body(&body, &name) else {
+            continue;
+        };
+        queue.extend(calls_in(&body[start..end]));
+        scopes.push((start, end));
+    }
+    assert!(
+        !scopes.is_empty(),
+        "the predicate is no longer at {}",
+        src.display()
+    );
 
     let mut unclearable = Vec::new();
-    for (n, line) in body.lines().enumerate() {
-        for call in READS {
-            let Some(at) = line.find(call) else {
-                continue;
-            };
-            let name = line[at + call.len()..]
-                .split('"')
-                .next()
-                .unwrap_or_default();
-            if !HYPERLINK_DIRECT_VARS.contains(&name) {
-                unclearable.push(format!("{}:{}: {name}", src.display(), n + 1));
+    for (start, end) in &scopes {
+        let first = body[..*start].lines().count();
+        for (n, line) in body[*start..*end].lines().enumerate() {
+            let line = code(line);
+            for call in READS {
+                let Some(at) = line.find(call) else {
+                    continue;
+                };
+                let name = line[at + call.len()..]
+                    .split('"')
+                    .next()
+                    .unwrap_or_default();
+                if !HYPERLINK_DIRECT_VARS.contains(&name) {
+                    unclearable.push(format!("{}:{}: {name}", src.display(), first + n + 1));
+                }
             }
         }
     }
     assert!(
         unclearable.is_empty(),
-        "every variable this module reads by name belongs in HYPERLINK_DIRECT_VARS, \
+        "every variable the detection reads by name belongs in HYPERLINK_DIRECT_VARS, \
          so a test can clear it:\n{}",
         unclearable.join("\n")
     );
 
-    let mut delegated = Vec::new();
+    let Some((start, end)) = fn_body(&body, PREDICATE) else {
+        panic!("the predicate is no longer at {}", src.display());
+    };
+    let mut unreachable_paths = Vec::new();
     for line in body[start..end].lines() {
-        let code = line.trim_start();
-        if code.starts_with("//") {
-            continue;
-        }
-        for (at, _) in code.match_indices("::") {
-            let from = code[..at].rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != ':');
-            let path = &code[from.map_or(0, |i| i + 1)..];
+        let line = code(line);
+        for (at, _) in line.match_indices("::") {
+            let from = line[..at].rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != ':');
+            let path = &line[from.map_or(0, |i| i + 1)..];
             if !REACHABLE_PATHS.iter().any(|ok| path.starts_with(ok)) {
-                delegated.push(format!(
-                    "{}: {code}",
+                unreachable_paths.push(format!(
+                    "{}: {line}",
                     path.split('(').next().unwrap_or(path)
                 ));
             }
         }
     }
     assert!(
-        delegated.is_empty(),
-        "the predicate reads the environment itself, or through a helper in its own \
-         module where the scan above still sees it — never through a path into another \
-         module, which no scan can follow:\n{}",
-        delegated.join("\n")
+        unreachable_paths.is_empty(),
+        "the predicate may name no path but `std::env::var`, `std::env::var_os` and a \
+         turbofish, so no environment read can hide behind one in a module this scan \
+         cannot follow; a genuinely inert new path belongs in REACHABLE_PATHS:\n{}",
+        unreachable_paths.join("\n")
     );
 
     assert!(
