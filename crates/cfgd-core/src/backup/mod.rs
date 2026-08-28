@@ -320,7 +320,10 @@ fn snapshot_subject(destination: Option<&Path>) -> String {
 /// declared source is the run header's (`Source`), never a row under the
 /// action either.
 pub(super) fn restore_subject(target: &str, snapshot: &str) -> String {
-    format!("restore {target} from {snapshot}")
+    format!(
+        "restore {} from {snapshot}",
+        crate::fold_home_in_text(target)
+    )
 }
 
 /// The width the snapshot line will occupy, derived before the run.

@@ -358,9 +358,11 @@ pub fn action_display_subject_within(action: &Action, budget: Option<usize>) -> 
                 ..
             },
         ) => module_script_subject(script.run_str(), phase, ma.origin.as_deref()),
+        // The fold is the DISPLAY seam's alone: `ListRender::Full` feeds the
+        // `-o json` plan payload and keeps the absolute path.
         _ => DisplaySubject {
             marker: None,
-            body: plan_item(action, ListRender::Elided { budget }),
+            body: crate::fold_home_in_text(&plan_item(action, ListRender::Elided { budget })),
         },
     }
 }
