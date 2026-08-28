@@ -94,6 +94,9 @@ pub struct SourceManager {
     /// again — a persistent warning that stops appearing reads as resolved. See
     /// [`Self::take_advisories`].
     advisories: Vec<SourceAdvisory>,
+    /// Whether a cache-freshness skip is announced as it is recorded. See
+    /// [`Self::set_announce_cache_skips`].
+    announce_cache_skips: bool,
 }
 
 /// One thing a composition said out loud, carried WITH the channel it was said
@@ -168,12 +171,22 @@ impl SourceManager {
             sources: HashMap::new(),
             allow_unsigned: false,
             advisories: Vec::new(),
+            announce_cache_skips: true,
         }
     }
 
     /// Set whether to allow unsigned source content (bypasses signature verification).
     pub fn set_allow_unsigned(&mut self, allow: bool) {
         self.allow_unsigned = allow;
+    }
+
+    /// Set whether a cache-freshness skip is ANNOUNCED as it is recorded.
+    ///
+    /// Both such advisories end in "run `cfgd sync`", so the verb that IS the
+    /// fetch prints a remedy already in progress. It stays RECORDED either
+    /// way: a caller that restates advisories later still sees it.
+    pub fn set_announce_cache_skips(&mut self, announce: bool) {
+        self.announce_cache_skips = announce;
     }
 
     /// Say — and remember — that a source was skipped and the composition went
@@ -187,7 +200,9 @@ impl SourceManager {
             message,
             channel: AdvisoryChannel::Status,
         };
-        advisory.restate(printer);
+        if self.announce_cache_skips {
+            advisory.restate(printer);
+        }
         self.advisories.push(advisory);
     }
 

@@ -6981,16 +6981,30 @@ async fn handle_sync_no_pull_no_push_updates_timestamp() {
     );
 }
 
-// --- git_pull_sync: delegates to git_pull ---
+// --- git_pull_sync: classifies, then delegates to git_pull ---
 
+/// A directory under no version control has nothing to pull, which is a
+/// verdict rather than a failure — both verbs that pull read it from here, so
+/// neither can call it an error.
 #[test]
-fn git_pull_sync_non_repo_returns_error() {
+fn git_pull_sync_over_a_non_repo_is_not_a_failure() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let result = git_pull_sync(tmp.path());
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("open repo"),
-        "expected 'open repo' error, got: {err}"
+    assert_eq!(git_pull_sync(tmp.path()), PullOutcome::NotARepository);
+}
+
+/// libgit2 appends `; class=…; code=…` to every message it raises; a person
+/// reading a row wants the sentence in front of it.
+#[test]
+fn pull_failure_summary_drops_the_libgit2_tail() {
+    assert_eq!(
+        pull_failure_summary(
+            "find remote: remote 'origin' does not exist; class=Config (7); code=NotFound (-3)"
+        ),
+        "find remote: remote 'origin' does not exist"
+    );
+    assert_eq!(
+        pull_failure_summary("cannot fast-forward — remote has diverged"),
+        "cannot fast-forward — remote has diverged"
     );
 }
 
@@ -7027,9 +7041,7 @@ fn git_pull_sync_clean_repo_no_changes() {
             .unwrap();
     }
 
-    let result = git_pull_sync(&work_dir);
-    assert!(result.is_ok());
-    assert!(result.unwrap().is_none(), "should be up to date");
+    assert_eq!(git_pull_sync(&work_dir), PullOutcome::UpToDate);
 }
 
 // --- Notifier: all methods construct without panic ---

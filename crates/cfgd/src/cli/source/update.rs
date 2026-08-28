@@ -1,4 +1,5 @@
 use super::*;
+use crate::cli::output_types::SourceOutcome;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
 
 /// Build the `source update <name>` not-found error. Carries the typed
@@ -220,7 +221,7 @@ pub fn run_source_update(
     #[serde(rename_all = "camelCase")]
     struct UpdateEntry {
         name: String,
-        status: String,
+        status: SourceOutcome,
         commit: Option<String>,
         perm_changes: usize,
     }
@@ -303,7 +304,7 @@ pub fn run_source_update(
                                 );
                                 entries.push(UpdateEntry {
                                     name: source.name.clone(),
-                                    status: "skipped".into(),
+                                    status: SourceOutcome::Skipped,
                                     commit: cached.last_commit.clone(),
                                     perm_changes: perm_changes.len(),
                                 });
@@ -313,7 +314,7 @@ pub fn run_source_update(
                                 source_sec.status_simple(Role::Info, "Skipped (prompt cancelled)");
                                 entries.push(UpdateEntry {
                                     name: source.name.clone(),
-                                    status: "cancelled".into(),
+                                    status: SourceOutcome::Cancelled,
                                     commit: cached.last_commit.clone(),
                                     perm_changes: perm_changes.len(),
                                 });
@@ -359,7 +360,7 @@ pub fn run_source_update(
                         fetch_updated = true;
                         entries.push(UpdateEntry {
                             name: source.name.clone(),
-                            status: "updated".into(),
+                            status: SourceOutcome::Updated,
                             commit: cached.last_commit.clone(),
                             perm_changes: perm_changes.len(),
                         });
@@ -377,7 +378,7 @@ pub fn run_source_update(
                 state.update_config_source_status(&source.name, "error")?;
                 entries.push(UpdateEntry {
                     name: source.name.clone(),
-                    status: "error".into(),
+                    status: SourceOutcome::Error,
                     commit: None,
                     perm_changes: 0,
                 });
@@ -419,12 +420,12 @@ pub fn run_source_update(
         }
     }
 
-    let updated_count = entries.iter().filter(|e| e.status == "updated").count();
-    let error_count = entries.iter().filter(|e| e.status == "error").count();
-    let skipped_count = entries
+    let updated_count = entries
         .iter()
-        .filter(|e| e.status == "skipped" || e.status == "cancelled")
+        .filter(|e| e.status == SourceOutcome::Updated)
         .count();
+    let error_count = entries.iter().filter(|e| e.status.refused()).count();
+    let skipped_count = entries.iter().filter(|e| e.status.declined()).count();
     let (role, summary) = match (updated_count, error_count, skipped_count) {
         (0, e, _) if e > 0 => (
             Role::Fail,

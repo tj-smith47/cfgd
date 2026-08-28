@@ -94,13 +94,42 @@ use cfgd_core::state::StateStore;
 
 const MSG_RUN_APPLY: &str = "Run `cfgd plan` to preview changes, then `cfgd apply`";
 
-/// What a reader DOES about a local config repository `cfgd sync` could not
-/// pull — the local-layer twin of
+/// What a reader DOES about a local config repository a pull could not move —
+/// the local-layer twin of
 /// [`source::source_failure_next_step`](crate::cli::source::source_failure_next_step),
-/// which words the same beat for a subscribed source. The repository is the
-/// reader's own, so the fix is theirs and the command to re-run is named as a
-/// placeholder-free re-invocation of the one that just reported the refusal.
-const MSG_LOCAL_PULL_FAILED: &str = "Resolve the local repository by hand, then re-run `cfgd sync`";
+/// which words the same beat per error kind for a subscribed source. The
+/// repository is the reader's own, so the fix is theirs.
+///
+/// Branched on the PREFIX `git_pull` composed, never on libgit2's prose: those
+/// prefixes are cfgd's own vocabulary for which step refused, so the advice
+/// cannot drift with a libgit2 message. One wording per kind — a missing
+/// `origin` and a diverged branch have nothing to do with each other, and
+/// "resolve it by hand" told the reader neither.
+///
+/// `command` is the verb that just reported the refusal, so the re-run names
+/// the command the reader actually ran.
+/// What a pull over a directory under no version control comes to. Not a
+/// failure: there is no remote to be out of date with.
+const MSG_NOT_A_REPOSITORY: &str = "Nothing to pull — the config directory is not a git repository";
+
+pub(in crate::cli) fn local_pull_next_step(reason: &str, command: &str) -> String {
+    if reason.starts_with("find remote:") {
+        return format!(
+            "Add the remote with `git remote add origin <url>`, then re-run `{command}`"
+        );
+    }
+    if reason.starts_with("cannot fast-forward") {
+        return format!(
+            "Reconcile the diverged branch with `git pull --rebase` in the config directory, then re-run `{command}`"
+        );
+    }
+    if reason.starts_with("fetch:") {
+        return format!(
+            "Check the remote is reachable and your credentials are current, then re-run `{command}`"
+        );
+    }
+    format!("Resolve the local repository by hand, then re-run `{command}`")
+}
 
 /// What a mutating `source` or `module` verb just did, for
 /// [`success_next_step`].

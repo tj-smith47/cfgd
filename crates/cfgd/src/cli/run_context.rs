@@ -47,6 +47,9 @@ pub(in crate::cli) struct RunContext<'a> {
     enumerations: cfgd_core::providers::InstalledEnumerations,
     base_registry: OnceCell<ProviderRegistry>,
     manifests: ManifestCache,
+    /// Whether this run FETCHES the sources it composes, which decides
+    /// [`Self::announce_cache_skips`].
+    fetching_sources: bool,
 }
 
 impl<'a> RunContext<'a> {
@@ -62,7 +65,29 @@ impl<'a> RunContext<'a> {
             enumerations: cfgd_core::providers::InstalledEnumerations::default(),
             base_registry: OnceCell::new(),
             manifests: ManifestCache::default(),
+            fetching_sources: false,
         }
+    }
+
+    /// Declare that this run fetches the sources it composes, so the
+    /// composition stops advising the reader to run the command they are
+    /// running.
+    ///
+    /// The two advisories a cached load can raise — a source with no checkout
+    /// yet, and one cloned from an origin the spec no longer names — both end
+    /// in "run `cfgd sync`". Emitted by `cfgd sync` itself, three lines above
+    /// the section that does the fetching, they name a remedy already in
+    /// progress. Nothing else the composition says is touched: a constraint
+    /// violation, a conflict preview and the `allowScripts` disclosure are all
+    /// facts the fetching verb is the right place to hear.
+    pub(in crate::cli) fn fetching_sources(mut self) -> Self {
+        self.fetching_sources = true;
+        self
+    }
+
+    /// Whether a source-cache skip should be announced on this run.
+    pub(in crate::cli) fn announce_cache_skips(&self) -> bool {
+        !self.fetching_sources
     }
 
     pub(in crate::cli) fn cli(&self) -> &'a Cli {

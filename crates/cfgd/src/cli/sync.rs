@@ -20,7 +20,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
 /// and a local repository that could not be pulled are the two outcomes
 /// nobody chose.
 pub fn sync_refused(payload: &SyncOutput) -> bool {
-    payload.local_pull_error.is_some() || payload.sources.iter().any(|s| s.status == "failed")
+    payload.local_pull_error.is_some() || payload.sources.iter().any(|s| s.status.refused())
 }
 
 /// Drive the sync and return the payload it settled, so a caller can map a
@@ -33,21 +33,22 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
     // the pull changed, and the plan the closing hint invites reads the new
     // set — so the header describes the starting point, exactly as `Config`
     // and `Profile` beside it do.
-    let ctx = RunContext::new(cli, printer);
+    // `fetching_sources`: the two advisories this resolution can raise both
+    // tell the reader to run `cfgd sync` to fetch a stale or missing checkout,
+    // which is the command printing them, three lines above the section that
+    // does the fetching. Everything else the composition has to say — a
+    // constraint violation, a conflict, the `allowScripts` disclosure — is
+    // exactly what this verb is the right place to hear.
+    let ctx = RunContext::new(cli, printer).fetching_sources();
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let mut rows = cfgd_core::output::config_profile_rows(Some(&cli.config), Some(profile_name));
-    // Resolved quietly: the one advisory this resolution can raise is that a
-    // subscribed source has no local cache yet and should be fetched with
-    // `cfgd sync` — which is the command printing it, three lines above the
-    // section that does the fetching.
-    let quiet = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
     let desired = resolve_desired_state(
         &ctx,
         cfg,
         local_resolved,
         &[],
         false,
-        &quiet,
+        printer,
         false,
         composition::ConstraintMode::Report,
     )?;
@@ -65,17 +66,15 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
     };
 
     // A config directory under no version control has nothing to pull, so it
-    // opens no section: `git_pull_sync` answers a bare `Err` there, and the
-    // `⚠ Pull failed` it produced sat two lines above a `✓ Synced` claiming
-    // the pull the row said had failed.
-    if config_dir.join(".git").exists() {
+    // opens no section at all — the pull is one leg of this run among several.
+    if cfgd_core::daemon::is_git_repository(&config_dir) {
         // The section keeps only its pull outcome: the header's `Config` row
         // already names this location, and stating it again three lines later
         // makes one fact read as two.
         let repo_sec = printer.section("Local Repo");
         let sp = repo_sec.spinner("Pulling from remote");
         match cfgd_core::daemon::git_pull_sync(&config_dir) {
-            Ok(Some(movement)) => {
+            cfgd_core::daemon::PullOutcome::Moved(movement) => {
                 sp.finish_ok("Pulled new changes from remote")
                     .detail(format!(
                         "commit: {} {} {}",
@@ -85,14 +84,20 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                     ));
                 sync_payload.local_pulled = true;
             }
-            Ok(None) => {
+            cfgd_core::daemon::PullOutcome::UpToDate => {
                 sp.finish_ok("Already up to date");
             }
-            Err(e) => {
-                let reason = cfgd_core::output::collapse_to_subject_line(e);
-                sp.finish_warn("Pull failed").detail(reason.clone());
-                repo_sec.hint(MSG_LOCAL_PULL_FAILED);
-                sync_payload.local_pull_error = Some(reason);
+            cfgd_core::daemon::PullOutcome::Failed(e) => {
+                sp.finish_warn("Pull failed")
+                    .detail(cfgd_core::daemon::pull_failure_summary(&e));
+                repo_sec.hint(local_pull_next_step(&e, "cfgd sync"));
+                sync_payload.local_pull_error = Some(e);
+            }
+            // The probe above said otherwise, so the checkout went away
+            // between the two reads — the section is already open, and the
+            // same sentence `cfgd pull` closes on is what it came to.
+            cfgd_core::daemon::PullOutcome::NotARepository => {
+                sp.finish_skipped(MSG_NOT_A_REPOSITORY);
             }
         }
     }
@@ -286,13 +291,13 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                             changes_detected = true;
                             sync_payload.sources.push(SourceSyncOutput {
                                 name: source_spec.name.clone(),
-                                status: "synced".to_string(),
+                                status: SourceOutcome::Synced,
                                 commit: cached.last_commit.clone(),
                             });
                         } else {
                             sync_payload.sources.push(SourceSyncOutput {
                                 name: source_spec.name.clone(),
-                                status: "skipped".to_string(),
+                                status: SourceOutcome::Skipped,
                                 commit: None,
                             });
                         }
@@ -309,7 +314,7 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                         ));
                         sync_payload.sources.push(SourceSyncOutput {
                             name: source_spec.name.clone(),
-                            status: "failed".to_string(),
+                            status: SourceOutcome::Failed,
                             commit: None,
                         });
                     }
@@ -323,7 +328,7 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                     ));
                     sync_payload.sources.push(SourceSyncOutput {
                         name: source_spec.name.clone(),
-                        status: "failed".to_string(),
+                        status: SourceOutcome::Failed,
                         commit: None,
                     });
                 }
@@ -370,8 +375,8 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
 fn sync_verdict(payload: &SyncOutput) -> (Role, &'static str, Option<String>) {
     let sources = &payload.sources;
     let total = sources.len();
-    let failed = sources.iter().filter(|s| s.status == "failed").count();
-    let skipped = sources.iter().filter(|s| s.status == "skipped").count();
+    let failed = sources.iter().filter(|s| s.status.refused()).count();
+    let skipped = sources.iter().filter(|s| s.status.declined()).count();
     let synced = total - failed - skipped;
     let noun = cfgd_core::plural_noun(total, "source");
     if failed > 0 {

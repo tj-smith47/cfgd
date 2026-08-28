@@ -1570,6 +1570,49 @@ fn source_update_all_failed_exits_1() {
     );
 }
 
+/// A config directory whose repository has no `origin` cannot be pulled, and
+/// both verbs that pull it must say so with the same process exit — a CI chain
+/// gating on `cfgd sync` and one gating on `cfgd pull` see one answer.
+#[test]
+fn a_local_pull_failure_exits_1_from_both_verbs_that_pull() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let repo = git2::Repository::init(dir.path()).unwrap();
+    let sig = git2::Signature::now("t", "t@example.com").unwrap();
+    let tree = {
+        let mut index = repo.index().unwrap();
+        let oid = index.write_tree().unwrap();
+        repo.find_tree(oid).unwrap()
+    };
+    repo.commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])
+        .unwrap();
+
+    for verb in [vec!["sync"], vec!["pull"]] {
+        let state_dir = tempfile::tempdir().unwrap();
+        let assert = Command::cargo_bin("cfgd")
+            .unwrap()
+            .args(&verb)
+            .arg("--no-color")
+            .arg("--config")
+            .arg(dir.path().join("cfgd.yaml"))
+            .arg("--state-dir")
+            .arg(state_dir.path())
+            .assert()
+            .code(1);
+        let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+        assert!(
+            out.contains("Pull failed") && out.contains("find remote"),
+            "`cfgd {}` must name the cause it exited on, got:\n{out}",
+            verb[0]
+        );
+        assert!(
+            !out.contains("class="),
+            "`cfgd {}` must not leak libgit2 internals, got:\n{out}",
+            verb[0]
+        );
+    }
+}
+
 /// ExitCode::NotFound = 6 — `cfgd module show <missing>` against a valid config.
 /// The dedicated not-found code must reach the process, and the structured
 /// payload must keep the stable `not_found` kind for acceptance oracles.
