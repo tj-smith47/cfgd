@@ -96,6 +96,7 @@ impl PackageManager for ChocolateyManager {
             .collect()
     }
 
+    // bootstrap-arm-ok: the community install script is chocolatey's only route
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
             cx,

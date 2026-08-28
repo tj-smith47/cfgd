@@ -71,6 +71,7 @@ impl PackageManager for NixManager {
         vec![cfgd_core::to_posix_string(NIX_PROFILE_BIN_DIR)]
     }
 
+    // bootstrap-arm-ok: the nixos.org installer is nix's only route
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         bootstrap_via_shell_script(
             cx,

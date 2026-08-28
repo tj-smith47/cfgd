@@ -168,6 +168,7 @@ impl PackageManager for ScriptedManager {
         None
     }
 
+    // bootstrap-arm-ok: a user-defined manager declares no install of its own
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }

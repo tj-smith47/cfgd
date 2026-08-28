@@ -71,6 +71,7 @@ impl PackageManager for CargoManager {
             .collect()
     }
 
+    // bootstrap-arm-ok: rustup's installer is the only route to cargo
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         bootstrap_via_shell_script(
             cx,
