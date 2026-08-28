@@ -52,8 +52,8 @@ pub(crate) use format::debug_assert_system_key_undoubled;
 pub use format::{
     DisplaySubject, action_display_subject, action_display_subject_within, bare_script_subject,
     condense_action_desc_for_display, format_action_description, format_plan_item,
-    format_plan_items, hook_script_subject, module_script_subject, script_run_subject,
-    system_key_doubling_error, system_resource_key,
+    format_plan_items, hook_script_subject, module_script_subject, module_script_subject_within,
+    script_run_subject, script_run_subject_within, system_key_doubling_error, system_resource_key,
 };
 pub use managers::plan_managers;
 pub use packages::stale_tracked_packages;
@@ -76,7 +76,7 @@ pub use run::{
     PhaseCoverage, PseudoPhase, RunContext, RunDisposition, RunExecutor, RunTally, RunTitle,
     ScopedGroup, ScopedPhase, align_width_of, in_scope_tree, nothing_to_do_verdict, outcome_counts,
     pseudo_phase, render_apply_result, render_plan_tree, render_run_rollup, report_align_width,
-    run_next_step, sole_phase,
+    report_subject_budget, run_next_step, sole_phase,
 };
 pub use sidecar::{CFGD_BACKUP_SUFFIX, SidecarOutcome, backup_file, cfgd_backup_path};
 pub use types::{

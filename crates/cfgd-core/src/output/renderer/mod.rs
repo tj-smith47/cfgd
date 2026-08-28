@@ -128,6 +128,11 @@ pub(crate) struct RenderState {
     /// apply tree's, and the pseudo-phases' beside them — pads to one column
     /// instead of one per phase.
     pub(crate) report_column: Option<usize>,
+    /// The subject budget the same claim settled — what THIS report's rows
+    /// may occupy, widened from the printer's floor by what the report's own
+    /// trailing allowance leaves — so every reader of
+    /// `Printer::subject_budget` inside the claim cuts one action one way.
+    pub(crate) report_subject_budget: Option<usize>,
 }
 
 impl RenderState {
@@ -154,6 +159,7 @@ impl RenderState {
             doc_depth: 0,
             last_top_in_doc: false,
             report_column: None,
+            report_subject_budget: None,
         }
     }
 
@@ -871,10 +877,14 @@ pub struct ReportColumnGuard<'p> {
 }
 
 impl ReportColumnGuard<'_> {
-    pub(crate) fn acquire(renderer: &std::sync::Arc<Renderer>, width: usize) -> Self {
+    pub(crate) fn acquire(
+        renderer: &std::sync::Arc<Renderer>,
+        width: usize,
+        budget: Option<usize>,
+    ) -> Self {
         Self {
             renderer: renderer
-                .claim_report_column(width)
+                .claim_report_column(width, budget)
                 .then(|| renderer.clone()),
             _phantom: std::marker::PhantomData,
         }

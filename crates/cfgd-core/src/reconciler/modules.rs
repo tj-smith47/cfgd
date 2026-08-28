@@ -505,10 +505,11 @@ impl<'a> super::Reconciler<'a> {
                 let working = script_default_workdir(config_dir);
                 // The action's ONE display subject, from the same derivation
                 // the preview bullet and the phase's alignment column use.
-                let subject = super::format::module_script_subject(
+                let subject = super::format::module_script_subject_within(
                     script.run_str(),
                     script_phase,
                     action.origin.as_deref(),
+                    printer.subject_budget(),
                 );
                 let (_label, changed, _captured) = execute_script(
                     script,

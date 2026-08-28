@@ -227,7 +227,7 @@ pub(crate) const GLYPH_PREFIX_WIDTH: usize = 2;
 pub const WAIT_FRAMING_WIDTH: usize = 17;
 
 /// The column every row of one group pads to at `depth` — the requested
-/// column, or none at all.
+/// column, or the widest one `trailing` still fits beside.
 ///
 /// Alignment is a property of the SET, not of a line: a row that could not
 /// afford the shared column used to render unpadded beside siblings that
@@ -236,6 +236,12 @@ pub const WAIT_FRAMING_WIDTH: usize = 17;
 /// Judged on the padded subject alone, which is the one quantity every row in
 /// a group shares — a per-row cap read off each line's own detail length is
 /// exactly the measurement that split the group.
+///
+/// NARROWED, never dropped: `pad_subject` only pads, so a claim too small for
+/// one row damages nothing — that row glues its trailer inline, exactly as a
+/// row already past the column does — while every narrower row still lands
+/// on one x. Answering 0 instead withdrew the column from twenty rows because
+/// one script label was over budget.
 pub(crate) fn group_column(
     wrap_cols: Option<usize>,
     depth: usize,
@@ -245,11 +251,7 @@ pub(crate) fn group_column(
     let Some(budget) = wrap_budget(wrap_cols, depth) else {
         return column;
     };
-    if column + trailing <= budget {
-        column
-    } else {
-        0
-    }
+    column.min(budget.saturating_sub(trailing))
 }
 
 /// What a group has to leave beside the padded subject, measured over the
@@ -541,18 +543,28 @@ mod tests {
     }
 
     #[test]
-    fn a_column_the_window_cannot_hold_is_dropped_for_the_whole_group() {
+    fn a_column_the_window_cannot_hold_is_narrowed_to_what_the_window_holds() {
         // The plan-wide column is computed from the widest subject in the
         // phase, which says nothing about the window. Padded to it, every row
-        // in the group would run past the edge — so the group renders with no
-        // column at all rather than with the column some of its rows can
-        // afford and others cannot.
+        // in the group would run past the edge — so the group pads to the
+        // widest column the trailing content still fits beside, and only the
+        // rows past it glue their trailers inline.
         let (_r, sink, _buf) = narrow(40);
-        assert_eq!(group_column(sink.wrap_columns(), 1, 120, 2), 0);
+        let column = group_column(sink.wrap_columns(), 1, 120, 2);
+        let line = wrap_budget(sink.wrap_columns(), 1).expect("a narrow sink wraps");
+        assert_eq!(column, line - 2, "narrowed to the line less the trailing");
+        assert!(column > 0, "never withdrawn outright");
         assert_eq!(
-            pad_subject("install ripgrep", 0, true),
+            pad_subject(&"x".repeat(120), column, true),
             None,
-            "so no row in the group is padded"
+            "the row past the column is left alone"
+        );
+        assert_eq!(
+            console::measure_text_width(
+                &pad_subject("install ripgrep", column, true).unwrap_or_default()
+            ),
+            column,
+            "a row under it still pads to it"
         );
     }
 

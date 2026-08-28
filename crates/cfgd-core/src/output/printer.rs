@@ -610,13 +610,35 @@ impl Printer {
     /// `action_display_subject_within`, so the preview, the alignment column,
     /// the apply ledger, the live tree and the wait lines name one action one
     /// way.
+    ///
+    /// The FLOOR, not always the answer: a report that measured its own
+    /// trailing allowance claims a wider budget through
+    /// [`Printer::report_column_beside`], and this answers that claim while
+    /// it is held — so a subject cut inside the claim (a preview bullet, a
+    /// settled row, a wait line) is cut once, to the report's budget.
     pub fn subject_budget(&self) -> Option<usize> {
-        self.sink_stderr.wrap_columns().map(|cols| {
-            super::renderer::wrap::line_budget(cols, ACTION_ROW_DEPTH).saturating_sub(
+        self.renderer
+            .report_subject_budget()
+            .or_else(|| self.subject_budget_floor())
+    }
+
+    /// The budget [`Printer::subject_budget`] answers when no report has
+    /// claimed a wider one: the constant-reserved half of the line.
+    pub fn subject_budget_floor(&self) -> Option<usize> {
+        self.action_row_line_budget().map(|line| {
+            line.saturating_sub(
                 super::renderer::status::GLYPH_PREFIX_WIDTH
                     + super::renderer::status::WAIT_FRAMING_WIDTH,
             ) / 2
         })
+    }
+
+    /// The columns an action row has in total on this terminal — the whole
+    /// line at [`ACTION_ROW_DEPTH`] — or `None` for a sink that never wraps.
+    pub fn action_row_line_budget(&self) -> Option<usize> {
+        self.sink_stderr
+            .wrap_columns()
+            .map(|cols| super::renderer::wrap::line_budget(cols, ACTION_ROW_DEPTH))
     }
 
     /// Declare the alignment column every action row of THIS report pads to,
@@ -632,7 +654,7 @@ impl Printer {
     /// nested inside that run leaves the wider claim alone.
     #[must_use = "the column is released when the guard drops; bind it"]
     pub fn report_column(&self, width: usize) -> super::renderer::ReportColumnGuard<'_> {
-        super::renderer::ReportColumnGuard::acquire(&self.renderer, width)
+        super::renderer::ReportColumnGuard::acquire(&self.renderer, width, None)
     }
 
     /// [`Printer::report_column`] for a report that knows what its rows will
@@ -650,8 +672,13 @@ impl Printer {
     /// section's own live column defers to the claim, and a live tree asks
     /// [`Printer::live_column_for`] for it.
     #[must_use = "the column is released when the guard drops; bind it"]
+    ///
+    /// `budget` is the subject budget the report settled for its rows
+    /// (`reconciler::report_subject_budget`), held with the column so every
+    /// reader of [`Printer::subject_budget`] inside the claim answers it.
     pub fn report_column_beside(
         &self,
+        budget: Option<usize>,
         width: usize,
         trailing: usize,
     ) -> super::renderer::ReportColumnGuard<'_> {
@@ -661,7 +688,7 @@ impl Printer {
             width,
             super::renderer::status::GLYPH_PREFIX_WIDTH + trailing,
         );
-        self.report_column(column)
+        super::renderer::ReportColumnGuard::acquire(&self.renderer, column, budget)
     }
 
     /// The column a live painter pads a row to: the report's claimed column

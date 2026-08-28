@@ -450,7 +450,12 @@ pub fn env_file_row_is_redundant<'a>(kinds: impl IntoIterator<Item = &'a str>) -
 /// still appends a role glyph and an optional `(Ns)` duration suffix after
 /// the subject, so the cap leaves that trailing room rather than filling the
 /// full width with script text alone.
-const SCRIPT_LABEL_MAX_CHARS: usize = 80;
+pub const SCRIPT_LABEL_MAX_CHARS: usize = 80;
+
+/// The fewest `char`s a budget may cut a script label to: below this a row
+/// names no command at all, so a narrow terminal cuts the marker's room
+/// rather than the body's.
+pub const SCRIPT_LABEL_MIN_CHARS: usize = 16;
 
 /// Condense a `ScriptEntry::run_str()` body into a single-line, width-bounded
 /// label for status subjects and error messages.
@@ -468,6 +473,15 @@ const SCRIPT_LABEL_MAX_CHARS: usize = 80;
 /// otherwise ride along inside the "first line" untouched; it is scrubbed
 /// explicitly so the result can never carry a `\r` forward.
 pub fn condense_script_label(body: &str) -> String {
+    condense_script_label_within(body, SCRIPT_LABEL_MAX_CHARS)
+}
+
+/// [`condense_script_label`] cut at `max_chars` instead of the fixed cap, for
+/// a subject that knows its report's budget: a script row is the one action
+/// shape whose operand is prose, and a cap that cannot see the terminal left
+/// it the widest row of every report on any screen narrower than the cap.
+pub fn condense_script_label_within(body: &str, max_chars: usize) -> String {
+    let max_chars = max_chars.max(SCRIPT_LABEL_MIN_CHARS);
     let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
     let Some(first_raw) = lines.next() else {
         return String::new();
@@ -475,14 +489,14 @@ pub fn condense_script_label(body: &str) -> String {
     let first: String = first_raw.chars().filter(|&c| c != '\r').collect();
     let more_lines = lines.next().is_some();
 
-    if first.chars().count() <= SCRIPT_LABEL_MAX_CHARS {
+    if first.chars().count() <= max_chars {
         if more_lines {
             format!("{first} …")
         } else {
             first
         }
     } else {
-        let truncated: String = first.chars().take(SCRIPT_LABEL_MAX_CHARS).collect();
+        let truncated: String = first.chars().take(max_chars).collect();
         format!("{truncated}…")
     }
 }

@@ -165,19 +165,28 @@ impl Renderer {
     /// The OUTERMOST claim wins: an apply claims a column measured over its
     /// plan AND its backup labels, and the preview nested inside it — which
     /// can see only the plan — must not narrow what the run already settled.
-    pub(crate) fn claim_report_column(&self, width: usize) -> bool {
+    pub(crate) fn claim_report_column(&self, width: usize, budget: Option<usize>) -> bool {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if s.report_column.is_some() {
             return false;
         }
         s.report_column = Some(width);
+        s.report_subject_budget = budget;
         true
+    }
+
+    /// The subject budget the held claim settled, if a claim is held and
+    /// settled one.
+    pub(crate) fn report_subject_budget(&self) -> Option<usize> {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.report_subject_budget
     }
 
     /// Release a claim made by [`Renderer::claim_report_column`].
     pub(crate) fn release_report_column(&self) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.report_column = None;
+        s.report_subject_budget = None;
     }
 
     /// Set the empty_state placeholder for the topmost open section.
@@ -885,12 +894,14 @@ mod alignment_group_tests {
         crate::test_helpers::captured_text(&buf)
     }
 
-    /// Alignment is a property of the SET: every row of one group pads to one
-    /// detail column, or no row is padded. Capped per row — off each line's
-    /// own detail length — these three rows settled at three different
-    /// columns, and the widest of them was the one left out.
+    /// Alignment is a property of the SET: every padded row of one group pads
+    /// to ONE detail column, and a row left unpadded is one already past it.
+    /// Capped per row — off each line's own detail length — these three rows
+    /// settled at three different columns, and the widest of them was the one
+    /// left out; dropped to 0 when one row could not afford the column, the
+    /// two rows that could were left ragged beside it.
     #[test]
-    fn every_row_of_one_group_shares_a_detail_column_or_none_is_padded() {
+    fn every_padded_row_of_one_group_shares_a_detail_column() {
         for cols in [40usize, 50, 55, 60, 65, 70, 80, 100, 200] {
             let out = render_group(cols);
             // A row's FIRST physical line: a wrapped continuation carries no
@@ -901,22 +912,30 @@ mod alignment_group_tests {
                 .filter(|l| l.starts_with('✓') || l.starts_with('∅'))
                 .filter(|l| l.contains(" — "))
                 .collect();
-            let glue_at: Vec<usize> = heads
+            let glue_at: Vec<(usize, bool)> = heads
                 .iter()
                 .filter_map(|l| l.find(" — ").map(|byte| &l[..byte]))
-                .map(console::measure_text_width)
+                // A padded subject is the only way a glue lands behind whitespace.
+                .map(|before| (console::measure_text_width(before), before.ends_with(' ')))
                 .collect();
-            // A padded subject is the only way a glue lands behind whitespace.
-            let padded = heads
+            let padded: Vec<usize> = glue_at
                 .iter()
-                .filter_map(|l| l.find(" — ").map(|byte| &l[..byte]))
-                .any(|before| before.ends_with(' '));
-            let shared = glue_at.windows(2).all(|w| w[0] == w[1]);
+                .filter(|(_, p)| *p)
+                .map(|(x, _)| *x)
+                .collect();
+            let shared = padded.windows(2).all(|w| w[0] == w[1]);
             assert!(
-                shared || !padded,
-                "at {cols} columns the group settled at {glue_at:?} — one column \
-                 for every row, or padding for none:\n{out}"
+                shared,
+                "at {cols} columns the padded rows settled at {padded:?} — one column \
+                 for every padded row:\n{out}"
             );
+            if let Some(column) = padded.first() {
+                assert!(
+                    glue_at.iter().all(|(x, p)| *p || x >= column),
+                    "at {cols} columns a row left unpadded is one already past the \
+                     column {column}: {glue_at:?}\n{out}"
+                );
+            }
         }
     }
 }

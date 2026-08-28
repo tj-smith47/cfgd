@@ -1581,6 +1581,7 @@ mod tests {
         ] {
             let (printer, screen) = Printer::for_test_live_terminal(24, 44);
             let _claim = printer.report_column_beside(
+                None,
                 30,
                 crate::output::measure_width(" — ") + crate::output::measure_width(reason),
             );

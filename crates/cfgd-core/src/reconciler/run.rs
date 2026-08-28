@@ -676,8 +676,9 @@ impl<'a> ApplyRun<'a> {
         // the apply tree the executor writes, and the `Backups` pseudo-phase
         // after it are one page, and each measuring its own part of it puts
         // the trailing column at a different x position in each.
-        let budget = printer.subject_budget();
+        let budget = report_subject_budget(plan, self.filter, printer);
         let _column = printer.report_column_beside(
+            budget,
             report_align_width(plan, self.filter, budget).max(self.backup_align_width()),
             report_trailing_allowance(plan, self.filter, budget),
         );
@@ -942,10 +943,13 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
     // a reader scans down, and a column measured inside each phase moves x
     // position mid-report. A run that already claimed one — an apply, which saw
     // its backup labels too — keeps it, so its preview and its tree agree.
-    let budget = printer.subject_budget();
+    let budget = report_subject_budget(plan, filter, printer);
     let width = report_align_width(plan, filter, budget);
-    let _column =
-        printer.report_column_beside(width, report_trailing_allowance(plan, filter, budget));
+    let _column = printer.report_column_beside(
+        budget,
+        width,
+        report_trailing_allowance(plan, filter, budget),
+    );
     for (phase, groups) in in_scope_tree(plan, filter, PhaseCoverage::Rendered) {
         let phase_section = printer.section_phase(&phase.name.section_label());
         for (group, actions) in groups {
@@ -1124,9 +1128,15 @@ pub fn align_width_of<'s>(labels: impl Iterator<Item = &'s str>) -> usize {
 /// Ignoring the claim on the bullet put a preview's em-dashes in two places
 /// and neither at the apply's.
 ///
-/// `budget` is the printer's [`Printer::subject_budget`], the same one every
-/// row of the report renders its subject within, so the column is measured
-/// over the strings the rows will actually carry.
+/// `budget` is the report's subject budget ([`report_subject_budget`]), the
+/// same one every row of the report renders its subject within, so the column
+/// is measured over the strings the rows will actually carry — and CLAMPED to
+/// it. Two subject shapes can exceed the budget they were cut within: an
+/// operand list at `elided_list`'s floor (two long paths under `deploy`) and
+/// a script label at `SCRIPT_LABEL_MIN_CHARS`. Measured unclamped, one such
+/// row made the claim fail and withdrew the column from every row under it;
+/// clamped, that row alone glues its trailer inline, which is what a row past
+/// the column does anyway.
 ///
 /// [`Printer::subject_budget`]: crate::output::Printer::subject_budget
 pub fn report_align_width(
@@ -1140,7 +1150,46 @@ pub fn report_align_width(
         .flat_map(|(_, actions)| actions.iter())
         .map(|action| action_display_subject_within(action, budget).to_string())
         .collect();
-    align_width_of(items.iter().map(String::as_str))
+    align_width_of(items.iter().map(String::as_str)).min(budget.unwrap_or(usize::MAX))
+}
+
+/// The subject budget THIS report's rows are cut within: the printer's floor
+/// ([`Printer::subject_budget_floor`], which reserves the widest wait framing
+/// for every report alike), widened to what the line leaves after the glyph
+/// and this report's OWN [`report_trailing_allowance`] — a plan whose only
+/// wait reasons name short provision rows has no use for a reservation sized
+/// for `queued behind <a subject at the budget>`, and the reservation cost the
+/// hero's `apt install` row three of its eleven names beside seventy blank
+/// columns. Re-priced once at the wider budget, since a reason names a
+/// subject cut within it, and kept only if the claim still fits; the floor
+/// otherwise. `None` for a sink that never wraps, like the floor.
+///
+/// Idempotent under its own claim: inside a run that already holds it,
+/// [`Printer::subject_budget`] answers the claimed budget and the widening
+/// reproduces it, so a preview nested in an apply cuts the same strings.
+///
+/// [`Printer::subject_budget_floor`]: crate::output::Printer::subject_budget_floor
+/// [`Printer::subject_budget`]: crate::output::Printer::subject_budget
+pub fn report_subject_budget(
+    plan: &Plan,
+    filter: Option<&PhaseFilter>,
+    printer: &Printer,
+) -> Option<usize> {
+    let floor = printer.subject_budget()?;
+    let line = printer.action_row_line_budget()?;
+    let reserved = |budget: usize| {
+        crate::output::renderer::status::GLYPH_PREFIX_WIDTH
+            + report_trailing_allowance(plan, filter, Some(budget))
+    };
+    let widened = line.saturating_sub(reserved(floor));
+    if widened <= floor {
+        return Some(floor);
+    }
+    Some(if widened + reserved(widened) <= line {
+        widened
+    } else {
+        floor
+    })
 }
 
 /// The widest content any row of the report may print AFTER its subject —
