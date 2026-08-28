@@ -101,12 +101,16 @@ fn env_write_summary(action: &Action) -> Option<String> {
 }
 
 /// What a module file deploy puts on the machine, for the detail beside its
-/// own line: `deploy a, b — 6 files`, or `— 1 of 6 files` for a subset.
+/// own line: `deploy init.lua — 1 of 6 files` for a subset.
 ///
 /// A subset counts against the DECLARED set, so "one file changed" and
 /// "nothing changed" (no action at all) can never render alike. A full deploy
-/// of three targets or fewer names every one of them in its subject already,
-/// so it carries no count: the detail would restate the row.
+/// carries no count at all: a subject short enough names every target, and a
+/// longer one's `+N more` marker ([`SUBJECT_LIST_KEEP`]) already gives the
+/// total with the names before it, so `deploy a, b, +4 more — 6 files` stated
+/// six twice.
+///
+/// [`SUBJECT_LIST_KEEP`]: super::format::SUBJECT_LIST_KEEP
 fn deploy_files_summary(action: &Action) -> Option<String> {
     let Action::Module(ModuleAction {
         kind:
@@ -120,13 +124,7 @@ fn deploy_files_summary(action: &Action) -> Option<String> {
         return None;
     };
     let written = files.len();
-    if written < *declared_total {
-        Some(format!("{written} of {declared_total} files"))
-    } else if written > 3 {
-        Some(crate::pluralize(written, "file"))
-    } else {
-        None
-    }
+    (written < *declared_total).then(|| format!("{written} of {declared_total} files"))
 }
 
 /// What a package install actually landed, for the detail beside its own line:
@@ -141,12 +139,11 @@ fn deploy_files_summary(action: &Action) -> Option<String> {
 /// there. `installed` is that re-read's answer, carried out of the executor on
 /// [`ActionRun`]; `None` is a preview, which has no answer yet.
 ///
-/// No plain count on a full install, unlike the deploy arm's `> 3` case: a
-/// package subject names every entry it installs — neither
-/// `format_module_action_body` nor `format_plan_item` truncates one — so a
-/// trailing `— 6 packages` could only ever restate the row. That is the same
-/// rule the deploy arm states for a subject of three targets or fewer; only
-/// the threshold differs, because only the deploy subject elides.
+/// No plain count on a full install: a package subject names every entry it
+/// installs — neither `format_module_action_body` nor `format_plan_item`
+/// truncates one — so a trailing `— 6 packages` could only ever restate the
+/// row. The same rule the deploy arm holds, whose elided subject gives its
+/// total through the `+N more` marker instead.
 ///
 /// [`action_display_subject`]: super::format::action_display_subject
 fn installed_packages_summary(action: &Action, installed: Option<usize>) -> Option<String> {

@@ -1816,9 +1816,11 @@ fn header_omits_the_sources_row_when_nothing_composed() {
 /// the preview bullet and the apply's status row state one fact in one slot.
 /// `deploy a, b (6 files)` baked the count into its subject while the env
 /// write beside it said `— 3 vars, 3 aliases`; both now read the ONE producer.
+/// The deploy here writes two of five declared files, the one deploy shape
+/// that produces a count: a full deploy's subject already gives its total.
 #[test]
 fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
-    let files: Vec<crate::modules::ResolvedFile> = (0..5)
+    let files: Vec<crate::modules::ResolvedFile> = (0..2)
         .map(|i| crate::modules::ResolvedFile {
             source: PathBuf::from(format!("/cache/mod/f{i}")),
             target: PathBuf::from(format!("/home/u/.f{i}")),
@@ -1832,7 +1834,7 @@ fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
     let deploy = Action::Module(crate::reconciler::ModuleAction::local(
         "big",
         crate::reconciler::ModuleActionKind::DeployFiles {
-            declared_total: files.len(),
+            declared_total: 5,
             files,
         },
     ));
@@ -1859,9 +1861,8 @@ fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        out.contains("- deploy /home/u/.f0, /home/u/.f1, +3 more — 5 files"),
-        "the count sits after the em-dash, beside the subject — which says for \
-         itself how many operands it left out: {out}"
+        out.contains("- deploy /home/u/.f0, /home/u/.f1 — 2 of 5 files"),
+        "the count sits after the em-dash, beside the subject: {out}"
     );
     assert!(
         !out.contains("files)"),
