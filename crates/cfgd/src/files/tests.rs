@@ -1143,7 +1143,11 @@ fn link_deployed_content_follows_an_edit_made_through_the_link() {
         vec![cfgd_core::providers::LinkDeployedRow {
             target: target.clone(),
             hash: cfgd_core::sha256_hex(b"content"),
-            files: 1,
+            file_hashes: vec![format!(
+                "{}:{}",
+                cfgd_core::to_posix_string(&target),
+                cfgd_core::sha256_hex(b"content")
+            )],
         }],
         "a converged symlink reports the bytes its target resolves to"
     );
@@ -1159,9 +1163,13 @@ fn link_deployed_content_follows_an_edit_made_through_the_link() {
     assert_eq!(
         deployed,
         vec![cfgd_core::providers::LinkDeployedRow {
+            file_hashes: vec![format!(
+                "{}:{}",
+                cfgd_core::to_posix_string(&target),
+                cfgd_core::sha256_hex(b"edited through the link")
+            )],
             target,
             hash: cfgd_core::sha256_hex(b"edited through the link"),
-            files: 1,
         }],
         "the reported hash follows the edit, so a stale record can be corrected"
     );
@@ -4605,7 +4613,15 @@ fn link_deployed_content_covers_every_file_under_a_directory_entry() {
         "the directory entry has one row: {before:?}"
     );
     assert_eq!(before[0].target, target);
-    assert_eq!(before[0].files, 1, "one file under the tree");
+    assert_eq!(
+        before[0].file_hashes,
+        vec![format!(
+            "{}/config/options.lua:{}",
+            cfgd_core::to_posix_string(&target),
+            cfgd_core::sha256_hex(b"opt.number = true\n")
+        )],
+        "one file under the tree, keyed on the deployed target: {before:?}"
+    );
 
     fs::write(
         files_dir.join("options.lua"),

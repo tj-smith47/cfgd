@@ -1,11 +1,24 @@
 use std::collections::HashSet;
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use super::StateStore;
 use super::types::ManagedResource;
 use crate::errors::Result;
 use crate::providers::OrphanedPackage;
+
+/// What [`StateStore::refresh_managed_resource_hash`] did to the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HashRefresh {
+    /// The recorded hash already described the bytes; nothing written.
+    Unchanged,
+    /// The hash agreed but the row carried no per-file breakdown; the
+    /// breakdown was stored so the next move can be counted. Not news.
+    Backfilled,
+    /// The hash moved. `previous_files` is the breakdown the row held before,
+    /// `None` when it had none to compare against.
+    Moved { previous_files: Option<String> },
+}
 
 impl StateStore {
     /// Upsert a managed resource record.
@@ -96,27 +109,51 @@ impl StateStore {
             .collect())
     }
 
-    /// Refresh a tracked resource's recorded content hash, leaving every other
-    /// column alone, and report whether the row actually moved.
+    /// Refresh a tracked resource's recorded content hash and the per-file
+    /// breakdown behind it, leaving every other column alone, and report what
+    /// the row did.
     ///
     /// An `UPDATE` rather than an upsert: a resource cfgd has never applied has
     /// no row, and minting one here would claim management of something this run
-    /// only looked at. The hash comparison lives in the statement so a row whose
-    /// recorded hash already describes the bytes on disk costs no write at all —
-    /// the daemon asks this on every tick.
+    /// only looked at. A row whose recorded hash already describes the bytes on
+    /// disk costs no write at all — the daemon asks this on every tick — unless
+    /// it carries no breakdown yet, in which case the breakdown is stored once
+    /// ([`HashRefresh::Backfilled`]) so the NEXT move can be counted. The
+    /// previous breakdown comes back with a move, because the caller counts the
+    /// entries that differ and the row is the only place it was kept.
     pub fn refresh_managed_resource_hash(
         &self,
         resource_type: &str,
         resource_id: &str,
         hash: &str,
-    ) -> Result<bool> {
-        let changed = self.conn.execute(
-            "UPDATE managed_resources SET last_hash = ?3
-                 WHERE resource_type = ?1 AND resource_id = ?2
-                   AND (last_hash IS NULL OR last_hash <> ?3)",
-            params![resource_type, resource_id, hash],
+        file_hashes: &str,
+    ) -> Result<HashRefresh> {
+        let previous: Option<(Option<String>, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT last_hash, file_hashes FROM managed_resources
+                     WHERE resource_type = ?1 AND resource_id = ?2",
+                params![resource_type, resource_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((last_hash, previous_files)) = previous else {
+            return Ok(HashRefresh::Unchanged);
+        };
+        let moved = last_hash.as_deref() != Some(hash);
+        if !moved && previous_files.is_some() {
+            return Ok(HashRefresh::Unchanged);
+        }
+        self.conn.execute(
+            "UPDATE managed_resources SET last_hash = ?3, file_hashes = ?4
+                 WHERE resource_type = ?1 AND resource_id = ?2",
+            params![resource_type, resource_id, hash, file_hashes],
         )?;
-        Ok(changed > 0)
+        Ok(if moved {
+            HashRefresh::Moved { previous_files }
+        } else {
+            HashRefresh::Backfilled
+        })
     }
 
     /// Remove a managed resource record. Idempotent: deleting a row that is not

@@ -15,6 +15,7 @@ mod decisions;
 mod drift;
 mod journal;
 mod managed;
+pub use managed::HashRefresh;
 mod modules;
 mod package_prefix;
 mod pending_config;
@@ -483,6 +484,14 @@ const MIGRATIONS: &[&str] = &[
     // could not read) and is deliberately not backfilled to 0: an unsigned
     // source and an unreadable one are different facts.
     "ALTER TABLE config_sources ADD COLUMN last_commit_signed INTEGER;",
+    // Migration 19: the per-file breakdown behind `last_hash` for a link-deployed
+    // row, one `<path>:<sha256>` per line. `last_hash` is one aggregate over
+    // every file a row stands for, so it can say THAT something moved but never
+    // HOW MUCH: a one-line edit under a 52-file module tree read as 52 files
+    // refreshed. NULL is "no breakdown recorded yet" and is backfilled silently
+    // by the first refresh that sees the row; a refresh that finds no prior
+    // breakdown reports no count rather than the row's coverage.
+    "ALTER TABLE managed_resources ADD COLUMN file_hashes TEXT;",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable

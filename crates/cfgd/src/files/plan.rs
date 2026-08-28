@@ -427,11 +427,11 @@ impl super::CfgdFileManager {
             // A source that exists but cannot be read leaves the question
             // unanswered, which is not the same as an answer of "unchanged":
             // report nothing for it and let the recorded hash stand.
-            match cfgd_core::reconciler::link_deployed_digest(&source_path) {
-                Some((hash, files)) => deployed.push(cfgd_core::providers::LinkDeployedRow {
+            match cfgd_core::reconciler::link_deployed_digest(&source_path, &target_path) {
+                Some(digest) => deployed.push(cfgd_core::providers::LinkDeployedRow {
                     target: target_path,
-                    hash,
-                    files,
+                    hash: digest.hash,
+                    file_hashes: digest.file_hashes,
                 }),
                 None => tracing::debug!("cannot hash {}", source_path.posix()),
             }
