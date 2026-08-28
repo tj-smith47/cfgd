@@ -1982,21 +1982,27 @@ fn a_failed_run_renders_its_next_step_under_the_verdict() {
     );
 }
 
-/// A report wide enough for its wait reasons KEEPS its one column — and every
-/// path a row names is home-folded while the `-o json` payload keeps it whole.
-///
-/// The hero's own shape on an emulated 128-column screen: a `Files` deploy
-/// row naming two long absolute home paths, three provision rows, an env
-/// write and two package rows filled to the budget. Priced over every action,
-/// the allowance reserved for `queued behind deploy <two paths>` — a sentence
-/// no code path emits — and the retreat refused the whole report a column,
-/// which every capture answering `wrap_columns() == None` was blind to. The
-/// counterpart of `a_wait_row_on_a_narrow_terminal_retreats_its_column_and_is_cut_at_a_token`,
-/// which pins only the retreat.
-#[test]
-fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
-    let home = PathBuf::from("/home/tj");
-    let _home = crate::with_test_home_guard(&home);
+/// The columns a rendered action row spends before its subject: the indent
+/// and the two-column bullet or glyph.
+fn row_prefix_width(line: &str) -> usize {
+    line.len() - line.trim_start().len() + 2
+}
+
+/// The width of a rendered row's subject alone — the head before ` — `, net
+/// of its prefix and of the padding a claim added.
+fn row_subject_width(line: &str) -> usize {
+    let head = line.split_once(" — ").map_or(line, |(head, _)| head);
+    crate::output::measure_width(head.trim_end()).saturating_sub(row_prefix_width(line))
+}
+
+/// The hero's own plan shape: three provision rows with the brew edges, an
+/// env write, two package rows that fill to the budget, a six-file deploy
+/// under `~/.config/nvim` (whose two-path floor exceeds any budget under 70),
+/// a three-file deploy (joined in full, the `len <= keep + 1` arm) and a
+/// `postApply` script at 77 columns — every subject shape that can exceed the
+/// budget it is cut within.
+fn hero_plan(home: &std::path::Path) -> Plan {
+    let home = home.to_path_buf();
     let provision = |manager: &str, via: &str| {
         Action::Manager(crate::reconciler::ManagerAction::Provision {
             manager: manager.to_string(),
@@ -2037,13 +2043,29 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
             declared_total: 8,
         },
     ));
+    // The `len <= keep + 1` arm: three targets are joined in full, untested
+    // against any room.
+    let three = Action::Module(crate::reconciler::ModuleAction::local(
+        "nvim",
+        crate::reconciler::ModuleActionKind::DeployFiles {
+            files: [
+                "after/ftplugin/markdown.lua",
+                "after/ftplugin/python.lua",
+                "snippets/all.json",
+            ]
+            .into_iter()
+            .map(file)
+            .collect(),
+            declared_total: 3,
+        },
+    ));
     let write_env = Action::Env(super::super::types::EnvAction::WriteEnvFile {
         path: home.join(".cfgd.env"),
         content: String::new(),
         vars: 3,
         aliases: 3,
     });
-    let plan = plan_of(vec![
+    plan_of(vec![
         phase(
             PhaseName::Prerequisites,
             vec![
@@ -2083,8 +2105,40 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
                 ),
             ],
         ),
-        phase(PhaseName::Files, vec![deploy]),
-    ]);
+        phase(PhaseName::Files, vec![deploy, three]),
+        phase(
+            PhaseName::PostScripts,
+            vec![Action::Module(crate::reconciler::ModuleAction {
+                module_name: "nvim".to_string(),
+                kind: crate::reconciler::ModuleActionKind::RunScript {
+                    script: ScriptEntry::Simple(
+                        r#"nvim --headless "+Lazy! load nvim-treesitter" "+TSUpdateSync" +qa!"#
+                            .to_string(),
+                    ),
+                    phase: ScriptPhase::PostApply,
+                },
+                origin: None,
+            })],
+        ),
+    ])
+}
+
+/// A report wide enough for its wait reasons KEEPS its one column — and every
+/// path a row names is home-folded while the `-o json` payload keeps it whole.
+///
+/// The hero's own shape on an emulated 128-column screen: a `Files` deploy
+/// row naming two long absolute home paths, three provision rows, an env
+/// write and two package rows filled to the budget. Priced over every action,
+/// the allowance reserved for `queued behind deploy <two paths>` — a sentence
+/// no code path emits — and the retreat refused the whole report a column,
+/// which every capture answering `wrap_columns() == None` was blind to. The
+/// counterpart of `a_wait_row_on_a_narrow_terminal_retreats_its_column_and_is_cut_at_a_token`,
+/// which pins only the retreat.
+#[test]
+fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
+    let home = PathBuf::from("/home/tj");
+    let _home = crate::with_test_home_guard(&home);
+    let plan = hero_plan(&home);
     let deploy = plan.phases[2]
         .actions()
         .next()
@@ -2092,7 +2146,7 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
 
     let cols: u16 = 128;
     let (printer, screen) = Printer::for_test_live_terminal(60, cols);
-    let budget = printer.subject_budget();
+    let budget = report_subject_budget(&plan, None, &printer);
     let width = report_align_width(&plan, None, budget);
     let trailing = report_trailing_allowance(&plan, None, budget);
     // The WHOLE report: the header the run opens on, then the tree. A tree
@@ -2153,22 +2207,32 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
         dashes.len() >= 2,
         "at least two detail-bearing rows rendered:\n{shown}"
     );
-    let column = dashes[0].0;
+    // The claim is the clamped width; a row whose subject is past it — the
+    // two-path deploy at the floor, the script label — glues its trailer
+    // inline, and every other row lands on the one column.
+    let column = width;
     for (at, line) in &dashes {
+        if row_subject_width(line) > column {
+            continue;
+        }
         assert_eq!(
-            *at, column,
-            "every em-dash lands at one column:\n{shown}\n{line}"
+            *at,
+            row_prefix_width(line) + column,
+            "every em-dash of a row within the claim lands at one column:\n{shown}\n{line}"
         );
     }
+    assert!(
+        dashes
+            .iter()
+            .filter(|(_, l)| row_subject_width(l) <= column)
+            .count()
+            >= 2,
+        "at least two rows share the claimed column:\n{shown}"
+    );
     // The widest row IS the column; every narrower row is padded out to it.
     let padded = dashes
         .iter()
-        .filter(|(_, line)| {
-            let subject = line
-                .split_once(" — ")
-                .map_or("", |(head, _)| head.trim_end());
-            column > crate::output::measure_width(subject)
-        })
+        .filter(|(_, line)| column > row_subject_width(line))
         .count();
     assert!(
         padded >= 1,
@@ -2216,4 +2280,136 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
         super::super::format_plan_item(deploy).contains("/home/tj/.config/nvim/init.lua"),
         "the `-o json` description keeps the absolute path"
     );
+}
+
+/// The report's column is claimed — and its subjects bounded — at EVERY
+/// width, including the demo's own 125, over every subject shape that can
+/// exceed the budget it is cut within.
+///
+/// The 128-column pin above passed with one column of slack while the hero
+/// recorded at 125 columns had no column at all: the `deploy` floor and the
+/// script label are not bounded by the budget, so `report_align_width`
+/// answered 70 (then 77 with the script row) and the claim's `column +
+/// trailing <= line` test failed by two. Walked over widths, the invariant
+/// `report_align_width <= budget` holds by clamping, the claim is never 0,
+/// and every row within it shares one x. At 125 the rows also fill at least
+/// what they filled before the wait framing was reserved (four apt names,
+/// six brew names), since the budget widens by what this report's own
+/// allowance leaves rather than reserving the widest framing for every report.
+#[test]
+fn the_reports_column_is_claimed_and_its_subjects_bounded_at_every_width() {
+    let home = PathBuf::from("/home/tj");
+    let _home = crate::with_test_home_guard(&home);
+    let plan = hero_plan(&home);
+    let apt = plan.phases[1]
+        .actions()
+        .next()
+        .expect("the packages phase holds the apt install");
+    let brew = plan.phases[1]
+        .actions()
+        .nth(1)
+        .expect("the packages phase holds the brew install");
+    let names = |subject: &str| {
+        subject
+            .split_once(" install ")
+            .map_or("", |(_, list)| list)
+            .split(", ")
+            .filter(|s| !s.starts_with('+'))
+            .count()
+    };
+    for cols in [80u16, 100, 120, 125, 128, 160, 200] {
+        let (printer, screen) = Printer::for_test_live_terminal(80, cols);
+        let floor = printer
+            .subject_budget_floor()
+            .expect("an emulated screen has a width");
+        let budget = report_subject_budget(&plan, None, &printer);
+        let b = budget.expect("an emulated screen has a width");
+        assert!(
+            b >= floor,
+            "{cols} cols: the budget never narrows below the floor"
+        );
+        let width = report_align_width(&plan, None, budget);
+        assert!(
+            width <= b,
+            "{cols} cols: the claim is clamped to the budget ({width} > {b})"
+        );
+        let trailing = report_trailing_allowance(&plan, None, budget);
+        let line = printer
+            .action_row_line_budget()
+            .expect("an emulated screen has a width");
+        // The claim: the clamped width where the widest trailing fits beside
+        // it, narrowed to what does fit where it does not — never 0.
+        let reserved = crate::output::renderer::status::GLYPH_PREFIX_WIDTH + trailing;
+        let column = width.min(line.saturating_sub(reserved));
+        assert!(column > 0, "{cols} cols: the column is never withdrawn");
+        if width + reserved <= line {
+            assert_eq!(column, width, "{cols} cols: a fitting claim is the width");
+        }
+        if cols >= 125 {
+            assert_eq!(
+                column, width,
+                "{cols} cols: the hero's wait reasons fit beside its clamped width \
+                 ({width} + {reserved} > {line})"
+            );
+        }
+        // From the hero's own width up, every subject the budget CAN bound
+        // is within it — the script label included — and the two-path deploy
+        // floors are the only rows past it, gluing rather than withdrawing
+        // the column. Narrower, every fixed subject floors past a budget of
+        // twenty-odd columns, which is what the clamp is for.
+        if cols >= 125 {
+            let over: Vec<String> = plan
+                .phases
+                .iter()
+                .flat_map(|p| p.actions())
+                .map(|a| super::action_display_subject_within(a, budget).to_string())
+                .filter(|s| crate::output::measure_width(s) > b)
+                .collect();
+            assert!(
+                over.iter().all(|s| s.starts_with("deploy ")),
+                "{cols} cols: only a deploy at its floor may exceed the budget {b}: {over:?}"
+            );
+        }
+        if cols == 125 {
+            let apt_named = names(&super::action_display_subject_within(apt, budget).to_string());
+            let brew_named = names(&super::action_display_subject_within(brew, budget).to_string());
+            assert!(
+                apt_named >= 4 && brew_named >= 6,
+                "125 cols: the rows fill at least what they filled before the framing was \
+                 reserved (apt {apt_named} of 4, brew {brew_named} of 6)"
+            );
+        }
+
+        render_plan_tree(&plan, None, &printer);
+        drop(printer);
+        let shown = screen.contents();
+        let within: Vec<(usize, String)> = shown
+            .lines()
+            .filter(|l| l.contains(" — "))
+            .filter(|l| row_subject_width(l) <= column)
+            .map(|l| {
+                let at = crate::output::measure_width(l.split_once(" — ").map_or("", |(h, _)| h));
+                (at, l.to_string())
+            })
+            .collect();
+        // The env write is always within the claim; the two-path deploy at
+        // its floor (70 columns) joins it from 128 columns up, and glues its
+        // detail inline below that.
+        let expected = if cols >= 128 { 2 } else { 1 };
+        assert!(
+            within.len() >= expected,
+            "{cols} cols: at least {expected} rows render within the claim:\n{shown}"
+        );
+        for (at, line) in &within {
+            assert_eq!(
+                *at,
+                row_prefix_width(line) + column,
+                "{cols} cols: every row within the claim lands its em-dash at {column}:\n{shown}\n{line}"
+            );
+        }
+        assert!(
+            !shown.contains("/home/tj/"),
+            "{cols} cols: every path folds home:\n{shown}"
+        );
+    }
 }

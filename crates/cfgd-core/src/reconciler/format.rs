@@ -351,13 +351,13 @@ pub fn action_display_subject_within(action: &Action, budget: Option<usize>) -> 
             entry,
             phase,
             origin,
-        }) => script_run_subject(entry.run_str(), phase, origin),
+        }) => script_run_subject_within(entry.run_str(), phase, origin, budget),
         Action::Module(
             ma @ ModuleAction {
                 kind: ModuleActionKind::RunScript { script, phase },
                 ..
             },
-        ) => module_script_subject(script.run_str(), phase, ma.origin.as_deref()),
+        ) => module_script_subject_within(script.run_str(), phase, ma.origin.as_deref(), budget),
         // The fold is the DISPLAY seam's alone: `ListRender::Full` feeds the
         // `-o json` plan payload and keeps the absolute path.
         _ => DisplaySubject {
@@ -370,9 +370,23 @@ pub fn action_display_subject_within(action: &Action, budget: Option<usize>) -> 
 /// [`action_display_subject`] for a profile script, reachable from the apply
 /// path that holds the `ScriptAction`'s parts rather than the `Action`.
 pub fn script_run_subject(run: &str, phase: &ScriptPhase, origin: &str) -> DisplaySubject {
+    script_run_subject_within(run, phase, origin, None)
+}
+
+/// [`script_run_subject`] cut to `budget`, the same budget the operand lists
+/// of the report are cut to; the apply path reads it off the printer, which
+/// answers the claimed report budget while the run holds one.
+pub fn script_run_subject_within(
+    run: &str,
+    phase: &ScriptPhase,
+    origin: &str,
+    budget: Option<usize>,
+) -> DisplaySubject {
+    let marker = format!("run {} script", phase.display_name());
+    let body = script_body_display(run, origin, budget, &marker);
     DisplaySubject {
-        marker: Some(format!("run {} script", phase.display_name())),
-        body: script_body_display(run, origin),
+        marker: Some(marker),
+        body,
     }
 }
 
@@ -383,9 +397,21 @@ pub fn module_script_subject(
     phase: &ScriptPhase,
     origin: Option<&str>,
 ) -> DisplaySubject {
+    module_script_subject_within(run, phase, origin, None)
+}
+
+/// [`module_script_subject`] cut to `budget`; see [`script_run_subject_within`].
+pub fn module_script_subject_within(
+    run: &str,
+    phase: &ScriptPhase,
+    origin: Option<&str>,
+    budget: Option<usize>,
+) -> DisplaySubject {
+    let marker = phase.display_name().to_string();
+    let body = script_body_display(run, origin.unwrap_or(""), budget, &marker);
     DisplaySubject {
-        marker: Some(phase.display_name().to_string()),
-        body: script_body_display(run, origin.unwrap_or("")),
+        marker: Some(marker),
+        body,
     }
 }
 
@@ -416,11 +442,22 @@ pub fn bare_script_subject(run: &str) -> DisplaySubject {
 
 /// Condense the body, then append provenance: a long or multi-line script body
 /// must not be able to truncate away the source that delivered it.
-fn script_body_display(run: &str, origin: &str) -> String {
+///
+/// With a `budget` the body is cut so the WHOLE subject — `marker: body
+/// <- origin` — fits it, floored at `SCRIPT_LABEL_MIN_CHARS`; the fixed
+/// `SCRIPT_LABEL_MAX_CHARS` cap still binds on a wide screen.
+fn script_body_display(run: &str, origin: &str, budget: Option<usize>, marker: &str) -> String {
+    let suffix = provenance_suffix(origin);
+    // The marker and its `: `, the provenance, and the `…` a cut appends.
+    let framing =
+        crate::output::measure_width(marker) + 2 + crate::output::measure_width(&suffix) + 1;
+    let cap = budget.map_or(crate::output::SCRIPT_LABEL_MAX_CHARS, |b| {
+        crate::output::SCRIPT_LABEL_MAX_CHARS.min(b.saturating_sub(framing))
+    });
     format!(
         "{}{}",
-        crate::output::condense_script_label(run),
-        provenance_suffix(origin)
+        crate::output::condense_script_label_within(run, cap),
+        suffix
     )
 }
 
