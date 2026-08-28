@@ -1,0 +1,12 @@
+Explain: profile.spec.packages.brew <([]string | BrewSpec)>
+  Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.
+
+Variants
+  []string — Package names, as a bare list.
+  BrewSpec — The object form of `brew`: taps, formulae and casks, or a Brewfile. A bare list of names folds into `formulae`.
+
+Fields
+  casks     <[]string> — Homebrew casks (GUI applications) to install.
+  file      <string>   — Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.
+  formulae  <[]string> — Homebrew formulae (CLI packages) to install.
+  taps      <[]string> — Third-party taps to add before installing formulae/casks.

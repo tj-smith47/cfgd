@@ -1286,7 +1286,7 @@
             "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
             "name": "apt",
             "required": false,
-            "type": "([]string | object)",
+            "type": "([]string | AptSpec)",
             "variants": [
               {
                 "description": "Package names, as a bare list.",
@@ -1310,9 +1310,10 @@
                   }
                 ],
                 "description": "The object form of `apt`: a package list, a file listing packages, or both. A bare list of names folds into `packages`.",
-                "name": "object",
+                "name": "AptSpec",
                 "required": false,
-                "type": "object"
+                "type": "object",
+                "typeName": "AptSpec"
               }
             ]
           },
@@ -1320,7 +1321,7 @@
             "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
             "name": "brew",
             "required": false,
-            "type": "([]string | object)",
+            "type": "([]string | BrewSpec)",
             "variants": [
               {
                 "description": "Package names, as a bare list.",
@@ -1356,9 +1357,10 @@
                   }
                 ],
                 "description": "The object form of `brew`: taps, formulae and casks, or a Brewfile. A bare list of names folds into `formulae`.",
-                "name": "object",
+                "name": "BrewSpec",
                 "required": false,
-                "type": "object"
+                "type": "object",
+                "typeName": "BrewSpec"
               }
             ]
           },
@@ -1366,7 +1368,7 @@
             "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
             "name": "cargo",
             "required": false,
-            "type": "([]string | object)",
+            "type": "([]string | CargoSpec)",
             "variants": [
               {
                 "description": "Package names, as a bare list.",
@@ -1390,9 +1392,10 @@
                   }
                 ],
                 "description": "The object form of `cargo`: crates to install, a `Cargo.toml` to install from, or both. A bare list of names folds into `packages`.",
-                "name": "object",
+                "name": "CargoSpec",
                 "required": false,
-                "type": "object"
+                "type": "object",
+                "typeName": "CargoSpec"
               }
             ]
           },
@@ -1507,7 +1510,7 @@
             "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
             "name": "flatpak",
             "required": false,
-            "type": "([]string | object)",
+            "type": "([]string | FlatpakSpec)",
             "variants": [
               {
                 "description": "Package names, as a bare list.",
@@ -1531,9 +1534,10 @@
                   }
                 ],
                 "description": "The object form of `flatpak`: application ids and the remote to install them from. A bare list of ids folds into `packages`.",
-                "name": "object",
+                "name": "FlatpakSpec",
                 "required": false,
-                "type": "object"
+                "type": "object",
+                "typeName": "FlatpakSpec"
               }
             ]
           },
@@ -1597,7 +1601,7 @@
             "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
             "name": "npm",
             "required": false,
-            "type": "([]string | object)",
+            "type": "([]string | NpmSpec)",
             "variants": [
               {
                 "description": "Package names, as a bare list.",
@@ -1621,9 +1625,10 @@
                   }
                 ],
                 "description": "The object form of `npm`: global packages, a `package.json` to install from, or both. A bare list of names folds into `global`.",
-                "name": "object",
+                "name": "NpmSpec",
                 "required": false,
-                "type": "object"
+                "type": "object",
+                "typeName": "NpmSpec"
               }
             ]
           },
@@ -1743,7 +1748,7 @@
             "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
             "name": "snap",
             "required": false,
-            "type": "([]string | object)",
+            "type": "([]string | SnapSpec)",
             "variants": [
               {
                 "description": "Package names, as a bare list.",
@@ -1767,9 +1772,10 @@
                   }
                 ],
                 "description": "The object form of `snap`: strict and classic-confinement snaps. A bare list of names folds into `packages`.",
-                "name": "object",
+                "name": "SnapSpec",
                 "required": false,
-                "type": "object"
+                "type": "object",
+                "typeName": "SnapSpec"
               }
             ]
           },
@@ -2756,7 +2762,7 @@
                     "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
                     "name": "apt",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | AptSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -2780,9 +2786,10 @@
                           }
                         ],
                         "description": "The object form of `apt`: a package list, a file listing packages, or both. A bare list of names folds into `packages`.",
-                        "name": "object",
+                        "name": "AptSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "AptSpec"
                       }
                     ]
                   },
@@ -2790,7 +2797,7 @@
                     "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
                     "name": "brew",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | BrewSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -2826,9 +2833,10 @@
                           }
                         ],
                         "description": "The object form of `brew`: taps, formulae and casks, or a Brewfile. A bare list of names folds into `formulae`.",
-                        "name": "object",
+                        "name": "BrewSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "BrewSpec"
                       }
                     ]
                   },
@@ -2836,7 +2844,7 @@
                     "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
                     "name": "cargo",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | CargoSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -2860,9 +2868,10 @@
                           }
                         ],
                         "description": "The object form of `cargo`: crates to install, a `Cargo.toml` to install from, or both. A bare list of names folds into `packages`.",
-                        "name": "object",
+                        "name": "CargoSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "CargoSpec"
                       }
                     ]
                   },
@@ -2977,7 +2986,7 @@
                     "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
                     "name": "flatpak",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | FlatpakSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -3001,9 +3010,10 @@
                           }
                         ],
                         "description": "The object form of `flatpak`: application ids and the remote to install them from. A bare list of ids folds into `packages`.",
-                        "name": "object",
+                        "name": "FlatpakSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "FlatpakSpec"
                       }
                     ]
                   },
@@ -3067,7 +3077,7 @@
                     "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
                     "name": "npm",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | NpmSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -3091,9 +3101,10 @@
                           }
                         ],
                         "description": "The object form of `npm`: global packages, a `package.json` to install from, or both. A bare list of names folds into `global`.",
-                        "name": "object",
+                        "name": "NpmSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "NpmSpec"
                       }
                     ]
                   },
@@ -3213,7 +3224,7 @@
                     "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
                     "name": "snap",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | SnapSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -3237,9 +3248,10 @@
                           }
                         ],
                         "description": "The object form of `snap`: strict and classic-confinement snaps. A bare list of names folds into `packages`.",
-                        "name": "object",
+                        "name": "SnapSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "SnapSpec"
                       }
                     ]
                   },
@@ -3595,7 +3607,7 @@
                     "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
                     "name": "apt",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | AptSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -3619,9 +3631,10 @@
                           }
                         ],
                         "description": "The object form of `apt`: a package list, a file listing packages, or both. A bare list of names folds into `packages`.",
-                        "name": "object",
+                        "name": "AptSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "AptSpec"
                       }
                     ]
                   },
@@ -3629,7 +3642,7 @@
                     "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
                     "name": "brew",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | BrewSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -3665,9 +3678,10 @@
                           }
                         ],
                         "description": "The object form of `brew`: taps, formulae and casks, or a Brewfile. A bare list of names folds into `formulae`.",
-                        "name": "object",
+                        "name": "BrewSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "BrewSpec"
                       }
                     ]
                   },
@@ -3675,7 +3689,7 @@
                     "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
                     "name": "cargo",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | CargoSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -3699,9 +3713,10 @@
                           }
                         ],
                         "description": "The object form of `cargo`: crates to install, a `Cargo.toml` to install from, or both. A bare list of names folds into `packages`.",
-                        "name": "object",
+                        "name": "CargoSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "CargoSpec"
                       }
                     ]
                   },
@@ -3816,7 +3831,7 @@
                     "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
                     "name": "flatpak",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | FlatpakSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -3840,9 +3855,10 @@
                           }
                         ],
                         "description": "The object form of `flatpak`: application ids and the remote to install them from. A bare list of ids folds into `packages`.",
-                        "name": "object",
+                        "name": "FlatpakSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "FlatpakSpec"
                       }
                     ]
                   },
@@ -3906,7 +3922,7 @@
                     "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
                     "name": "npm",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | NpmSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -3930,9 +3946,10 @@
                           }
                         ],
                         "description": "The object form of `npm`: global packages, a `package.json` to install from, or both. A bare list of names folds into `global`.",
-                        "name": "object",
+                        "name": "NpmSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "NpmSpec"
                       }
                     ]
                   },
@@ -4052,7 +4069,7 @@
                     "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
                     "name": "snap",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | SnapSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -4076,9 +4093,10 @@
                           }
                         ],
                         "description": "The object form of `snap`: strict and classic-confinement snaps. A bare list of names folds into `packages`.",
-                        "name": "object",
+                        "name": "SnapSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "SnapSpec"
                       }
                     ]
                   },
@@ -4434,7 +4452,7 @@
                     "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
                     "name": "apt",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | AptSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -4458,9 +4476,10 @@
                           }
                         ],
                         "description": "The object form of `apt`: a package list, a file listing packages, or both. A bare list of names folds into `packages`.",
-                        "name": "object",
+                        "name": "AptSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "AptSpec"
                       }
                     ]
                   },
@@ -4468,7 +4487,7 @@
                     "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
                     "name": "brew",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | BrewSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -4504,9 +4523,10 @@
                           }
                         ],
                         "description": "The object form of `brew`: taps, formulae and casks, or a Brewfile. A bare list of names folds into `formulae`.",
-                        "name": "object",
+                        "name": "BrewSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "BrewSpec"
                       }
                     ]
                   },
@@ -4514,7 +4534,7 @@
                     "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
                     "name": "cargo",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | CargoSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -4538,9 +4558,10 @@
                           }
                         ],
                         "description": "The object form of `cargo`: crates to install, a `Cargo.toml` to install from, or both. A bare list of names folds into `packages`.",
-                        "name": "object",
+                        "name": "CargoSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "CargoSpec"
                       }
                     ]
                   },
@@ -4655,7 +4676,7 @@
                     "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
                     "name": "flatpak",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | FlatpakSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -4679,9 +4700,10 @@
                           }
                         ],
                         "description": "The object form of `flatpak`: application ids and the remote to install them from. A bare list of ids folds into `packages`.",
-                        "name": "object",
+                        "name": "FlatpakSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "FlatpakSpec"
                       }
                     ]
                   },
@@ -4745,7 +4767,7 @@
                     "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
                     "name": "npm",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | NpmSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -4769,9 +4791,10 @@
                           }
                         ],
                         "description": "The object form of `npm`: global packages, a `package.json` to install from, or both. A bare list of names folds into `global`.",
-                        "name": "object",
+                        "name": "NpmSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "NpmSpec"
                       }
                     ]
                   },
@@ -4891,7 +4914,7 @@
                     "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
                     "name": "snap",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | SnapSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -4915,9 +4938,10 @@
                           }
                         ],
                         "description": "The object form of `snap`: strict and classic-confinement snaps. A bare list of names folds into `packages`.",
-                        "name": "object",
+                        "name": "SnapSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "SnapSpec"
                       }
                     ]
                   },
@@ -5273,7 +5297,7 @@
                     "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
                     "name": "apt",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | AptSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -5297,9 +5321,10 @@
                           }
                         ],
                         "description": "The object form of `apt`: a package list, a file listing packages, or both. A bare list of names folds into `packages`.",
-                        "name": "object",
+                        "name": "AptSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "AptSpec"
                       }
                     ]
                   },
@@ -5307,7 +5332,7 @@
                     "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
                     "name": "brew",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | BrewSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -5343,9 +5368,10 @@
                           }
                         ],
                         "description": "The object form of `brew`: taps, formulae and casks, or a Brewfile. A bare list of names folds into `formulae`.",
-                        "name": "object",
+                        "name": "BrewSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "BrewSpec"
                       }
                     ]
                   },
@@ -5353,7 +5379,7 @@
                     "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
                     "name": "cargo",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | CargoSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -5377,9 +5403,10 @@
                           }
                         ],
                         "description": "The object form of `cargo`: crates to install, a `Cargo.toml` to install from, or both. A bare list of names folds into `packages`.",
-                        "name": "object",
+                        "name": "CargoSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "CargoSpec"
                       }
                     ]
                   },
@@ -5494,7 +5521,7 @@
                     "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
                     "name": "flatpak",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | FlatpakSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -5518,9 +5545,10 @@
                           }
                         ],
                         "description": "The object form of `flatpak`: application ids and the remote to install them from. A bare list of ids folds into `packages`.",
-                        "name": "object",
+                        "name": "FlatpakSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "FlatpakSpec"
                       }
                     ]
                   },
@@ -5584,7 +5612,7 @@
                     "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
                     "name": "npm",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | NpmSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -5608,9 +5636,10 @@
                           }
                         ],
                         "description": "The object form of `npm`: global packages, a `package.json` to install from, or both. A bare list of names folds into `global`.",
-                        "name": "object",
+                        "name": "NpmSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "NpmSpec"
                       }
                     ]
                   },
@@ -5730,7 +5759,7 @@
                     "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
                     "name": "snap",
                     "required": false,
-                    "type": "([]string | object)",
+                    "type": "([]string | SnapSpec)",
                     "variants": [
                       {
                         "description": "Package names, as a bare list.",
@@ -5754,9 +5783,10 @@
                           }
                         ],
                         "description": "The object form of `snap`: strict and classic-confinement snaps. A bare list of names folds into `packages`.",
-                        "name": "object",
+                        "name": "SnapSpec",
                         "required": false,
-                        "type": "object"
+                        "type": "object",
+                        "typeName": "SnapSpec"
                       }
                     ]
                   },

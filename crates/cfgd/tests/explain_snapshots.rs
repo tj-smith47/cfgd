@@ -3,6 +3,9 @@
 //! Three cases mapping to the three command shapes:
 //!   - `explain/index.{txt,json}`  — bare `cfgd explain` (schema table + hints)
 //!   - `explain/module.{txt,json}` — `cfgd explain module` (overview + fields)
+//!   - `explain/profile-packages-brew.txt` — `cfgd explain profile.spec.packages.brew`
+//!     (a union field: the shapes under `Variants`, the one object shape's
+//!     fields under `Fields`, and a legend whose placeholder resolves)
 //!   - `explain/unknown.txt`       — `cfgd explain bogus` (error path; the
 //!     command short-circuits with `anyhow::bail!` so the snapshot captures
 //!     the Err string rather than a rendered Doc)
@@ -12,7 +15,10 @@
 
 use std::path::Path;
 
-use cfgd::cli::explain::{build_explain_index_doc, build_explain_schema_doc, find_schema};
+use cfgd::cli::explain::{
+    build_explain_drilldown_doc, build_explain_index_doc, build_explain_schema_doc, find_schema,
+    resolve_field_path,
+};
 use cfgd_core::output::Printer;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -116,6 +122,20 @@ fn explain_recursive_tree_json() {
         "recursive explain payload must carry kind=Profile, got: {actual}"
     );
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/profile-recursive.json");
+}
+
+#[test]
+fn explain_union_drilldown_human() {
+    let schema = find_schema("profile").expect("profile schema is registered");
+    let path = ["packages", "brew"];
+    let fields = resolve_field_path(&schema.fields, &path).expect("brew resolves");
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_explain_drilldown_doc(schema, &path, fields, false));
+    drop(printer);
+    cap.assert_human_snapshot_in(
+        Path::new(SNAPSHOT_ROOT),
+        "explain/profile-packages-brew.txt",
+    );
 }
 
 #[test]

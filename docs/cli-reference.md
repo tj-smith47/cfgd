@@ -1066,8 +1066,11 @@ Drilling into an array-of-object field (`profile.backups`) lists the
 element's own fields, same as `kubectl explain`. A field that accepts more
 than one shape (e.g. `profile.scripts.preApply`, where each entry is either a
 bare string or a `{ run, timeout, … }` object) shows every accepted shape
-under a `Variants` section, each labeled by its own type and drillable into
-its own fields.
+under a `Variants` section, each named by its type (the `$defs` name where the
+schema has one, `BrewSpec`; the shape word, `[]string`, where it does not). When
+exactly one shape has fields of its own, those fields are the page's `Fields`
+list, listed by name and drillable (`profile.spec.packages.brew.taps`) exactly as
+a plain object's would be; `--recursive` expands every shape.
 
 Resource types: `module`, `profile`, `configsource`, `config` (aliases:
 `cfgdconfig`, `cfgd`), `machineconfig`, `configpolicy`, `clusterconfigpolicy`,

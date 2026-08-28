@@ -72,6 +72,10 @@ pub struct FieldNode {
     /// The accepted values of a unit-variant enum (`Copy`, `Symlink`, …), in
     /// declared order. Empty for every other field.
     pub enum_values: Vec<String>,
+    /// Whether this node is one SHAPE a union field accepts rather than a
+    /// field of its own: its `name` is its displayed type, so a renderer
+    /// states the type once and never offers it as a path segment.
+    pub is_variant: bool,
     /// Nested fields, for object-typed fields (including an array field's
     /// object-shaped element, e.g. `packages[].name`).
     pub children: Vec<FieldNode>,
@@ -587,6 +591,7 @@ fn field_node(
         type_desc,
         type_name: named_type(&unwrapped, &resolved).unwrap_or_default(),
         enum_values: enum_values(&resolved, ctx),
+        is_variant: false,
         required,
         description,
         children,
@@ -980,7 +985,11 @@ fn union_type_join(
             return None;
         }
         let resolved = resolve_ref(member, ctx);
-        let desc = type_description(&resolved, ctx, visited);
+        // A `$ref` member names its `$defs` type; `object` is reserved for a
+        // member that genuinely has none, so `brew` reads
+        // `([]string | BrewSpec)` while `apk`'s inline arm stays `object`.
+        let desc = named_type(member, &resolved)
+            .unwrap_or_else(|| type_description(&resolved, ctx, visited));
         descent.leave(visited);
         if !parts.contains(&desc) {
             parts.push(desc);
@@ -990,10 +999,13 @@ fn union_type_join(
 }
 
 /// Field-tree expansion of a genuine multi-shape union: one [`FieldNode`] per
-/// distinct accepted shape, named by its own [`type_description`] (schemars
-/// drops Rust variant names for `#[serde(untagged)]` enums, so the type string
-/// is the only stable label available — e.g. `ScriptEntry` yields a `string`
-/// variant and an `object` variant carrying its `run`/`timeout`/… fields).
+/// distinct accepted shape, named by its displayed type — the `$defs` name a
+/// `$ref` member resolves through (`BrewSpec`), else its own
+/// [`type_description`] (schemars drops Rust variant names for
+/// `#[serde(untagged)]` enums, so for an inline member the type string is the
+/// only stable label — e.g. `ScriptEntry` yields a `string` variant and an
+/// `object` variant carrying its `run`/`timeout`/… fields). The name IS the
+/// shape, which is why a variant row renders no type span of its own.
 /// Returns an empty vec when the union already collapses to one type via
 /// [`union_member_type`] (nothing to break down) or the schema is not a union.
 fn union_variants(
@@ -1023,29 +1035,26 @@ fn union_variants(
             continue;
         }
         let resolved = resolve_ref(member, ctx);
-        let type_desc = type_description(&resolved, ctx, visited);
-        if seen.insert(type_desc.clone()) {
-            let description = schema_description(member)
+        let mut variant = FieldNode {
+            name: String::new(),
+            type_desc: type_description(&resolved, ctx, visited),
+            type_name: named_type(member, &resolved).unwrap_or_default(),
+            enum_values: Vec::new(),
+            is_variant: true,
+            required: false,
+            description: String::new(),
+            children: Vec::new(),
+            variants: Vec::new(),
+        };
+        variant.name = variant.displayed_type();
+        if seen.insert(variant.name.clone()) {
+            variant.description = schema_description(member)
                 .or_else(|| schema_description(&resolved))
                 .unwrap_or_default();
-            let children = if is_object(&resolved) {
-                object_fields(&resolved, ctx, visited)
-            } else {
-                Vec::new()
-            };
-            variants.push(FieldNode {
-                name: type_desc.clone(),
-                type_desc,
-                // A variant row is a SHAPE the field accepts, not a field of
-                // its own: the union's name belongs to the field above it,
-                // which already renders it.
-                type_name: String::new(),
-                enum_values: Vec::new(),
-                required: false,
-                description,
-                children,
-                variants: Vec::new(),
-            });
+            if is_object(&resolved) {
+                variant.children = object_fields(&resolved, ctx, visited);
+            }
+            variants.push(variant);
         }
         descent.leave(visited);
     }

@@ -92,8 +92,8 @@ fn explain_resolve_field_path_deep() {
     let object = brew
         .variants
         .iter()
-        .find(|v| v.name == "object")
-        .expect("the map shape is a variant");
+        .find(|v| v.name == "BrewSpec")
+        .expect("the map shape is a variant, named by its $defs type");
     // Brew has file, taps, formulae, casks
     assert_eq!(object.children.len(), 4);
     let list = brew.variants.iter().find(|v| v.name == "[]string");
@@ -497,11 +497,18 @@ fn explain_cmd_field_path_oneof_shows_both_variants() {
         output.contains("object"),
         "expected the object variant, got: {output}"
     );
-    // Non-recursive: the object variant's own fields (`run`, …) stay behind
-    // the `[+]` marker, matching every other expandable field.
+    // Non-recursive: the one object shape's own fields (`run`, …) are the
+    // page's `Fields`, listed by name where a plain object would list its
+    // own; the shape row itself is never marked, its name being no path.
     assert!(
-        output.contains("[+]"),
-        "expected the object variant to carry an unexpanded [+] marker, got: {output}"
+        output.contains("Fields") && output.lines().any(|l| l.trim_start().starts_with("run ")),
+        "expected the object shape's fields listed by name, got: {output}"
+    );
+    assert!(
+        !output
+            .lines()
+            .any(|l| l.trim_start().starts_with("object") && l.contains("[+]")),
+        "a shape row never carries the [+] a field earns, got: {output}"
     );
 }
 
@@ -643,21 +650,27 @@ fn explain_drilldown_renders_the_documented_shape() {
     // The whole drill-in view, pinned byte-for-byte: the heading is the
     // `Explain: <path>` TitleLabel every sibling report noun uses and carries
     // the queried field's own type, the description is body text under it, and
-    // the field list is a two-column `name <type> — description` list whose
-    // name and type columns each align beneath themselves.
+    // the shapes under `Variants` each state their type once (as their name),
+    // and the one object shape's fields are the two-column
+    // `name <type> — description` list whose name and type columns each
+    // align beneath themselves.
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, Some("profile.spec.packages.brew"), false).unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     let expected = "\
-Explain: profile.spec.packages.brew <([]string | object)>
+Explain: profile.spec.packages.brew <([]string | BrewSpec)>
   Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.
 
 Variants
-  []string  <[]string>     — Package names, as a bare list.
-  object    <object>   [+] — The object form of `brew`: taps, formulae and casks, or a Brewfile. A bare list of names folds into `formulae`.
+  []string — Package names, as a bare list.
+  BrewSpec — The object form of `brew`: taps, formulae and casks, or a Brewfile. A bare list of names folds into `formulae`.
 
-→ `cfgd explain profile.spec.packages.brew.<field>` expands a field marked [+]
+Fields
+  casks     <[]string> — Homebrew casks (GUI applications) to install.
+  file      <string>   — Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.
+  formulae  <[]string> — Homebrew formulae (CLI packages) to install.
+  taps      <[]string> — Third-party taps to add before installing formulae/casks.
 ";
     pretty_assertions::assert_eq!(output, expected);
 }
@@ -1015,4 +1028,113 @@ fn every_field_row_mark_lands_in_a_column() {
             "a padded column left trailing whitespace: {rendered:?}"
         );
     }
+}
+
+/// Every union-typed field renders its shapes ONCE and its fields BY NAME.
+///
+/// Walked over every field of every registered schema whose `variants` are
+/// non-empty, rendering the non-recursive drill-down each of them heads:
+///
+/// - a `$ref` member of the union names its `$defs` type, in the heading's
+///   type span and on its own Variants row (`<([]string | BrewSpec)>`), and
+///   `object` is reserved for a member that genuinely has none;
+/// - a Variants row carries one fact: its name IS its shape, so no `<type>`
+///   span restates it;
+/// - a union whose ONE object arm is the only shape with fields lists that
+///   arm's fields under `Fields`, where a plain object would have listed its
+///   own — a `Variants` section discloses shapes, it never replaces the list;
+/// - every row marked `[+]` names a path segment `resolve_field_path` accepts
+///   under the page's own path, so the legend's placeholder substitutes to a
+///   command that runs.
+///
+/// One commit shipped all four wrong on the one screen the author demo
+/// exists to show: `brew`'s `taps`/`formulae`/`casks`/`file` vanished behind a
+/// row named `object`, that row wore the `[+]` the legend promised a field
+/// for, and eighteen of nineteen type spans read `object`.
+#[test]
+fn every_union_typed_field_renders_its_shapes_once_and_its_fields_by_name() {
+    fn walk<'a>(
+        schema: &ResourceSchema,
+        fields: &'a [cfgd_core::schema::FieldNode],
+        path: &mut Vec<&'a str>,
+        seen: &mut usize,
+    ) {
+        for f in fields {
+            path.push(&f.name);
+            if !f.variants.is_empty() {
+                *seen += 1;
+                let resolved = resolve_field_path(&schema.fields, path)
+                    .unwrap_or_else(|| panic!("{} resolves", path.join(".")));
+                let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+                printer.emit(build_explain_drilldown_doc(schema, path, resolved, false));
+                printer.flush();
+                let rendered = cfgd_core::test_helpers::captured_text(&buf);
+                let page = format!("{}.spec.{}", schema.name.to_lowercase(), path.join("."));
+                let heading = rendered.lines().next().unwrap_or_default().to_string();
+
+                for v in &f.variants {
+                    if !v.type_name.is_empty() {
+                        assert!(
+                            heading.contains(&v.displayed_type()) && !heading.contains("object"),
+                            "{page}: a $ref member names its type in the heading: {heading}"
+                        );
+                    }
+                    let row = rendered
+                        .lines()
+                        .find(|l| l.trim_start().starts_with(&v.name))
+                        .unwrap_or_else(|| {
+                            panic!("{page}: a Variants row for {}:\n{rendered}", v.name)
+                        });
+                    assert!(
+                        !row.contains(&format!("<{}>", v.displayed_type())),
+                        "{page}: a Variants row states its shape once: {row}"
+                    );
+                    assert!(
+                        !row.contains("[+]"),
+                        "{page}: a shape is not a field and never earns the mark: {row}"
+                    );
+                }
+
+                let mut with_fields = f.variants.iter().filter(|v| !v.children.is_empty());
+                if let (Some(only), None) = (with_fields.next(), with_fields.next()) {
+                    assert!(
+                        rendered.contains("Fields"),
+                        "{page}: the one object arm's fields are listed:\n{rendered}"
+                    );
+                    for child in &only.children {
+                        assert!(
+                            rendered
+                                .lines()
+                                .any(|l| l.trim_start().starts_with(&child.name)),
+                            "{page}: `{}` is a row a reader can scan:\n{rendered}",
+                            child.name
+                        );
+                    }
+                }
+
+                for line in rendered.lines().filter(|l| l.contains("[+]")) {
+                    let name = line.split_whitespace().next().unwrap_or_default();
+                    let mut deeper = path.clone();
+                    deeper.push(name);
+                    assert!(
+                        resolve_field_path(&schema.fields, &deeper).is_some(),
+                        "{page}: `[+]` promises `cfgd explain {page}.{name}` runs: {line}"
+                    );
+                }
+            }
+            walk(schema, &f.children, path, seen);
+            for v in &f.variants {
+                walk(schema, &v.children, path, seen);
+            }
+            path.pop();
+        }
+    }
+    let mut seen = 0;
+    for schema in all_schemas() {
+        walk(schema, &schema.fields, &mut Vec::new(), &mut seen);
+    }
+    assert!(
+        seen > 0,
+        "the registry carries at least one union-typed field"
+    );
 }

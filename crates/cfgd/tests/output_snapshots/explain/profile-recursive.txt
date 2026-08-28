@@ -16,8 +16,8 @@ Fields (under spec)
     name         <string>        (required)
     namePattern  <string>
     postBackup   <[]ScriptEntry>
-      string  <string>
-      object  <object>
+      string
+      object
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
@@ -30,8 +30,8 @@ Fields (under spec)
         unless           <string>
         workdir          <string>
     preBackup    <[]ScriptEntry>
-      string  <string>
-      object  <object>
+      string
+      object
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
@@ -74,29 +74,29 @@ Fields (under spec)
   modules   <[]string>
   packages  <PackagesSpec>
     apk         <([]string | object)>
-      []string  <[]string>
-      object    <object>
+      []string
+      object
         packages  <[]string>
-    apt         <([]string | object)>
-      []string  <[]string>
-      object    <object>
+    apt         <([]string | AptSpec)>
+      []string
+      AptSpec
         file      <string>
         packages  <[]string>
-    brew        <([]string | object)>
-      []string  <[]string>
-      object    <object>
+    brew        <([]string | BrewSpec)>
+      []string
+      BrewSpec
         casks     <[]string>
         file      <string>
         formulae  <[]string>
         taps      <[]string>
-    cargo       <([]string | object)>
-      []string  <[]string>
-      object    <object>
+    cargo       <([]string | CargoSpec)>
+      []string
+      CargoSpec
         file      <string>
         packages  <[]string>
     chocolatey  <([]string | object)>
-      []string  <[]string>
-      object    <object>
+      []string
+      object
         packages  <[]string>
     custom      <[]CustomManagerSpec>
       check          <string>   (required)
@@ -107,64 +107,64 @@ Fields (under spec)
       uninstall      <string>   (required)
       update         <string>
     dnf         <([]string | object)>
-      []string  <[]string>
-      object    <object>
+      []string
+      object
         packages  <[]string>
-    flatpak     <([]string | object)>
-      []string  <[]string>
-      object    <object>
+    flatpak     <([]string | FlatpakSpec)>
+      []string
+      FlatpakSpec
         packages  <[]string>
         remote    <string>
     go          <([]string | object)>
-      []string  <[]string>
-      object    <object>
+      []string
+      object
         packages  <[]string>
     nix         <([]string | object)>
-      []string  <[]string>
-      object    <object>
+      []string
+      object
         packages  <[]string>
-    npm         <([]string | object)>
-      []string  <[]string>
-      object    <object>
+    npm         <([]string | NpmSpec)>
+      []string
+      NpmSpec
         file    <string>
         global  <[]string>
     pacman      <([]string | object)>
-      []string  <[]string>
-      object    <object>
+      []string
+      object
         packages  <[]string>
     pipx        <([]string | object)>
-      []string  <[]string>
-      object    <object>
+      []string
+      object
         packages  <[]string>
     pkg         <([]string | object)>
-      []string  <[]string>
-      object    <object>
+      []string
+      object
         packages  <[]string>
     scoop       <([]string | object)>
-      []string  <[]string>
-      object    <object>
+      []string
+      object
         packages  <[]string>
-    snap        <([]string | object)>
-      []string  <[]string>
-      object    <object>
+    snap        <([]string | SnapSpec)>
+      []string
+      SnapSpec
         classic   <[]string>
         packages  <[]string>
     winget      <([]string | object)>
-      []string  <[]string>
-      object    <object>
+      []string
+      object
         packages  <[]string>
     yum         <([]string | object)>
-      []string  <[]string>
-      object    <object>
+      []string
+      object
         packages  <[]string>
     zypper      <([]string | object)>
-      []string  <[]string>
-      object    <object>
+      []string
+      object
         packages  <[]string>
   scripts   <ScriptSpec>
     onChange       <[]ScriptEntry>
-      string  <string>
-      object  <object>
+      string
+      object
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
@@ -177,8 +177,8 @@ Fields (under spec)
         unless           <string>
         workdir          <string>
     onDrift        <[]ScriptEntry>
-      string  <string>
-      object  <object>
+      string
+      object
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
@@ -191,8 +191,8 @@ Fields (under spec)
         unless           <string>
         workdir          <string>
     postApply      <[]ScriptEntry>
-      string  <string>
-      object  <object>
+      string
+      object
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
@@ -205,8 +205,8 @@ Fields (under spec)
         unless           <string>
         workdir          <string>
     postReconcile  <[]ScriptEntry>
-      string  <string>
-      object  <object>
+      string
+      object
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
@@ -219,8 +219,8 @@ Fields (under spec)
         unless           <string>
         workdir          <string>
     preApply       <[]ScriptEntry>
-      string  <string>
-      object  <object>
+      string
+      object
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
@@ -233,8 +233,8 @@ Fields (under spec)
         unless           <string>
         workdir          <string>
     preReconcile   <[]ScriptEntry>
-      string  <string>
-      object  <object>
+      string
+      object
         continueOnError  <boolean>
         creates          <string>
         idleTimeout      <string>
