@@ -194,14 +194,14 @@ impl<'a> super::Reconciler<'a> {
         // slot the apply fills from what actually landed. Dropping an entry
         // can retire a manager's last consumer, so the nodes are planned
         // again over what survived.
-        if let Some(mediators) = self.elide_provisioned_tools(&mut module_routed, &manager_actions)
+        if let Some(relied_on) = self.elide_provisioned_tools(&mut module_routed, &manager_actions)
         {
             manager_actions = super::managers::plan_managers_with_routes(
                 self.registry,
                 &profile_packages,
                 &module_routed,
                 &declared_routes,
-                &mediators,
+                &relied_on,
             );
         }
 
@@ -979,9 +979,14 @@ impl<'a> super::Reconciler<'a> {
     /// Drop every module entry a `ManagerAction::Provision` in
     /// `manager_actions` already delivers, emptying and removing the install
     /// actions that held nothing else. `Some` when anything was dropped,
-    /// naming the mediators the delivered pairs were installed through — the
-    /// membership a re-plan must keep, see
-    /// [`super::managers::plan_managers_with_routes`].
+    /// naming both ends of every route the elision relied on: the mediator
+    /// the pair was installed through AND the managers of the node that
+    /// delivered it — the membership a re-plan must keep, see
+    /// [`super::managers::plan_managers_with_routes`]. Naming only the
+    /// mediator left the delivering node free to retire on the second pass
+    /// when the elision also took ITS last consumer, so the dropped package
+    /// was delivered by nothing again and the mediator was provisioned for
+    /// nobody.
     ///
     /// Two shapes, because a provision delivers a tool under two different
     /// names. An undeclared entry naming the provisioned MANAGER's own
@@ -1013,25 +1018,39 @@ impl<'a> super::Reconciler<'a> {
         module_routed: &mut Vec<(PhaseName, Action)>,
         manager_actions: &[Action],
     ) -> Option<Vec<String>> {
+        // Both ends of one provision's route: what the node delivers, and the
+        // managers it delivers them AS.
+        struct Route {
+            managers: Vec<String>,
+            packages: Vec<(String, String)>,
+        }
         let mut provisions: Vec<String> = Vec::new();
-        let mut delivered: Vec<(String, String)> = Vec::new();
+        let mut delivered: Vec<Route> = Vec::new();
         for action in manager_actions {
             let Action::Manager(node @ super::ManagerAction::Provision { manager, .. }) = action
             else {
                 continue;
             };
             provisions.push(manager.clone());
-            delivered.extend(super::managers::provision_delivered_packages(
-                self.registry,
-                node,
-            ));
+            let pairs = super::managers::provision_delivered_packages(self.registry, node);
+            if !pairs.is_empty() {
+                let managers = node
+                    .provisioned_managers()
+                    .iter()
+                    .map(|m| (*m).to_string())
+                    .collect();
+                delivered.push(Route {
+                    managers,
+                    packages: pairs,
+                });
+            }
         }
         if provisions.is_empty() {
             return None;
         }
         let none = crate::providers::InstalledPackages::default();
         let mut dropped = false;
-        let mut mediators: Vec<String> = Vec::new();
+        let mut relied_on: Vec<String> = Vec::new();
         module_routed.retain_mut(|(_, action)| {
             let Action::Module(ModuleAction {
                 kind: ModuleActionKind::InstallPackages { resolved },
@@ -1042,18 +1061,21 @@ impl<'a> super::Reconciler<'a> {
             };
             let before = resolved.len();
             resolved.retain(|pkg| {
-                if let Some(installer) =
-                    Self::delivering_installer(&delivered, &pkg.manager, &pkg.resolved_name)
+                let deliverer = delivered.iter().find_map(|route| {
+                    let pairs = &route.packages;
+                    Self::delivering_installer(pairs, &pkg.manager, &pkg.resolved_name)
                         .or_else(|| {
-                            Self::delivering_installer(
-                                &delivered,
-                                &pkg.manager,
-                                &pkg.canonical_name,
-                            )
+                            Self::delivering_installer(pairs, &pkg.manager, &pkg.canonical_name)
                         })
-                {
-                    if !mediators.iter().any(|m| m == installer) {
-                        mediators.push(installer.to_string());
+                        .map(|installer| (installer, &route.managers))
+                });
+                if let Some((installer, managers)) = deliverer {
+                    for name in
+                        std::iter::once(installer).chain(managers.iter().map(String::as_str))
+                    {
+                        if !relied_on.iter().any(|m| m == name) {
+                            relied_on.push(name.to_string());
+                        }
                     }
                     return false;
                 }
@@ -1068,7 +1090,7 @@ impl<'a> super::Reconciler<'a> {
             dropped |= resolved.len() != before;
             !resolved.is_empty()
         });
-        dropped.then_some(mediators)
+        dropped.then_some(relied_on)
     }
 
     /// Whether `pkg` survives the installed-state elision: not installed under

@@ -132,6 +132,7 @@ impl PackageManager for SimpleManager {
         None
     }
 
+    // bootstrap-arm-ok: a native system manager ships with its distribution
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }

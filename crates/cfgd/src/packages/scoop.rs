@@ -109,6 +109,7 @@ impl PackageManager for ScoopManager {
             .collect()
     }
 
+    // bootstrap-arm-ok: get.scoop.sh is scoop's only route
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
             cx,

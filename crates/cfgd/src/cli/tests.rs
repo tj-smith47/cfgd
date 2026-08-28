@@ -30207,6 +30207,90 @@ fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
     );
 }
 
+/// A cascade's PLANNED `via` is binding: the plan elides a module entry
+/// naming a package a provision delivers, and the pair it records is read off
+/// the planned route, so a bootstrap that quietly substituted another arm
+/// would credit the run with a package no route installed and leave the
+/// elided entry delivered by nothing.
+///
+/// The arm-selecting helpers hold that contract — they run the arm the plan
+/// named and fail (`planned_method_unavailable` / `planned_method_failed`)
+/// rather than falling through. So every `fn bootstrap` under `packages/`
+/// either routes through one of them, or says with `// bootstrap-arm-ok:`
+/// that it has a single arm and nothing to diverge to; and a body that adds
+/// an arm of its OWN past the helper (npm's nvm, pipx's pip) consults
+/// `planned_method` itself.
+#[test]
+fn every_multi_arm_bootstrap_honours_the_planned_method() {
+    let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut files = walk_rust_files(&packages_dir);
+    files.sort();
+    let arm_helpers = [
+        "bootstrap_brew_arm(",
+        "bootstrap_via_brew_then_system(",
+        "bootstrap_via_system_manager(",
+    ];
+    let own_installs = [
+        "pkg_run(",
+        "run_pkg_cmd_live(",
+        "bootstrap_via_shell_script(",
+    ];
+    let mut seen = 0usize;
+    let mut offenders = Vec::new();
+    for path in files
+        .into_iter()
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+    {
+        let production = production_body(&std::fs::read_to_string(&path).unwrap());
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if line.trim_start() != "fn bootstrap(" && !line.contains(" fn bootstrap(&self") {
+                continue;
+            }
+            let indent = line.len() - line.trim_start().len();
+            let closer = format!("{}}}", " ".repeat(indent));
+            let end = (n + 1..lines.len())
+                .find(|&i| lines[i] == closer)
+                .unwrap_or(lines.len());
+            let body = lines[n..end].join("\n");
+            seen += 1;
+            let routed = arm_helpers.iter().any(|h| body.contains(h));
+            if !routed {
+                if !label_hatched(&lines, n, "// bootstrap-arm-ok:") {
+                    offenders.push(format!(
+                        "{}:{}: no arm helper and no `// bootstrap-arm-ok:` reason",
+                        path.display(),
+                        n + 1
+                    ));
+                }
+                continue;
+            }
+            let own_arm = own_installs.iter().any(|i| body.contains(i));
+            if own_arm && !body.contains("planned_method") {
+                offenders.push(format!(
+                    "{}:{}: an arm of its own past the helper, without consulting \
+                     `planned_method`",
+                    path.display(),
+                    n + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        seen >= 10,
+        "the walk no longer reaches the managers' bootstraps — it found {seen}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a bootstrap must honour the method the plan named — route it through \
+         bootstrap_brew_arm / bootstrap_via_brew_then_system / \
+         bootstrap_via_system_manager, consult `planned_method` in an arm of its own, \
+         or say why one arm is all it has with `// bootstrap-arm-ok:`:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// A docs pointer is a repo-relative path (`docs/spec/module.md#fields`) —
 /// something no terminal auto-links and no reader can paste into a browser.
 /// `ResourceSchema::docs_url` is the ONE derivation that turns it into the

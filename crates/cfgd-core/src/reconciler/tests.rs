@@ -11597,27 +11597,31 @@ fn a_declared_route_entry_this_plan_provisions_is_not_planned_again_on_the_packa
 /// through.
 #[test]
 fn a_cascade_the_elision_relied_on_survives_the_re_plan() {
-    let mut registry = ProviderRegistry::new();
-    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
-        "sys",
-    )));
-    // The mediator: absent, and itself bootstrappable from the system manager.
-    registry.add_package_manager(Box::new(
-        crate::test_helpers::MockPackageManager::new("alt")
-            .without_index()
-            .unavailable()
-            .bootstrappable_via("sys"),
-    ));
-    // Prefers the mediator whenever the run delivers one, and delivers
-    // `paket` when it takes that arm — the module's only entry under `alt`.
-    registry.add_package_manager(Box::new(
-        crate::test_helpers::MockPackageManager::new("dep")
-            .without_index()
-            .unavailable()
-            .preferring_delivered(&["alt"])
-            .bootstrappable_via("sys")
-            .mediated_by("alt", &["paket"]),
-    ));
+    let registry_of = || {
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+            "sys",
+        )));
+        // The mediator: absent, and itself bootstrappable from the system manager.
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new("alt")
+                .without_index()
+                .unavailable()
+                .bootstrappable_via("sys"),
+        ));
+        // Prefers the mediator whenever the run delivers one, and delivers
+        // `paket` when it takes that arm — the module's only entry under `alt`.
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new("dep")
+                .without_index()
+                .unavailable()
+                .preferring_delivered(&["alt"])
+                .bootstrappable_via("sys")
+                .mediated_by("alt", &["paket"]),
+        ));
+        registry
+    };
+    let registry = registry_of();
 
     let pkg = |canonical: &str, manager: &str, declared: bool| ResolvedPackage {
         canonical_name: canonical.to_string(),
@@ -11663,6 +11667,38 @@ fn a_cascade_the_elision_relied_on_survives_the_re_plan() {
     assert!(
         items.contains("dep install gadget"),
         "the provisioned manager still installs what needed it, got:\n{items}"
+    );
+
+    // The same shape one step out: the entry that kept the DELIVERING manager
+    // wanted is itself elided (a bare entry naming the mediator `alt`, which
+    // the provisioned arm drops), so pass 2 retires `provision dep via alt`
+    // unless the elision seeds that node's own managers too — and `paket`,
+    // dropped because the pass-1 route delivered it, is delivered by nothing
+    // while `alt` is provisioned for no consumer at all.
+    let registry = registry_of();
+    let mut module = make_resolved_module("tools");
+    module.packages = vec![pkg("paket", "alt", true), pkg("alt", "dep", false)];
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let items = all_plan_items(&plan).join("\n");
+    assert!(
+        items.contains("provision alt via sys") && items.contains("provision dep via alt"),
+        "the node that DELIVERED the elided package stays wanted across the re-plan, got:\n{items}"
+    );
+    assert_eq!(
+        items.matches("paket").count(),
+        0,
+        "and the package it delivers is still named by no packages row, got:\n{items}"
     );
 }
 

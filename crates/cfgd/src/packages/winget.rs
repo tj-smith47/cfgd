@@ -85,6 +85,7 @@ impl PackageManager for WingetManager {
         None
     }
 
+    // bootstrap-arm-ok: winget ships with Windows; there is nothing to install it with
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Err(PackageError::BootstrapFailed {
             manager: "winget".into(),

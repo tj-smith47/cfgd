@@ -158,6 +158,7 @@ impl PackageManager for BrewTapManager {
         None
     }
 
+    // bootstrap-arm-ok: a sub-manager installs nothing of its own — brew provisions the one binary all three share
     fn bootstrap(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         Ok(())
     }
@@ -242,6 +243,7 @@ impl PackageManager for BrewCaskManager {
         None
     }
 
+    // bootstrap-arm-ok: a sub-manager installs nothing of its own — brew provisions the one binary all three share
     fn bootstrap(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         Ok(())
     }
@@ -326,6 +328,7 @@ impl PackageManager for BrewManager {
         )
     }
 
+    // bootstrap-arm-ok: one installer script, run as the linuxbrew user when root
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         let install_url = "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh";
 
