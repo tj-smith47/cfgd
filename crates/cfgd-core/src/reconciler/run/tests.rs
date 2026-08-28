@@ -910,7 +910,7 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
     let subject = super::action_display_subject_within(&write_env, None)
         .body
         .clone();
-    let detail = super::super::action_produced_detail(&write_env, None, &[])
+    let detail = super::super::action_produced_detail(&write_env, None, 0, &[])
         .expect("a write of 3 vars and 3 aliases states what it produced");
     // A far longer sibling in the SAME report, so the column the short row
     // pads to is one its own width would never have produced.
@@ -1979,5 +1979,222 @@ fn a_failed_run_renders_its_next_step_under_the_verdict() {
     assert!(
         failed < hint,
         "the instruction follows the counts it is about: {out:?}"
+    );
+}
+
+/// A report wide enough for its wait reasons KEEPS its one column — and every
+/// path a row names is home-folded while the `-o json` payload keeps it whole.
+///
+/// The hero's own shape on an emulated 128-column screen: a `Files` deploy
+/// row naming two long absolute home paths, three provision rows, an env
+/// write and two package rows filled to the budget. Priced over every action,
+/// the allowance reserved for `queued behind deploy <two paths>` — a sentence
+/// no code path emits — and the retreat refused the whole report a column,
+/// which every capture answering `wrap_columns() == None` was blind to. The
+/// counterpart of `a_wait_row_on_a_narrow_terminal_retreats_its_column_and_is_cut_at_a_token`,
+/// which pins only the retreat.
+#[test]
+fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
+    let home = PathBuf::from("/home/tj");
+    let _home = crate::with_test_home_guard(&home);
+    let provision = |manager: &str, via: &str| {
+        Action::Manager(crate::reconciler::ManagerAction::Provision {
+            manager: manager.to_string(),
+            via: via.to_string(),
+            declared: None,
+            batched: Vec::new(),
+            // The hero's own edges: both brew-mediated provisions wait on brew.
+            depends_on: if via == "brew" {
+                vec![crate::reconciler::ManagerAction::provision_node("brew")]
+            } else {
+                Vec::new()
+            },
+        })
+    };
+    let file = |name: &str| crate::modules::ResolvedFile {
+        source: PathBuf::from("/src").join(name),
+        target: home.join(".config/nvim").join(name),
+        is_git_source: false,
+        strategy: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    let deploy = Action::Module(crate::reconciler::ModuleAction::local(
+        "nvim",
+        crate::reconciler::ModuleActionKind::DeployFiles {
+            files: [
+                "init.lua",
+                "lazy-lock.json",
+                "lua/plugins.lua",
+                "lua/keys.lua",
+                "lua/opts.lua",
+                "ftplugin/rust.lua",
+            ]
+            .into_iter()
+            .map(file)
+            .collect(),
+            declared_total: 8,
+        },
+    ));
+    let write_env = Action::Env(super::super::types::EnvAction::WriteEnvFile {
+        path: home.join(".cfgd.env"),
+        content: String::new(),
+        vars: 3,
+        aliases: 3,
+    });
+    let plan = plan_of(vec![
+        phase(
+            PhaseName::Prerequisites,
+            vec![
+                Action::Manager(crate::reconciler::ManagerAction::RefreshIndex {
+                    manager: "apt".to_string(),
+                }),
+                provision("brew", "homebrew installer"),
+                provision("npm", "brew"),
+                provision("pipx", "brew"),
+                write_env,
+            ],
+        ),
+        phase(
+            PhaseName::Packages,
+            vec![
+                install(
+                    "apt",
+                    &[
+                        "unzip",
+                        "ripgrep",
+                        "xclip",
+                        "wl-clipboard",
+                        "fd-find",
+                        "jq",
+                        "tmux",
+                        "curl",
+                        "git",
+                        "make",
+                        "gcc",
+                    ],
+                ),
+                install(
+                    "brew",
+                    &[
+                        "neovim", "fd", "zoxide", "node", "pipx", "go", "gum", "lazygit", "stylua",
+                    ],
+                ),
+            ],
+        ),
+        phase(PhaseName::Files, vec![deploy]),
+    ]);
+    let deploy = plan.phases[2]
+        .actions()
+        .next()
+        .expect("the files phase holds the deploy");
+
+    let cols: u16 = 128;
+    let (printer, screen) = Printer::for_test_live_terminal(60, cols);
+    let budget = printer.subject_budget();
+    let width = report_align_width(&plan, None, budget);
+    let trailing = report_trailing_allowance(&plan, None, budget);
+    render_plan_tree(&plan, None, &printer);
+    drop(printer);
+    let shown = screen.contents();
+
+    // The claim survives: the column plus the glyph plus what any row may
+    // print beside it fits the line.
+    let line_budget = crate::output::renderer::wrap::line_budget(
+        usize::from(cols),
+        crate::output::printer::ACTION_ROW_DEPTH,
+    );
+    assert!(
+        width + crate::output::renderer::status::GLYPH_PREFIX_WIDTH + trailing <= line_budget,
+        "the report claims its column: width {width} + glyph + trailing {trailing} \
+         must fit the {line_budget}-column line"
+    );
+    // Priced over the reasons a dispatcher can WORD: the widest is the edge on
+    // the brew provision; the deploy row and the two lone package rows are
+    // named by no reason.
+    assert_eq!(
+        trailing,
+        crate::output::measure_width(" — waiting on provision brew via homebrew installer"),
+        "the allowance is the widest wait reason this plan can put on a row"
+    );
+
+    // Every detail-bearing row lands its em-dash at ONE x, past the widest
+    // subject, so the column is really claimed rather than each row gluing its
+    // detail to its own end.
+    let dashes: Vec<(usize, String)> = shown
+        .lines()
+        .filter(|l| l.contains(" — "))
+        .map(|l| {
+            let at = crate::output::measure_width(l.split_once(" — ").map_or("", |(head, _)| head));
+            (at, l.to_string())
+        })
+        .collect();
+    assert!(
+        dashes.len() >= 2,
+        "at least two detail-bearing rows rendered:\n{shown}"
+    );
+    let column = dashes[0].0;
+    for (at, line) in &dashes {
+        assert_eq!(
+            *at, column,
+            "every em-dash lands at one column:\n{shown}\n{line}"
+        );
+    }
+    // The widest row IS the column; every narrower row is padded out to it.
+    let padded = dashes
+        .iter()
+        .filter(|(_, line)| {
+            let subject = line
+                .split_once(" — ")
+                .map_or("", |(head, _)| head.trim_end());
+            column > crate::output::measure_width(subject)
+        })
+        .count();
+    assert!(
+        padded >= 1,
+        "a narrower row is padded to the column, not glued to its own end:\n{shown}"
+    );
+
+    // The subject FILLS the room the budget grants: at 128 columns the apt row
+    // names more than the floor's two packages, never more than the budget,
+    // and at `None` it names the floor alone.
+    let filled = shown
+        .lines()
+        .find(|l| l.contains("apt install"))
+        .unwrap_or_else(|| panic!("the apt row is on screen:\n{shown}"));
+    assert!(
+        filled.contains("xclip"),
+        "the apt row fills to the budget rather than the floor: {filled:?}"
+    );
+    let apt = plan.phases[1]
+        .actions()
+        .next()
+        .expect("the packages phase holds the apt install");
+    let apt_subject = super::action_display_subject_within(apt, budget).to_string();
+    assert!(
+        crate::output::measure_width(&apt_subject)
+            <= budget.expect("an emulated screen has a width"),
+        "a filled subject never exceeds the budget: {apt_subject:?}"
+    );
+    assert!(
+        !super::action_display_subject_within(apt, None)
+            .to_string()
+            .contains("xclip"),
+        "a capture with no width names the floor alone"
+    );
+
+    // Home-folded on screen, absolute on the wire.
+    assert!(
+        !shown.contains("/home/tj/"),
+        "every path a row names spells the home directory as `~`:\n{shown}"
+    );
+    assert!(
+        shown.contains("~/.cfgd.env") && shown.contains("deploy ~/.config/nvim/init.lua"),
+        "the folded spelling is what the rows print:\n{shown}"
+    );
+    assert!(
+        super::super::format_plan_item(deploy).contains("/home/tj/.config/nvim/init.lua"),
+        "the `-o json` description keeps the absolute path"
     );
 }

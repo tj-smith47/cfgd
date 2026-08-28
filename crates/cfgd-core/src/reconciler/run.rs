@@ -1144,15 +1144,18 @@ pub fn report_align_width(
 
 /// The widest content any row of the report may print AFTER its subject —
 /// the `trailing` a [`Printer::report_column_beside`] claim is judged
-/// against — measured over what the run can already say: the wait reason a
-/// lane dispatcher may word about any action (`queued behind <subject>`,
-/// the wider of the two verbs) and the produced count a row's detail may
-/// carry. Both are worded by the ONE producers the rows read
-/// (`lanes::wait_reason`, [`action_produced_detail`]), so a claim here is a
-/// claim about a string the report will actually print.
+/// against — measured over what the run can actually say: every wait reason
+/// a phase's dispatcher can word (`lanes::phase_wait_reasons`, over the rows a
+/// reason can NAME and no other) and the widest produced count a row's detail
+/// may settle with ([`widest_produced_detail`], so a shortfall the preview
+/// cannot know is priced too). Both are worded by the ONE producers the rows
+/// read, so a claim here is a claim about a string the report will actually
+/// print — and never about one it cannot: priced as `queued behind` every
+/// action, the reservation for a reason naming a two-path deploy row withdrew
+/// the column from every report whose widest subject passed half the line.
 ///
 /// [`Printer::report_column_beside`]: crate::output::Printer::report_column_beside
-/// [`action_produced_detail`]: super::action_produced_detail
+/// [`widest_produced_detail`]: super::widest_produced_detail
 pub fn report_trailing_allowance(
     plan: &Plan,
     filter: Option<&PhaseFilter>,
@@ -1161,15 +1164,21 @@ pub fn report_trailing_allowance(
     let separator = measure_width(" — ");
     in_scope_tree(plan, filter, PhaseCoverage::Rendered)
         .iter()
-        .flat_map(|(_, groups)| groups.iter())
-        .flat_map(|(_, actions)| actions.iter())
-        .map(|action| {
-            let subject = action_display_subject_within(action, budget).to_string();
-            let held = measure_width(&super::lanes::wait_reason(super::lanes::Hold::Lane(
-                &subject,
-            )));
-            let produced = super::action_produced_detail(action, None, &[])
+        .map(|(_, groups)| {
+            let actions: Vec<&Action> = groups
+                .iter()
+                .flat_map(|(_, actions)| actions.iter().copied())
+                .collect();
+            let held = super::lanes::phase_wait_reasons(&actions, budget)
+                .iter()
+                .map(|reason| measure_width(reason))
+                .max()
+                .unwrap_or(0);
+            let produced = actions
+                .iter()
+                .filter_map(|action| super::widest_produced_detail(action))
                 .map(|d| measure_width(&d))
+                .max()
                 .unwrap_or(0);
             separator + held.max(produced)
         })

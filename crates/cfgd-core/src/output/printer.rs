@@ -596,18 +596,27 @@ impl Printer {
     /// never wraps (a capture, a redirected stream), where the list is cut at
     /// the floor alone.
     ///
-    /// Half the complete-line budget at [`ACTION_ROW_DEPTH`]: the other half
-    /// is what the row has to say beside the subject — the glyph, the
-    /// em-dash, a wait reason naming ANOTHER subject, a produced count, the
-    /// duration — and a subject that took more would leave that half cut
-    /// mid-token by the live repaint. Read once per report and threaded to
-    /// every reader of `action_display_subject_within`, so the preview, the
-    /// alignment column, the apply ledger, the live tree and the wait lines
-    /// name one action one way.
+    /// Half of what the complete-line budget at [`ACTION_ROW_DEPTH`] leaves
+    /// after the glyph and the wait framing
+    /// ([`WAIT_FRAMING_WIDTH`](super::renderer::status::WAIT_FRAMING_WIDTH)):
+    /// the widest row a report can print is a subject at the budget, ` —
+    /// queued behind `, and ANOTHER subject at the budget, so a budget that
+    /// halved the whole line let a filled subject and the report's claimed
+    /// column contradict each other — every row reached the budget T5
+    /// grants, and the claim's retreat then refused every report a column.
+    /// Sized this way the two agree by construction: the widest subject the
+    /// budget permits is always a column the widest wait reason still fits
+    /// beside. Read once per report and threaded to every reader of
+    /// `action_display_subject_within`, so the preview, the alignment column,
+    /// the apply ledger, the live tree and the wait lines name one action one
+    /// way.
     pub fn subject_budget(&self) -> Option<usize> {
-        self.sink_stderr
-            .wrap_columns()
-            .map(|cols| super::renderer::wrap::line_budget(cols, ACTION_ROW_DEPTH) / 2)
+        self.sink_stderr.wrap_columns().map(|cols| {
+            super::renderer::wrap::line_budget(cols, ACTION_ROW_DEPTH).saturating_sub(
+                super::renderer::status::GLYPH_PREFIX_WIDTH
+                    + super::renderer::status::WAIT_FRAMING_WIDTH,
+            ) / 2
+        })
     }
 
     /// Declare the alignment column every action row of THIS report pads to,

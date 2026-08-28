@@ -461,11 +461,18 @@ impl<'p> Slot<'p> {
     /// Ordering against the delivered manager's later work needs no lane: a
     /// package install depends on its manager's provision by DAG edge.
     fn lane(&self) -> Option<&str> {
-        if let Action::Manager(ManagerAction::Provision { via, .. }) = self.action {
-            return Some(crate::manager_family(via));
-        }
-        self.manager.as_deref().map(crate::manager_family)
+        action_lane(self.action)
     }
+}
+
+/// The lane `action` would occupy — [`Slot::lane`]'s derivation, stated once
+/// so the report's allowance and the dispatcher agree about which rows can
+/// contend for a lane and so be named by a `queued behind` reason.
+fn action_lane(action: &Action) -> Option<&str> {
+    if let Action::Manager(ManagerAction::Provision { via, .. }) = action {
+        return Some(crate::manager_family(via));
+    }
+    super::packages::action_manager(action).map(crate::manager_family)
 }
 
 /// Whether `action` INSTALLS through a manager that registers sources for its
@@ -580,6 +587,41 @@ fn node_subject(action: &Action, budget: Option<usize>) -> Option<String> {
         Action::Manager(_) => Some(action_display_subject_within(action, budget).to_string()),
         _ => None,
     }
+}
+
+/// Every wait reason a phase holding `actions` can put on a row, worded as
+/// the dispatcher would word it — and no other. A reason names a DAG node
+/// some other action of the phase depends on (`waiting on <node>`,
+/// [`node_subject`]) or a lane occupant another action of the phase contends
+/// with (`queued behind <occupant>`, [`lane_occupant`] over [`action_lane`]),
+/// and nothing else. What `report_trailing_allowance` prices a report's wait
+/// rows over: priced over every action, it reserved for `queued behind deploy
+/// <two absolute paths>` — a sentence no code path emits — and refused the
+/// whole report its column.
+pub(super) fn phase_wait_reasons(actions: &[&Action], budget: Option<usize>) -> Vec<String> {
+    let mut reasons = Vec::new();
+    for (at, action) in actions.iter().enumerate() {
+        if let Action::Manager(node) = action {
+            let id = node.node_id();
+            let depended_on = actions.iter().any(|other| match other {
+                Action::Manager(dependent) => dependent.depends_on().contains(&id),
+                _ => false,
+            });
+            if depended_on && let Some(subject) = node_subject(action, budget) {
+                reasons.push(wait_reason(Hold::Edge(&subject)));
+            }
+        }
+        if let Some(lane) = action_lane(action)
+            && actions
+                .iter()
+                .enumerate()
+                .any(|(other_at, other)| other_at != at && action_lane(other) == Some(lane))
+        {
+            let subject = action_display_subject_within(action, budget).to_string();
+            reasons.push(wait_reason(Hold::Lane(&subject)));
+        }
+    }
+    reasons
 }
 
 /// The slot occupying `lane`, for a wait line held by the lane rather than by
@@ -1482,6 +1524,7 @@ fn run_one_action(
                 abort: run.abort,
                 path_dirs,
                 provisioned: run.provisioned,
+                provisioned_packages: run.provisioned_packages,
             },
         ),
         // The dispatched set holds only package and manager work by
@@ -1516,6 +1559,101 @@ mod tests {
     use crate::output::SectionGuard;
     use crate::output::lane::LaneHandle;
 
+    /// `Printer::subject_budget` reserves exactly the columns the widest hold
+    /// wording spends between two subjects, so a subject filled to the budget
+    /// and a wait reason naming another filled subject share one line by
+    /// construction. Every hold kind is bound here, so a fourth is priced
+    /// before it compiles.
+    #[test]
+    fn the_subject_budget_reserves_exactly_the_wait_framing() {
+        let widest = [Hold::Edge(""), Hold::Source(""), Hold::Lane("")]
+            .into_iter()
+            .map(|hold| {
+                // Exhaustive on purpose: a new variant lands here first.
+                match hold {
+                    Hold::Edge(_) | Hold::Source(_) | Hold::Lane(_) => {}
+                }
+                crate::output::measure_width(" — ")
+                    + crate::output::measure_width(&wait_reason(hold))
+            })
+            .max()
+            .unwrap_or(0);
+        assert_eq!(
+            widest,
+            crate::output::renderer::status::WAIT_FRAMING_WIDTH,
+            "the budget's reservation is the widest hold wording's framing"
+        );
+    }
+
+    /// A wait reason names a DAG node another action depends on, or a lane
+    /// occupant another action contends with, and nothing else; the report's
+    /// allowance prices exactly that population.
+    #[test]
+    fn a_wait_reason_is_priced_only_over_rows_it_can_name() {
+        let deploy = Action::Module(ModuleAction::local(
+            "nvim",
+            ModuleActionKind::DeployFiles {
+                files: Vec::new(),
+                declared_total: 0,
+            },
+        ));
+        let write_env = Action::Env(crate::reconciler::types::EnvAction::WriteEnvFile {
+            path: std::path::PathBuf::from("/home/u/.cfgd.env"),
+            content: String::new(),
+            vars: 1,
+            aliases: 0,
+        });
+        let provision = |manager: &str, via: &str, depends_on: Vec<String>| {
+            Action::Manager(ManagerAction::Provision {
+                manager: manager.to_string(),
+                via: via.to_string(),
+                declared: None,
+                batched: Vec::new(),
+                depends_on,
+            })
+        };
+        let install = |manager: &str, package: &str| {
+            Action::Package(crate::providers::PackageAction::Install {
+                manager: manager.to_string(),
+                packages: vec![package.to_string()],
+                origin: "local".to_string(),
+            })
+        };
+        let brew = provision("brew", "homebrew installer", Vec::new());
+        let npm = provision("npm", "brew", vec![ManagerAction::provision_node("brew")]);
+        let pipx = provision("pipx", "brew", vec![ManagerAction::provision_node("brew")]);
+        let apt = install("apt", "jq");
+        let gum = install("brew", "gum");
+        let tap = install("brew-tap", "charmbracelet/tap");
+
+        // Nothing contends and nothing depends: no reason at all.
+        assert!(phase_wait_reasons(&[&deploy, &write_env, &brew, &apt], None).is_empty());
+        // The depended-on node and the two contenders for one lane, each
+        // worded as the dispatcher words it; the sole apt occupant, the deploy
+        // and the env write are named by nothing.
+        let mut reasons =
+            phase_wait_reasons(&[&brew, &npm, &pipx, &apt, &deploy, &write_env], None);
+        reasons.sort();
+        assert_eq!(
+            reasons,
+            vec![
+                "queued behind provision npm via brew".to_string(),
+                "queued behind provision pipx via brew".to_string(),
+                "waiting on provision brew via homebrew installer".to_string(),
+            ]
+        );
+        // Two package rows of one family contend by FAMILY, the unit a lane is.
+        let mut reasons = phase_wait_reasons(&[&gum, &tap], None);
+        reasons.sort();
+        assert_eq!(
+            reasons,
+            vec![
+                "queued behind brew install gum".to_string(),
+                "queued behind brew-tap install charmbracelet/tap".to_string(),
+            ]
+        );
+    }
+
     /// The wait lines the live region would show, in the order given, each
     /// paired with the group it belongs under — the sentence no longer names
     /// its owner, so the pairing is the only thing that says whose line it is.
@@ -1524,7 +1662,6 @@ mod tests {
             .into_iter()
             .map(|(owner, subject)| (owner.token(), subject))
             .collect()
-                provisioned_packages: run.provisioned_packages,
     }
 
     fn group<'p>(owner: &'p Owner, tier: Tier, pending: bool) -> GroupWait<'p> {
