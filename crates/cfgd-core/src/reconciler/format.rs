@@ -270,18 +270,25 @@ fn carries_operand_list(action: &Action) -> bool {
 
 /// How a subject builder renders an operand list: in full for a WIRE string
 /// (`PlanActionOutput.description`, `ActionResult.description`), or cut with
-/// a `+N more` marker for a ROW ([`action_display_subject`]).
+/// a `+N more` marker for a ROW ([`action_display_subject`]), the cut placed
+/// where the row's `budget` runs out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ListRender {
     Full,
-    Elided,
+    Elided { budget: Option<usize> },
 }
 
 impl ListRender {
-    fn join(self, items: &[String]) -> String {
+    /// `prefix` followed by the list, the list cut to what fits the subject
+    /// budget BESIDE the prefix — `brew install ` is part of the row, so the
+    /// names are given the room the verb leaves, not the whole line.
+    fn after(self, prefix: &str, items: &[String]) -> String {
         match self {
-            ListRender::Full => items.join(", "),
-            ListRender::Elided => elided_list(items, SUBJECT_LIST_KEEP),
+            ListRender::Full => format!("{prefix}{}", items.join(", ")),
+            ListRender::Elided { budget } => {
+                let room = budget.map(|b| b.saturating_sub(crate::output::measure_width(prefix)));
+                format!("{prefix}{}", elided_list(items, SUBJECT_LIST_KEEP, room))
+            }
         }
     }
 }
@@ -323,6 +330,22 @@ impl std::fmt::Display for DisplaySubject {
 /// payload — stay byte-identical to the source body and come from
 /// [`format_action_description`] / [`format_plan_item`] instead.
 pub fn action_display_subject(action: &Action) -> DisplaySubject {
+    action_display_subject_within(action, None)
+}
+
+/// [`action_display_subject`] for a row that knows how wide it may be.
+///
+/// `budget` is the columns the subject may occupy — [`Printer::subject_budget`]
+/// on the sink the row is drawn to — and an operand list fills it before it
+/// cuts, so a wide terminal names as many packages as fit and a narrow one
+/// still names [`SUBJECT_LIST_KEEP`]. `None` is the floor alone, the answer a
+/// capture or a redirected stream gets, and every surface that renders ONE
+/// report reads the same budget: the preview bullet, the alignment column,
+/// the apply ledger, the live tree and the lane dispatcher's wait lines, so
+/// one action is still one string wherever it is painted.
+///
+/// [`Printer::subject_budget`]: crate::output::Printer::subject_budget
+pub fn action_display_subject_within(action: &Action, budget: Option<usize>) -> DisplaySubject {
     match action {
         Action::Script(ScriptAction::Run {
             entry,
@@ -337,7 +360,7 @@ pub fn action_display_subject(action: &Action) -> DisplaySubject {
         ) => module_script_subject(script.run_str(), phase, ma.origin.as_deref()),
         _ => DisplaySubject {
             marker: None,
-            body: plan_item(action, ListRender::Elided),
+            body: plan_item(action, ListRender::Elided { budget }),
         },
     }
 }
@@ -447,9 +470,8 @@ fn plan_item(action: &Action, render: ListRender) -> String {
                 origin,
                 ..
             } => format!(
-                "{} install {}{}",
-                manager,
-                render.join(packages),
+                "{}{}",
+                render.after(&format!("{manager} install "), packages),
                 provenance_suffix(origin)
             ),
             PackageAction::Uninstall {
@@ -458,9 +480,8 @@ fn plan_item(action: &Action, render: ListRender) -> String {
                 origin,
                 ..
             } => format!(
-                "{} uninstall {}{}",
-                manager,
-                render.join(packages),
+                "{}{}",
+                render.after(&format!("{manager} uninstall "), packages),
                 provenance_suffix(origin)
             ),
             PackageAction::Skip {
@@ -685,7 +706,7 @@ fn format_module_action_body(action: &ModuleAction, render: ListRender) -> Strin
             }
             let parts: Vec<String> = by_manager
                 .iter()
-                .map(|(mgr, pkgs)| format!("{} install {}", mgr, render.join(pkgs)))
+                .map(|(mgr, pkgs)| render.after(&format!("{mgr} install "), pkgs))
                 .collect();
             parts.join("; ")
         }
@@ -695,7 +716,7 @@ fn format_module_action_body(action: &ModuleAction, render: ListRender) -> Strin
             // PRODUCES and so is the row's detail (`deploy_files_summary`),
             // the slot the sibling env-write row already puts its counts in.
             let targets: Vec<String> = files.iter().map(|f| f.target.display_posix()).collect();
-            format!("deploy {}", render.join(&targets))
+            render.after("deploy ", &targets)
         }
         ModuleActionKind::RunScript { script, phase } => {
             // Raw body: this same string feeds both `ApplyRun::preview`
@@ -740,21 +761,44 @@ fn format_module_action_body(action: &ModuleAction, render: ListRender) -> Strin
 /// `every_elided_operand_list_says_so` walks the module-action kinds and
 /// `every_operand_list_a_subject_renders_is_cut_with_a_marker` the rendered
 /// string of every list-bearing shape.
-/// How many operands a subject names before `elided_list` cuts, and so the
-/// ONE threshold every detail arm reasons about: a list at most one longer is
-/// stated in full, and a longer one carries `+N more`, which with the named
-/// operands already gives the total. A produced-detail arm therefore never
+/// How many operands a subject names AT LEAST before `elided_list` cuts, and
+/// so the ONE threshold every detail arm reasons about: a list at most one
+/// longer is stated in full, and a longer one carries `+N more`, which with
+/// the named operands already gives the total. A FLOOR, not the count: a row
+/// that knows its width ([`action_display_subject_within`]) names every
+/// operand that fits before the marker, so a 120-column terminal is not cut
+/// to two names by a constant chosen for the narrowest one. A produced-detail arm therefore never
 /// restates a full count over an elided subject — `deploy a, b, +4 more —
 /// 6 files` said six twice — and the walk
 /// `no_produced_detail_restates_a_total_the_subject_already_gives` renders
 /// every arm over `SUBJECT_LIST_KEEP + 3` operands to keep it so.
 pub(super) const SUBJECT_LIST_KEEP: usize = 2;
 
-fn elided_list(items: &[String], keep: usize) -> String {
+fn elided_list(items: &[String], keep: usize, room: Option<usize>) -> String {
     if items.len() <= keep + 1 {
         return items.join(", ");
     }
-    format!("{}, +{} more", items[..keep].join(", "), items.len() - keep)
+    let cut = |named: usize| {
+        format!(
+            "{}, +{} more",
+            items[..named].join(", "),
+            items.len() - named
+        )
+    };
+    let Some(room) = room else {
+        return cut(keep);
+    };
+    let full = items.join(", ");
+    if crate::output::measure_width(&full) <= room {
+        return full;
+    }
+    // Fill towards the room, never below the floor: the marker stays honest
+    // because it is written only over the names it does not hold.
+    let mut named = keep;
+    while named + 1 < items.len() && crate::output::measure_width(&cut(named + 1)) <= room {
+        named += 1;
+    }
+    cut(named)
 }
 
 /// Prefixes whose `format_action_description`/`execute_script` output has a
@@ -831,8 +875,9 @@ mod tests {
     use crate::providers::PackageAction;
 
     use super::{
-        SUBJECT_LIST_KEEP, action_display_subject, elided_list, format_manager_action_item,
-        format_module_action_item, parse_package_description, pre_skip_doubling_error,
+        SUBJECT_LIST_KEEP, action_display_subject, action_display_subject_within, elided_list,
+        format_manager_action_item, format_module_action_item, parse_package_description,
+        pre_skip_doubling_error,
     };
 
     /// No withheld row states one noun twice.
@@ -1037,17 +1082,65 @@ mod tests {
     #[test]
     fn a_list_that_fits_carries_no_elision_marker() {
         let items: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(elided_list(&items, 2), "a, b, c");
-        assert_eq!(elided_list(&items[..1], 2), "a");
+        assert_eq!(elided_list(&items, 2, None), "a, b, c");
+        assert_eq!(elided_list(&items[..1], 2, None), "a");
         assert_eq!(
             elided_list(
                 &["a", "b", "c", "d"]
                     .iter()
                     .map(|s| s.to_string())
                     .collect::<Vec<_>>(),
-                2
+                2,
+                None
             ),
             "a, b, +2 more"
+        );
+    }
+
+    /// A row that knows its width names every operand that fits before the
+    /// marker, never fewer than the floor, and drops the marker only when the
+    /// whole list fits — so `+N more` is written over names the row does
+    /// not hold, and over nothing else.
+    #[test]
+    fn a_row_with_room_names_as_many_operands_as_fit_and_never_fewer_than_the_floor() {
+        let items: Vec<String> = ["neovim", "fd", "ripgrep", "bat", "fzf", "jq"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            elided_list(&items, 2, Some(80)),
+            "neovim, fd, ripgrep, bat, fzf, jq",
+            "everything fits: no marker"
+        );
+        assert_eq!(
+            elided_list(&items, 2, Some(30)),
+            "neovim, fd, ripgrep, +3 more",
+            "filled to the room, the marker counting exactly what is unnamed"
+        );
+        assert_eq!(
+            elided_list(&items, 2, Some(5)),
+            "neovim, fd, +4 more",
+            "a room narrower than the floor still names the floor"
+        );
+        let widest = elided_list(&items, 2, Some(30));
+        assert!(crate::output::measure_width(&widest) <= 30);
+
+        let action = Action::Package(PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: items.clone(),
+            origin: "local".to_string(),
+        });
+        let budgeted = action_display_subject_within(&action, Some(44)).to_string();
+        assert!(
+            crate::output::measure_width(&budgeted) <= 44
+                && budgeted.contains("ripgrep")
+                && !budgeted.contains("bat"),
+            "the prefix `brew install ` is charged against the same budget: {budgeted}"
+        );
+        assert_eq!(
+            action_display_subject_within(&action, None).to_string(),
+            "brew install neovim, fd, +4 more",
+            "no budget is the floor"
         );
     }
 

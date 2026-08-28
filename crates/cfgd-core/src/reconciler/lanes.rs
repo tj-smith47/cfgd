@@ -77,7 +77,7 @@ use crate::providers::{ActionNote, NoteSink, PackageAction, PackageStateStore, P
 
 use super::apply::ActionOutcome;
 use super::format::{
-    action_display_subject, format_action_description, parse_resource_from_description,
+    action_display_subject_within, format_action_description, parse_resource_from_description,
 };
 use super::live_tree::{Held, PhaseTree, Wait};
 use super::packages::{ModuleInstallContext, PackageExec, action_manager};
@@ -571,10 +571,10 @@ fn blocking_node<'s, 'p>(slots: &'s [Slot<'p>], index: usize) -> Option<&'s Slot
 /// A prerequisite is the one narrowing, named by its TOOL rather than by
 /// `apt install curl — required by npm`: curl not arriving is what the
 /// dependent was waiting for, and its tool is the head of that row already.
-fn node_subject(action: &Action) -> Option<String> {
+fn node_subject(action: &Action, budget: Option<usize>) -> Option<String> {
     match action {
         Action::Manager(ManagerAction::Prerequisite { tool, .. }) => Some(tool.clone()),
-        Action::Manager(_) => Some(action_display_subject(action).to_string()),
+        Action::Manager(_) => Some(action_display_subject_within(action, budget).to_string()),
         _ => None,
     }
 }
@@ -599,10 +599,10 @@ fn lane_occupant<'s, 'p>(slots: &'s [Slot<'p>], lane: &str) -> Option<&'s Slot<'
 /// otherwise. Named by the occupant's display subject for the same reason
 /// [`node_subject`] is; the bare lane name is the fallback when no row
 /// occupies it.
-fn lane_hold_reason(slots: &[Slot<'_>], lane: &str) -> String {
+fn lane_hold_reason(slots: &[Slot<'_>], lane: &str, budget: Option<usize>) -> String {
     match lane_occupant(slots, lane) {
         Some(occupant) => {
-            let name = action_display_subject(occupant.action).to_string();
+            let name = action_display_subject_within(occupant.action, budget).to_string();
             if occupant.registers_sources {
                 wait_reason(Hold::Source(&name))
             } else {
@@ -690,7 +690,7 @@ fn fail_dependents<'p>(
     let Some(root_node) = slots[root].node.clone() else {
         return;
     };
-    let cause = node_subject(root_action).unwrap_or_else(|| root_node.clone());
+    let cause = node_subject(root_action, None).unwrap_or_else(|| root_node.clone());
     let mut failed: Vec<String> = vec![root_node];
     loop {
         let mut progressed = false;
@@ -874,6 +874,9 @@ struct WaitInputs<'a, 'p> {
     groups: &'a [(&'p Owner, Tier)],
     deps: &'a HashMap<&'a str, HashSet<&'a str>>,
     lanes_busy: &'a HashSet<String>,
+    /// The tree's subject budget, so a wait line names its subject — and the
+    /// row it waits on — exactly as their own rows do.
+    budget: Option<usize>,
 }
 
 /// Every distinct owner in the phase, in the order the dispatch offers them,
@@ -1120,6 +1123,7 @@ impl super::Reconciler<'_> {
                         groups: &groups,
                         deps: &deps,
                         lanes_busy: &lanes_busy,
+                        budget: collect.tree.subject_budget(),
                     }));
                 }
                 // Nothing new dispatches after an abort, so no refresh follows
@@ -1371,7 +1375,7 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
                 // Only a manager node carries edges, so a blocker always has a
                 // name. If that ever stops holding, say nothing rather than
                 // "waiting on " with the claim's object missing.
-                let named = node_subject(blocker.action);
+                let named = node_subject(blocker.action, inputs.budget);
                 debug_assert!(
                     named.is_some(),
                     "a node is blocked by an action with no subject to name"
@@ -1404,13 +1408,13 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
                 // `brew-cask` held back by a running `brew install neovim` is
                 // queued behind that row, and one held for its family's tap
                 // is waiting on it.
-                lane_hold_reason(slots, lane)
+                lane_hold_reason(slots, lane, inputs.budget)
             }
         };
         rows.push(Wait {
             owner: slot.owner,
             action: Some(slot.action),
-            subject: action_display_subject(slot.action).to_string(),
+            subject: action_display_subject_within(slot.action, inputs.budget).to_string(),
             reason: Some(reason),
         });
     }
@@ -1643,8 +1647,8 @@ mod tests {
         ];
         for node in variants {
             let action = Action::Manager(node);
-            let named = node_subject(&action).expect("a manager node has a subject");
-            let rendered = action_display_subject(&action).to_string();
+            let named = node_subject(&action, None).expect("a manager node has a subject");
+            let rendered = crate::reconciler::action_display_subject(&action).to_string();
             let Action::Manager(node) = &action else {
                 unreachable!()
             };
@@ -1665,7 +1669,7 @@ mod tests {
             }
         }
         assert!(
-            node_subject(&probe_action()).is_none(),
+            node_subject(&probe_action(), None).is_none(),
             "only a manager node is ever a blocker"
         );
     }
@@ -1805,6 +1809,7 @@ mod tests {
             groups,
             deps,
             lanes_busy,
+            budget: None,
         })
     }
 
@@ -2708,7 +2713,7 @@ mod tests {
         // the wiring: every finished action becomes a `Fail`-role outcome
         // carrying the real error `fail_dependents` produced.
         let mut record = |_owner: &Owner, action: &Action, collected: LaneCollected| {
-            let subject = action_display_subject(action).to_string();
+            let subject = crate::reconciler::action_display_subject(action).to_string();
             let mut outcome = ActionOutcome::for_test(&subject, Duration::ZERO);
             outcome.role = crate::output::Role::Fail;
             outcome.duration = None;
