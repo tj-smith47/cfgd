@@ -3017,3 +3017,20 @@ fn the_error_leads_the_detail_slot_and_the_size_joins_it() {
         "a row with nothing to qualify it renders bare"
     );
 }
+
+/// The restore row spells its target the way every other row spells a path
+/// under the home directory: folded to `~`, with a sibling directory whose
+/// name merely STARTS with the home left alone.
+#[test]
+fn a_restore_subject_folds_the_home_directory() {
+    let home = PathBuf::from("/home/tj");
+    let _home = crate::with_test_home_guard(&home);
+    assert_eq!(
+        super::restore_subject("/home/tj/notes", "notes-20260512T143025Z"),
+        "restore ~/notes from notes-20260512T143025Z"
+    );
+    assert_eq!(
+        crate::fold_home_in_text("write /home/tjx/.cfgd.env"),
+        "write /home/tjx/.cfgd.env"
+    );
+}

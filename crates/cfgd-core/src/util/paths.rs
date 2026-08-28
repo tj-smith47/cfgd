@@ -715,6 +715,28 @@ impl ResolvedDirs {
 }
 
 /// Expand `~` and `~/...` paths to the user's home directory.
+/// Fold every absolute path under the home directory in `text` to its `~/`
+/// spelling — the DISPLAY inverse of [`expand_tilde`], for a subject a person
+/// reads (`write ~/.cfgd.env`, `deploy ~/.config/nvim/init.lua`).
+///
+/// Display-only, exactly as `short_commit` is: a resource id, a stored
+/// description and every `-o json` field keep the absolute path, so nothing
+/// structured moves. One report used to spell one file two ways — the row
+/// absolute, the `source ~/.cfgd.env` hint beside it folded — and the absolute
+/// form is what pushed a two-target deploy row past the room its own elision
+/// respects. Folded on the POSIX spelling, so a Windows home folds too.
+pub fn fold_home_in_text(text: &str) -> String {
+    let Some(home) = home_dir_var() else {
+        return text.to_string();
+    };
+    let home = to_posix_string(&home);
+    let home = home.trim_end_matches('/');
+    if home.is_empty() {
+        return text.to_string();
+    }
+    text.replace(&format!("{home}/"), "~/")
+}
+
 pub fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
     let path_str = path.display().to_string();
     let home = home_dir_var();

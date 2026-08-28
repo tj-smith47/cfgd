@@ -26500,7 +26500,7 @@ fn plan_preview_excludes_the_resource_its_pending_block_names() {
         .map(|(_, tail)| tail.to_string())
         .expect("the plan tree renders a Files phase");
     assert!(
-        tree.contains(&f.kept.posix().to_string()),
+        tree.contains(&cfgd_core::fold_home_in_text(&f.kept.posix().to_string())),
         "the decided file is still planned:\n{output}"
     );
     assert!(
