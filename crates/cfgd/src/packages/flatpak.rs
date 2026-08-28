@@ -40,14 +40,14 @@ impl PackageManager for FlatpakManager {
         flatpak_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // flatpak is a Linux-only package manager; bootstrappable via apt/dnf/zypper.
         // The client lands on the system PATH, so the plan creates no directory.
         #[cfg(target_os = "linux")]
         {
             // `None` rather than a hopeful name when no system manager can run
             // it: the method a plan carries is binding at execution.
-            detect_system_method().map(BootstrapPlan::new)
+            detect_system_method(delivered).map(BootstrapPlan::new)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -150,6 +150,7 @@ pub(super) fn parse_flatpak_app_list(stdout: &str) -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::*;
 

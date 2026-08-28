@@ -667,7 +667,17 @@ pub trait PackageManager: Send + Sync {
     /// The provisioning plan for this host, or `None` when this manager cannot
     /// be provisioned at all. Implementations resolve the cascade the same way
     /// `bootstrap` does, so the plan names what will actually run.
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan>;
+    ///
+    /// `delivered` answers whether a manager will be on the machine by the
+    /// time this plan runs — because it is there now, or because the run being
+    /// planned provisions it first. A cascade that probes a mediator (`brew`)
+    /// asks `delivered` BEFORE the host: the planner prices a plan that
+    /// installs brew two rows up, and a probe of the host alone answered "no
+    /// brew" and sent npm through 534 apt packages. The plan-time question is
+    /// "will it be there"; `bootstrap` asks the execute-time one, "is it there",
+    /// against a host the provision ahead of it has already changed.
+    /// [`PackageManagerExt::bootstrap_plan`] is the host-only view.
+    fn bootstrap_plan_given(&self, delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan>;
 
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()>;
 
@@ -852,6 +862,7 @@ pub trait PackageManager: Send + Sync {
 /// candidate by [`crate::modules::resolve_package`] and then never provisioned.
 pub trait PackageManagerExt {
     fn can_bootstrap(&self) -> bool;
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan>;
     fn feasible_bootstrap_plan(&self) -> Option<BootstrapPlan>;
     fn available_version_memoized(&self, package: &str) -> Result<Option<String>>;
 }
@@ -859,6 +870,14 @@ pub trait PackageManagerExt {
 impl<T: PackageManager + ?Sized> PackageManagerExt for T {
     fn can_bootstrap(&self) -> bool {
         self.feasible_bootstrap_plan().is_some()
+    }
+
+    /// [`PackageManager::bootstrap_plan_given`] against the host as it stands:
+    /// nothing delivered but what is already there. For every caller outside a
+    /// plan being built (`doctor`, the selector vocabulary, a recorded node's
+    /// PATH directories).
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        self.bootstrap_plan_given(&|_| false)
     }
 
     /// [`PackageManager::available_version`], asked at most once per
@@ -1781,7 +1800,7 @@ impl PackageManager for StubPackageManager {
     fn is_available(&self) -> bool {
         self.available
     }
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         self.bootstrap_capable
             .then(|| BootstrapPlan::new("stub").requiring(self.bootstrap_requires.clone()))
     }
@@ -1884,7 +1903,7 @@ mod tests {
             self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.available.load(std::sync::atomic::Ordering::SeqCst)
         }
-        fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
             None
         }
         fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
@@ -1936,7 +1955,7 @@ mod tests {
         fn is_available(&self) -> bool {
             true
         }
-        fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
             None
         }
         fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {

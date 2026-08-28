@@ -596,11 +596,11 @@ impl PackageManager for NpmManager {
             .unwrap_or_default()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // No declared PATH directory: npm's global bin lives under a prefix that
         // is only resolvable once node exists, which is what `path_dirs` reads
         // out of state after the install.
-        match detect_brew_system_method(NPM_FALLBACK_METHOD) {
+        match detect_brew_system_method(NPM_FALLBACK_METHOD, delivered) {
             NPM_FALLBACK_METHOD => {
                 Some(BootstrapPlan::new(NPM_FALLBACK_METHOD).requiring(["curl"]))
             }
@@ -794,6 +794,7 @@ pub(super) fn parse_npm_list_versions(
 mod tests {
     use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::super::shared::brew_available;
     use super::*;

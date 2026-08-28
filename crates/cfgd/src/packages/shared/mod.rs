@@ -777,15 +777,23 @@ pub(super) const fn system_manager_arms(
     }
 }
 
-/// The first arm of `arms` this host can actually run, or `None`.
-fn detect_system_arm(arms: &[SystemArm]) -> Option<&'static str> {
+/// The first arm of `arms` the run can actually use, or `None`: one the run
+/// delivers first, else one this host already has.
+///
+/// `delivered` is asked before the host on every arm, so every detector in
+/// this family reads the plan being built the same way; a system manager is
+/// never provisioned today, which makes the first half a no-op for these arms
+/// and keeps it from being a second rule when one is.
+fn detect_system_arm(arms: &[SystemArm], delivered: &dyn Fn(&str) -> bool) -> Option<&'static str> {
     arms.iter()
-        .find(|(_, tool)| system_tool_available(tool))
+        .find(|(method, tool)| delivered(method) || system_tool_available(tool))
         .map(|(method, _)| *method)
 }
 
 /// Which manager a brew→apt→dnf cascade would pick, or `fallback` when none of
-/// them is available. The name a `BootstrapPlan` carries as its method.
+/// them is available or delivered. The name a `BootstrapPlan` carries as its
+/// method. `delivered` is the plan-time question — will the run have put this
+/// mediator on the machine — and is asked before the host is probed.
 ///
 /// The answer is BINDING on execution, not a preview of it: the plan line the
 /// user reads names this mediator and the action is serialized on this
@@ -797,8 +805,11 @@ fn detect_system_arm(arms: &[SystemArm]) -> Option<&'static str> {
 /// `fallback` must be the caller's OWN bootstrap arm (npm's `nvm`, pipx's
 /// `pip`) — the same string it hands the cascade — because a method naming
 /// neither this cascade nor that arm is a provision nothing can run.
-pub(super) fn detect_brew_system_method(fallback: &'static str) -> &'static str {
-    detect_brew_or_system_method(BREW_SYSTEM_ARMS).unwrap_or(fallback)
+pub(super) fn detect_brew_system_method(
+    fallback: &'static str,
+    delivered: &dyn Fn(&str) -> bool,
+) -> &'static str {
+    detect_brew_or_system_method(BREW_SYSTEM_ARMS, delivered).unwrap_or(fallback)
 }
 
 /// The mediator a brew-then-system bootstrap can actually run on this host, or
@@ -808,11 +819,14 @@ pub(super) fn detect_brew_system_method(fallback: &'static str) -> &'static str 
 /// no bootstrap arm of its own: naming a mediator the host cannot run used to
 /// degrade into a cascade that tried something else, and under a binding plan
 /// it would be a guaranteed failure instead.
-pub(super) fn detect_brew_or_system_method(arms: &[SystemArm]) -> Option<&'static str> {
-    if brew_available() {
+pub(super) fn detect_brew_or_system_method(
+    arms: &[SystemArm],
+    delivered: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    if delivered("brew") || brew_available() {
         return Some("brew");
     }
-    detect_system_arm(arms)
+    detect_system_arm(arms, delivered)
 }
 
 /// Which manager an apt→dnf→zypper cascade can run here, or `None` when none of
@@ -820,14 +834,14 @@ pub(super) fn detect_brew_or_system_method(arms: &[SystemArm]) -> Option<&'stati
 /// method through it. Binding on execution for the same reason
 /// [`detect_brew_system_method`] is.
 #[cfg(target_os = "linux")]
-pub(super) fn detect_system_method() -> Option<&'static str> {
-    detect_system_arm(SYSTEM_MANAGER_ARMS)
+pub(super) fn detect_system_method(delivered: &dyn Fn(&str) -> bool) -> Option<&'static str> {
+    detect_system_arm(SYSTEM_MANAGER_ARMS, delivered)
 }
 
 /// Every mediator a `go` bootstrap can run: brew, then the full system cascade
 /// (`bootstrap_via_system_manager`, which reaches zypper as well).
-pub(super) fn detect_go_bootstrap_method() -> Option<&'static str> {
-    detect_brew_or_system_method(SYSTEM_MANAGER_ARMS)
+pub(super) fn detect_go_bootstrap_method(delivered: &dyn Fn(&str) -> bool) -> Option<&'static str> {
+    detect_brew_or_system_method(SYSTEM_MANAGER_ARMS, delivered)
 }
 
 /// The plan named a mediator that cannot deliver on this host any more.

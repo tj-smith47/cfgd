@@ -81,7 +81,7 @@ impl PackageManager for ChocolateyManager {
         cfgd_core::command_available("choco")
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         Some(BootstrapPlan::new("system").creating(choco_bin_dir()))
     }
 
@@ -215,6 +215,7 @@ pub(super) fn parse_choco_info_version(output: &str) -> Option<String> {
 mod tests {
     use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::*;
 

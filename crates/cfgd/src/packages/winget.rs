@@ -74,7 +74,7 @@ impl PackageManager for WingetManager {
         cfgd_core::command_available("winget")
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // winget ships with Windows; nothing cfgd runs can provision it.
         None
     }
@@ -184,6 +184,7 @@ impl PackageManager for WingetManager {
 mod tests {
     use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::*;
 

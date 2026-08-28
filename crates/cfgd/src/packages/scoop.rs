@@ -94,7 +94,7 @@ impl PackageManager for ScoopManager {
         cfgd_core::command_available("scoop")
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         Some(BootstrapPlan::new("system").creating(scoop_shims_dir()))
     }
 
@@ -216,6 +216,7 @@ impl PackageManager for ScoopManager {
 mod tests {
     use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::*;
 

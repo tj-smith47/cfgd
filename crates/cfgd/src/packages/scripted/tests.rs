@@ -1,5 +1,6 @@
 use cfgd_core::config::PackagesSpec;
 use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::PackageManagerExt;
 
 use super::*;
 

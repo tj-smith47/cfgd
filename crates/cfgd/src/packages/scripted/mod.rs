@@ -165,7 +165,7 @@ impl PackageManager for ScriptedManager {
             .unwrap_or(false)
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // A user-defined manager declares no install of its own — only how to
         // check, list, install and remove packages with one that already exists.
         None

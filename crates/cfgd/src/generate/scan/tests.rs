@@ -380,7 +380,10 @@ impl PackageManager for TestPackageManager {
     fn is_available(&self) -> bool {
         self.available
     }
-    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<cfgd_core::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(
@@ -1181,7 +1184,10 @@ fn test_scan_installed_packages_error_manager_does_not_abort() {
         fn is_available(&self) -> bool {
             true
         }
-        fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+        fn bootstrap_plan_given(
+            &self,
+            _delivered: &dyn Fn(&str) -> bool,
+        ) -> Option<cfgd_core::providers::BootstrapPlan> {
             None
         }
         fn bootstrap(

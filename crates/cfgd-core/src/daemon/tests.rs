@@ -9563,7 +9563,10 @@ impl PackageManager for RecordingInstallManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<crate::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> crate::errors::Result<()> {
@@ -10147,7 +10150,10 @@ impl PackageManager for RecordingUninstallManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<crate::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> crate::errors::Result<()> {
@@ -19484,7 +19490,10 @@ impl PackageManager for EnumerationCountingManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<crate::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> crate::errors::Result<()> {

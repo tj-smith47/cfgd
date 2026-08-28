@@ -102,7 +102,7 @@ impl PackageManager for GoInstallManager {
         go_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // The toolchain lands on the system PATH whichever manager installs it,
         // so the plan creates no directory of its own.
         //
@@ -113,7 +113,7 @@ impl PackageManager for GoInstallManager {
         // mediator that cannot run, which under a binding plan is a guaranteed
         // failure rather than a provision. `go` has no bootstrap arm of its
         // own, so when none of them is present there is no plan.
-        detect_go_bootstrap_method().map(BootstrapPlan::new)
+        detect_go_bootstrap_method(delivered).map(BootstrapPlan::new)
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
@@ -264,6 +264,7 @@ pub(super) fn parse_go_module_version(output: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::*;
 

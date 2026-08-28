@@ -2913,6 +2913,10 @@ pub struct MockPackageManager {
     pub bootstrap_method: String,
     pub bootstrap_requires: Vec<String>,
     pub bootstrap_creates: Vec<String>,
+    /// The mediators this mock's cascade would install through, in order,
+    /// taken when the plan says the run delivers one; `bootstrap_method` is
+    /// the host arm it falls to otherwise. The npm/pipx/go shape.
+    pub bootstrap_cascade: Vec<String>,
     pub installed: std::collections::HashSet<String>,
     pub install_calls: Mutex<Vec<Vec<String>>>,
     pub uninstall_calls: Mutex<Vec<Vec<String>>>,
@@ -2981,6 +2985,7 @@ impl MockPackageManager {
             available: true,
             bootstrap_capable: false,
             bootstrap_method: "mock".to_string(),
+            bootstrap_cascade: Vec::new(),
             bootstrap_requires: Vec::new(),
             bootstrap_creates: Vec::new(),
             installed: std::collections::HashSet::new(),
@@ -3046,6 +3051,14 @@ impl MockPackageManager {
     }
 
     /// Bootstrappable, with the method its plan names.
+    /// A cascade that prefers `mediators` (in order) whenever the run delivers
+    /// one, and otherwise takes `bootstrappable_via`'s method.
+    pub fn preferring_delivered(mut self, mediators: &[&str]) -> Self {
+        self.bootstrap_capable = true;
+        self.bootstrap_cascade = mediators.iter().map(|m| (*m).to_string()).collect();
+        self
+    }
+
     pub fn bootstrappable_via(mut self, method: &str) -> Self {
         self.bootstrap_capable = true;
         self.bootstrap_method = method.to_string();
@@ -3180,9 +3193,17 @@ impl crate::providers::PackageManager for MockPackageManager {
                 .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<crate::providers::BootstrapPlan> {
         self.bootstrap_capable.then(|| {
-            crate::providers::BootstrapPlan::new(self.bootstrap_method.clone())
+            let method = self
+                .bootstrap_cascade
+                .iter()
+                .find(|m| delivered(m))
+                .unwrap_or(&self.bootstrap_method);
+            crate::providers::BootstrapPlan::new(method.clone())
                 .requiring(self.bootstrap_requires.clone())
                 .creating(self.bootstrap_creates.clone())
         })

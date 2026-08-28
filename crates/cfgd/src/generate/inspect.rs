@@ -205,7 +205,10 @@ mod tests {
             true
         }
 
-        fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+        fn bootstrap_plan_given(
+            &self,
+            _delivered: &dyn Fn(&str) -> bool,
+        ) -> Option<cfgd_core::providers::BootstrapPlan> {
             None
         }
 

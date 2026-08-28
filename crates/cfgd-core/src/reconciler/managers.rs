@@ -5,7 +5,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::providers::{
-    PackageAction, PackageManager, ProviderRegistry, SYSTEM_INSTALLABLE_TOOLS, is_system_manager,
+    PackageAction, PackageManager, PackageManagerExt, ProviderRegistry, SYSTEM_INSTALLABLE_TOOLS,
+    is_system_manager,
 };
 
 use super::env_engine::ManagerPathDir;
@@ -137,6 +138,11 @@ fn declared_manager_routes(
 /// install happens invisibly, which is the unrendered bootstrap this phase
 /// exists to replace.
 ///
+/// A cascade is priced against the managers this run DELIVERS as well as the
+/// ones the host has: when brew is itself a provision member of the plan, a
+/// cascade that prefers brew plans `via brew` behind that node, rather than
+/// falling to the system arm because the host it probed had no brew yet.
+///
 /// Membership is deliberately NOT the desired package set: an index refresh is
 /// only worth its network round trip when something in the run consumes the
 /// index. A converged machine plans nothing here, so `cfgd apply` still reaches
@@ -212,7 +218,22 @@ pub fn plan_managers(
         // No cascade at all on this platform (apt on macOS, winget on Linux).
         // There is no cfgd decision to render: the manager was never a
         // candidate here, and `Packages` says so.
-        let Some(plan) = pm.bootstrap_plan() else {
+        //
+        // Priced against the machine this plan LEAVES, not the one it found:
+        // a member already settled as present or provisioned is a mediator
+        // every cascade closed after it may install through, and the edge the
+        // cascade then mints orders this node behind that provision. The
+        // wanted set is a `BTreeSet`, so `brew` is settled before every
+        // cascade that prefers it (`go`, `npm`, `pipx`); the closure never
+        // pulls an absent brew in for a cascade's sake, so a host with no
+        // brew and no brew work keeps its system arm.
+        let delivered = |manager: &str| {
+            graph
+                .members
+                .get(manager)
+                .is_some_and(MemberState::yields_a_usable_manager)
+        };
+        let Some(plan) = pm.bootstrap_plan_given(&delivered) else {
             continue;
         };
 
@@ -1437,6 +1458,76 @@ mod tests {
             &vec!["manager:refresh:brew".to_string()],
             "a provision waits on the node that makes its installer usable"
         );
+    }
+
+    /// A cascade is priced against the plan it joins: brew is absent on this
+    /// host but a `Provision` member of the same plan, so npm's cascade plans
+    /// `via brew` behind brew's node rather than falling to the system arm
+    /// the host alone would have answered.
+    #[test]
+    fn a_cascade_prefers_the_mediator_this_run_provisions() {
+        let actions = plan_actions(
+            installs(&["brew", "npm"]),
+            vec![
+                MockPackageManager::new("apt"),
+                MockPackageManager::new("brew")
+                    .unavailable()
+                    .bootstrappable_via("homebrew installer"),
+                MockPackageManager::new("npm")
+                    .unavailable()
+                    .preferring_delivered(&["brew"])
+                    .bootstrappable_via("apt"),
+            ],
+        );
+        let ids: Vec<String> = actions.iter().map(format_action_description).collect();
+        let Some(Action::Manager(ManagerAction::Provision {
+            via, depends_on, ..
+        })) = actions
+            .iter()
+            .find(|a| format_action_description(a) == "manager:provision:npm")
+        else {
+            panic!("npm must be provisioned: {ids:?}");
+        };
+        assert_eq!(
+            via, "brew",
+            "npm's cascade must see the brew this run provisions: {ids:?}"
+        );
+        assert_eq!(
+            depends_on,
+            &vec!["manager:provision:brew".to_string()],
+            "and its node waits on brew's provision"
+        );
+    }
+
+    /// The other half: a host with no brew and no brew work keeps the system
+    /// arm. The closure never installs brew for a cascade's sake.
+    #[test]
+    fn a_cascade_with_no_brew_in_the_plan_keeps_its_host_arm() {
+        let actions = plan_actions(
+            installs(&["npm"]),
+            vec![
+                MockPackageManager::new("apt"),
+                MockPackageManager::new("brew")
+                    .unavailable()
+                    .bootstrappable_via("homebrew installer"),
+                MockPackageManager::new("npm")
+                    .unavailable()
+                    .preferring_delivered(&["brew"])
+                    .bootstrappable_via("apt"),
+            ],
+        );
+        let ids: Vec<String> = actions.iter().map(format_action_description).collect();
+        assert!(
+            !ids.iter().any(|id| id == "manager:provision:brew"),
+            "brew is not pulled in for a cascade's sake: {ids:?}"
+        );
+        let Some(Action::Manager(ManagerAction::Provision { via, .. })) = actions
+            .iter()
+            .find(|a| format_action_description(a) == "manager:provision:npm")
+        else {
+            panic!("npm must be provisioned: {ids:?}");
+        };
+        assert_eq!(via, "apt");
     }
 
     #[test]

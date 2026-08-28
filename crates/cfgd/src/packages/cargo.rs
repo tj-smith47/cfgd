@@ -48,7 +48,7 @@ impl PackageManager for CargoManager {
         cargo_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         Some(
             BootstrapPlan::new("rustup")
                 .requiring(["curl"])
@@ -211,6 +211,7 @@ pub(super) fn parse_cargo_install_list(stdout: &str) -> Vec<cfgd_core::providers
 #[cfg(test)]
 mod tests {
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::*;
 
