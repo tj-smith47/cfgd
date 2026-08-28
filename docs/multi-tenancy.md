@@ -25,7 +25,7 @@ The Helm chart includes optional RBAC example templates (enable with `rbacExampl
 | `platform-admin` | Cluster | Full control over all cfgd resources; manages ClusterConfigPolicies, approves modules |
 | `team-lead` | Namespace | Full CRUD on MachineConfigs, ConfigPolicies, and DriftAlerts in the team's namespace |
 | `team-member` | Namespace | Read-only on MachineConfigs and DriftAlerts |
-| `module-publisher` | Cluster | Publish Module CRDs; cannot modify MachineConfigs or policies |
+| `module-publisher` | Cluster | Publish Modules; cannot modify MachineConfigs or policies |
 
 ## Policy Merge Semantics
 

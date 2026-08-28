@@ -78,14 +78,14 @@ Type "cfgd config set daemon.reconcile.autoApply true"
 Enter
 Wait@10s /cfgd\$$/
 
-# Fixture: a small local "team" ConfigSource — a git repo carrying a
+# Fixture: a small local ConfigSource named `jarvispro` — a git repo carrying a
 # cfgd-source.yaml manifest and a `team` profile (env vars only: a package
 # install is minutes of screen time about package managers, not about
 # subscriptions), the same shape the acceptance suite's S7.2 fixtures use.
 # Its first commit is deliberately left UNSIGNED — act two's refusal beat
 # needs a real unsigned HEAD to reject, not a staged error. Setup only,
 # never shown.
-Type "mkdir -p ~/team-config/profiles && printf '%s\n' 'apiVersion: cfgd.io/v1alpha1' 'kind: ConfigSource' 'metadata:' '  name: team' '  version: 1.0.0' '  description: Team base config' 'spec:' '  provides:' '    profiles:' '      - team' > ~/team-config/cfgd-source.yaml && printf '%s\n' 'apiVersion: cfgd.io/v1alpha1' 'kind: Profile' 'metadata:' '  name: team' 'spec:' '  modules: []' '  env:' '    - name: PAGER' '      value: less' > ~/team-config/profiles/team.yaml && (cd ~/team-config && git init -q && git config user.email team@jarvispro.io && git config user.name 'Team Config' && git add -A && git commit -q -m 'initial team config')"
+Type "mkdir -p ~/team-config/profiles && printf '%s\n' 'apiVersion: cfgd.io/v1alpha1' 'kind: ConfigSource' 'metadata:' '  name: jarvispro' '  version: 1.0.0' '  description: Team base config' 'spec:' '  provides:' '    profiles:' '      - team' > ~/team-config/cfgd-source.yaml && printf '%s\n' 'apiVersion: cfgd.io/v1alpha1' 'kind: Profile' 'metadata:' '  name: team' 'spec:' '  modules: []' '  env:' '    - name: PAGER' '      value: less' > ~/team-config/profiles/team.yaml && (cd ~/team-config && git init -q && git config user.email team@jarvispro.io && git config user.name 'Team Config' && git add -A && git commit -q -m 'initial team config')"
 Enter
 Wait@30s /cfgd\$$/
 
@@ -134,7 +134,7 @@ Sleep 3s
 # (set in the hidden setup) classifies everything this source delivers at
 # the default Recommended tier, so incoming items queue as pending decisions
 # instead of being silently absorbed.
-Type "cfgd source add file://$HOME/team-config --name team --branch master --profile team --yes"
+Type "cfgd source add file://$HOME/team-config --name jarvispro --branch master --profile team --yes"
 Enter
 Wait@30s /cfgd\$$/
 Sleep 6s
@@ -147,7 +147,7 @@ Show
 Sleep 1s
 
 # Beat 3: the same plan, after. The header now names the composed source
-# (`Sources  team (profile team)`), and the one thing it delivers is
+# (`Sources  jarvispro (profile team)`), and the one thing it delivers is
 # WITHHELD — listed as a pending decision, not queued as an action — because
 # nobody has said yes to it yet.
 Type "cfgd plan"
@@ -163,8 +163,7 @@ Wait@10s /cfgd\$$/
 Sleep 5s
 
 # Beat 5: accept, then apply. Accepting records the decision; apply is what
-# moves the machine — the env write lands, and the line it writes carries
-# the source's own name as its owner.
+# moves the machine — the env write lands on camera.
 Type "cfgd decide accept --all"
 Enter
 Wait@10s /cfgd\$$/
@@ -229,7 +228,7 @@ Sleep 1s
 # knob on the subscription (`subscription.requireSignedCommits`, docs/
 # sources.md "Demanding signed commits"), set with the same verb every other
 # subscription knob takes.
-Type "cfgd source update team --require-signed-commits"
+Type "cfgd source update jarvispro --require-signed-commits"
 Enter
 Wait@10s /cfgd\$$/
 Sleep 3s
@@ -237,8 +236,8 @@ Sleep 3s
 # Beat 10: the wall itself. `cfgd sync` really fetches the fixture, really
 # runs `git log --format=%G?` against its HEAD, and really refuses — the
 # unsigned-HEAD line below is cfgd's own, unedited, under the source it
-# refuses. Held longer than the other beats because the refusal is the whole
-# claim and must be legible on its own before the screen clears for the fix.
+# refuses. Held at the tape's longest because the refusal is the whole claim
+# and must be legible on its own before the screen clears for the fix.
 Type "cfgd sync"
 Enter
 Wait@10s /cfgd\$$/
@@ -270,7 +269,7 @@ Sleep 4s
 # now runs under (`Require Signed Commits  yes`), and the profile it
 # provides with what that profile declares — the same render beat 2 showed
 # before subscribing, now from the subscriber's side.
-Type "cfgd source show team"
+Type "cfgd source show jarvispro"
 Enter
 Wait@10s /cfgd\$$/
 Sleep 6s
@@ -285,5 +284,5 @@ Wait@10s /cfgd\$$/
 Sleep 4s
 
 # Closing hold — the last beat's own hold already covers reading it; this is
-# only the breath before the loop snaps back, the same 2s in every tape.
+# only the breath before the loop snaps back.
 Sleep 2s

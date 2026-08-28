@@ -14,25 +14,26 @@ Set Shell "bash"
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
-# Sized to the tallest scene: the closing hold stacks every beat (52 rows at
-# this pitch), and beat 1's `==>` header has to still be on screen when the
-# loop rests — at 1000 it had scrolled off.
-Set Height 1100
+# Sized to the tallest scene: the closing hold stacks every beat with a few
+# rows of headroom, and beat 1's `==>` header has to still be on screen when
+# the loop rests — at 1000 it had scrolled off.
+Set Height 1140
 Set TypingSpeed 50ms
 Set Padding 20
 Set Framerate 50
 
 # Hidden setup: the demo cluster's own kubeconfig and the freshly built
 # binaries, then the starting point this tape opens on — the nettools artifact
-# in the registry, its Module CRD, and a pod that asked for it and is already
+# in the registry, its Module, and a pod that asked for it and is already
 # running. Publishing a module is k8s.tape's claim, not this one's, so it
 # happens off camera here.
 Hide
 # CFGD_THEME is pinned because this tape records on the HOST, where cfgd (and
 # `kubectl cfgd`, which resolves the same config) reads the recording
-# operator's own ~/.config/cfgd — dracula is the preset every
-# container-recorded tape's hidden `cfgd init --theme dracula` selects, so the
-# whole set renders in one theme whatever the operator's config names.
+# operator's own ~/.config/cfgd — dracula is the preset the rest of the set
+# lands on (`cfgd init --theme dracula`, hidden in four tapes and on camera in
+# init.tape; the sync fixture writes `spec.theme` straight into its cfgd.yaml),
+# so the whole set renders in one theme whatever the operator's config names.
 Type "export KUBECONFIG=$HOME/.cache/cfgd-debug/demo-k8s/kubeconfig PATH=$HOME/.cache/cfgd-debug/demo-k8s/bin:$PATH CFGD_THEME=dracula"
 Enter
 Sleep 500ms
@@ -62,14 +63,14 @@ Sleep 1s
 
 # Beat 1: what the module IS — one script under bin/. Both files fit on screen
 # at head's default 10 lines, and the `==>` headers name each one, so the
-# artifact the CRD below points at, the directory that lands in the debug
+# artifact the Module below points at, the directory that lands in the debug
 # shell and the command that finally runs there are visibly the same file.
 Type "head nettools/module.yaml nettools/bin/netcheck.sh"
 Enter
 Wait@30s /demo\$$/
 Sleep 4s
 
-# Beat 2: the policy that makes the rest of this tape possible. The CRD points
+# Beat 2: the policy that makes the rest of this tape possible. The Module points
 # at the pushed artifact, and `mountPolicy: Debug` stages the module's CSI
 # volume on any pod that asks for it and mounts it into none of that pod's own
 # containers — the module is on the node, ready, and invisible to the
@@ -137,5 +138,5 @@ Wait@60s /demo\$$/
 Sleep 5s
 
 # Closing hold — the last beat's own hold already covers reading it; this is
-# only the breath before the loop snaps back, the same 2s in every tape.
+# only the breath before the loop snaps back.
 Sleep 2s

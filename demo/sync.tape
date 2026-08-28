@@ -15,6 +15,13 @@ Set Shell "bash"
 # glyphs, and cfgd's own output (icons, tables) shares the terminal.
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
+# The same width as every other tape, so the docs render one text scale. With
+# the module's file tree open (it is part of what this demo deploys) the
+# editor beats lose ~30 columns to it, and one context line plus the git
+# hunk header clip mid-word; both editor beats clip identically, so the
+# before/after comparison the beats exist for is untouched. Widening this
+# tape alone would trade that for a demo at a different scale from its
+# siblings.
 Set Width 1320
 Set Height 1000
 Set TypingSpeed 50ms
@@ -31,8 +38,10 @@ Hide
 Type "export PS1='host$ '"
 Enter
 # Gate on machine B's daemon having finished its INITIAL reconcile: the tick
-# loop is serial, the first reconcile on a cold machine blocks it for a
-# minute-plus, and every sync tick queues behind it — a take recorded before
+# loop is serial, the interval pump sleeps a whole interval before its first
+# send, so the first completion lands a little over one interval after start
+# (the reconcile itself is a few seconds of that), and every sync tick queues
+# behind it — a take recorded before
 # it drains reaches beat 8 before the first pull can land. The daemon logs
 # the completion of every reconcile it runs; the gate waits for the SECOND
 # completion — the first only says the cold reconcile drained, the second
@@ -69,15 +78,23 @@ Sleep 5s
 # counts from the top of the file.
 Type "nvim +52 ~/.config/nvim/lua/config/options.lua"
 Enter
-Wait+Screen@20s /52 opt\.number = true/
-# The module opens its file tree on start and wraps long lines; neither is
-# what this beat is about (the gutter is), and the tree costs the left
-# quarter of every frame. Both settings are struck off camera so the visible
-# frame is the file at full width, one row per line.
+# nvim switches to the alternate screen before it paints, which records as
+# a black frame for as long as its start takes. The typed command stays on
+# camera; from Enter the take stays hidden through the off-camera setup
+# below and resumes on the settled editor.
 Hide
-Type ":NvimTreeClose | set nowrap"
+Wait+Screen@20s /52 opt\.number = true/
+# The module wraps long lines and repaints the cursor line on a hold; neither
+# is what this beat is about (the gutter is). Off camera: unset wrap, clear
+# the CursorHold autocmds, then wait out the plugin manager's start-up
+# notices. The file tree stays open: it is part of the configuration this
+# demo just deployed, and closing it would frame the payoff in an editor the
+# module did not produce. The notifier is never replaced — noice watches it
+# and reports a replacement louder than the notice it hid; hidden wall time
+# costs the GIF nothing.
+Type ":set nowrap | lua vim.api.nvim_clear_autocmds({ event = 'CursorHold' })"
 Enter
-Sleep 300ms
+Sleep 10s
 Show
 Wait+Screen@10s /52 opt\.number = true/
 Sleep 5s
@@ -196,19 +213,22 @@ Sleep 4s
 # daemon's pull lands.
 Type "nvim +52 ~/.config/nvim/lua/config/options.lua"
 Enter
-Wait+Screen@20s /1 opt\.relativenumber = true/
-# Same off-camera tree close and nowrap as beat 3, so the before and after
-# frames differ in the gutter alone.
+# nvim switches to the alternate screen before it paints, which records as
+# a black frame for as long as its start takes. The typed command stays on
+# camera; from Enter the take stays hidden through the off-camera setup
+# below and resumes on the settled editor.
 Hide
-Type ":NvimTreeClose | set nowrap"
+Wait+Screen@20s /1 opt\.relativenumber = true/
+# Same off-camera nowrap, CursorHold clear and notice wait-out as beat 3, so
+# the before and after frames differ in the gutter alone.
+Type ":set nowrap | lua vim.api.nvim_clear_autocmds({ event = 'CursorHold' })"
 Enter
-Sleep 300ms
+Sleep 10s
 Show
 Wait+Screen@10s /1 opt\.relativenumber = true/
 Sleep 5s
 
 # The take ends inside nvim, on the payoff, so the loop rests on the gutter
 # rather than on scrollback. Closing hold — the last beat's own hold already
-# covers reading it; this is only the breath before the loop snaps back, the
-# same 2s in every tape.
+# covers reading it; this is only the breath before the loop snaps back.
 Sleep 2s

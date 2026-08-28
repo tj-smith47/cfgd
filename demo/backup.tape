@@ -102,14 +102,15 @@ Enter
 Wait@10s /cfgd\$$/
 Sleep 4s
 
-# Beat 6: close the loop on the ledger — the Snapshots column counts the run's
-# snapshot plus the restore's safety copy, called out separately, and Last Run
-# stays anchored on the run's clock rather than the restore's.
+# Beat 6: close the loop on the ledger — the unit counts exactly the snapshot
+# it took (the restore's safety copy is a sidecar beside the source, never a
+# snapshot), Status fills now that a run has happened, and Last Run is the
+# run's own age.
 Type "cfgd backup list"
 Enter
 Wait@10s /cfgd\$$/
 Sleep 4s
 
 # Closing hold — the last beat's own hold already covers reading it; this is
-# only the breath before the loop snaps back, the same 2s in every tape.
+# only the breath before the loop snaps back.
 Sleep 2s
