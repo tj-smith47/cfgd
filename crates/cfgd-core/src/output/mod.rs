@@ -98,18 +98,13 @@ const HYPERLINK_TERMINAL_VARS: &[&str] = &[
 /// (0.50.0). GNOME Terminal, Tilix and every other VTE embedder reports it.
 const HYPERLINK_MIN_VTE_VERSION: u32 = 5000;
 
-/// Every environment variable [`terminal_supports_hyperlinks`] reads — the
-/// list a test clears to assert the negative, so the two cannot drift apart.
+/// The variables [`terminal_supports_hyperlinks`] reads BY NAME, as opposed to
+/// through [`HYPERLINK_TERMINAL_VARS`]. Together the two are every variable the
+/// predicate touches, which is what a test clears to assert the negative;
+/// `every_variable_the_detection_reads_is_one_a_test_can_clear` walks the
+/// predicate's own source, so a new direct read fails until it is listed here.
 #[cfg(test)]
-const HYPERLINK_ENV_VARS: &[&str] = &[
-    "TERM_PROGRAM",
-    "VTE_VERSION",
-    "WT_SESSION",
-    "KITTY_WINDOW_ID",
-    "ALACRITTY_WINDOW_ID",
-    "ALACRITTY_SOCKET",
-    "KONSOLE_VERSION",
-];
+const HYPERLINK_DIRECT_VARS: &[&str] = &["TERM_PROGRAM", "VTE_VERSION", "TMUX", "STY"];
 
 /// Whether the terminal this process writes to renders OSC 8 hyperlinks.
 ///
@@ -121,7 +116,22 @@ const HYPERLINK_ENV_VARS: &[&str] = &[
 /// costs a reader nothing but a longer line. Colour is a separate gate, judged
 /// by the caller ([`Theme::with_hyperlinks`]): a printer that may not emit
 /// colour may not emit this escape either.
+///
+/// A terminal MULTIPLEXER (`TMUX`, or `STY` for `screen`) answers no whatever
+/// the terminal underneath says. Every variable above is inherited by a pane,
+/// so an old tmux under iTerm2 identifies as iTerm2 while passing none of the
+/// escape through — and an escape a multiplexer swallows leaves the reader
+/// with neither a link nor a URL, the one outcome the plain-URL fallback
+/// exists to prevent. tmux forwards OSC 8 from 3.4 on, but it publishes no
+/// version anywhere this predicate can read, so the conservative answer is the
+/// only one available: a multiplexed session gets the URL as text.
 pub fn terminal_supports_hyperlinks() -> bool {
+    // A multiplexer's panes inherit the outer terminal's identification, so
+    // this is asked FIRST — the vars below would otherwise answer for a
+    // terminal whose escapes never reach the screen.
+    if std::env::var_os("TMUX").is_some() || std::env::var_os("STY").is_some() {
+        return false;
+    }
     let program = std::env::var("TERM_PROGRAM").unwrap_or_default();
     if HYPERLINK_TERM_PROGRAMS.contains(&program.as_str()) {
         return true;

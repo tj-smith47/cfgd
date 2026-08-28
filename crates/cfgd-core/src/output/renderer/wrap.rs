@@ -272,6 +272,27 @@ pub(crate) fn wrap_segment(
                         break;
                     }
                 }
+            } else if chars.peek() == Some(&']') {
+                // An OSC string — the two halves of an OSC 8 hyperlink — runs
+                // to BEL or to the two-character ST rather than to a CSI final
+                // byte. Consumed as a bare two-byte opener its payload would
+                // fall through to the width accounting below and be counted as
+                // visible columns.
+                if let Some(bracket) = chars.next() {
+                    current.push(bracket);
+                }
+                while let Some(esc) = chars.next() {
+                    current.push(esc);
+                    if esc == '\u{07}' {
+                        break;
+                    }
+                    if esc == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        if let Some(st) = chars.next() {
+                            current.push(st);
+                        }
+                        break;
+                    }
+                }
             } else if let Some(next) = chars.next() {
                 current.push(next);
             }

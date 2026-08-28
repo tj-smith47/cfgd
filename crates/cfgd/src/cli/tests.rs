@@ -30212,15 +30212,23 @@ fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
 /// `ResourceSchema::docs_url` is the ONE derivation that turns it into the
 /// release-pinned GitHub URL, and `KvPair::linked` the ONE slot that renders
 /// it: the short path where the terminal opens an OSC 8 hyperlink, the URL
-/// itself everywhere else. A second `Docs` row built with the plain kv shapes
-/// would print the bare path again, which is the state this pin retires.
+/// itself everywhere else.
+///
+/// Both halves are walked, because either alone leaves the other open. A
+/// second `Docs` row built with the plain kv shapes would print the bare path
+/// again; and a pointer rendered under a DIFFERENT key (`Documentation`, a
+/// table column, a hint) would never be seen by a pin that keys on the word
+/// `Docs`. So every `"docs/…"` literal in the crate's production sources is
+/// judged too: it either DECLARES the pointer (a `docs:` field, whose reader
+/// is `docs_url`) or carries `// docs-pointer-ok: <why>`.
 #[test]
 fn every_docs_pointer_the_cli_renders_goes_through_the_linked_slot() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = walk_rust_files(&src);
     files.sort();
     let mut linked = 0usize;
-    let mut offenders = Vec::new();
+    let mut rows = Vec::new();
+    let mut pointers = Vec::new();
     for path in files {
         if path.file_name().is_some_and(|n| n == "tests.rs")
             || path.components().any(|c| c.as_os_str() == "tests")
@@ -30230,26 +30238,53 @@ fn every_docs_pointer_the_cli_renders_goes_through_the_linked_slot() {
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
-        for (n, line) in production_body(&body).lines().enumerate() {
+        let production = production_body(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
             let code = line.trim_start();
-            if code.starts_with("//") || !code.contains("\"Docs\"") {
+            if code.starts_with("//") {
                 continue;
             }
-            if code.contains("KvPair::linked(\"Docs\"") {
-                linked += 1;
+            let at = format!("{}:{}: {}", path.display(), n + 1, code);
+            if code.contains("\"Docs\"") {
+                if code.contains("KvPair::linked(\"Docs\"") {
+                    linked += 1;
+                } else {
+                    rows.push(at.clone());
+                }
+            }
+            // A `docs/` segment inside an absolute URL is already a complete,
+            // clickable reference (a vendor's own documentation), not a
+            // repo-relative pointer this rule is about.
+            if !code.contains("docs/") || code.contains("://") {
                 continue;
             }
-            offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+            // A `docs:` field DECLARES the pointer; `ResourceSchema::docs_url`
+            // is its only reader, and the row pin above covers the render.
+            let declares = code.starts_with("docs:");
+            let hatched = code.contains("// docs-pointer-ok:")
+                || n.checked_sub(1)
+                    .is_some_and(|p| lines[p].contains("// docs-pointer-ok:"));
+            if !declares && !hatched {
+                pointers.push(at);
+            }
         }
     }
     assert!(
-        offenders.is_empty(),
+        rows.is_empty(),
         "a `Docs` row carries the URL `ResourceSchema::docs_url` derives, through \
          `KvPair::linked` — never the bare repo-relative path a reader cannot open:\n{}",
-        offenders.join("\n")
+        rows.join("\n")
     );
     assert_eq!(
         linked, 1,
         "explain's schema overview is the one surface rendering a `Docs` row; found {linked}"
+    );
+    assert!(
+        pointers.is_empty(),
+        "a repo-relative docs pointer reaches a reader only through \
+         `ResourceSchema::docs_url`; declare it as a `docs:` field or say why with \
+         `// docs-pointer-ok: <why>`:\n{}",
+        pointers.join("\n")
     );
 }

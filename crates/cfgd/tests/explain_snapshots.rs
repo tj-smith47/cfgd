@@ -36,10 +36,8 @@ fn assert_human(cap: &DocCapture, name: &str) {
 /// The same fold over the `-o json` payload, whose `docsUrl` is the same
 /// release-pinned URL.
 fn assert_json(cap: &DocCapture, name: &str) {
-    let payload = cap
-        .json()
-        .map(|v| serde_json::to_string_pretty(&v).expect("payload serializes"))
-        .unwrap_or_default();
+    let payload = serde_json::to_string_pretty(&cap.json().expect("doc captured json"))
+        .expect("payload serializes");
     let actual = cfgd_core::normalize_cfgd_version(&payload, env!("CARGO_PKG_VERSION"));
     assert_snapshot_at(Path::new(SNAPSHOT_ROOT), name, &actual);
 }

@@ -4,7 +4,7 @@
 use serial_test::serial;
 
 use crate::output::{
-    HYPERLINK_ENV_VARS, HYPERLINK_MIN_VTE_VERSION, HYPERLINK_TERM_PROGRAMS,
+    HYPERLINK_DIRECT_VARS, HYPERLINK_MIN_VTE_VERSION, HYPERLINK_TERM_PROGRAMS,
     HYPERLINK_TERMINAL_VARS, KvPair, Printer, Theme, Verbosity, terminal_supports_hyperlinks,
 };
 use crate::test_helpers::{EnvVarGuard, captured_text};
@@ -12,29 +12,58 @@ use crate::test_helpers::{EnvVarGuard, captured_text};
 /// Clear every variable the detection reads, so a positive case is the one
 /// variable the test set and the negative case is a terminal that named itself
 /// not at all — including under a suite invoked from a hyperlink-capable
-/// terminal of the developer's own.
+/// terminal of the developer's own, or from inside tmux.
 fn cleared() -> Vec<EnvVarGuard> {
-    HYPERLINK_ENV_VARS
+    HYPERLINK_DIRECT_VARS
         .iter()
+        .chain(HYPERLINK_TERMINAL_VARS)
         .map(|v| EnvVarGuard::unset(v))
         .collect()
 }
 
-/// The two tables and the clearing list are one population: a terminal added
-/// to either detection list but not to `HYPERLINK_ENV_VARS` would leave the
-/// negative case below asserting against the developer's own terminal.
+/// The clearing list and the predicate are one population, checked against the
+/// predicate's OWN SOURCE rather than against a second hand-written list: a
+/// direct read added to the function (`TERM`, `TERMINAL_EMULATOR`) and to
+/// neither table would leave the negative case below asserting against the
+/// developer's own terminal — the exact failure that pin exists to prevent.
 #[test]
-fn the_cleared_list_covers_every_variable_the_detection_reads() {
-    assert!(
-        HYPERLINK_ENV_VARS.contains(&"TERM_PROGRAM") && HYPERLINK_ENV_VARS.contains(&"VTE_VERSION"),
-        "the two named variables are read directly and must be clearable"
-    );
-    for var in HYPERLINK_TERMINAL_VARS {
-        assert!(
-            HYPERLINK_ENV_VARS.contains(var),
-            "{var} is detected but not clearable"
-        );
+fn every_variable_the_detection_reads_is_one_a_test_can_clear() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/output/mod.rs");
+    let body = std::fs::read_to_string(&src).unwrap_or_default();
+    let Some(start) = body.find("pub fn terminal_supports_hyperlinks()") else {
+        panic!("the predicate is no longer at {}", src.display());
+    };
+    let end = body[start..]
+        .find("\n}\n")
+        .map_or(body.len(), |at| start + at);
+
+    let mut unclearable = Vec::new();
+    for (n, line) in body[start..end].lines().enumerate() {
+        for call in ["std::env::var(\"", "std::env::var_os(\""] {
+            let Some(at) = line.find(call) else {
+                continue;
+            };
+            let name = line[at + call.len()..]
+                .split('"')
+                .next()
+                .unwrap_or_default();
+            if !HYPERLINK_DIRECT_VARS.contains(&name) {
+                unclearable.push(format!("{name} (line {} of the predicate)", n + 1));
+            }
+        }
     }
+    assert!(
+        unclearable.is_empty(),
+        "every variable the predicate names directly belongs in HYPERLINK_DIRECT_VARS, \
+         so a test can clear it:\n{}",
+        unclearable.join("\n")
+    );
+    assert!(
+        !HYPERLINK_DIRECT_VARS
+            .iter()
+            .any(|v| HYPERLINK_TERMINAL_VARS.contains(v)),
+        "the two tables partition the population; neither repeats the other"
+    );
 }
 
 #[test]
@@ -86,6 +115,30 @@ fn a_terminal_that_names_itself_not_at_all_gets_no_hyperlink() {
         !terminal_supports_hyperlinks(),
         "an unidentified terminal reads the plain URL instead"
     );
+}
+
+/// A multiplexer's panes inherit the outer terminal's identification, and an
+/// old tmux (or any `screen`) swallows the escape rather than forwarding it —
+/// leaving the reader neither a link nor a URL. The plain URL is the answer
+/// whatever the terminal underneath claims.
+#[test]
+#[serial]
+fn a_multiplexed_session_gets_the_plain_url_whatever_the_outer_terminal_is() {
+    for mux in ["TMUX", "STY"] {
+        let _cleared = cleared();
+        // The outer terminal's own identification, inherited by the pane.
+        let _outer = EnvVarGuard::set("TERM_PROGRAM", "iTerm.app");
+        let _inner = EnvVarGuard::set("WT_SESSION", "1");
+        assert!(
+            terminal_supports_hyperlinks(),
+            "{mux} unset, the outer terminal answers for itself"
+        );
+        let _in_mux = EnvVarGuard::set(mux, "/tmp/session,1,0");
+        assert!(
+            !terminal_supports_hyperlinks(),
+            "{mux} set withholds the escape whatever the pane inherited"
+        );
+    }
 }
 
 /// A hyperlink is an escape sequence, so the colour decision governs it: a
@@ -183,6 +236,34 @@ fn wrapping_a_linked_value_never_splits_its_escape() {
         assert!(
             !visible.contains("8;;") && !visible.contains("example.test"),
             "no byte of the escape reaches the screen, got: {visible:?}"
+        );
+    }
+}
+
+/// An escape occupies no columns, so a linked value breaks at exactly the
+/// column its own text would have broken at. Counted as visible width, an OSC
+/// string's payload retreats every break by the length of its URL: the row
+/// still rendered whole — the break landed past the escape either way — but it
+/// carried six fewer characters than the terminal had room for, and a longer
+/// URL moves the break further each time.
+#[test]
+fn wrapping_a_linked_value_measures_only_what_the_terminal_shows() {
+    let text = "docs/spec/module.md#a-very-long-anchor-name";
+    let cut = |body: &str| {
+        crate::output::renderer::wrap::wrap_segment(body, "Docs  ", "      ", Some(30))
+            .iter()
+            .map(|row| crate::output::strip_ansi(row))
+            .collect::<Vec<_>>()
+    };
+    let plain = cut(text);
+    for url in [
+        "https://example.test/docs/spec/module.md#fields",
+        "https://example.test/docs/spec/module.md#a-much-much-longer-anchor-still",
+    ] {
+        assert_eq!(
+            cut(&crate::output::osc8_hyperlink(url, text)),
+            plain,
+            "the link's own length must not move the break"
         );
     }
 }
