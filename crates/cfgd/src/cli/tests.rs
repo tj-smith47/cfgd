@@ -30207,6 +30207,102 @@ fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
     );
 }
 
+/// The helpers that pick a bootstrap's arm, honoring the method the plan named.
+const ARM_SELECTING_HELPERS: &[&str] = &[
+    "bootstrap_brew_arm(",
+    "bootstrap_via_brew_then_system(",
+    "bootstrap_via_system_manager(",
+];
+
+/// Whether a routed `fn bootstrap` body runs an arm of its OWN past the last
+/// arm the shared helpers select, without reading `planned_method`.
+///
+/// Inverted rather than enumerated. A spawn-wrapper allowlist answers for the
+/// wrappers that existed when it was written and silently passes the next one:
+/// naming `pkg_run` / `run_pkg_cmd_live` alone left `run_pkg_cmd`,
+/// `run_pkg_cmd_msg`, `run_pkg_query` and a raw `Command` — six real call
+/// sites in this very directory — free to add a second arm the plan never
+/// chose. So anything past the last helper call that is not a closer or an
+/// `Ok(())` counts as an arm this body decided by itself, and a new shape
+/// fails the walk rather than slipping through it.
+fn bootstrap_own_arm_is_unguarded(body: &[&str]) -> bool {
+    let Some(last) = (0..body.len())
+        .rev()
+        .find(|&i| ARM_SELECTING_HELPERS.iter().any(|h| body[i].contains(h)))
+    else {
+        return false;
+    };
+    if body.iter().any(|l| l.contains("planned_method")) {
+        return false;
+    }
+    body[last + 1..].iter().any(|line| {
+        let t = line.trim();
+        !(t.is_empty()
+            || t.starts_with("//")
+            || t == "Ok(())"
+            || t == "return Ok(());"
+            || t.chars()
+                .all(|c| matches!(c, '}' | ')' | ']' | ';' | '?' | ',' | '{')))
+    })
+}
+
+/// The inversion above, driven negatively: the hand-rolled second arm every
+/// spawn wrapper can spell is caught whichever wrapper spells it, and a body
+/// that ends on its helper — or reads `planned_method` in its own arm — is not.
+#[test]
+fn the_bootstrap_arm_walk_catches_an_own_arm_through_any_spawn_wrapper() {
+    let two_arm = |spawn: &str| {
+        vec![
+            "    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {".to_string(),
+            "        if bootstrap_brew_arm(cx, \"probe\", \"probe\")? {".to_string(),
+            "            return Ok(());".to_string(),
+            "        }".to_string(),
+            format!(
+                "        {spawn}(\"probe\", Command::new(\"curl\").arg(\"probe.sh\"), \"install\")?;"
+            ),
+            "        Ok(())".to_string(),
+        ]
+    };
+    for spawn in [
+        "pkg_run",
+        "run_pkg_cmd",
+        "run_pkg_cmd_msg",
+        "run_pkg_query",
+        "run_pkg_cmd_live",
+    ] {
+        let owned = two_arm(spawn);
+        let lines: Vec<&str> = owned.iter().map(String::as_str).collect();
+        assert!(
+            bootstrap_own_arm_is_unguarded(&lines),
+            "a second arm spelled with `{spawn}` is an arm the plan never chose"
+        );
+    }
+
+    // The same body, reading the method the plan named: its own arm now
+    // honours it, which is npm's nvm arm and pipx's pip arm.
+    let mut guarded = two_arm("run_pkg_cmd");
+    guarded.insert(4, "        let planned = cx.planned_method();".to_string());
+    let lines: Vec<&str> = guarded.iter().map(String::as_str).collect();
+    assert!(
+        !bootstrap_own_arm_is_unguarded(&lines),
+        "a body consulting `planned_method` decides no arm by itself"
+    );
+
+    // A body that ends on its helper — go's shape — has no tail at all.
+    let lines = [
+        "    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {",
+        "        if bootstrap_brew_arm(cx, \"go\", \"go\")? {",
+        "            return Ok(());",
+        "        }",
+        "",
+        "        bootstrap_via_system_manager(cx, \"golang\", \"go\")",
+    ];
+    assert!(
+        !bootstrap_own_arm_is_unguarded(&lines),
+        "a body whose last statement IS an arm helper adds nothing of its own"
+    );
+}
+
 /// A cascade's PLANNED `via` is binding: the plan elides a module entry
 /// naming a package a provision delivers, and the pair it records is read off
 /// the planned route, so a bootstrap that quietly substituted another arm
@@ -30225,16 +30321,7 @@ fn every_multi_arm_bootstrap_honours_the_planned_method() {
     let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
     let mut files = walk_rust_files(&packages_dir);
     files.sort();
-    let arm_helpers = [
-        "bootstrap_brew_arm(",
-        "bootstrap_via_brew_then_system(",
-        "bootstrap_via_system_manager(",
-    ];
-    let own_installs = [
-        "pkg_run(",
-        "run_pkg_cmd_live(",
-        "bootstrap_via_shell_script(",
-    ];
+    let arm_helpers = ARM_SELECTING_HELPERS;
     let mut seen = 0usize;
     let mut offenders = Vec::new();
     for path in files
@@ -30253,10 +30340,12 @@ fn every_multi_arm_bootstrap_honours_the_planned_method() {
             let end = (n + 1..lines.len())
                 .find(|&i| lines[i] == closer)
                 .unwrap_or(lines.len());
-            let body = lines[n..end].join("\n");
+            let body = &lines[n..end];
             seen += 1;
-            let routed = arm_helpers.iter().any(|h| body.contains(h));
-            if !routed {
+            if !arm_helpers
+                .iter()
+                .any(|h| body.iter().any(|l| l.contains(h)))
+            {
                 if !label_hatched(&lines, n, "// bootstrap-arm-ok:") {
                     offenders.push(format!(
                         "{}:{}: no arm helper and no `// bootstrap-arm-ok:` reason",
@@ -30266,8 +30355,7 @@ fn every_multi_arm_bootstrap_honours_the_planned_method() {
                 }
                 continue;
             }
-            let own_arm = own_installs.iter().any(|i| body.contains(i));
-            if own_arm && !body.contains("planned_method") {
+            if bootstrap_own_arm_is_unguarded(body) {
                 offenders.push(format!(
                     "{}:{}: an arm of its own past the helper, without consulting \
                      `planned_method`",
