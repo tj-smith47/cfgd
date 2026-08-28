@@ -110,7 +110,9 @@ fn marker_width(visible: &str) -> usize {
 ///
 /// The hang is computed once, from the first logical line, and governs every
 /// line after it — whether that line came from an embedded newline or from
-/// soft-wrapping. A caveat's second sentence and the tail of a wrapped
+/// soft-wrapping. A line's OWN leading indent stacks on top of it for the
+/// rows that line wraps onto, so a sub-item keeps its column all the way
+/// down (`wrap_body_with_trailer` inherits this, wrapping through here). A caveat's second sentence and the tail of a wrapped
 /// sentence are the same thing to a reader, so they belong in the same column;
 /// splitting on `\n` alone left the second sentence at column 0, reading as an
 /// unrelated unmarked line.
@@ -124,14 +126,21 @@ pub(crate) fn wrap_body(body: &str, prefix: &str, cols: Option<usize>) -> Vec<St
         return Vec::new();
     };
     let hang = " ".repeat(display_width(prefix) + marker_width(&super::super::strip_ansi(first)));
-    let mut out = wrap_segment(first, prefix, &hang, cols);
+    // A logical line's own leading indent (a bulleted sub-item, a code block
+    // inside a caveat) is part of what it says, so the rows it wraps onto
+    // carry it under the hang rather than sliding back to the marker column.
+    let own_indent = |line: &str| -> String {
+        let indent: String = line.chars().take_while(|c| *c == ' ').collect();
+        format!("{hang}{indent}")
+    };
+    let mut out = wrap_segment(first, prefix, &own_indent(first), cols);
     for line in logical {
         // A blank line inside the body separates paragraphs; indenting it
         // would leave trailing whitespace with nothing under it.
         if line.trim().is_empty() {
             out.push(String::new());
         } else {
-            out.extend(wrap_segment(line, &hang, &hang, cols));
+            out.extend(wrap_segment(line, &hang, &own_indent(line), cols));
         }
     }
     out
@@ -453,6 +462,21 @@ mod tests {
     fn a_blank_line_inside_a_body_carries_no_indent() {
         let out = wrap_body("- head\n\ntail", "  ", None);
         assert_eq!(out, vec!["  - head", "", "    tail"]);
+    }
+
+    /// A logical line that carries its OWN indent (a caveat's bulleted
+    /// sub-list, an `Add to ~/.bashrc:` block) keeps it on the rows the wrap
+    /// splits it into: the continuation hangs under the line's first word,
+    /// not under the marker column the whole body hangs from. Lost, a
+    /// wrapped sub-item's tail slid left under the bullet and read as a new
+    /// item of the outer list.
+    #[test]
+    fn a_wrapped_line_keeps_its_own_indent_on_its_continuation_rows() {
+        let out = wrap_body("◉ head\n  - alpha bravo charlie delta echo", "", Some(24));
+        assert_eq!(out[0], "◉ head");
+        assert_eq!(out[1], "    - alpha bravo");
+        assert_eq!(out[2], "    charlie delta echo");
+        assert_eq!(out.len(), 3, "got: {out:?}");
     }
 
     #[test]
