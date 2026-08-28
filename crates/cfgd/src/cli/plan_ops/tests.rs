@@ -1634,6 +1634,68 @@ fn every_operand_a_plan_action_holds_reaches_the_json_payload() {
     }
 }
 
+/// A tool this plan's own provision delivers is named ONCE on the wire.
+///
+/// The elision that keeps `brew install …, node, pipx` off the `Packages` row
+/// is asserted at its producer in `cfgd-core`, over the same
+/// `reconciler::format_plan_item` this builder fills
+/// `PlanActionOutput.description` from. That is a producer-side proof of a
+/// payload-side promise: a CI gate diffing two `cfgd plan -o json` runs reads
+/// the payload, and nothing would fail if the builder stopped reading that
+/// producer. So the real plan is built through the reconciler here and
+/// serialized, and the delivered package must appear exactly once across every
+/// `description` and `targets` the payload carries.
+#[test]
+fn a_tool_this_plan_provisions_is_named_once_in_the_json_payload() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(cfgd_core::test_helpers::MockPackageManager::new(
+        "alt",
+    )));
+    registry.add_package_manager(Box::new(cfgd_core::test_helpers::MockPackageManager::new(
+        "sys",
+    )));
+    registry.add_package_manager(Box::new(
+        cfgd_core::test_helpers::MockPackageManager::new("tool")
+            .without_index()
+            .unavailable()
+            .bootstrappable_via("sys"),
+    ));
+
+    let mut module = cfgd_core::test_helpers::make_resolved_module("tools");
+    module.packages = vec![
+        resolved_package_declared("alt", "tool", "tool-alias"),
+        resolved_package("tool", "widget"),
+    ];
+
+    let state = cfgd_core::test_helpers::test_state();
+    let reconciler = reconciler::Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(
+            &cfgd_core::test_helpers::make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            reconciler::ReconcileContext::Apply,
+        )
+        .expect("plan");
+
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let json = serde_json::to_string(&output).expect("serialize");
+    assert_eq!(
+        json.matches("tool-alias").count(),
+        1,
+        "the package the provision delivers is named once on the wire: {json}"
+    );
+    assert!(
+        json.contains("provision tool via alt (tool-alias)"),
+        "and the one naming is the provision the module's route settled: {json}"
+    );
+    assert!(
+        json.contains("widget"),
+        "an entry no provision delivers still reaches the payload: {json}"
+    );
+}
+
 #[test]
 fn build_plan_output_counts_actions_and_sets_context() {
     let plan = make_plan(vec![
@@ -3300,6 +3362,21 @@ fn resolved_package(manager: &str, name: &str) -> cfgd_core::modules::ResolvedPa
         only_if: None,
         unless: None,
         min_version: None,
+    }
+}
+
+/// [`resolved_package`] whose manager the module's AUTHOR named — the `prefer`
+/// chain's installer and the `aliases` name it installs under, which is what
+/// mints a `DeclaredProvision` route.
+fn resolved_package_declared(
+    manager: &str,
+    canonical: &str,
+    resolved: &str,
+) -> cfgd_core::modules::ResolvedPackage {
+    cfgd_core::modules::ResolvedPackage {
+        resolved_name: resolved.to_string(),
+        manager_declared: true,
+        ..resolved_package(manager, canonical)
     }
 }
 

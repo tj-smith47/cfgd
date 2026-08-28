@@ -11473,7 +11473,12 @@ fn a_tool_this_plan_provisions_is_not_planned_again_by_a_module_entry() {
 /// A provision delivers a PACKAGE, and that package's name is the entry's, not
 /// the manager's — the module's route installs `tool-alias` through `alt`, and
 /// `dep`'s cascade installs `dep-pkg` through the same `alt`. Both are elided
-/// by the pair the apply's settle records, so the row names neither. The
+/// by the pair the apply's settle records, so the row names neither.
+///
+/// A cascade delivers the MANAGER's own literal, which an entry writing
+/// `aliases: {alt: alias-spelling}` never spells — so the elision asks the
+/// canonical name the alias resolves to as well, and `aliased-pkg` goes the
+/// same way as its unaliased sibling. The
 /// strings asserted here are what `-o json` carries: the plan payload's
 /// `description` IS `format_plan_item`.
 #[test]
@@ -11501,7 +11506,7 @@ fn a_declared_route_entry_this_plan_provisions_is_not_planned_again_on_the_packa
             .without_index()
             .unavailable()
             .bootstrappable_via("alt")
-            .mediated_by("alt", &["dep-pkg"]),
+            .mediated_by("alt", &["dep-pkg", "aliased-pkg"]),
     ));
 
     let pkg = |canonical: &str, resolved: &str, manager: &str, declared: bool| ResolvedPackage {
@@ -11520,6 +11525,7 @@ fn a_declared_route_entry_this_plan_provisions_is_not_planned_again_on_the_packa
     module.packages = vec![
         pkg("tool", "tool-alias", "alt", true),
         pkg("dep-pkg", "dep-pkg", "alt", true),
+        pkg("aliased-pkg", "alias-spelling", "alt", true),
         pkg("keep", "keep", "alt", true),
         pkg("widget", "widget", "tool", false),
         pkg("gadget", "gadget", "dep", false),
@@ -11556,6 +11562,11 @@ fn a_declared_route_entry_this_plan_provisions_is_not_planned_again_on_the_packa
         0,
         "the package the cascade installs is named by no packages row, got:\n{items}"
     );
+    assert_eq!(
+        items.matches("alias-spelling").count(),
+        0,
+        "and so is the entry that spells that package with an `aliases:` name, got:\n{items}"
+    );
     assert!(
         items.contains("alt install keep"),
         "an entry no provision delivers is kept, got:\n{items}"
@@ -11563,6 +11574,95 @@ fn a_declared_route_entry_this_plan_provisions_is_not_planned_again_on_the_packa
     assert!(
         items.contains("tool install widget") && items.contains("dep install gadget"),
         "each provisioned manager still installs what needed it, got:\n{items}"
+    );
+}
+
+/// The elision is judged against the FIRST pass's nodes, and the second pass
+/// must still ship the route that justified it.
+///
+/// `module_routed` feeds only `wanted_managers`, and a cascade's arm is priced
+/// off the managers the graph has already settled — so eliding a mediator's
+/// last consuming entry retires the mediator on the second pass, the cascade
+/// falls to its host arm, and the package dropped because the pass-1 route
+/// would have delivered it is then delivered by nothing: `paket` here was
+/// declared by the module and named NOWHERE in the shipped plan. The milder
+/// form of the same mechanism re-routes a surviving `via` (`provision npm via
+/// apt` in place of the brew arm the elision was justified by), which is the
+/// 534-package regression `bootstrap_plan_given`'s `delivered` predicate
+/// exists to prevent.
+///
+/// So the installers of the pairs the elision acted on stay WANTED across the
+/// re-plan. A manager whose consumers genuinely vanished still retires: the
+/// seed names only the mediators a provision of this very plan installs
+/// through.
+#[test]
+fn a_cascade_the_elision_relied_on_survives_the_re_plan() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "sys",
+    )));
+    // The mediator: absent, and itself bootstrappable from the system manager.
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("alt")
+            .without_index()
+            .unavailable()
+            .bootstrappable_via("sys"),
+    ));
+    // Prefers the mediator whenever the run delivers one, and delivers
+    // `paket` when it takes that arm — the module's only entry under `alt`.
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("dep")
+            .without_index()
+            .unavailable()
+            .preferring_delivered(&["alt"])
+            .bootstrappable_via("sys")
+            .mediated_by("alt", &["paket"]),
+    ));
+
+    let pkg = |canonical: &str, manager: &str, declared: bool| ResolvedPackage {
+        canonical_name: canonical.to_string(),
+        resolved_name: canonical.to_string(),
+        manager: manager.to_string(),
+        manager_declared: declared,
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+        min_version: None,
+    };
+    let mut module = make_resolved_module("tools");
+    module.packages = vec![pkg("paket", "alt", true), pkg("gadget", "dep", false)];
+
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let items = all_plan_items(&plan).join("\n");
+    assert!(
+        items.contains("provision alt via sys"),
+        "the mediator the elision relied on is still provisioned, got:\n{items}"
+    );
+    assert!(
+        items.contains("provision dep via alt"),
+        "and the cascade still takes the arm that delivers the elided package, got:\n{items}"
+    );
+    assert_eq!(
+        items.matches("paket").count(),
+        0,
+        "the delivered package is named by no packages row, got:\n{items}"
+    );
+    assert!(
+        items.contains("dep install gadget"),
+        "the provisioned manager still installs what needed it, got:\n{items}"
     );
 }
 
