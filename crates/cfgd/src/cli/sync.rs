@@ -89,9 +89,9 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
             }
             cfgd_core::daemon::PullOutcome::Failed(e) => {
                 sp.finish_warn("Pull failed")
-                    .detail(cfgd_core::daemon::pull_failure_summary(&e));
+                    .detail(cfgd_core::daemon::pull_failure_summary(&e.message));
                 repo_sec.hint(local_pull_next_step(&e, "cfgd sync"));
-                sync_payload.local_pull_error = Some(e);
+                sync_payload.local_pull_error = Some(e.message);
             }
             // The probe above said otherwise, so the checkout went away
             // between the two reads — the section is already open, and the
