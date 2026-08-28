@@ -18742,19 +18742,46 @@ fn cmd_source_add_duplicate_fails() {
 // New coverage: cmd_pull / cmd_sync output
 // -----------------------------------------------------------------------
 
+/// The local-layer twin of `source_failure_next_step`: every refusal kind gets
+/// its own fix, and each names the verb the reader re-runs — in backticks, the
+/// shape `every_closing_hint_names_a_command` holds for the hints it can read
+/// the text of directly.
 #[test]
-fn cmd_pull_non_git_dir_shows_warning() {
+fn every_local_pull_refusal_names_the_fix_for_its_own_kind() {
+    let reasons = [
+        "find remote: remote 'origin' does not exist",
+        "cannot fast-forward — remote has diverged",
+        "fetch: failed to resolve address",
+        "merge analysis: something else entirely",
+    ];
+    let mut seen = std::collections::BTreeSet::new();
+    for reason in reasons {
+        let hint = super::local_pull_next_step(reason, "cfgd sync");
+        assert!(
+            hint.contains("`cfgd sync`"),
+            "the hint names the verb to re-run, in backticks: {hint}"
+        );
+        assert!(
+            !hint.contains("class="),
+            "the hint carries no libgit2 internals: {hint}"
+        );
+        seen.insert(hint);
+    }
+    assert_eq!(
+        seen.len(),
+        reasons.len(),
+        "each refusal kind gets its own fix, not one sentence four times"
+    );
+}
+
+#[test]
+fn cmd_pull_over_a_non_repo_reports_nothing_to_pull() {
     let h = CliTestHarness::builder().build();
-    // config dir is not a git repo, so git_pull_sync will fail gracefully
     super::pull::cmd_pull(&h.cli(), h.printer()).unwrap();
     let output = h.output();
     assert!(
-        output.contains("Pull"),
-        "pull output should contain Pull heading, got: {output}"
-    );
-    assert!(
-        output.contains("Pull failed") || output.contains("up to date"),
-        "pull in non-git dir should warn or show up-to-date, got: {output}"
+        output.contains("Pull") && output.contains(super::MSG_NOT_A_REPOSITORY),
+        "a config dir under no version control has nothing to pull, got: {output}"
     );
 }
 
@@ -29180,6 +29207,17 @@ fn str_consts(
     consts
 }
 
+/// Whether a hint's argument is a call to another composer — an identifier
+/// immediately followed by `(`, which `format!` and friends are not.
+fn is_composed_call(arg: &str) -> bool {
+    let arg = arg.trim_start();
+    let head: String = arg
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':')
+        .collect();
+    !head.is_empty() && arg[head.len()..].starts_with('(')
+}
+
 /// A closing hint names the command that comes next. `cfgd decide accept`
 /// closed on `Changes will take effect on next reconcile` — the one next step
 /// in the product that named no command, pointing at a background reconcile a
@@ -29212,6 +29250,12 @@ fn every_closing_hint_names_a_command() {
                 continue;
             };
             let arg = call_argument(&lines, n, at);
+            // A hint COMPOSED by another function is that function's class,
+            // pinned by its own producer; the operand it takes here (a command
+            // name, a subject) is not the hint's text.
+            if is_composed_call(&arg) {
+                continue;
+            }
             let text = first_string_literal(&arg).or_else(|| {
                 let ident = arg.trim().rsplit("::").next().unwrap_or_default().trim();
                 consts.get(ident).cloned()

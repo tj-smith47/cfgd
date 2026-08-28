@@ -186,6 +186,57 @@ pub(crate) fn git_auto_commit_push(repo_path: &Path) -> std::result::Result<bool
 }
 // --- Public sync functions for CLI commands ---
 
-pub fn git_pull_sync(repo_path: &Path) -> std::result::Result<Option<RefMovement>, String> {
-    git_pull(repo_path)
+/// What a pull over a config directory came to.
+///
+/// The ONE verdict `cfgd pull` and `cfgd sync`'s local-repo leg both render
+/// and exit from. Two commands running one operation answered differently
+/// while each classified `git_pull`'s bare `Err` for itself: a directory under
+/// no version control read `⚠ Pull failed` on one and nothing at all on the
+/// other, and a real failure exited 1 on one and 0 on the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PullOutcome {
+    /// The directory is under no version control, so there is nothing to pull.
+    /// Not a failure: `git_pull` answers a bare `Err` here, which read as one.
+    NotARepository,
+    UpToDate,
+    Moved(RefMovement),
+    /// The pull was attempted and refused. Carries the message `git_pull`
+    /// composed, libgit2 tail and all; `pull_failure_summary` is the display
+    /// fold and `-o json` keeps this string.
+    Failed(String),
+}
+
+/// Whether a pull over this directory can do anything at all.
+///
+/// Asked BEFORE the pull by a caller that opens a live region for it, so a
+/// directory under no version control opens no section to animate; the pull
+/// itself asks again, so a caller that does not probe still gets the right
+/// verdict.
+///
+/// A gitlink FILE (a worktree or a submodule) is a repository too, so this
+/// asks whether the entry EXISTS rather than whether it is a directory.
+pub fn is_git_repository(repo_path: &Path) -> bool {
+    repo_path.join(".git").exists()
+}
+
+pub fn git_pull_sync(repo_path: &Path) -> PullOutcome {
+    if !is_git_repository(repo_path) {
+        return PullOutcome::NotARepository;
+    }
+    match git_pull(repo_path) {
+        Ok(Some(movement)) => PullOutcome::Moved(movement),
+        Ok(None) => PullOutcome::UpToDate,
+        Err(e) => PullOutcome::Failed(e),
+    }
+}
+
+/// A pull failure worded for a person: libgit2's `; class=…; code=…` tail
+/// belongs in a bug report, not in a result line under a red glyph.
+///
+/// The stored message and the `-o json` payload keep the full string, so
+/// nothing diagnostic is lost — this is the DISPLAY fold alone.
+pub fn pull_failure_summary(message: &str) -> &str {
+    message
+        .split_once("; class=")
+        .map_or(message, |(head, _)| head)
 }

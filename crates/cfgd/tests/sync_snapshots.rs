@@ -5,7 +5,7 @@ mod common;
 
 use std::path::Path;
 
-use cfgd::cli::output_types::{SourceSyncOutput, SyncOutput};
+use cfgd::cli::output_types::{SourceOutcome, SourceSyncOutput, SyncOutput};
 use cfgd::cli::sync::{build_sync_doc, cmd_sync, run_sync, sync_refused};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
@@ -27,12 +27,12 @@ fn happy_output() -> SyncOutput {
         sources: vec![
             SourceSyncOutput {
                 name: "team-a".to_string(),
-                status: "synced".to_string(),
+                status: SourceOutcome::Synced,
                 commit: Some("abc1234def56".to_string()),
             },
             SourceSyncOutput {
                 name: "team-b".to_string(),
-                status: "synced".to_string(),
+                status: SourceOutcome::Synced,
                 commit: Some("def56abc1234".to_string()),
             },
         ],

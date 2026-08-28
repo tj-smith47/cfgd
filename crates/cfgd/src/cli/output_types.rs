@@ -285,11 +285,50 @@ pub struct EnvDriftOutput {
     pub actual: String,
 }
 
+/// What one source came to in a `sync` or `source update` payload.
+///
+/// The two verbs spell the same states differently on the wire (`failed` /
+/// `error`), and each compared its own spelling by hand — so the predicate
+/// deciding the process exit was a bare string compare that answers `false`
+/// the moment a producer's spelling moves. The tokens each payload has always
+/// carried are unchanged; what is shared is the TYPE and the two predicates
+/// over it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceOutcome {
+    /// `cfgd sync` fetched it.
+    Synced,
+    /// `cfgd source update` fetched it.
+    Updated,
+    /// The reader declined its permission changes at the prompt.
+    Skipped,
+    /// The permission prompt could not be answered.
+    Cancelled,
+    /// `cfgd sync` could not fetch it.
+    Failed,
+    /// `cfgd source update` could not fetch it.
+    Error,
+}
+
+impl SourceOutcome {
+    /// Whether this outcome is one nobody chose, which is what a nonzero exit
+    /// reports. A declined prompt is an answered question, not a refusal.
+    pub fn refused(self) -> bool {
+        matches!(self, Self::Failed | Self::Error)
+    }
+
+    /// Whether the reader's own answer at the permission prompt is why this
+    /// source contributed nothing.
+    pub fn declined(self) -> bool {
+        matches!(self, Self::Skipped | Self::Cancelled)
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceSyncOutput {
     pub name: String,
-    pub status: String,
+    pub status: SourceOutcome,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
 }
@@ -1285,7 +1324,7 @@ mod tests {
             local_pull_error: None,
             sources: vec![SourceSyncOutput {
                 name: "main".to_string(),
-                status: "synced".to_string(),
+                status: SourceOutcome::Synced,
                 commit: Some("c0ffee".to_string()),
             }],
         };
@@ -1503,12 +1542,12 @@ mod tests {
     fn source_sync_output_skips_none_commit() {
         let v = SourceSyncOutput {
             name: "infra".to_string(),
-            status: "pending".to_string(),
+            status: SourceOutcome::Skipped,
             commit: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["name"], json!("infra"));
-        assert_eq!(json["status"], json!("pending"));
+        assert_eq!(json["status"], json!("skipped"));
         assert!(
             json.get("commit").is_none(),
             "commit must be skipped when None"

@@ -1012,10 +1012,14 @@ Sync
 
 Local Repo
   ⚠ Pull failed — find remote: remote 'origin' does not exist
-  → Resolve the local repository by hand, then re-run `cfgd sync`
+  → Add the remote with `git remote add origin <url>`, then re-run `cfgd sync`
 
 ⚠ Sync incomplete — local repo not pulled
 ```
+
+The cause is the message git raised, without libgit2's `class=…; code=…`
+tail, and the hint names the fix for that kind of refusal: a missing remote, a
+diverged branch, an unreachable one, or the general case.
 
 `-o json` carries `localPullError` beside `localPulled`, so a consumer sees
 the same fact the verdict withheld `Synced` over.
@@ -1023,6 +1027,26 @@ the same fact the verdict withheld `Synced` over.
 ### `cfgd pull`
 
 Pull remote changes (git pull only, no apply).
+
+`cfgd pull` and `cfgd sync`'s `Local Repo` leg read one seam, so they agree on
+what a config directory is and on what a refusal costs: a directory under no
+version control has nothing to pull and exits 0, and a pull that failed exits
+1 from either verb.
+
+```
+Pull
+∅ Nothing to pull — the config directory is not a git repository
+```
+
+```
+Pull
+⚠ Pull failed — find remote: remote 'origin' does not exist
+
+→ Add the remote with `git remote add origin <url>`, then re-run `cfgd pull`
+```
+
+`-o json` carries `status`: `pulled`, `up_to_date`, `not_a_repository` or
+`failed`, with `error` filled on the last.
 
 ### `cfgd upgrade`
 

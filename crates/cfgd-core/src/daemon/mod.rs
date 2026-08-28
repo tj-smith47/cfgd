@@ -717,7 +717,7 @@ use sync::*;
 
 // --- Public re-exports (preserve crate::daemon::<name> API) ---
 
-pub use git::{RefMovement, git_pull_sync};
+pub use git::{PullOutcome, RefMovement, git_pull_sync, is_git_repository, pull_failure_summary};
 pub use health_ipc::query_daemon_status;
 pub use service::{
     install_service, run_as_windows_service, service_binpath_argv, start_service, uninstall_service,

@@ -1,2 +1,4 @@
 Pull
-⚠ Pull failed — open repo: could not find repository at '<CONFIG_DIR>'; class=Repository (6); code=NotFound (-3)
+⚠ Pull failed — find remote: remote 'origin' does not exist
+
+→ Add the remote with `git remote add origin <url>`, then re-run `cfgd pull`
