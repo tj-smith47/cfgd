@@ -106,7 +106,7 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
         };
         t = t.row_styled(vec![
             (e.name.clone(), None),
-            (e.source.clone(), None),
+            (cfgd_core::fold_home_in_text(&e.source), None),
             (
                 e.schedule
                     .clone()

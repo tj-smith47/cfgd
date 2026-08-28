@@ -478,11 +478,13 @@ fn render_drift_section(
         // `format_action_description`) stamps "script"; `execute_script`
         // (onChange / module-onChange scripts, reconciler/scripts.rs) stamps
         // "Running script: {body}" — both must condense here.
+        // Folded to `~/` like every other display slot of the report; the
+        // recorded id and the `-o json` payload keep the absolute path.
         let display_id =
             if event.resource_type == "script" || event.resource_type == "Running script" {
                 condense_script_label(&event.resource_id)
             } else {
-                event.resource_id.clone()
+                cfgd_core::fold_home_in_text(&event.resource_id)
             };
         let subject = cfgd_core::output::drift_item_subject(&event.resource_type, &display_id);
         // The recomputed pair when a surface could read one off the machine,
@@ -553,7 +555,7 @@ fn render_module_drift_section(doc: Doc, drift: &[ModuleDrift], checked_live: bo
             "{}:{} {}",
             OwnerLabel::new("module", &d.owner).plain(),
             d.surface,
-            d.item
+            cfgd_core::fold_home_in_text(&d.item)
         );
         let cause = cfgd_core::output::drift_terse_cause(
             &d.event.resource_type,
@@ -807,7 +809,7 @@ fn managed_resource_rows(
             } else if is_session_env_row(r) {
                 session_env_resource()
             } else {
-                r.resource_id.clone()
+                cfgd_core::fold_home_in_text(&r.resource_id)
             };
             rows.push([
                 display_type(&r.resource_type),
@@ -901,7 +903,9 @@ fn module_id_parts<'a>(resource_type: &str, resource_id: &'a str) -> Option<(&'a
 /// `cfgd status --module -o wide`'s job.
 fn module_files_resource(recorded_count: &str, declared: Option<&ModuleDeclared>) -> String {
     let count = module_files_count(recorded_count).map(|n| cfgd_core::pluralize(n, "file"));
-    let root = declared.and_then(|d| d.file_root.clone());
+    let root = declared
+        .and_then(|d| d.file_root.as_deref())
+        .map(cfgd_core::fold_home_in_text);
     match (root, count) {
         (Some(root), Some(count)) => format!("{root} ({count})"),
         (Some(root), None) => root,
@@ -1208,24 +1212,27 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
         .collect();
 
     doc = doc.section_if_nonempty("Deployed Files", &output.deployed_files, |s, files| {
-        files.iter().fold(s, |s, file| match file.state {
-            // A converged row says the path and stops: "deployed" under a
-            // heading that already says Deployed Files is a word per row that
-            // adds nothing.
-            ModuleFilePresence::Deployed => s.status(Role::Ok, &file.path),
-            ModuleFilePresence::Drifted => {
-                let cause = file_causes
-                    .get(&super::live_drift::module_file_resource_id(
-                        &output.name,
-                        &file.path,
-                    ))
-                    .cloned()
-                    .unwrap_or_else(|| file.state.label().to_string());
-                s.status_with(file.state.role(), &file.path, |f| f.detail(cause))
+        files.iter().fold(s, |s, file| {
+            // The row folds home like every display slot; the cause lookup
+            // and the payload keep the absolute path the id was recorded with.
+            let shown = cfgd_core::fold_home_in_text(&file.path);
+            match file.state {
+                // A converged row says the path and stops: "deployed" under a
+                // heading that already says Deployed Files is a word per row
+                // that adds nothing.
+                ModuleFilePresence::Deployed => s.status(Role::Ok, shown),
+                ModuleFilePresence::Drifted => {
+                    let cause = file_causes
+                        .get(&super::live_drift::module_file_resource_id(
+                            &output.name,
+                            &file.path,
+                        ))
+                        .cloned()
+                        .unwrap_or_else(|| file.state.label().to_string());
+                    s.status_with(file.state.role(), shown, |f| f.detail(cause))
+                }
+                _ => s.status_with(file.state.role(), shown, |f| f.detail(file.state.label())),
             }
-            _ => s.status_with(file.state.role(), &file.path, |f| {
-                f.detail(file.state.label())
-            }),
         })
     });
 
@@ -4369,8 +4376,11 @@ mod tests {
             output.contains("Deployed Files"),
             "deployed files section should be present, got: {output}"
         );
+        // The row folds the test home to `~/`, like every display slot.
         assert!(
-            output.contains(real_file.to_str().unwrap()),
+            output.contains(&cfgd_core::fold_home_in_text(&cfgd_core::to_posix_string(
+                &real_file
+            ))),
             "existing file should appear, got: {output}"
         );
         assert!(
@@ -4379,9 +4389,10 @@ mod tests {
         );
         // No scan ran, so the present file's CONTENT is unchecked and the row
         // must say that rather than claim health `Path::exists` cannot back.
+        let shown = cfgd_core::fold_home_in_text(&cfgd_core::to_posix_string(&real_file));
         let present_row = output
             .lines()
-            .find(|l| l.contains(real_file.to_str().unwrap()))
+            .find(|l| l.contains(&shown))
             .unwrap_or_else(|| panic!("no row for the present file: {output}"));
         assert!(
             present_row.contains(NOT_SCANNED) && !present_row.contains('✓'),

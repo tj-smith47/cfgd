@@ -546,7 +546,14 @@ impl super::CfgdFileManager {
                 describe_directory_unequal(&target_path)
             };
             if !matches {
-                printer.status_simple(Role::Info, format!("{} ({})", target_path.posix(), actual));
+                printer.status_simple(
+                    Role::Info,
+                    format!(
+                        "{} ({})",
+                        cfgd_core::fold_home_in_text(&target_path.display_posix()),
+                        actual
+                    ),
+                );
             }
             return Ok(FileDriftResult {
                 target: target_id,
@@ -574,7 +581,10 @@ impl super::CfgdFileManager {
 
             let matches = rendered_content == target_content;
             if !matches {
-                printer.status_simple(Role::Info, target_path.display_posix());
+                printer.status_simple(
+                    Role::Info,
+                    cfgd_core::fold_home_in_text(&target_path.display_posix()),
+                );
                 printer.diff(&target_content, &rendered_content);
             }
             Ok(FileDriftResult {
@@ -589,7 +599,13 @@ impl super::CfgdFileManager {
                 unmanaged: false,
             })
         } else {
-            printer.status_simple(Role::Info, format!("{} (new file)", target_path.posix()));
+            printer.status_simple(
+                Role::Info,
+                format!(
+                    "{} (new file)",
+                    cfgd_core::fold_home_in_text(&target_path.display_posix())
+                ),
+            );
             let lang = detect_language(&target_path);
             printer.syntax_highlight(&rendered_content, &lang);
             Ok(FileDriftResult {

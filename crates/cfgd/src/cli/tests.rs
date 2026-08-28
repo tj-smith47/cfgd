@@ -29673,15 +29673,21 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
     );
 }
 
-/// Every header kv row that names a path under home folds it to `~/`, the
-/// way the action rows under it do — the `Config` row every run header,
-/// `status`, `diff`, `sync`, `daemon status` and `profile show` open on, the
-/// `Source` row `backup run <name>` / `backup restore` hang above a
-/// `restore ~/… from …` subject, and every directory `cfgd paths` lists.
-/// `-o json` keeps the absolute path on all three.
+/// Every DISPLAY slot of a report that names a path under home folds it to
+/// `~/`, the way the action rows do — the header kv rows (the `Config` row
+/// every run header, `status`, `diff`, `sync`, `daemon status` and `profile
+/// show` open on; the `Source` row `backup run <name>` / `backup restore`
+/// hang above a `restore ~/… from …` subject; every directory `cfgd paths`
+/// lists) AND every table cell or row under them that renders a recorded
+/// path: `status`'s Managed Resources and Drift rows, `status <module>`'s
+/// Deployed Files and Drift rows, `source show` / `source list`'s local
+/// source and its Managed Resources, `backup list`'s `Source` column and
+/// `module show`'s `Directory`. `cfgd status` folded its `Config` row and
+/// spelled `/home/tj/.cfgd.env` six lines below it. `-o json` keeps the
+/// absolute path on every one of them.
 #[test]
 #[serial_test::serial]
-fn no_header_row_spells_the_home_directory_absolutely() {
+fn no_report_slot_spells_the_home_directory_absolutely() {
     let home = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(home.path());
     let home_posix = home.path().posix().to_string();
@@ -29714,7 +29720,7 @@ fn no_header_row_spells_the_home_directory_absolutely() {
     printer.emit(super::paths::build_paths_doc(&paths));
     let paths_doc = cfgd_core::test_helpers::captured_text(&buf);
 
-    for (surface, text) in [
+    let mut surfaces = vec![
         (
             "config_profile_rows",
             rows.iter()
@@ -29724,7 +29730,208 @@ fn no_header_row_spells_the_home_directory_absolutely() {
         ),
         ("ApplyRun::header", header),
         ("cfgd paths", paths_doc),
-    ] {
+    ];
+
+    // Every listing that renders a recorded path, each carrying one under
+    // home, rendered once for the human text and once for its payload.
+    let now = "2026-05-14T12:05:00Z";
+    let under_home = |rel: &str| format!("{home_posix}/{rel}");
+    let drift_event = |id: i64, resource_id: String| cfgd_core::state::DriftEvent {
+        id,
+        timestamp: "2026-05-14T12:00:00Z".into(),
+        resource_type: "file".into(),
+        resource_id,
+        expected: Some("hash-desired".into()),
+        actual: Some("hash-actual".into()),
+        resolved_by: None,
+        source: "local".into(),
+        want: None,
+        have: None,
+    };
+    let fleet = super::status::StatusOutput {
+        last_apply: None,
+        drift: vec![drift_event(10, under_home(".zshrc"))],
+        sources: Vec::new(),
+        pending_decisions: Vec::new(),
+        modules: vec![super::status::ModuleStatusEntry {
+            name: "nvim".into(),
+            packages: 0,
+            files: 6,
+            scripts: 0,
+            status: "installed".into(),
+            declared: super::status::ModuleDeclared {
+                file_root: Some(under_home(".config/nvim")),
+                ..Default::default()
+            },
+        }],
+        managed_resources: vec![
+            cfgd_core::state::ManagedResource {
+                resource_type: "env".into(),
+                resource_id: under_home(".cfgd.env"),
+                source: "local".into(),
+                last_hash: None,
+                last_applied: None,
+            },
+            cfgd_core::state::ManagedResource {
+                resource_type: "module".into(),
+                resource_id: "nvim:files:6".into(),
+                source: "local".into(),
+                last_hash: None,
+                last_applied: None,
+            },
+        ],
+        warnings: Vec::new(),
+        classification_degraded: false,
+        classification_degraded_code: None,
+        classification_degraded_reason: None,
+        drift_checked_live: false,
+        last_scan_at: None,
+    };
+    let module = super::status::ModuleStatus {
+        name: "nvim".into(),
+        packages: 0,
+        files: 1,
+        env: 0,
+        aliases: 0,
+        scripts: Vec::new(),
+        declared: Default::default(),
+        system: Vec::new(),
+        depends: Vec::new(),
+        status: "installed".into(),
+        last_applied: None,
+        scope: None,
+        package_state: Vec::new(),
+        deployed_files: vec![super::status::ModuleFileStatus {
+            path: under_home(".config/nvim/init.lua"),
+            state: super::status::ModuleFilePresence::Drifted,
+        }],
+        drift: vec![super::status::ModuleDrift {
+            event: drift_event(11, under_home(".config/nvim/init.lua")),
+            owner: "nvim".into(),
+            surface: super::status::SURFACE_FILES,
+            item: under_home(".config/nvim/init.lua"),
+        }],
+        drift_checked_live: true,
+    };
+    let source_show = super::output_types::SourceShowOutput {
+        name: "team".into(),
+        url: under_home("team-config"),
+        branch: "main".into(),
+        priority: 100,
+        accept_recommended: false,
+        profile: None,
+        sync_interval: "5m".into(),
+        auto_apply: false,
+        pin_version: None,
+        state: None,
+        managed_resources: vec![super::output_types::SourceResourceEntry {
+            resource_type: "file".into(),
+            resource_id: under_home(".zshrc"),
+        }],
+        modules: Vec::new(),
+        policy: None,
+        manifest: None,
+    };
+    let source_list = vec![super::output_types::SourceListEntry {
+        name: "team".into(),
+        url: Some(under_home("team-config")),
+        priority: Some(100),
+        version: None,
+        status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
+        last_fetched: None,
+        signed: None,
+        require_signed_commits: None,
+        last_commit: None,
+        drift_count: None,
+    }];
+    let backups = vec![super::output_types::BackupListEntry {
+        name: "notes".into(),
+        source: under_home("notes"),
+        schedule: None,
+        retention: 3,
+        last_run_status: None,
+        last_run_at: None,
+        last_run_clean: None,
+        next_run_at: None,
+        snapshots: None,
+    }];
+    let module_show = super::module::ModuleShowOutput {
+        name: "nvim".into(),
+        metadata: super::module::ModuleShowMetadata { version: None },
+        directory: under_home(".config/cfgd/modules/nvim"),
+        source: "local".into(),
+        depends: Vec::new(),
+        state: None,
+        spec: Default::default(),
+    };
+    let docs: Vec<(&str, cfgd_core::output::Doc)> = vec![
+        (
+            "cfgd status",
+            super::status::build_fleet_status_doc(
+                &fleet,
+                &[],
+                &config_path,
+                "base",
+                now,
+                &Default::default(),
+            ),
+        ),
+        (
+            "cfgd status <module>",
+            super::status::build_module_status_doc(
+                &module,
+                super::status::ModuleStatusView::Compact,
+                now,
+            ),
+        ),
+        (
+            "cfgd status <module> -o wide",
+            super::status::build_module_status_doc(
+                &module,
+                super::status::ModuleStatusView::Inventory { show_values: false },
+                now,
+            ),
+        ),
+        (
+            "cfgd source show",
+            super::source::show::build_source_show_doc(&source_show, None, None, now),
+        ),
+        (
+            "cfgd source list",
+            super::source::list::build_source_list_doc(&source_list, true, now),
+        ),
+        (
+            "cfgd backup list",
+            super::backup::build_backup_list_doc(&backups, now),
+        ),
+        (
+            "cfgd module show",
+            super::module::list_show::build_module_show_doc(
+                &module_show,
+                None,
+                &[],
+                false,
+                "->",
+                now,
+            ),
+        ),
+    ];
+    for (surface, doc) in docs {
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        printer.emit(doc);
+        drop(printer);
+        let payload = cap
+            .json()
+            .expect("every listing carries a payload")
+            .to_string();
+        assert!(
+            payload.contains(&home_posix),
+            "{surface}'s `-o json` payload keeps the absolute path:\n{payload}"
+        );
+        surfaces.push((surface, cap.human()));
+    }
+
+    for (surface, text) in surfaces {
         assert!(
             !text.contains(&home_posix),
             "{surface} spells a path under home absolutely where the rows beside it fold it:\n{text}"

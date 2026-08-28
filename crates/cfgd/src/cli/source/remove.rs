@@ -131,7 +131,10 @@ pub(super) fn run_source_remove(
             ));
             let mut t = Table::new(["Type", "Resource"]);
             for r in &resources {
-                t = t.row([r.resource_type.clone(), r.resource_id.clone()]);
+                t = t.row([
+                    r.resource_type.clone(),
+                    cfgd_core::fold_home_in_text(&r.resource_id),
+                ]);
             }
             res_sec.table(t.without_unfillable_columns());
         }

@@ -47,7 +47,9 @@ pub fn build_source_show_doc(
             "Show",
             cfgd_core::output::OwnerLabel::new("source", &output.name),
         )
-        .kv("URL", &output.url)
+        // A local source's URL is a directory: folded like every display
+        // slot, the payload keeping the absolute path.
+        .kv("URL", cfgd_core::fold_home_in_text(&output.url))
         .kv("Branch", &output.branch)
         .kv("Priority", output.priority.to_string())
         .kv(
@@ -130,7 +132,10 @@ pub fn build_source_show_doc(
         |s, resources| {
             let mut table = Table::new(["Type", "Resource"]);
             for r in resources {
-                table = table.row([r.resource_type.clone(), r.resource_id.clone()]);
+                table = table.row([
+                    r.resource_type.clone(),
+                    cfgd_core::fold_home_in_text(&r.resource_id),
+                ]);
             }
             s.table(table.without_unfillable_columns())
         },
@@ -446,7 +451,7 @@ fn append_policy_items(mut s: SectionBuilder, items: &PolicyItems) -> SectionBui
     }
     for f in &items.files {
         s = s.status_with(Role::Info, "file", |sf| {
-            sf.qualifier(f.target.posix().to_string())
+            sf.qualifier(cfgd_core::fold_home_in_text(&f.target.display_posix()))
         });
     }
     for ev in &items.env {
