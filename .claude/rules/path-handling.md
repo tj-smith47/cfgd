@@ -53,11 +53,17 @@ the substitution is reversible) and leaves POSIX exact.
 ## When native IS correct (opt out explicitly)
 
 Terminal output, `tracing` log lines, and human-facing error messages may keep the
-native separator — a Windows user reading a log wants `\`. To keep one of those
+native separator — a Windows user reading a log wants `\`. A `tracing` line also
+keeps the ABSOLUTE path: a journal is read by scripts and from other hosts, and as
+another user `~` is ambiguous there in a way it is not in a report addressed to
+whoever ran the command — the same reason `-o json` keeps it. `fold_home_in_text`
+is for a DISPLAY slot and never reaches a `tracing!` argument
+(`no_journal_line_folds_the_home_directory` walks both crates). To keep one of those
 when the post-edit hook flags it, append a justification on the same line:
 
 ```rust
 tracing::warn!("cannot read {}", path.display()); // native-ok: log line, not a key
+tracing::info!("daemon: health endpoint at {ipc_path}"); // native-ok: journal line, not a display slot
 ```
 
 The hook flags **newly-added** native renders only; the documented legacy baseline

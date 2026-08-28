@@ -29674,6 +29674,66 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
     );
 }
 
+/// A `tracing!` line is a JOURNAL, not a display slot: it is read by scripts
+/// and from other hosts, and as another user `~` there is ambiguous in a way
+/// it is not in a report addressed to whoever ran the command — the same
+/// reason `-o json` keeps the absolute path. So `fold_home_in_text` never
+/// reaches a `tracing::` argument, and a journal line naming a path under
+/// home carries `// native-ok: journal line, not a display slot` beside the
+/// folded rows it will be read next to. The daemon's startup banner spelled
+/// its socket absolutely eight lines above a folded `Config` row with no rule
+/// deciding which was right.
+#[test]
+fn no_journal_line_folds_the_home_directory() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = walk_rust_files(&root.join("src"));
+    files.extend(walk_rust_files(&root.join("../cfgd-core/src")));
+    files.sort();
+    let mut journal_lines = 0usize;
+    let mut hatched = 0usize;
+    let mut offenders = Vec::new();
+    for path in files {
+        if path.file_name().is_none_or(|n| n == "tests.rs")
+            || path.components().any(|c| c.as_os_str() == "tests")
+        {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let body = production_body(&raw);
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || !code.contains("tracing::") {
+                continue;
+            }
+            journal_lines += 1;
+            // The whole macro invocation, however rustfmt broke it.
+            let end = (n..lines.len())
+                .find(|&i| lines[i].trim_end().ends_with(';'))
+                .unwrap_or(n);
+            let stmt = lines[n..=end].join("\n");
+            if stmt.contains("native-ok:") {
+                hatched += 1;
+            }
+            if stmt.contains("fold_home_in_text(") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, code.trim()));
+            }
+        }
+    }
+    assert!(
+        journal_lines >= 50 && hatched >= 1,
+        "the walk no longer reaches the journal lines — it found {journal_lines}, {hatched} hatched"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a `tracing!` line is a journal and keeps the absolute path, the way `-o json` does; \
+         `fold_home_in_text` is for a DISPLAY slot:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// A slot keyed on the DIMENSION states the magnitude; a slot keyed on the
 /// EVENT states the relation. `Age  3m ago` spent its value restating the
 /// pastness its key already asserts, beside `Last Applied  3m ago`, which is
