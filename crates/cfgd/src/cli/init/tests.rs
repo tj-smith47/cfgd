@@ -1038,6 +1038,71 @@ fn cmd_init_apply_module_prices_the_package_it_installs() {
     );
 }
 
+/// `cfgd init --apply-module` over a bare `- name: <tool>` that another
+/// available manager already holds plans NO install and still reports the
+/// machine converged: the resolver reads the run's own package context, so
+/// init's `Success` and the next `cfgd apply`'s plan are one picture. Before
+/// this, init resolved the entry to the platform default (which held nothing),
+/// reported Success over a plan it never priced, and the on-camera apply that
+/// followed installed the tool through apt for 79s and re-ran every postApply
+/// hook.
+#[test]
+#[serial_test::serial]
+fn cmd_init_apply_module_leaves_a_tool_another_manager_holds_alone() {
+    let _pm_guard =
+        crate::cli::registry::PackageManagerFactoryGuard::hermetic_native_beside_a_brew_holding_a_tool();
+    let dir = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let target = dir.path().join("config");
+    let module_dir = target.join("modules").join("held-init-mod");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: held-init-mod\nspec:\n  packages:\n    - name: {}\n",
+            crate::cli::registry::HELD_BY_BREW
+        ),
+    )
+    .unwrap();
+
+    let state_dir = dir.path().join("state");
+    let cache_dir = dir.path().join("cache");
+    let (printer, cap) = Printer::for_test_at(Verbosity::Normal);
+    let target_str = target.display().to_string();
+    let modules = ["held-init-mod".to_string()];
+    let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: None,
+        branch: "master",
+        name: Some("held-init"),
+        apply: false,
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &modules,
+        cache_dir: Some(&cache_dir),
+        state_dir: Some(&state_dir),
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    cmd_init_guarded(&printer, &args).expect("init with a module apply must succeed");
+    drop(printer);
+
+    let output = cfgd_core::test_helpers::captured_text(&cap);
+    assert!(
+        !output.contains(&format!("install {}", crate::cli::registry::HELD_BY_BREW)),
+        "a tool brew already holds is not installed through the native manager: {output}"
+    );
+    assert!(
+        output.contains("Initialized"),
+        "init still reports the machine initialized: {output}"
+    );
+}
+
 #[test]
 #[serial_test::serial]
 fn cmd_init_apply_profile_with_a_module_prices_the_package_it_installs() {

@@ -325,7 +325,21 @@ impl PackageManagerFactoryGuard {
     pub(in crate::cli) fn hermetic_native_quoting_versions() -> Self {
         Self::install(hermetic_managers_quoting_versions)
     }
+
+    /// The hermetic set, plus a fake `brew` that is available and already
+    /// reports [`HELD_BY_BREW`] installed while the native fake reports
+    /// nothing: the machine a bare module entry naming that tool must be
+    /// satisfied on without an install.
+    pub(in crate::cli) fn hermetic_native_beside_a_brew_holding_a_tool() -> Self {
+        Self::install(hermetic_managers_beside_a_holder)
+    }
 }
+
+/// The package the fake `brew` of
+/// [`PackageManagerFactoryGuard::hermetic_native_beside_a_brew_holding_a_tool`]
+/// reports installed. A name no other test shares.
+#[cfg(test)]
+pub(in crate::cli) const HELD_BY_BREW: &str = "qp5-held-tool";
 
 /// The version [`PackageManagerFactoryGuard::hermetic_native_quoting_versions`]
 /// makes the fake native manager offer. In the 9.9.x sentinel range, so it can
@@ -351,6 +365,21 @@ fn hermetic_managers_quoting_versions() -> Vec<Box<dyn cfgd_core::providers::Pac
 }
 
 #[cfg(test)]
+fn hermetic_managers_beside_a_holder() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    let mut managers: Vec<Box<dyn cfgd_core::providers::PackageManager>> =
+        hermetic_managers_with(None)
+            .into_iter()
+            .filter(|m| m.name() != "brew")
+            .collect();
+    managers.push(Box::new(FakeNativeManager {
+        name: "brew".to_string(),
+        version: None,
+        installed: &[HELD_BY_BREW],
+    }));
+    managers
+}
+
+#[cfg(test)]
 fn hermetic_managers_with(
     version: Option<&'static str>,
 ) -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
@@ -365,6 +394,7 @@ fn hermetic_managers_with(
     managers.push(Box::new(FakeNativeManager {
         name: native,
         version,
+        installed: &[],
     }));
     managers
 }
@@ -379,6 +409,9 @@ struct FakeNativeManager {
     /// What it answers `available_version` with, for the tests whose subject is
     /// the version a rendered action carries.
     version: Option<&'static str>,
+    /// What it reports installed, for the tests whose subject is a bare entry
+    /// another manager already holds.
+    installed: &'static [&'static str],
 }
 
 #[cfg(test)]
@@ -405,7 +438,7 @@ impl cfgd_core::providers::PackageManager for FakeNativeManager {
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> cfgd_core::errors::Result<std::collections::HashSet<String>> {
-        Ok(std::collections::HashSet::new())
+        Ok(self.installed.iter().map(|p| p.to_string()).collect())
     }
     fn install(
         &self,
