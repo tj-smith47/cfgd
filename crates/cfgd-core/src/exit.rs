@@ -102,6 +102,10 @@ pub fn exit_code_for_error(err: &CfgdError) -> ExitCode {
         // that is not there" condition as an unknown backup name.
         CfgdError::Backup(BackupError::SnapshotNotFound { .. }) => ExitCode::NotFound,
         CfgdError::Backup(BackupError::NoSnapshots { .. }) => ExitCode::NotFound,
+        // A rollback naming a unit whose source has no copy beside it is the
+        // same condition one step further out: the artifact the verb exists to
+        // put back is not there.
+        CfgdError::Backup(BackupError::NoRollbackCopy { .. }) => ExitCode::NotFound,
         // `cfgd rollback <id>` naming an apply-log row that does not exist is
         // the same "you asked for a thing that is not there" condition as an
         // unknown backup name or snapshot.

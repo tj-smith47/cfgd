@@ -1,0 +1,8 @@
+{
+  "clean": true,
+  "copy": "<SOURCE>.cfgd-backup",
+  "name": "docs",
+  "restored": true,
+  "restoredTo": "<SOURCE>",
+  "sizeBytes": 29
+}

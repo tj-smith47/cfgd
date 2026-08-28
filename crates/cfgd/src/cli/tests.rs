@@ -462,6 +462,76 @@ fn no_subcommand_declares_its_own_yes_flag() {
     }
 }
 
+/// Every `cfgd backup` verb that OVERWRITES live data mirrors the global
+/// `--yes`, so the operator can always answer the prompt without one.
+///
+/// The two that do — `restore` and `rollback` — are the only commands in cfgd
+/// that write over a file the user, not cfgd, authored, and a verb that prompts
+/// but cannot be answered non-interactively is unusable from a script.
+/// `from_global` is not visible through clap introspection (the field is filled
+/// from the root matches, and the subcommand declares no argument of its own),
+/// so the declaration is read from the source and the behaviour from the
+/// parser. A new `BackupCommand` variant trips here by not being in the table.
+#[test]
+fn every_destructive_backup_verb_mirrors_the_global_yes() {
+    // Each variant, and whether it overwrites data the user authored.
+    const VARIANTS: &[(&str, bool)] = &[
+        ("Run", false),
+        ("List", false),
+        ("Restore", true),
+        ("Rollback", true),
+    ];
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
+    )
+    .expect("cli/mod.rs is checked out");
+    let block = source
+        .split("pub enum BackupCommand {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("BackupCommand is declared in cli/mod.rs");
+
+    let declared: Vec<&str> = block
+        .lines()
+        .filter_map(|l| l.strip_suffix(" {"))
+        .map(str::trim)
+        .filter(|v| v.chars().next().is_some_and(char::is_uppercase))
+        .collect();
+    let expected: Vec<&str> = VARIANTS.iter().map(|(v, _)| *v).collect();
+    assert_eq!(
+        declared, expected,
+        "a new BackupCommand variant is classified here as destructive or not"
+    );
+
+    for (variant, destructive) in VARIANTS {
+        let body = block
+            .split(&format!("    {variant} {{"))
+            .nth(1)
+            .and_then(|rest| rest.split("\n    },").next())
+            .unwrap_or_else(|| panic!("BackupCommand::{variant} has a body"));
+        let mirrors = body.contains("from_global") && body.contains("yes: bool");
+        assert_eq!(
+            mirrors, *destructive,
+            "BackupCommand::{variant} overwrites live data: {destructive}, mirrors --yes: {mirrors}"
+        );
+    }
+
+    for argv in [
+        ["cfgd", "--yes", "backup", "rollback", "notes"],
+        ["cfgd", "backup", "rollback", "notes", "--yes"],
+        ["cfgd", "backup", "rollback", "notes", "-y"],
+    ] {
+        let cli = Cli::try_parse_from(argv).expect("--yes parses in every position");
+        let Some(Command::Backup {
+            command: BackupCommand::Rollback { yes, .. },
+        }) = cli.command
+        else {
+            panic!("{argv:?} did not parse as backup rollback");
+        };
+        assert!(yes, "{argv:?} did not reach the from_global mirror");
+    }
+}
+
 /// Every boolean SUBSCRIPTION knob `cfgd source update` can set comes as a
 /// `--x` / `--no-x` pair: a single `--x` could only ever turn a knob on, so a
 /// demand once recorded would be unrevokable from the CLI. The pair is what
@@ -15692,6 +15762,29 @@ fn mutating_secret_verbs() -> Vec<(&'static str, &'static str, Option<&'static s
     ]
 }
 
+/// The mutating `backup` verbs, all three in one file, each read from its own
+/// handler body the way the `secret` family is. A `Some` reason is why the
+/// verb's success path names no next step.
+fn mutating_backup_verbs() -> Vec<(&'static str, &'static str, Option<&'static str>)> {
+    vec![
+        (
+            "run",
+            "run_backup_run",
+            Some(
+                "a run over many units settles through the shared rollup, whose own `reconciler::run_next_step` words the only state that leaves the reader anything to do",
+            ),
+        ),
+        (
+            "restore",
+            "run_backup_restore",
+            Some(
+                "closes on the sidecar hint naming `cfgd backup rollback <name>` — the one command that undoes what it just wrote, worded from `SidecarOutcome::detail` so the copy's verb is stated once",
+            ),
+        ),
+        ("rollback", "run_backup_rollback", None),
+    ]
+}
+
 fn cli_file_body(relative: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src/cli")
@@ -15799,6 +15892,26 @@ fn every_mutating_verb_closes_on_a_next_step() {
     assert_eq!(
         secret_judged, 4,
         "the walk no longer reaches the `secret` family"
+    );
+
+    let backup_body = cli_file_body("backup.rs");
+    let backup_lines: Vec<&str> = backup_body.lines().collect();
+    let mut backup_judged = 0usize;
+    for (verb, handler, terminal) in mutating_backup_verbs() {
+        let handler_body = fn_body(&backup_lines, handler)
+            .unwrap_or_else(|| panic!("backup.rs declares `{handler}`"));
+        backup_judged += 1;
+        judge(
+            &mut offenders,
+            "backup.rs".to_string(),
+            format!("backup {verb}"),
+            terminal,
+            handler_body.contains("success_next_step("),
+        );
+    }
+    assert_eq!(
+        backup_judged, 3,
+        "the walk no longer reaches the `backup` family"
     );
 
     // `rollback` is a family of one, and its verdict is composed by
@@ -16098,6 +16211,7 @@ fn every_composed_next_step_names_a_command() {
         (Mutation::SecretEncrypted, &["cfgd secret encrypt"]),
         (Mutation::SecretEdited, &["cfgd secret edit"]),
         (Mutation::RolledBack, &["cfgd rollback"]),
+        (Mutation::BackupRolledBack, &["cfgd backup rollback"]),
     ];
     let source = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
@@ -16117,7 +16231,7 @@ fn every_composed_next_step_names_a_command() {
         })
         .count();
     assert_eq!(
-        declared, 22,
+        declared, 23,
         "a new Mutation variant is walked here with every shape it can take"
     );
     for (mutation, own_verbs) in mutations {

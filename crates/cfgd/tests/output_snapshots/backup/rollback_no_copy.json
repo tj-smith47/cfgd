@@ -1,0 +1,5 @@
+{
+  "error": "no_rollback_copy",
+  "hint": "restore first with `cfgd backup restore docs`",
+  "name": "docs"
+}

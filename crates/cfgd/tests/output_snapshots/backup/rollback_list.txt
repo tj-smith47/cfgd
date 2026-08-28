@@ -1,0 +1,4 @@
+Rollback Copies
+Name  Copy                                Created  Size  
+─────────────────────────────────────────────────────────
+docs  /var/lib/app/notes.txt.cfgd-backup  2h ago   4.0 KB

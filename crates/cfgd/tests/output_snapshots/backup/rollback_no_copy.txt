@@ -1,0 +1,3 @@
+✗ Backup 'docs' has no copy to roll back to
+
+→ restore first with `cfgd backup restore docs`

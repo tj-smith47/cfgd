@@ -108,6 +108,12 @@ $ cfgd --output json backup run missing-name
   "hint": "valid backups: notes-db, journal",
   "name": "missing-name"
 }
+
+$ cfgd backup rollback
+Rollback Copies
+Name      Copy                                          Created  Size
+─────────────────────────────────────────────────────────────────────────
+notes-db  ~/.local/share/notes/notes.db.cfgd-backup     6m ago   8.0 KB
 ```
 
 `cfgd backup run [name]` runs every declared backup when `name` is omitted, or the named one.
@@ -549,7 +555,7 @@ Restore: notes-db
 
 backup:notes-db
   ✓ restore /home/me/.local/share/notes/notes.db from notes.db.20260813T061333Z — 8.0 KB
-  → Previous contents backed up to /home/me/.local/share/notes/notes.db.cfgd-backup
+  → Previous contents backed up to /home/me/.local/share/notes/notes.db.cfgd-backup; put them back with `cfgd backup rollback notes-db`
 
 ✓ Restore complete — 1 action succeeded (0.3s wall)
 ```
@@ -658,8 +664,61 @@ staging removed      ← on every path, success or failure
 
 **Restores are not recorded.** The `backup_runs` table is the ledger retention walks, and a
 restore produces no artifact for it to prune; the safety copy it takes is a sidecar beside the
-source, outside the ledger too. `cfgd rollback` covers cfgd's own file writes and is unrelated to
-this table.
+source, outside the ledger too — it is retained one-per-source and put back by
+[`cfgd backup rollback`](#rolling-back-a-restore), never by `spec.backups[].retention`.
+`cfgd rollback` covers cfgd's own file writes and is unrelated to both.
+
+### Rolling back a restore
+
+Every time cfgd displaces a file it copies the current contents aside first, as the
+`<path>.cfgd-backup` sidecar beside them — a restore leaves one before it overlays, and so does
+`cfgd apply` when it adopts a file it did not write. `cfgd backup rollback` puts that copy back,
+which is how a restore of the wrong snapshot is undone:
+
+```console
+$ cfgd backup rollback notes-db --yes
+Rollback: notes-db
+  Config   /home/me/.config/cfgd/cfgd.yaml
+  Profile  workstation
+  Source   /home/me/.local/share/notes/notes.db
+  Actions  1 planned
+
+backup:notes-db
+  ✓ rollback /home/me/.local/share/notes/notes.db from notes.db.cfgd-backup — 8.0 KB
+
+✓ Rollback complete — 1 action succeeded (0.2s wall)
+
+→ Run `cfgd diff` to see how the machine now differs from your config
+```
+
+With no name it lists what it could put back and leaves the machine alone:
+
+```bash
+cfgd backup rollback                     # what has a copy beside it
+cfgd backup rollback notes-db            # put notes-db's copy back (asks first)
+cfgd backup rollback notes-db --yes      # ...without the prompt
+cfgd --output json backup rollback       # the same listing, as an array
+```
+
+The rollback runs through the same envelope a restore does: the unit's lock, its one
+`preBackup` / `postBackup` hook list (with `CFGD_OPERATION=rollback`), and the same confirmation.
+It takes no safety copy of its own — what it displaces is what the restore just wrote, which is
+still in the snapshot store — and it leaves the sidecar in place, so rolling back twice lands the
+same bytes as rolling back once.
+
+**One copy is retained per source.** When a displacement writes a new copy, the older stamped
+sidecars for that path are pruned, so a rollback always undoes the *most recent* displacement.
+Only names cfgd itself would have written are pruned; anything else beside the source is left
+alone.
+
+A unit with no copy beside its source is refused, exit `6`, naming the verb that leaves one:
+
+```console
+$ cfgd backup rollback notes-db
+✗ Backup 'notes-db' has no copy to roll back to
+
+→ restore first with `cfgd backup restore notes-db`
+```
 
 ### Restoring by hand
 

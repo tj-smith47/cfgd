@@ -536,6 +536,225 @@ fn confirm_restore(
     })
 }
 
+/// Turn "nothing displaced this source" into the CLI's structured error shape.
+///
+/// The hint names the verb that WOULD leave a copy: a rollback undoes a
+/// displacement, so a unit nothing has displaced has nothing to undo, and the
+/// reader's next move is the restore itself rather than another rollback.
+fn no_rollback_copy_error(name: &str, source: &Path) -> anyhow::Error {
+    let hint = format!("restore first with `cfgd backup restore {name}`");
+    cli_error_ctx_with_hints(
+        cfgd_core::errors::CfgdError::Backup(cfgd_core::errors::BackupError::NoRollbackCopy {
+            name: name.to_string(),
+            source_path: source.to_path_buf(),
+        })
+        .into(),
+        name,
+        "no_rollback_copy",
+        format!("Backup '{name}' has no copy to roll back to"),
+        serde_json::json!({ "hint": hint }),
+        vec![hint],
+    )
+}
+
+/// Build the `cfgd backup rollback` listing Doc from a populated entries
+/// vector. Pure; the caller assembles the entries and passes `now`, so a render
+/// pins in a test rather than reading a clock inside the builder.
+///
+/// `Created` is an age for the same reason `build_backup_snapshot_list_doc`'s
+/// is: the reader is choosing whether the copy is the one they want back, and
+/// how long ago it was written is that question. The payload keeps the ISO 8601
+/// stamp.
+pub fn build_backup_rollback_list_doc(entries: &[BackupRollbackEntry], now: &str) -> Doc {
+    let mut doc = Doc::new().heading("Rollback Copies");
+
+    if entries.is_empty() {
+        doc = doc.status(Role::Info, "Nothing to roll back");
+        doc = doc.hint(
+            "A copy is left beside a source by `cfgd backup restore <name>`, and by any file `cfgd apply` adopts",
+        );
+        return doc.with_data(entries);
+    }
+
+    let mut t = Table::new(["Name", "Copy", "Created", "Size"]);
+    for e in entries {
+        t = t.row([
+            e.name.clone(),
+            cfgd_core::fold_home_in_text(&e.copy),
+            cfgd_core::humanize_age_cell(Some(&e.created), now),
+            format_bytes(e.size_bytes),
+        ]);
+    }
+    doc = doc.table(t.without_unfillable_columns());
+    doc.with_data(entries)
+}
+
+pub fn cmd_backup_rollback(
+    cli: &Cli,
+    printer: &Printer,
+    name: Option<&str>,
+    yes: bool,
+) -> anyhow::Result<()> {
+    let Some(name) = name else {
+        return list_rollback_copies(cli, printer);
+    };
+    // The same split `cmd_backup_restore` uses: the payload Doc is already out
+    // by the time the exit code is decided, so a failed rollback is not
+    // rendered as a SECOND top-level document.
+    match run_backup_rollback(cli, printer, name, yes)? {
+        Some(outcome) if !outcome.is_clean() => cfgd_core::exit::ExitCode::Error.exit(),
+        _ => Ok(()),
+    }
+}
+
+/// The no-name arm: what a rollback COULD put back, over every declared unit.
+///
+/// A read surface, so it composes in `Report` alongside `backup list` rather
+/// than in the `Enforce` the two mutating verbs take.
+fn list_rollback_copies(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    let composition = compose_with_sources(
+        &ctx,
+        cfg,
+        local_resolved,
+        printer,
+        false,
+        composition::ConstraintMode::Report,
+    )?;
+    let backups = composition.resolved.merged.backups;
+
+    let config_dir = config_dir(cli);
+    let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
+    let entries: Vec<BackupRollbackEntry> = backups
+        .iter()
+        .filter_map(|spec| {
+            let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
+            cfgd_core::backup::rollback_copy(&unit).map(|copy| BackupRollbackEntry {
+                name: spec.name.clone(),
+                copy: copy.path.posix().to_string(),
+                created: copy.created,
+                size_bytes: copy.size_bytes,
+            })
+        })
+        .collect();
+
+    printer.emit(build_backup_rollback_list_doc(
+        &entries,
+        &cfgd_core::utc_now_iso8601(),
+    ));
+    Ok(())
+}
+
+/// Core of `backup rollback <name>`. `Ok(None)` means the operator declined at
+/// the confirmation prompt — nothing ran, and that is a success.
+///
+/// Kept out of [`cmd_backup_rollback`] so the body stays in-process testable
+/// (`process::exit` would abort the test binary).
+pub fn run_backup_rollback(
+    cli: &Cli,
+    printer: &Printer,
+    name: &str,
+    yes: bool,
+) -> anyhow::Result<Option<cfgd_core::backup::RollbackOutcome>> {
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    // Enforce, like the other two mutating verbs: a rollback executes the
+    // unit's hooks and overwrites live data.
+    let composition = compose_with_sources(
+        &ctx,
+        cfg,
+        local_resolved,
+        printer,
+        false,
+        composition::ConstraintMode::Enforce,
+    )?;
+    let sources =
+        cfgd_core::reconciler::ComposedSource::from_profile_layers(&composition.resolved.layers);
+    let backups = composition.resolved.merged.backups;
+
+    let spec = find_backup_spec(&backups, name)?;
+
+    let (config_dir, _state, state_dir) = unit_context(&ctx)?;
+    let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
+
+    // Resolved before the prompt so the operator is told which copy they are
+    // agreeing to, and so a unit with nothing to put back is refused without
+    // asking. `rollback_backup` looks it up again under the lock.
+    let copy = cfgd_core::backup::rollback_copy(&unit)
+        .ok_or_else(|| no_rollback_copy_error(name, &unit.source()))?;
+
+    let unit_source = spec.source.posix().to_string();
+    let run_ctx = cfgd_core::reconciler::RunContext {
+        title: cfgd_core::reconciler::RunTitle::Rollback,
+        config_path: Some(cli.config.as_path()),
+        profile: Some(profile_name),
+        sources: &sources,
+        modules: &[],
+        trigger: None,
+        subject: Some(name),
+        unit_source: Some(&unit_source),
+    };
+    cfgd_core::reconciler::ApplyRun::unplanned(run_ctx, cfgd_core::backup::RESTORE_ACTION_COUNT)
+        .header(printer);
+
+    let copy_display = copy.path.posix().to_string();
+    if !yes && !confirm_rollback(printer, name, &copy_display)? {
+        printer.emit(Doc::new().status(Role::Info, "Aborted").with_data(
+            &BackupRollbackDeclinedOutput {
+                name: name.to_string(),
+                copy: copy_display,
+                restored_to: cfgd_core::to_posix_string(unit.source()),
+                restored: false,
+                declined: true,
+            },
+        ));
+        return Ok(None);
+    }
+
+    let started = std::time::Instant::now();
+    let outcome = cfgd_core::backup::rollback_backup(&unit, printer)?;
+
+    let tally = cfgd_core::backup::report_rollback(printer, &outcome);
+    cfgd_core::reconciler::render_run_rollup(
+        &tally,
+        cfgd_core::reconciler::RunTitle::Rollback,
+        printer,
+        Some(started.elapsed()),
+    );
+    if outcome.is_clean() {
+        printer.hint(success_next_step(Mutation::BackupRolledBack));
+    }
+
+    printer.emit(Doc::new().with_data(BackupRollbackOutput::from(&outcome)));
+    Ok(Some(outcome))
+}
+
+/// Ask before overwriting live data, on the terms [`confirm_restore`] asks on:
+/// a session that cannot prompt is an error carrying the `--yes` remedy, never
+/// a silent decline.
+fn confirm_rollback(printer: &Printer, name: &str, copy: &str) -> anyhow::Result<bool> {
+    let question = format!(
+        "Roll '{name}' back to {}?",
+        cfgd_core::fold_home_in_text(copy)
+    );
+    printer.prompt_confirm(&question).map_err(|e| {
+        let hint = "pass --yes (or set CFGD_YES=1) to roll back without a prompt".to_string();
+        let message = if printer.can_prompt() {
+            cfgd_core::output::collapse_to_subject_line(&e)
+        } else {
+            format!("Rollback of '{name}' needs confirmation, and this session cannot prompt")
+        };
+        cli_error_with_hints(
+            name,
+            "confirmation_required",
+            message,
+            serde_json::json!({ "hint": hint, "copy": copy }),
+            vec![hint],
+        )
+    })
+}
+
 pub fn cmd_backup_run(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
     let outcome = run_backup_run(cli, printer, name)?;
 

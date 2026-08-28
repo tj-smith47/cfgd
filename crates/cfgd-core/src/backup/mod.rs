@@ -22,6 +22,7 @@ use crate::reconciler::{
 use crate::state::{BackupRunDraft, BackupRunRecord, BackupRunStatus, StateStore};
 
 pub mod restore;
+pub mod rollback;
 pub mod schedule;
 
 #[cfg(test)]
@@ -30,6 +31,9 @@ mod tests;
 pub use restore::{
     RESTORE_ACTION_COUNT, RestoreOutcome, RestoreTarget, SnapshotInfo, list_snapshots,
     report_restore, restore_backup, restore_target, select_snapshot,
+};
+pub use rollback::{
+    RollbackCopy, RollbackOutcome, report_rollback, rollback_backup, rollback_copy,
 };
 pub use schedule::next_run_at;
 
@@ -164,6 +168,9 @@ pub enum BackupOperation {
     Backup,
     /// A snapshot is being put back (`cfgd backup restore`).
     Restore,
+    /// The pre-restore sidecar is being put back over the source
+    /// (`cfgd backup rollback`).
+    Rollback,
 }
 
 impl BackupOperation {
@@ -172,6 +179,7 @@ impl BackupOperation {
         match self {
             BackupOperation::Backup => "backup",
             BackupOperation::Restore => "restore",
+            BackupOperation::Rollback => "rollback",
         }
     }
 }
@@ -324,6 +332,17 @@ pub(super) fn restore_subject(target: &str, snapshot: &str) -> String {
         "restore {} from {snapshot}",
         crate::fold_home_in_text(target)
     )
+}
+
+/// The rollback line's subject: `rollback <target> from <copy file name>`.
+///
+/// The third member of the family [`snapshot_subject`] and [`restore_subject`]
+/// belong to, and built to the same rule: a lowercase verb head, the target it
+/// WRITES, and what it wrote from. The copy's file NAME, never its path — it
+/// sits beside the target the subject already names, and the run header's
+/// `Source` row states the unit's own path.
+pub(super) fn rollback_subject(target: &str, copy: &str) -> String {
+    format!("rollback {} from {copy}", crate::fold_home_in_text(target))
 }
 
 /// The width the snapshot line will occupy, derived before the run.

@@ -1,0 +1,12 @@
+Rollback: docs
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  withbackups
+  Source   <SOURCE>
+  Actions  1 planned
+
+backup:docs
+  ✓ rollback <SOURCE> from notes.txt.cfgd-backup — 4 B
+
+✓ Rollback complete — 1 action succeeded (XXs wall)
+
+→ Run `cfgd diff` to see how the machine now differs from your config

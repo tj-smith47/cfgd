@@ -12,6 +12,16 @@
 //!   - `backup/run_unknown.{txt,json}`    — `cfgd backup run bogus` returns a
 //!     typed error listing the valid names in BOTH the human `render_cli_error`
 //!     output and the structured payload's `hint` field.
+//!   - `backup/rollback.{txt,json}`       — `cfgd backup rollback docs` putting
+//!     the copy a restore left back over the source.
+//!   - `backup/rollback_list.{txt,json}`  — the no-name listing of what could be
+//!     rolled back, driven through the pure builder so the Copy column's width
+//!     does not depend on the host's temp root.
+//!   - `backup/rollback_list_empty.txt`   — the same listing on a machine where
+//!     nothing has been displaced.
+//!   - `backup/rollback_no_copy.{txt,json}` — `cfgd backup rollback docs` on a
+//!     unit with no copy beside its source: the typed `no_rollback_copy` error
+//!     and its `cfgd backup restore` hint, in both channels.
 //!   - apply integration (no goldens; behavioural assertions): a schedule-less
 //!     backup runs during `cfgd apply` even when the file/package/module plan
 //!     is empty, a `--dry-run` apply runs no backups, a scheduled backup is
@@ -28,9 +38,10 @@ use std::path::Path;
 
 use cfgd::cli::apply::run_apply;
 use cfgd::cli::backup::{
-    RestoreArgs, build_backup_list_doc, cmd_backup_list, cmd_backup_run, run_backup_restore,
+    RestoreArgs, build_backup_list_doc, build_backup_rollback_list_doc, cmd_backup_list,
+    cmd_backup_rollback, cmd_backup_run, run_backup_restore, run_backup_rollback,
 };
-use cfgd::cli::output_types::BackupListEntry;
+use cfgd::cli::output_types::{BackupListEntry, BackupRollbackEntry};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
 use pretty_assertions::assert_eq;
@@ -492,6 +503,333 @@ fn build_backup_list_doc_json_matches_serde_roundtrip() {
     assert_eq!(
         actual, expected,
         "emit -o json must match serde_json::to_value(Vec<BackupListEntry>)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `backup rollback`
+// ---------------------------------------------------------------------------
+
+/// Take a snapshot, clobber the source, restore — which leaves the clobbered
+/// bytes beside the source as the copy a rollback puts back.
+fn restored_docs(cli: &cfgd::cli::Cli, source: &Path, live: &str) {
+    run_docs(cli);
+    std::fs::write(source, live).unwrap();
+    let (printer, _cap) = Printer::for_test_doc();
+    run_backup_restore(cli, &printer, &restore_args("docs"))
+        .unwrap()
+        .expect("a --yes restore is never declined");
+}
+
+#[test]
+fn backup_rollback_puts_back_what_the_restore_overwrote() {
+    let (config_dir, state_dir, source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    restored_docs(&cli, &source, "the version I actually wanted");
+    assert_eq!(
+        std::fs::read_to_string(&source).unwrap(),
+        "hello backup",
+        "the restore landed first"
+    );
+
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    let outcome = run_backup_rollback(&cli, &printer, "docs", true)
+        .unwrap()
+        .expect("a --yes rollback is never declined");
+    drop(printer);
+
+    assert!(outcome.is_clean(), "outcome: {outcome:?}");
+    assert_eq!(
+        std::fs::read_to_string(&source).unwrap(),
+        "the version I actually wanted",
+        "the rollback puts the pre-restore contents back"
+    );
+
+    let payload = cap.json().expect("rollback doc carries a payload");
+    let rendered = serde_json::to_string_pretty(&payload).unwrap();
+    let normalized = cfgd_core::normalize_for_snapshot(&rendered, &[(&source, "<SOURCE>")]);
+    cfgd_core::test_helpers::assert_snapshot_golden(
+        Path::new(SNAPSHOT_ROOT),
+        "backup/rollback.json",
+        &normalized,
+        env!("CARGO_PKG_VERSION"),
+    );
+}
+
+#[test]
+fn backup_rollback_twice_lands_the_same_bytes() {
+    // The copy is left in place, so a repeated rollback is a no-op rather than
+    // a flip-flop between the two generations.
+    let (config_dir, state_dir, source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    restored_docs(&cli, &source, "live");
+
+    for _ in 0..2 {
+        let (printer, _cap) = Printer::for_test_doc();
+        run_backup_rollback(&cli, &printer, "docs", true)
+            .unwrap()
+            .expect("a --yes rollback is never declined");
+    }
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), "live");
+}
+
+#[test]
+fn backup_rollback_human() {
+    let (config_dir, state_dir, source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    restored_docs(&cli, &source, "live");
+
+    let (printer, cap) = Printer::for_test_doc();
+    run_backup_rollback(&cli, &printer, "docs", true).unwrap();
+    drop(printer);
+
+    let config_file = config_dir.path().join("cfgd.yaml");
+    let normalized = cfgd_core::normalize_for_snapshot(
+        &cfgd_core::output::strip_ansi(&cap.human()),
+        &[
+            (&source, "<SOURCE>"),
+            (&config_file, "<CONFIG_DIR>/cfgd.yaml"),
+            (config_dir.path(), "<CONFIG_DIR>"),
+            (state_dir.path(), "<STATE_DIR>"),
+        ],
+    );
+    let normalized = cfgd_core::normalize_snapshot_durations(&normalized);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "backup/rollback.txt", &normalized,);
+}
+
+#[test]
+fn backup_rollback_list_human() {
+    // The pure builder, like `build_backup_list_doc_json_matches_serde_roundtrip`
+    // and for the same reason: the Copy column pads to its widest cell, so a
+    // tempdir-backed path would make the whole table's layout host-dependent.
+    let entries = vec![BackupRollbackEntry {
+        name: "docs".to_string(),
+        copy: "/var/lib/app/notes.txt.cfgd-backup".to_string(),
+        created: "2026-01-01T00:00:00Z".to_string(),
+        size_bytes: 4096,
+    }];
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_backup_rollback_list_doc(
+        &entries,
+        "2026-01-01T02:00:00Z",
+    ));
+    drop(printer);
+
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "backup/rollback_list.txt",
+        &cfgd_core::output::strip_ansi(&cap.human()),
+    );
+}
+
+#[test]
+fn backup_rollback_list_json_matches_serde_roundtrip() {
+    let entries = vec![BackupRollbackEntry {
+        name: "docs".to_string(),
+        copy: "/var/lib/app/notes.txt.cfgd-backup".to_string(),
+        created: "2026-01-01T00:00:00Z".to_string(),
+        size_bytes: 4096,
+    }];
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_backup_rollback_list_doc(
+        &entries,
+        "2026-01-01T02:00:00Z",
+    ));
+    drop(printer);
+
+    let actual = cap.json().expect("rollback listing carries a payload");
+    assert_eq!(actual, serde_json::to_value(&entries).unwrap());
+    let rendered = serde_json::to_string_pretty(&actual).unwrap();
+    cfgd_core::test_helpers::assert_snapshot_golden(
+        Path::new(SNAPSHOT_ROOT),
+        "backup/rollback_list.json",
+        &rendered,
+        env!("CARGO_PKG_VERSION"),
+    );
+}
+
+#[test]
+fn backup_rollback_lists_only_the_units_that_have_a_copy() {
+    let (config_dir, state_dir, source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    restored_docs(&cli, &source, "live");
+
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_backup_rollback(&cli, &printer, None, false).unwrap();
+    drop(printer);
+
+    let payload = cap.json().expect("the listing carries a payload");
+    let entries = payload.as_array().expect("array payload");
+    // `weekly` declares the same source but nothing has displaced it through
+    // that unit — the listing answers what a rollback COULD put back, so a unit
+    // with a copy beside its source is listed and one without is not. Both
+    // units here point at one file, so the shared copy is reported for both.
+    assert_eq!(entries.len(), 2, "{payload}");
+    assert_eq!(entries[0]["name"], "docs");
+    assert_eq!(entries[0]["sizeBytes"], "live".len());
+    assert!(
+        entries[0]["copy"]
+            .as_str()
+            .expect("copy path")
+            .ends_with(".cfgd-backup"),
+        "{payload}"
+    );
+}
+
+#[test]
+fn backup_rollback_listing_is_empty_when_nothing_was_displaced() {
+    let (config_dir, state_dir, _source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_backup_rollback(&cli, &printer, None, false).unwrap();
+    drop(printer);
+
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "backup/rollback_list_empty.txt",
+        &cfgd_core::output::strip_ansi(&cap.human()),
+    );
+}
+
+#[test]
+fn backup_rollback_without_a_copy_is_a_typed_refusal() {
+    let (config_dir, state_dir, source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+
+    let (printer, _cap) = Printer::for_test_doc();
+    let err = run_backup_rollback(&cli, &printer, "docs", true).unwrap_err();
+    drop(printer);
+
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("a missing copy is the CLI's typed error, not a bare anyhow string");
+    assert_eq!(meta.error_kind, "no_rollback_copy");
+    assert_eq!(meta.name, "docs");
+    assert!(
+        meta.hints
+            .iter()
+            .any(|h| h.contains("cfgd backup restore docs")),
+        "the remedy names the verb that leaves a copy: {meta:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&source).unwrap(),
+        "hello backup",
+        "a refused rollback touches nothing"
+    );
+    assert_eq!(
+        cfgd_core::exit::exit_code_for_error(
+            err.downcast_ref::<cfgd_core::errors::CfgdError>()
+                .expect("the typed error survives the CLI wrapper")
+        ),
+        cfgd_core::exit::ExitCode::NotFound,
+        "the artifact the verb exists to put back is not there — exit 6, like every other \
+         named-but-missing resource"
+    );
+
+    let (render_printer, render_cap) = Printer::for_test_doc();
+    cfgd::cli::error::render_cli_error(&render_printer, &err);
+    drop(render_printer);
+    let human = cfgd_core::output::strip_ansi(&render_cap.human());
+    assert_eq!(human.matches('✗').count(), 1, "one fail line: {human:?}");
+    let normalized = cfgd_core::normalize_for_snapshot(&human, &[(&source, "<SOURCE>")]);
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "backup/rollback_no_copy.txt",
+        &normalized,
+    );
+}
+
+#[test]
+fn backup_rollback_without_a_copy_carries_its_hint_in_json() {
+    let (config_dir, state_dir, source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+
+    let (printer, _cap) = Printer::for_test_doc();
+    let err = run_backup_rollback(&cli, &printer, "docs", true).unwrap_err();
+    drop(printer);
+
+    let (render_printer, render_cap) =
+        Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cfgd::cli::error::render_cli_error(&render_printer, &err);
+    drop(render_printer);
+
+    let payload = render_cap.json().expect("error doc carries a payload");
+    assert_eq!(payload["error"], "no_rollback_copy");
+    assert_eq!(payload["name"], "docs");
+    let rendered = serde_json::to_string_pretty(&payload).unwrap();
+    let normalized = cfgd_core::normalize_for_snapshot(&rendered, &[(&source, "<SOURCE>")]);
+    cfgd_core::test_helpers::assert_snapshot_golden(
+        Path::new(SNAPSHOT_ROOT),
+        "backup/rollback_no_copy.json",
+        &normalized,
+        env!("CARGO_PKG_VERSION"),
+    );
+}
+
+#[test]
+fn backup_rollback_without_yes_refuses_when_no_prompt_is_available() {
+    let (config_dir, state_dir, source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    restored_docs(&cli, &source, "live");
+
+    let (printer, _cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    let err = run_backup_rollback(&cli, &printer, "docs", false).unwrap_err();
+    drop(printer);
+
+    let meta = err
+        .downcast_ref::<cfgd::cli::error::CliErrorMeta>()
+        .expect("the refusal carries structured metadata");
+    assert_eq!(meta.error_kind, "confirmation_required");
+    assert!(
+        meta.hints.iter().any(|h| h.contains("--yes")),
+        "the remedy must ride along: {:?}",
+        meta.hints
+    );
+    assert_eq!(
+        std::fs::read_to_string(&source).unwrap(),
+        "hello backup",
+        "a rollback that was never confirmed must not have touched the source"
+    );
+}
+
+#[test]
+fn backup_rollback_declined_at_the_prompt_changes_nothing() {
+    let (config_dir, state_dir, source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    restored_docs(&cli, &source, "live");
+
+    let (printer, cap) = Printer::for_test_doc_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Confirm(false),
+    ]);
+    let declined = run_backup_rollback(&cli, &printer, "docs", false).unwrap();
+    drop(printer);
+
+    assert!(
+        declined.is_none(),
+        "a declined rollback produces no outcome"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&source).unwrap(),
+        "hello backup",
+        "declining must leave the source exactly as the restore left it"
+    );
+
+    let payload = cap
+        .json()
+        .expect("even a declined rollback emits its payload");
+    let normalized =
+        cfgd_core::normalize_for_snapshot(&payload.to_string(), &[(&source, "<SOURCE>")]);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&normalized).unwrap(),
+        serde_json::json!({
+            "name": "docs",
+            "copy": "<SOURCE>.cfgd-backup",
+            "restoredTo": "<SOURCE>",
+            "restored": false,
+            "declined": true,
+        }),
+        "a decline exits 0, so it must not claim `clean: false` — the key is absent entirely"
     );
 }
 
