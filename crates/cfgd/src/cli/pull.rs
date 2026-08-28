@@ -50,9 +50,9 @@ pub fn render_pull(printer: &Printer, outcome: PullOutcome) {
         }
         PullOutcome::Failed(e) => {
             sp.finish_warn("Pull failed")
-                .detail(cfgd_core::daemon::pull_failure_summary(&e));
+                .detail(cfgd_core::daemon::pull_failure_summary(&e.message));
             printer.hint(local_pull_next_step(&e, "cfgd pull"));
-            ("failed", Some(e))
+            ("failed", Some(e.message))
         }
         // Returned above; the arm exists so a new variant is classified here.
         PullOutcome::NotARepository => ("not_a_repository", None),

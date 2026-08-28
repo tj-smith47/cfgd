@@ -26,9 +26,9 @@ pub(crate) async fn handle_sync(
         let repo = repo_path.to_path_buf();
         // libgit2 credential fallback discovers ~/.ssh keys via home_dir_var, so the
         // test-home override must survive the thread hop
-        let pull_result = crate::spawn_blocking_with_test_home(move || git_pull(&repo)).await;
+        let pull_result = crate::spawn_blocking_with_test_home(move || git_pull_sync(&repo)).await;
         match pull_result {
-            Ok(Ok(Some(movement))) => {
+            Ok(PullOutcome::Moved(movement)) => {
                 // Verify signature on new HEAD after pull if required
                 if require_signed_commits && !allow_unsigned {
                     let src = source_name.to_string();
@@ -75,8 +75,14 @@ pub(crate) async fn handle_sync(
                 pulled_to = Some(movement.to);
                 changes = true;
             }
-            Ok(Ok(None)) => tracing::debug!("sync: already up to date"),
-            Ok(Err(e)) => tracing::warn!(error = %e, "sync: pull failed"),
+            Ok(PullOutcome::UpToDate) => tracing::debug!("sync: already up to date"),
+            // A config directory under no version control has no remote to be
+            // out of date with, so there is nothing to warn about — and this
+            // leg runs on a timer, so a warning here repeats forever.
+            Ok(PullOutcome::NotARepository) => {
+                tracing::debug!(source = %source_name, "sync: source is not a git repository");
+            }
+            Ok(PullOutcome::Failed(e)) => tracing::warn!(error = %e, "sync: pull failed"),
             Err(e) => tracing::error!(error = %e, "sync: pull task panicked"),
         }
     }

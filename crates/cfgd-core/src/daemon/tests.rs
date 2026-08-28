@@ -5532,9 +5532,10 @@ fn git_pull_non_repo_returns_error() {
     let tmp = tempfile::TempDir::new().unwrap();
     let result = git_pull(tmp.path());
     let err = result.unwrap_err();
-    assert!(
-        err.contains("open repo"),
-        "expected 'open repo' error, got: {err}"
+    assert_eq!(
+        err.kind,
+        PullFailureKind::OpenRepo,
+        "expected an open-repo refusal, got: {err}"
     );
 }
 
@@ -5589,9 +5590,10 @@ fn git_pull_falls_back_to_libgit2_and_reports_fetch_error_for_dead_remote() {
     drop(repo);
 
     let err = git_pull(&work_dir).unwrap_err();
-    assert!(
-        err.starts_with("fetch: "),
-        "libgit2 fallback must surface a 'fetch: ...' error for the dead remote, got: {err}"
+    assert_eq!(
+        err.kind,
+        PullFailureKind::Fetch,
+        "libgit2 fallback must surface a fetch refusal for the dead remote, got: {err}"
     );
 }
 
@@ -5961,9 +5963,10 @@ fn git_pull_diverged_returns_error() {
     let result = git_pull(&work_dir);
     assert!(result.is_err(), "diverged branch should return error");
     let err_msg = result.unwrap_err();
-    assert!(
-        err_msg.contains("diverged") || err_msg.contains("fast-forward"),
-        "error should mention divergence: {}",
+    assert_eq!(
+        err_msg.kind,
+        PullFailureKind::Diverged,
+        "error should name divergence: {}",
         err_msg
     );
 }
@@ -6978,6 +6981,28 @@ async fn handle_sync_no_pull_no_push_updates_timestamp() {
     assert!(
         st.last_sync.is_some(),
         "last_sync should be set even with no operations"
+    );
+}
+
+/// The daemon's own sync leg reads the same verdict the two CLI verbs do. It
+/// runs on a timer, so classifying a plain directory as a failure put
+/// `sync: pull failed` on the journal on every tick, forever, for a config
+/// directory the user never put under version control.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sync_tick_over_a_plain_directory_logs_no_pull_failure() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+
+    let logs = capture_run_logs_async(async {
+        for _ in 0..3 {
+            handle_sync(tmp.path(), true, false, "local", &state, false, false).await;
+        }
+    })
+    .await;
+
+    assert!(
+        !logs.contains("pull failed"),
+        "a directory under no version control is not a failed pull, got: {logs}"
     );
 }
 

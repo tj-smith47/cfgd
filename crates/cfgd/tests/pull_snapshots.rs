@@ -100,6 +100,27 @@ fn pull_over_a_non_repo_says_there_is_nothing_to_pull() {
     );
 }
 
+/// The `-o json` half of the verdict above: the payload carries the same
+/// `not_a_repository` status the docs promise, with no error beside it.
+#[test]
+fn pull_not_a_repository_json() {
+    let output = PullOutput {
+        status: "not_a_repository".to_string(),
+        error: None,
+    };
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_pull_doc(&output));
+    drop(printer);
+
+    let expected = serde_json::to_value(&output).unwrap();
+    let actual = cap.json().expect("pull doc carries a payload");
+    assert_eq!(
+        actual, expected,
+        "emit -o json must match serde_json::to_value(PullOutput)"
+    );
+    cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "pull/not_a_repository.json");
+}
+
 /// A real repository whose pull refuses: the cause is stated without
 /// libgit2's `class=…; code=…` tail, and the hint names the fix for THIS
 /// kind of refusal rather than "resolve it by hand".

@@ -18742,21 +18742,25 @@ fn cmd_source_add_duplicate_fails() {
 // New coverage: cmd_pull / cmd_sync output
 // -----------------------------------------------------------------------
 
-/// The local-layer twin of `source_failure_next_step`: every refusal kind gets
-/// its own fix, and each names the verb the reader re-runs — in backticks, the
-/// shape `every_closing_hint_names_a_command` holds for the hints it can read
-/// the text of directly.
+/// The local-layer twin of `source_failure_next_step`: every refusal kind the
+/// producer can raise gets a fix, and each names the verb the reader re-runs —
+/// in backticks, the shape `every_closing_hint_names_a_command` holds for the
+/// hints it can read the text of directly.
+///
+/// Driven off `PullFailureKind::ALL` rather than a hand-written sample, and
+/// the walk below asserts that array covers the enum, so a stage `git_pull`
+/// grows cannot fall through unnoticed.
 #[test]
 fn every_local_pull_refusal_names_the_fix_for_its_own_kind() {
-    let reasons = [
-        "find remote: remote 'origin' does not exist",
-        "cannot fast-forward — remote has diverged",
-        "fetch: failed to resolve address",
-        "merge analysis: something else entirely",
-    ];
+    use cfgd_core::daemon::{PullFailure, PullFailureKind};
+
     let mut seen = std::collections::BTreeSet::new();
-    for reason in reasons {
-        let hint = super::local_pull_next_step(reason, "cfgd sync");
+    for kind in PullFailureKind::ALL {
+        let failure = PullFailure {
+            kind: *kind,
+            message: "whatever libgit2 said; class=Repository; code=-3".to_string(),
+        };
+        let hint = super::local_pull_next_step(&failure, "cfgd sync");
         assert!(
             hint.contains("`cfgd sync`"),
             "the hint names the verb to re-run, in backticks: {hint}"
@@ -18767,11 +18771,52 @@ fn every_local_pull_refusal_names_the_fix_for_its_own_kind() {
         );
         seen.insert(hint);
     }
+    // The four kinds with advice of their own, plus the shared arm.
     assert_eq!(
         seen.len(),
-        reasons.len(),
-        "each refusal kind gets its own fix, not one sentence four times"
+        5,
+        "a refusal with a fix of its own does not share the general sentence"
     );
+}
+
+/// `PullFailureKind::ALL` is what the pin above walks, so a variant missing
+/// from it is a kind nothing checks. The enum's own source is the population.
+#[test]
+fn every_pull_failure_kind_is_listed_in_all() {
+    use cfgd_core::daemon::PullFailureKind;
+
+    let git =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src/daemon/git.rs");
+    let body = std::fs::read_to_string(&git).expect("daemon/git.rs is readable");
+    let start = body
+        .find("pub enum PullFailureKind {")
+        .expect("PullFailureKind is declared in daemon/git.rs");
+    let decl = &body[start..];
+    let decl = &decl[..decl.find("\n}").expect("the enum closes")];
+    let declared: Vec<&str> = decl
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter(|l| l.ends_with(','))
+        .map(|l| l.trim_end_matches(','))
+        .collect();
+    assert!(
+        declared.len() >= 13,
+        "the walk no longer reaches the variants it exists to hold: {declared:?}"
+    );
+    assert_eq!(
+        declared.len(),
+        PullFailureKind::ALL.len(),
+        "every declared kind is listed in PullFailureKind::ALL: {declared:?}"
+    );
+    for name in &declared {
+        assert!(
+            PullFailureKind::ALL
+                .iter()
+                .any(|k| format!("{k:?}") == *name),
+            "{name} is declared but missing from PullFailureKind::ALL"
+        );
+    }
 }
 
 #[test]
@@ -29207,15 +29252,38 @@ fn str_consts(
     consts
 }
 
-/// Whether a hint's argument is a call to another composer — an identifier
-/// immediately followed by `(`, which `format!` and friends are not.
+/// The hint composers this walk stands down for, each of which carries an
+/// `every_*` pin of its own over the sentences it builds.
+///
+/// An allowlist rather than "any call": read as a shape, the exemption also
+/// covered `printer.hint(String::from("…"))` and every future
+/// `printer.hint(some_helper(…))`, so a hint could leave the walk with nothing
+/// asserting anything about its text. A new composer fails the walk until it
+/// is registered here and pinned.
+const PINNED_HINT_COMPOSERS: &[&str] = &[
+    "answer_decisions_hint",
+    "heal_drift_hint",
+    "local_pull_next_step",
+    "perform_preview_hint",
+    "run_next_step",
+    "source_failure_next_step",
+    "success_next_step",
+];
+
+/// Whether a hint's argument is a call to one of those composers — its last
+/// path segment immediately followed by `(`, which `format!` and friends are
+/// not.
 fn is_composed_call(arg: &str) -> bool {
     let arg = arg.trim_start();
     let head: String = arg
         .chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':')
         .collect();
-    !head.is_empty() && arg[head.len()..].starts_with('(')
+    if head.is_empty() || !arg[head.len()..].starts_with('(') {
+        return false;
+    }
+    let name = head.rsplit("::").next().unwrap_or_default();
+    PINNED_HINT_COMPOSERS.contains(&name)
 }
 
 /// A closing hint names the command that comes next. `cfgd decide accept`
