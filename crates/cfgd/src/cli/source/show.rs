@@ -56,6 +56,8 @@ pub fn build_source_show_doc(
         );
 
     if let Some(ref profile) = output.profile {
+        // header-row-ok: the profile this SOURCE subscribes to, a declared
+        // field of the row above it — not the profile a run resolved.
         doc = doc.kv("Profile", profile);
     }
     doc = doc

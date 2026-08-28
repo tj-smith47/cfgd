@@ -465,13 +465,8 @@ impl<'a> ApplyRun<'a> {
     /// `ApplyRun::pending_backup_count` for what the engine can enumerate
     /// ahead of the run.
     pub fn header(&self, printer: &Printer) {
-        let mut rows: Vec<KvPair> = Vec::new();
-        if let Some(path) = self.ctx.config_path {
-            rows.push(KvPair::new("Config", crate::to_posix_string(path)));
-        }
-        if let Some(profile) = self.ctx.profile {
-            rows.push(KvPair::new("Profile", profile.to_string()));
-        }
+        let mut rows: Vec<KvPair> =
+            crate::output::config_profile_rows(self.ctx.config_path, self.ctx.profile);
         // Directly under `Profile`, because the sources are what that profile
         // was composed FROM. A plain value rather than an annotation: the
         // subscribed profile is part of what the row states, not an aside about

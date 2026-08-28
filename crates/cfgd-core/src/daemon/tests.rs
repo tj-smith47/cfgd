@@ -2857,6 +2857,8 @@ fn daemon_status_response_with_modules_round_trips() {
         ],
         reconcile_interval_secs: None,
         sync_interval_secs: None,
+        config_path: None,
+        profile: None,
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -2886,6 +2888,8 @@ fn daemon_status_response_skips_empty_module_reconcile() {
         module_reconcile: vec![],
         reconcile_interval_secs: None,
         sync_interval_secs: None,
+        config_path: None,
+        profile: None,
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -4328,6 +4332,8 @@ fn daemon_status_response_update_available_present() {
         module_reconcile: vec![],
         reconcile_interval_secs: None,
         sync_interval_secs: None,
+        config_path: None,
+        profile: None,
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -4863,6 +4869,8 @@ fn daemon_status_response_camel_case_uptime() {
         module_reconcile: vec![],
         reconcile_interval_secs: None,
         sync_interval_secs: None,
+        config_path: None,
+        profile: None,
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -7066,6 +7074,8 @@ fn daemon_status_response_roundtrip_symmetry() {
         }],
         reconcile_interval_secs: Some(300),
         sync_interval_secs: Some(900),
+        config_path: None,
+        profile: None,
     };
 
     let json = serde_json::to_string(&original).unwrap();
@@ -11092,6 +11102,8 @@ fn daemon_status_response_camel_case_keys() {
         module_reconcile: vec![],
         reconcile_interval_secs: None,
         sync_interval_secs: None,
+        config_path: None,
+        profile: None,
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -17166,6 +17178,8 @@ mod query_daemon_status_paths {
                     module_reconcile: vec![],
                     reconcile_interval_secs: None,
                     sync_interval_secs: None,
+                    config_path: None,
+                    profile: None,
                 })
                 .unwrap();
                 let _ = write!(

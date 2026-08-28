@@ -19239,6 +19239,8 @@ fn sample_daemon_status(
         module_reconcile: vec![],
         reconcile_interval_secs: None,
         sync_interval_secs: None,
+        config_path: None,
+        profile: None,
     }
 }
 
@@ -19321,6 +19323,8 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
         module_reconcile: vec![],
         reconcile_interval_secs: None,
         sync_interval_secs: None,
+        config_path: None,
+        profile: None,
     };
     printer.emit(super::daemon::build_daemon_status_doc(
         Some(&status),
@@ -29540,6 +29544,82 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
     assert!(
         offenders.is_empty(),
         "a verdict leads its detail, never trails a count list:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every surface naming the config and profile a run acted under builds those
+/// rows through the one builder.
+///
+/// `cfgd daemon status` — the dashboard for the one loop that runs unattended,
+/// and so the one whose reader is least likely to know which config it was
+/// started against — printed `PID`, `Uptime`, intervals and a drift count and
+/// named neither. Meanwhile `cfgd status`, `cfgd sync`, `cfgd diff` and every
+/// run header each hand-built the same two rows four different ways, one of
+/// them rendering the path with the host separator.
+///
+/// The population is every production `.rs` in both crates. A line building a
+/// `Config` or `Profile` key/value row belongs to
+/// [`cfgd_core::output::config_profile_rows`]; the builder's own body is the
+/// one exception, and a row naming a DIFFERENT profile — the one a source
+/// subscribes to, a field of the row above it — carries a
+/// `// header-row-ok: <why>` marker.
+#[test]
+fn every_config_and_profile_header_row_comes_from_the_one_builder() {
+    const NEEDLES: &[&str] = &[
+        "kv(\"Config\"",
+        "kv(\"Profile\"",
+        "KvPair::new(\"Config\"",
+        "KvPair::new(\"Profile\"",
+        "(\"Config\".to_string()",
+        "(\"Profile\".to_string()",
+    ];
+    let mut checked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        // The builder IS the exception: its own two pushes are the rows every
+        // other site is required to come here for.
+        if path.ends_with("output/component.rs") {
+            continue;
+        }
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if !NEEDLES.iter().any(|needle| line.contains(needle)) {
+                continue;
+            }
+            checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
+            // The marker may head a multi-line comment block, so the search
+            // walks the contiguous comment lines above the row.
+            let marked = code.contains("// header-row-ok:")
+                || (0..n)
+                    .rev()
+                    .take_while(|&p| lines[p].trim_start().starts_with("//"))
+                    .any(|p| lines[p].trim_start().starts_with("// header-row-ok:"));
+            if marked {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+        }
+    }
+    // The one marked site in the tree, so a gather that stopped reaching the
+    // CLI sources cannot pass by finding nothing at all.
+    assert!(
+        checked.iter().any(|c| c.contains("cli/source/show.rs")),
+        "the walk no longer reaches the one hatched site — it checked {checked:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a `Config` / `Profile` header row comes from \
+         `cfgd_core::output::config_profile_rows`, so no two surfaces can name \
+         the same pair with different keys or a host-native path (a row about \
+         a different profile takes a `// header-row-ok:` marker):\n{}",
         offenders.join("\n")
     );
 }

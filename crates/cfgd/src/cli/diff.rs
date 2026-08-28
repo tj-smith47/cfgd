@@ -1,6 +1,5 @@
 use super::*;
 
-use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, TitleLabel, section_guard::SectionGuard};
 use cfgd_core::reconciler::{MANAGERS_GROUP, ManagerAction, Owner};
 
@@ -94,20 +93,19 @@ pub fn cmd_diff(
         // The scoped run's header, the same two rows `apply --module` opens
         // on: a title that owns no rows would put its blank line straight
         // under the heading, which no other titled run does.
-        printer.kv_block([
-            ("Config".to_string(), cli.config.display_posix()),
-            ("Modules".to_string(), mod_name.to_string()),
-        ]);
+        let mut rows = cfgd_core::output::config_profile_rows(Some(&cli.config), None);
+        rows.push(cfgd_core::output::KvPair::new("Modules", mod_name));
+        printer.kv_rows(rows);
         return cmd_diff_module(&ctx, mod_name, exit_code);
     }
 
     printer.heading("Diff");
 
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
-    printer.kv_block([
-        ("Config".to_string(), cli.config.display_posix()),
-        ("Profile".to_string(), profile_name.to_string()),
-    ]);
+    printer.kv_rows(cfgd_core::output::config_profile_rows(
+        Some(&cli.config),
+        Some(profile_name),
+    ));
     // Drift is reported under the same owner that would be named in the plan
     // that fixes it, so the two surfaces read as one coordinate system.
     let profile_owner = Owner::profile(profile_name.to_string());
