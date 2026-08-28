@@ -30302,6 +30302,12 @@ const ARM_SELECTING_HELPERS: &[&str] = &[
 /// chose. So anything past the last helper call that is not a closer or an
 /// `Ok(())` counts as an arm this body decided by itself, and a new shape
 /// fails the walk rather than slipping through it.
+///
+/// Anchored on the LAST helper call rather than the first: scanning from the
+/// first would count a later helper call's own multi-line argument list as
+/// body statements and false-positive on npm and pipx, whose helper calls
+/// span several lines, so an own arm sandwiched between two helper calls
+/// would go unseen — no manager has that shape today.
 fn bootstrap_own_arm_is_unguarded(body: &[&str]) -> bool {
     let Some(last) = (0..body.len())
         .rev()
