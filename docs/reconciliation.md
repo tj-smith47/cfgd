@@ -99,9 +99,11 @@ Phase: Prerequisites
     ○ provision pipx via apt — waiting on refresh apt index
 ```
 
-A row held back is dimmed and names the row it is waiting on: the action occupying its
-lane or the node ahead of it (`provision npm via brew — waiting on provision brew via
-homebrew installer`). A node held behind more than one edge
+A row held back is dimmed and names the row holding it, with a verb that says how. A row
+behind a node it depends on is `waiting on` that node (`provision npm via brew — waiting on
+provision brew via homebrew installer`); a row that only needs its family's lane is `queued
+behind` the action occupying it (`brew-cask install firefox — queued behind brew install
+neovim`), depending on nothing that action produces. A node held behind more than one edge
 names the last of them to finish, so the line never has to take back what it said. A line
 with no action in front of it (`waiting on modules`) stands for its whole group, held by
 the tier barrier. Waiting is a live state only: it is never logged, never in `-o json`,

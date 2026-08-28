@@ -276,15 +276,34 @@ struct Slot<'p> {
     state: SlotState,
 }
 
-/// The ONE wait-line reason: `waiting on <thing>`.
+/// What holds a waiting row, and so which sentence its reason slot carries.
 ///
-/// One sentence for every cardinality — the tier in flight for a blocked
-/// group, the row occupying the family lane for a blocked package action, the
-/// row ahead of it for a blocked manager node — because they are the same
-/// statement at different levels and reading them side by side is the point.
-/// A row is named by its own display subject ([`node_subject`],
-/// [`lane_occupant`]), so the bright half of the line is a head the reader can
-/// find above it; only a tier has no row and is named by its word.
+/// Two holds, two verbs. A row behind an EDGE — a node it depends on, or the
+/// tier barrier ahead of its group — is waiting for that thing to finish
+/// before it can start at all: `waiting on <row>`. A row behind its family
+/// LANE depends on nothing the occupant produces; it is next in line for the
+/// lane the occupant is in: `queued behind <row>`. One verb for both had
+/// `brew install neovim — waiting on brew-tap install acme/tools` claim a
+/// dependency no edge declared, and a reader looking for why the install
+/// needed the tap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hold<'a> {
+    /// A DAG edge or tier barrier the row has not cleared, named by the row
+    /// or tier word ahead of it.
+    Edge(&'a str),
+    /// The family lane something else occupies, named by that occupant.
+    Lane(&'a str),
+}
+
+/// The ONE wait-line reason, one sentence per [`Hold`] kind.
+///
+/// Within a kind, one sentence for every cardinality — the tier in flight for
+/// a blocked group, the row ahead of it for a blocked manager node — because
+/// they are the same statement at different levels and reading them side by
+/// side is the point. A row is named by its own display subject
+/// ([`node_subject`], [`lane_occupant`]), so the bright half of the line is a
+/// head the reader can find above it; only a tier has no row and is named by
+/// its word.
 ///
 /// It is a REASON, so it fills the row's detail slot, beside the blocked
 /// action's own display subject in the subject slot. Fused into one string it
@@ -298,8 +317,11 @@ struct Slot<'p> {
 /// would print the same token twice one line apart. That row carries the
 /// reason in the subject slot, an empty subject beside a detail rendering as a
 /// leading em-dash.
-fn wait_reason(thing: &str) -> String {
-    format!("waiting on {thing}")
+fn wait_reason(hold: Hold<'_>) -> String {
+    match hold {
+        Hold::Edge(thing) => format!("waiting on {thing}"),
+        Hold::Lane(occupant) => format!("queued behind {occupant}"),
+    }
 }
 
 /// The tier currently in flight, given each tier's count of actions that have
@@ -352,7 +374,7 @@ fn tier_waits<'g>(groups: &[GroupWait<'g>], in_flight: Option<Tier>) -> Vec<(&'g
     groups
         .iter()
         .filter(|g| g.pending && g.tier > in_flight)
-        .map(|g| (g.owner, wait_reason(word)))
+        .map(|g| (g.owner, wait_reason(Hold::Edge(word))))
         .collect()
 }
 
@@ -1320,7 +1342,7 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
         // even have one yet — so naming the lane there would name a blocker
         // that is not in the way, and saying nothing at all would leave the
         // node absent from the live region for the whole of its wait.
-        let on = match blocking_node(slots, index) {
+        let reason = match blocking_node(slots, index) {
             Some(blocker) => {
                 // Only a manager node carries edges, so a blocker always has a
                 // name. If that ever stops holding, say nothing rather than
@@ -1333,7 +1355,7 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
                 let Some(on) = named else {
                     continue;
                 };
-                on
+                wait_reason(Hold::Edge(&on))
             }
             None => {
                 // An owner mid-action in another lane still gets this line:
@@ -1357,14 +1379,14 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
                 // The lane's occupant, not the registered name: an action for
                 // `brew-cask` held back by a running `brew install neovim` is
                 // waiting on that row.
-                lane_occupant(slots, lane)
+                wait_reason(Hold::Lane(&lane_occupant(slots, lane)))
             }
         };
         rows.push(Wait {
             owner: slot.owner,
             action: Some(slot.action),
             subject: action_display_subject(slot.action).to_string(),
-            reason: Some(wait_reason(&on)),
+            reason: Some(reason),
         });
     }
     Held {
@@ -1629,15 +1651,36 @@ mod tests {
         // sentence at two levels; they are built by one function so they
         // cannot drift apart.
         assert_eq!(
-            wait_reason("apt"),
+            wait_reason(Hold::Edge("apt")),
             "waiting on apt",
             "the blocked-action cardinality names what it is held by"
         );
         assert_eq!(
-            wait_reason(Tier::Modules.wait_word().unwrap_or_default()),
+            wait_reason(Hold::Edge(Tier::Modules.wait_word().unwrap_or_default())),
             "waiting on modules",
             "the blocked-group cardinality is headed by the group's own heading"
         );
+    }
+
+    /// A row held by its family LANE is not waiting for the occupant to
+    /// produce anything; it is queued for the lane the occupant is in. Read
+    /// with one verb, `brew install neovim — waiting on brew-tap install
+    /// acme/tools` claimed a dependency no edge declared. Each hold kind is
+    /// bound without a wildcard, so a new one is worded before this compiles.
+    #[test]
+    fn every_hold_kind_carries_its_own_wording() {
+        let kinds = [Hold::Edge("x"), Hold::Lane("x")];
+        let mut verbs = std::collections::BTreeSet::new();
+        for hold in kinds {
+            let expected = match hold {
+                Hold::Edge(_) => "waiting on x",
+                Hold::Lane(_) => "queued behind x",
+            };
+            let worded = wait_reason(hold);
+            assert_eq!(worded, expected);
+            verbs.insert(worded.split(" x").next().unwrap_or_default().to_string());
+        }
+        assert_eq!(verbs.len(), 2, "two hold kinds, two sentences: {verbs:?}");
     }
 
     /// One waiting slot: an owner, a tier, and the manager whose lane it wants.
@@ -1881,7 +1924,7 @@ mod tests {
         assert!(
             rows(&held).contains(&(
                 "module:nvim".to_string(),
-                "brew install neovim — waiting on brew-tap install acme/tools".to_string()
+                "brew install neovim — queued behind brew-tap install acme/tools".to_string()
             )),
             "a source-held install names the tap holding its family's lane: {:?}",
             rows(&held)
@@ -1916,7 +1959,7 @@ mod tests {
         assert!(
             rows(&held).contains(&(
                 "profile:work".to_string(),
-                "brew-tap install acme/tools — waiting on brew install neovim".to_string()
+                "brew-tap install acme/tools — queued behind brew install neovim".to_string()
             )),
             "the tier filter does not hide a barrier-crossing tap: {:?}",
             rows(&held)
@@ -1961,7 +2004,7 @@ mod tests {
             rows(&held),
             vec![(
                 "module:nvim".to_string(),
-                "apt install git — waiting on apt install tmux".to_string()
+                "apt install git — queued behind apt install tmux".to_string()
             )]
         );
     }
@@ -1984,7 +2027,7 @@ mod tests {
 
         assert_eq!(
             lines(&held),
-            vec!["brew-cask install firefox — waiting on brew install neovim"]
+            vec!["brew-cask install firefox — queued behind brew install neovim"]
         );
     }
 
@@ -2018,9 +2061,9 @@ mod tests {
         assert_eq!(
             lines(&held),
             vec![
-                "brew-tap install homebrew/cask-fonts — waiting on brew install neovim",
-                "brew-cask install firefox — waiting on brew install neovim",
-                "apt install git — waiting on apt install tmux",
+                "brew-tap install homebrew/cask-fonts — queued behind brew install neovim",
+                "brew-cask install firefox — queued behind brew install neovim",
+                "apt install git — queued behind apt install tmux",
             ]
         );
     }
@@ -2145,7 +2188,7 @@ mod tests {
         assert_eq!(
             lines(&held),
             vec![
-                "provision pipx via brew — waiting on brew",
+                "provision pipx via brew — queued behind brew",
                 "provision poetry via pipx — waiting on provision pipx via brew",
             ],
             "a node held by an edge is in the live region for the whole of its wait"
@@ -2318,7 +2361,7 @@ mod tests {
 
         assert_eq!(
             lines(&held(&slots, &groups, &deps, &busy(&["apt"]))),
-            vec!["apt install git — waiting on apt install tmux"]
+            vec!["apt install git — queued behind apt install tmux"]
         );
 
         slots[0].state = SlotState::Done;
