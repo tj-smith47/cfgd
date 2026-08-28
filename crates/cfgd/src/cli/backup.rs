@@ -624,8 +624,7 @@ fn list_rollback_copies(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     )?;
     let backups = composition.resolved.merged.backups;
 
-    let config_dir = config_dir(cli);
-    let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
+    let (config_dir, _state, state_dir) = unit_context(&ctx)?;
     let entries: Vec<BackupRollbackEntry> = backups
         .iter()
         .filter_map(|spec| {
@@ -699,12 +698,13 @@ pub fn run_backup_rollback(
         .header(printer);
 
     let copy_display = copy.path.posix().to_string();
-    if !yes && !confirm_rollback(printer, name, &copy_display)? {
+    let target = cfgd_core::backup::restore_target(&unit, None);
+    if !yes && !confirm_rollback(printer, name, &copy_display, &target)? {
         printer.emit(Doc::new().status(Role::Info, "Aborted").with_data(
             &BackupRollbackDeclinedOutput {
                 name: name.to_string(),
                 copy: copy_display,
-                restored_to: cfgd_core::to_posix_string(unit.source()),
+                restored_to: target.resolved_display(),
                 restored: false,
                 declined: true,
             },
@@ -732,10 +732,26 @@ pub fn run_backup_rollback(
 
 /// Ask before overwriting live data, on the terms [`confirm_restore`] asks on:
 /// a session that cannot prompt is an error carrying the `--yes` remedy, never
-/// a silent decline.
-fn confirm_rollback(printer: &Printer, name: &str, copy: &str) -> anyhow::Result<bool> {
+/// a silent decline, and the RESOLVED destination is named because that is what
+/// gets overwritten. A symlinked source is named both ways, for the reason
+/// [`confirm_restore`] states.
+fn confirm_rollback(
+    printer: &Printer,
+    name: &str,
+    copy: &str,
+    target: &cfgd_core::backup::RestoreTarget,
+) -> anyhow::Result<bool> {
+    let into = if target.was_redirected_by_a_link() {
+        format!(
+            "{} (via {})",
+            cfgd_core::fold_home_in_text(&target.resolved_display()),
+            cfgd_core::fold_home_in_text(&target.requested_display())
+        )
+    } else {
+        cfgd_core::fold_home_in_text(&target.resolved_display())
+    };
     let question = format!(
-        "Roll '{name}' back to {}?",
+        "Roll '{name}' back to {into} from {}?",
         cfgd_core::fold_home_in_text(copy)
     );
     printer.prompt_confirm(&question).map_err(|e| {
@@ -884,7 +900,7 @@ pub fn run_backup_run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfgd_core::backup::RestoreOutcome;
+    use cfgd_core::backup::{RestoreOutcome, RollbackOutcome};
 
     fn outcome(error: Option<&str>, restored: bool) -> RestoreOutcome {
         RestoreOutcome {
@@ -963,5 +979,72 @@ mod tests {
         let (_human, tally) = rendered(&outcome(Some("target busy"), false));
         assert_eq!(tally.status, cfgd_core::state::ApplyStatus::Failed);
         assert_eq!((tally.succeeded, tally.failed), (0, 1));
+    }
+
+    fn rollback_outcome(error: Option<&str>, restored: bool) -> RollbackOutcome {
+        RollbackOutcome {
+            name: "docs".to_string(),
+            copy: "/home/u/notes.txt.cfgd-backup".to_string(),
+            restored_to: "/home/u/notes.txt".to_string(),
+            restored,
+            size_bytes: 12,
+            safety_copy: None,
+            error: error.map(str::to_string),
+        }
+    }
+
+    /// The rollback twin of [`rendered`], and for the same reason: the two
+    /// trouble arms cannot be staged from a fixture.
+    fn rendered_rollback(outcome: &RollbackOutcome) -> (String, cfgd_core::reconciler::RunTally) {
+        let (printer, cap) = Printer::for_test_doc();
+        let tally = cfgd_core::backup::report_rollback(&printer, outcome);
+        drop(printer);
+        (cfgd_core::output::strip_ansi(&cap.human()), tally)
+    }
+
+    fn rollback_row(human: &str) -> String {
+        human
+            .lines()
+            .find(|l| l.contains("rollback /home"))
+            .unwrap_or_else(|| panic!("no rollback row in:\n{human}"))
+            .to_string()
+    }
+
+    #[test]
+    fn a_rollback_whose_hooks_failed_leads_with_the_failure_and_keeps_the_size() {
+        let (human, tally) = rendered_rollback(&rollback_outcome(Some("hook exited 1"), true));
+        let row = rollback_row(&human);
+        assert!(
+            row.contains("hook exited 1") && row.contains("(12 B)"),
+            "{row}"
+        );
+        assert_eq!(row.matches(" — ").count(), 1, "{row}");
+        assert_eq!(tally.status, cfgd_core::state::ApplyStatus::Partial);
+        assert_eq!(tally.succeeded, 1);
+    }
+
+    #[test]
+    fn a_rollback_that_did_not_happen_fails_the_run() {
+        let (_human, tally) = rendered_rollback(&rollback_outcome(Some("target busy"), false));
+        assert_eq!(tally.status, cfgd_core::state::ApplyStatus::Failed);
+        assert_eq!((tally.succeeded, tally.failed), (0, 1));
+    }
+
+    /// Where the displaced contents went is the one thing an operator who
+    /// regrets a rollback needs, and the sidecar's own outcome words it.
+    #[test]
+    fn a_rollback_says_where_the_contents_it_displaced_went() {
+        let mut outcome = rollback_outcome(None, true);
+        outcome.safety_copy = Some(cfgd_core::reconciler::SidecarOutcome {
+            path: std::path::PathBuf::from("/home/u/notes.txt.cfgd-backup.20260101T000000Z"),
+            reused: false,
+        });
+        let (human, _tally) = rendered_rollback(&outcome);
+        assert!(
+            human.contains(
+                "Previous contents backed up to /home/u/notes.txt.cfgd-backup.20260101T000000Z"
+            ) && human.contains("cfgd backup rollback docs"),
+            "{human}"
+        );
     }
 }

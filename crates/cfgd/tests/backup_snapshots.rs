@@ -13,7 +13,8 @@
 //!     typed error listing the valid names in BOTH the human `render_cli_error`
 //!     output and the structured payload's `hint` field.
 //!   - `backup/rollback.{txt,json}`       — `cfgd backup rollback docs` putting
-//!     the copy a restore left back over the source.
+//!     the copy a restore left back over the source, and leaving a copy of what
+//!     it displaced.
 //!   - `backup/rollback_list.{txt,json}`  — the no-name listing of what could be
 //!     rolled back, driven through the pure builder so the Copy column's width
 //!     does not depend on the host's temp root.
@@ -547,7 +548,12 @@ fn backup_rollback_puts_back_what_the_restore_overwrote() {
 
     let payload = cap.json().expect("rollback doc carries a payload");
     let rendered = serde_json::to_string_pretty(&payload).unwrap();
-    let normalized = cfgd_core::normalize_for_snapshot(&rendered, &[(&source, "<SOURCE>")]);
+    // The safety copy's own stamp is real clock time, the same
+    // `BACKUP_TIMESTAMP_FORMAT` the snapshot names carry.
+    let normalized = normalize_backup_timestamp(&cfgd_core::normalize_for_snapshot(
+        &rendered,
+        &[(&source, "<SOURCE>")],
+    ));
     cfgd_core::test_helpers::assert_snapshot_golden(
         Path::new(SNAPSHOT_ROOT),
         "backup/rollback.json",
@@ -557,20 +563,29 @@ fn backup_rollback_puts_back_what_the_restore_overwrote() {
 }
 
 #[test]
-fn backup_rollback_twice_lands_the_same_bytes() {
-    // The copy is left in place, so a repeated rollback is a no-op rather than
-    // a flip-flop between the two generations.
+fn backup_rollback_is_its_own_inverse() {
+    // A rollback copies the contents it displaces aside, so the second one puts
+    // THOSE back: the pair returns the source to where it started rather than
+    // the second being a no-op.
     let (config_dir, state_dir, source) = backup_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     restored_docs(&cli, &source, "live");
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), "hello backup");
 
-    for _ in 0..2 {
+    let roll = || {
         let (printer, _cap) = Printer::for_test_doc();
         run_backup_rollback(&cli, &printer, "docs", true)
             .unwrap()
             .expect("a --yes rollback is never declined");
-    }
+    };
+    roll();
     assert_eq!(std::fs::read_to_string(&source).unwrap(), "live");
+    roll();
+    assert_eq!(
+        std::fs::read_to_string(&source).unwrap(),
+        "hello backup",
+        "the second rollback puts back what the first displaced"
+    );
 }
 
 #[test]
@@ -593,7 +608,8 @@ fn backup_rollback_human() {
             (state_dir.path(), "<STATE_DIR>"),
         ],
     );
-    let normalized = cfgd_core::normalize_snapshot_durations(&normalized);
+    let normalized =
+        cfgd_core::normalize_snapshot_durations(&normalize_backup_timestamp(&normalized));
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "backup/rollback.txt", &normalized,);
 }
 
@@ -650,7 +666,21 @@ fn backup_rollback_list_json_matches_serde_roundtrip() {
 
 #[test]
 fn backup_rollback_lists_only_the_units_that_have_a_copy() {
+    // The two shared units declare ONE source, so a third unit pointing
+    // somewhere nothing has displaced is what makes this the mixed case: the
+    // listing answers what a rollback COULD put back, and a unit with no copy
+    // beside its source is absent rather than listed with an empty cell.
     let (config_dir, state_dir, source) = backup_profile_setup();
+    let untouched = config_dir.path().join("data").join("other.txt");
+    std::fs::write(&untouched, "never displaced").unwrap();
+    let profile = config_dir.path().join("profiles").join("withbackups.yaml");
+    let mut yaml = std::fs::read_to_string(&profile).unwrap();
+    yaml.push_str(&format!(
+        "    - name: other\n      source: {}\n      retention: 3\n",
+        untouched.display()
+    ));
+    std::fs::write(&profile, yaml).unwrap();
+
     let cli = cli_for(config_dir.path(), state_dir.path());
     restored_docs(&cli, &source, "live");
 
@@ -660,12 +690,11 @@ fn backup_rollback_lists_only_the_units_that_have_a_copy() {
 
     let payload = cap.json().expect("the listing carries a payload");
     let entries = payload.as_array().expect("array payload");
-    // `weekly` declares the same source but nothing has displaced it through
-    // that unit — the listing answers what a rollback COULD put back, so a unit
-    // with a copy beside its source is listed and one without is not. Both
-    // units here point at one file, so the shared copy is reported for both.
-    assert_eq!(entries.len(), 2, "{payload}");
-    assert_eq!(entries[0]["name"], "docs");
+    let names: Vec<&str> = entries
+        .iter()
+        .map(|e| e["name"].as_str().expect("name"))
+        .collect();
+    assert_eq!(names, ["docs", "weekly"], "{payload}");
     assert_eq!(entries[0]["sizeBytes"], "live".len());
     assert!(
         entries[0]["copy"]

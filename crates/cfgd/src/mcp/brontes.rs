@@ -243,10 +243,10 @@ pub fn config() -> Config {
     cfg = cfg.annotation("backup restore", write(true, false, true));
 
     // `backup rollback` overwrites live data with the sidecar a displacement
-    // left beside the source, and runs the same arbitrary hooks. It IS
-    // idempotent, unlike its two siblings: the copy is left in place and a
-    // second call lands the same bytes. A client must still prompt.
-    cfg = cfg.annotation("backup rollback", write(true, true, true));
+    // left beside the source, is not idempotent (it copies the contents it
+    // displaces aside, so a second call puts THOSE back), and runs the same
+    // arbitrary hooks. Same hint set as its two siblings, for the same reasons.
+    cfg = cfg.annotation("backup rollback", write(true, false, true));
 
     for path in LONG_RUNNING {
         cfg = cfg.task_mode_for(*path, TaskMode::Detached);

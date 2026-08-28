@@ -4,5 +4,7 @@
   "name": "docs",
   "restored": true,
   "restoredTo": "<SOURCE>",
+  "safetyCopy": "<SOURCE>.cfgd-backup.<TIMESTAMP>",
+  "safetyCopyReused": false,
   "sizeBytes": 29
 }

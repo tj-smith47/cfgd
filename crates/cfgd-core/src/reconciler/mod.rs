@@ -78,6 +78,7 @@ pub use run::{
     pseudo_phase, render_apply_result, render_plan_tree, render_run_rollup, report_align_width,
     report_subject_budget, run_next_step, sole_phase,
 };
+pub(crate) use sidecar::is_stamped_sidecar_name;
 pub use sidecar::{CFGD_BACKUP_SUFFIX, SidecarOutcome, backup_file, cfgd_backup_path};
 pub use types::{
     Action, ActionResult, ApplyResult, CFGD_GROUP_ORDER, DeclaredProvision, EnvAction,
