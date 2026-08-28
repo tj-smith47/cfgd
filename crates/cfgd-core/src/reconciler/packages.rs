@@ -114,6 +114,10 @@ pub(super) struct ModuleInstallContext<'x> {
     /// entry naming one of them as a PACKAGE is not installed a second time by
     /// another manager: see `super::Reconciler::provisioned`.
     pub(super) provisioned: &'x [String],
+    /// The `(installer, package)` pairs those provisions installed, so an
+    /// entry the run itself delivered is worded as such on its row: see
+    /// `super::Reconciler::provisioned_packages`.
+    pub(super) provisioned_packages: &'x [(String, String)],
 }
 
 /// One package action's whole execution environment, holding no `&Reconciler`.
@@ -133,6 +137,10 @@ pub(super) struct PackageExec<'x> {
     /// Managers an earlier phase of this run already failed to provision, which
     /// no action of this one may reach: see `super::Reconciler::unprovisioned`.
     unprovisioned: &'x [String],
+    /// The `(installer, package)` pairs this run's provisions installed, for a
+    /// profile install row's `provisioned by this run` count: see
+    /// `super::Reconciler::provisioned_packages`.
+    provisioned_packages: &'x [(String, String)],
     /// Every bootstrap this exec performed, drained by whoever owns the SQLite
     /// connection. A `RefCell` because the trait methods take `&self` and one
     /// exec is only ever used from the thread that built it.
@@ -153,6 +161,7 @@ impl<'x> PackageExec<'x> {
             notes,
             lane: None,
             unprovisioned: &[],
+            provisioned_packages: &[],
             bootstrapped: RefCell::new(Vec::new()),
         }
     }
@@ -170,6 +179,14 @@ impl<'x> PackageExec<'x> {
     #[must_use]
     pub(super) fn withholding_managers(mut self, managers: &'x [String]) -> Self {
         self.unprovisioned = managers;
+        self
+    }
+
+    /// Word a profile install's shortfall against what this run's own
+    /// provisions installed.
+    #[must_use]
+    pub(super) fn delivered_by(mut self, packages: &'x [(String, String)]) -> Self {
+        self.provisioned_packages = packages;
         self
     }
 
@@ -495,6 +512,17 @@ impl<'x> PackageExec<'x> {
                 if changed {
                     self.install_recording_created(pm, &pending, &cx)?;
                 }
+                let delivered = packages
+                    .iter()
+                    .filter(|p| !pending.contains(p))
+                    .filter(|p| {
+                        super::Reconciler::delivered_by_this_run(
+                            self.provisioned_packages,
+                            manager,
+                            p,
+                        )
+                    })
+                    .count();
                 // The description names the whole DECLARED set either way: the
                 // entries this run did not have to install are on the machine
                 // and are still this action's managed resources.
@@ -504,7 +532,7 @@ impl<'x> PackageExec<'x> {
                     format!("package:{}:install:{}", manager, identities.join(",")),
                     changed,
                 )
-                .installed(pending.len()))
+                .installed(pending.len(), delivered))
             }
             PackageAction::Uninstall {
                 manager, packages, ..
@@ -712,7 +740,7 @@ impl<'x> PackageExec<'x> {
         }
         let run = ActionRun::new(action.node_id(), changed).delivering(delivered);
         Ok(match provisioned_now {
-            Some(landed) => run.installed(landed),
+            Some(landed) => run.installed(landed, 0),
             None => run,
         })
     }
@@ -759,6 +787,9 @@ impl<'x> PackageExec<'x> {
         // script path narrows nothing, and neither does an action whose
         // manager is not registered here.
         let mut installed: Option<usize> = None;
+        // Of the entries NOT installed here, how many this run's own
+        // provisions delivered; the row's `provisioned by this run` count.
+        let mut delivered = 0;
 
         if let Some(first) = pkgs.first() {
             if first.manager == "script" {
@@ -893,6 +924,17 @@ impl<'x> PackageExec<'x> {
                             .collect(),
                     };
                     installed = Some(pending.len());
+                    delivered = pkgs
+                        .iter()
+                        .filter(|pkg| !pending.contains(&pkg.resolved_name))
+                        .filter(|pkg| {
+                            super::Reconciler::delivered_by_this_run(
+                                mcx.provisioned_packages,
+                                &pkg.manager,
+                                &pkg.resolved_name,
+                            )
+                        })
+                        .count();
                     if !pending.is_empty() {
                         self.install_recording_created(pm.as_ref(), &pending, &cx)?;
                         manager_changed = true;
@@ -910,7 +952,7 @@ impl<'x> PackageExec<'x> {
             script_changed || manager_changed,
         );
         Ok(match installed {
-            Some(landed) => run.installed(landed),
+            Some(landed) => run.installed(landed, delivered),
             None => run,
         })
     }
@@ -956,8 +998,10 @@ impl super::Reconciler<'_> {
         notes: &NoteSink,
     ) -> Result<ActionRun> {
         let unprovisioned = self.unprovisioned.borrow();
+        let provisioned_packages = self.provisioned_packages.borrow();
         let exec = PackageExec::new(self.registry, self.state, printer, notes)
-            .withholding_managers(&unprovisioned);
+            .withholding_managers(&unprovisioned)
+            .delivered_by(&provisioned_packages);
         let result = exec.apply_package_action(action);
         self.persist_bootstraps(exec.take_bootstrapped());
         result

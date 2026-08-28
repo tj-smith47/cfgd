@@ -7466,7 +7466,7 @@ fn format_module_action_item_deploy_truncates_many_files() {
         "the count is the row's detail, never the subject's trailer: {item}"
     );
     assert_eq!(
-        super::action_produced_detail(&Action::Module(action), None, &[]),
+        super::action_produced_detail(&Action::Module(action), None, 0, &[]),
         None,
         "the subject's `+3 more` gives the total; a detail would state it twice"
     );
@@ -10772,8 +10772,9 @@ fn an_install_that_landed_fewer_than_it_named_says_so_on_its_row() {
         .find(|l| l.contains("sys install"))
         .unwrap_or_default();
     assert!(
-        row.contains("✓ sys install npm, jq") && row.contains("— 1 already installed"),
-        "the row names the planned set and states what it landed: {rendered}"
+        row.contains("✓ sys install npm, jq") && row.contains("— 1 provisioned by this run"),
+        "the row names the planned set and attributes the entry this run's own \
+         provision delivered to the run, never to the machine: {rendered}"
     );
 
     let packages = result
@@ -10931,12 +10932,12 @@ fn every_manager_node_states_what_it_produced() {
         depends_on: Vec::new(),
     });
     assert_eq!(
-        super::action_produced_detail(&brew, Some(1), &landed(&[("brew", "4.6.3")])).as_deref(),
+        super::action_produced_detail(&brew, Some(1), 0, &landed(&[("brew", "4.6.3")])).as_deref(),
         Some("4.6.3"),
         "a node naming one manager states the version it delivered, bare"
     );
     assert_eq!(
-        super::action_produced_detail(&brew, Some(1), &[]),
+        super::action_produced_detail(&brew, Some(1), 0, &[]),
         None,
         "a manager that answers no version leaves the slot as it was"
     );
@@ -10960,17 +10961,17 @@ fn every_manager_node_states_what_it_produced() {
     };
     let batch = Action::Manager(batch);
     assert_eq!(
-        super::action_produced_detail(&batch, Some(1), &[]).as_deref(),
+        super::action_produced_detail(&batch, Some(1), 0, &[]).as_deref(),
         Some("1 of 2 managers"),
         "a node that landed fewer managers than it named says how many"
     );
     assert_eq!(
-        super::action_produced_detail(&batch, Some(2), &[]),
+        super::action_produced_detail(&batch, Some(2), 0, &[]),
         None,
         "a node that landed every manager it named would only restate its subject"
     );
     assert_eq!(
-        super::action_produced_detail(&batch, None, &[]),
+        super::action_produced_detail(&batch, None, 0, &[]),
         None,
         "a preview has not run, so it has no count of its own to state"
     );
@@ -10978,6 +10979,7 @@ fn every_manager_node_states_what_it_produced() {
         super::action_produced_detail(
             &batch,
             Some(2),
+            0,
             &landed(&[("cargo", "1.89.0"), ("npm", "11.4.2")])
         )
         .as_deref(),
@@ -10985,12 +10987,12 @@ fn every_manager_node_states_what_it_produced() {
         "a batch names each version beside its manager"
     );
     assert_eq!(
-        super::action_produced_detail(&batch, Some(1), &landed(&[("npm", "11.4.2")])).as_deref(),
+        super::action_produced_detail(&batch, Some(1), 0, &landed(&[("npm", "11.4.2")])).as_deref(),
         Some("1 of 2 managers (npm 11.4.2)"),
         "a shortfall keeps its count and parenthesises what did land"
     );
     assert_eq!(
-        super::action_produced_detail(&Action::Manager(solo), Some(0), &[]).as_deref(),
+        super::action_produced_detail(&Action::Manager(solo), Some(0), 0, &[]).as_deref(),
         Some("0 of 1 manager"),
         "a node whose one manager was already there states the count that says so"
     );
@@ -11016,7 +11018,7 @@ fn every_manager_node_states_what_it_produced() {
     ] {
         let node = Action::Manager(action);
         assert_eq!(
-            super::action_produced_detail(&node, Some(1), &landed(&[("curl", "8.5.0")])),
+            super::action_produced_detail(&node, Some(1), 0, &landed(&[("curl", "8.5.0")])),
             None,
             "a hatched node states nothing beyond its subject: {node:?}"
         );
@@ -11105,7 +11107,7 @@ fn no_produced_detail_restates_a_total_the_subject_already_gives() {
         }
         elided += 1;
         for landed in [total, total - 2] {
-            let detail = super::action_produced_detail(action, Some(landed), &[]);
+            let detail = super::action_produced_detail(action, Some(landed), 0, &[]);
             assert!(
                 detail.as_deref().is_none_or(|d| !total_word.is_match(d)),
                 "the subject's `+N more` already gives {total}; the detail says it again \
@@ -11217,13 +11219,16 @@ fn an_install_that_landed_everything_it_named_states_no_count() {
         },
         origin: None,
     });
-    assert_eq!(super::action_produced_detail(&action, Some(2), &[]), None);
     assert_eq!(
-        super::action_produced_detail(&action, Some(1), &[]).as_deref(),
+        super::action_produced_detail(&action, Some(2), 0, &[]),
+        None
+    );
+    assert_eq!(
+        super::action_produced_detail(&action, Some(1), 0, &[]).as_deref(),
         Some("1 already installed")
     );
     // A preview has not run, so it has no count of its own to state.
-    assert_eq!(super::action_produced_detail(&action, None, &[]), None);
+    assert_eq!(super::action_produced_detail(&action, None, 0, &[]), None);
 }
 
 /// A tool the module declares as a PACKAGE is provisioned by the module's own
@@ -15062,7 +15067,7 @@ fn format_module_action_item_deploy_many_files_truncates() {
     );
     let details: Vec<Option<String>> = phase
         .actions()
-        .map(|a| super::action_produced_detail(a, None, &[]))
+        .map(|a| super::action_produced_detail(a, None, 0, &[]))
         .collect();
     assert_eq!(
         details,
@@ -25731,7 +25736,7 @@ fn a_deployed_file_matching_its_source_is_elided_and_the_subset_names_itself() {
     );
     let details: Vec<String> = files_phase
         .actions()
-        .filter_map(|a| super::action_produced_detail(a, None, &[]))
+        .filter_map(|a| super::action_produced_detail(a, None, 0, &[]))
         .collect();
     assert_eq!(
         details,
@@ -27700,4 +27705,59 @@ fn a_one_file_edit_inside_a_module_tree_is_counted_as_one() {
         },
         "a file that appeared and one whose bytes moved are each counted once"
     );
+}
+
+/// A shortfall names WHY the work was already done when this run is the
+/// reason: `already installed` is reserved for state the run did not create,
+/// and an entry the run's own provision delivered reads `provisioned by this
+/// run`. Both clauses may stand on one row. The predicate folds the installer
+/// to its family, the unit every exclusion check agrees on.
+#[test]
+fn a_shortfall_this_runs_provisions_delivered_is_worded_as_delivered() {
+    let brew = Action::Package(PackageAction::Install {
+        manager: "brew".to_string(),
+        packages: ["neovim", "node", "pipx"]
+            .iter()
+            .map(|p| p.to_string())
+            .collect(),
+        origin: "local".to_string(),
+    });
+    assert_eq!(
+        super::action_produced_detail(&brew, Some(1), 2, &[]).as_deref(),
+        Some("2 provisioned by this run")
+    );
+    assert_eq!(
+        super::action_produced_detail(&brew, Some(1), 1, &[]).as_deref(),
+        Some("1 already installed, 1 provisioned by this run")
+    );
+    assert_eq!(
+        super::action_produced_detail(&brew, Some(1), 0, &[]).as_deref(),
+        Some("2 already installed")
+    );
+    assert_eq!(
+        super::action_produced_detail(&brew, Some(3), 3, &[]),
+        None,
+        "a run that landed everything it named states no shortfall"
+    );
+    // The report prices the WIDEST settlement, so the column never learns of
+    // a shortfall after it is claimed.
+    assert_eq!(
+        super::widest_produced_detail(&brew).as_deref(),
+        Some("1 already installed, 2 provisioned by this run")
+    );
+
+    let delivered = vec![("brew".to_string(), "node".to_string())];
+    assert!(Reconciler::delivered_by_this_run(
+        &delivered, "brew", "node"
+    ));
+    assert!(
+        Reconciler::delivered_by_this_run(&delivered, "brew-cask", "node"),
+        "the installer is judged by family"
+    );
+    assert!(!Reconciler::delivered_by_this_run(
+        &delivered, "apt", "node"
+    ));
+    assert!(!Reconciler::delivered_by_this_run(
+        &delivered, "brew", "neovim"
+    ));
 }

@@ -1058,6 +1058,22 @@ impl<'a> super::Reconciler<'a> {
             .is_none_or(|p| !mgr.version_meets_minimum(&p.version, min))
     }
 
+    /// Whether `package`, installed through `manager`, is one THIS run's own
+    /// provisions put on the machine: the pair is in
+    /// [`Self::provisioned_packages`], judged by the installer's FAMILY (the
+    /// unit a lane and every exclusion check agree on) and the package name.
+    /// The one predicate both install executors word their shortfall by, so
+    /// `already installed` is reserved for state the run did not create.
+    pub(super) fn delivered_by_this_run(
+        provisioned_packages: &[(String, String)],
+        manager: &str,
+        package: &str,
+    ) -> bool {
+        provisioned_packages.iter().any(|(installer, name)| {
+            crate::manager_family(installer) == crate::manager_family(manager) && name == package
+        })
+    }
+
     /// Price the packages this run's plan will actually surface, and no others.
     ///
     /// The survivor-gated form of [`crate::modules::fill_available_versions`],

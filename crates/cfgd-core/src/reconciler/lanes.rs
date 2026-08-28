@@ -114,6 +114,9 @@ pub(super) struct LaneRun<'x> {
     /// with the snapshot above and for the same reason: see
     /// `Reconciler::provisioned`.
     pub(super) provisioned: &'x [String],
+    /// The `(installer, package)` pairs those provisions installed, the same
+    /// snapshot: see `Reconciler::provisioned_packages`.
+    pub(super) provisioned_packages: &'x [(String, String)],
 }
 
 /// Where a finished action goes: through the caller's settle, which journals
@@ -1457,7 +1460,8 @@ fn run_one_action(
     // every bootstrap the action performed just before failing.
     let exec = PackageExec::new(registry, &proxy, run.printer, &notes)
         .in_lane(lane)
-        .withholding_managers(run.unprovisioned);
+        .withholding_managers(run.unprovisioned)
+        .delivered_by(run.provisioned_packages);
     let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match action {
         Action::Package(pkg) => exec.apply_package_action(pkg),
         Action::Manager(node) => exec.apply_manager_action(node),
@@ -1520,6 +1524,7 @@ mod tests {
             .into_iter()
             .map(|(owner, subject)| (owner.token(), subject))
             .collect()
+                provisioned_packages: run.provisioned_packages,
     }
 
     fn group<'p>(owner: &'p Owner, tier: Tier, pending: bool) -> GroupWait<'p> {
