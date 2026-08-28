@@ -81,4 +81,17 @@ if [ "$frames" -lt 100 ]; then
     exit 1
 fi
 
-echo "Recorded $RAW (${frames} frames, $(du -sh "$RAW" | cut -f1))"
+# The rate the take achieved, not the rate the tape asked for. The encoders
+# demux at this rate so the GIF plays back at the speed the session really ran,
+# which is why a shortfall is reported rather than refused: a take recorded
+# while a package install saturates the host will always miss its declared rate,
+# and its timing is still exact. The floor is about legibility instead — below
+# it the frames are too sparse for a scrolling install log to read as motion.
+rate=$(bash "$(dirname "$0")/capture-rate.sh" "$RAW")
+declared=$(sed -n 's/^Set Framerate \([0-9]*\)$/\1/p' "$TAPE" | head -1)
+if awk -v r="$rate" 'BEGIN { exit !(r < 20) }'; then
+    echo "$RAW captured ${rate} fps — too sparse to read as motion. Re-record on an idle host." >&2
+    exit 1
+fi
+
+echo "Recorded $RAW (${frames} frames, ${rate} fps captured of ${declared:-?} declared, $(du -sh "$RAW" | cut -f1))"

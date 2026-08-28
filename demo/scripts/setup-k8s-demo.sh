@@ -88,7 +88,7 @@ create_cluster() {
     log "Creating kind cluster '$CLUSTER_NAME'"
     mkdir -p "$WORK_DIR"
     # Always start from nothing. A cluster left over from an earlier run carries
-    # that run's Module CRDs and pods, and the tape's `kubectl apply` beats then
+    # that run's Modules and pods, and the tape's `kubectl apply` beats then
     # print `unchanged` instead of `created`.
     kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
     kind create cluster --name "$CLUSTER_NAME" --kubeconfig "$KUBECONFIG" --wait 120s
@@ -303,7 +303,7 @@ prepare_namespace() {
     kubectl config set-context --current --namespace="$DEMO_NAMESPACE"
 }
 
-# The second fixture, for connect.tape: a module whose CRD carries
+# The second fixture, for connect.tape: a module whose Module resource carries
 # `mountPolicy: Debug`, and a pod that asks for it. Debug is what makes that
 # tape's claim real — the CSI volume is staged on the pod and mounted into no
 # declared container, so the module is genuinely absent from the app until an
@@ -401,7 +401,7 @@ EOF
 
     # `ociArtifact` names the registry the way the CLUSTER reaches it. The host
     # pushes to the same registry through its published port
-    # (localhost:5001), so the two spellings address one registry. The CRD
+    # (localhost:5001), so the two spellings address one registry. The Module
     # carries the public half of the demo key: that is the key the operator
     # runs cosign against, and what flips `kubectl cfgd status` from
     # `unsigned` to `verified`.

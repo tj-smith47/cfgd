@@ -120,5 +120,5 @@ Wait@60s /cfgd\$$/
 Sleep 4s
 
 # Closing hold — the last beat's own hold already covers reading it; this is
-# only the breath before the loop snaps back, the same 2s in every tape.
+# only the breath before the loop snaps back.
 Sleep 2s

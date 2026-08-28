@@ -4,8 +4,9 @@
 #
 # The typing and the editor beats have to play at real speed or the demo stops
 # reading as a real session; only the install wait between them is compressed.
-# HEAD and TAIL exceed the 1:1 spans the tape records (~11s and ~14s) so the
-# ramp can never reach into them — see the trailing note in demo/init.tape.
+# HEAD and TAIL each exceed the 1:1 span the tape records at that end, so the
+# ramp can never reach into them — the per-knob comments below state how each
+# span is sized, and the trailing note in demo/init.tape states the rule.
 set -euo pipefail
 
 # ffmpeg is the only external binary this script runs; without this check a
@@ -29,16 +30,20 @@ OUT=demo/cfgd-demo.gif
 # never truncate the typing the demo opens on.
 HEAD=22
 # The tail starts at the moment the install finishes, so the whole payoff plays
-# at 1:1: the 5s summary read, `source ~/.cfgd.env`, nvim's start, the 5s toast
+# at 1:1: the 5s summary read, `source ~/.cfgd.env`, nvim's start, the 12s toast
 # settle, the 4s hero hold, `:qa`, the screen restore, and the version line with
-# its 8s hold — ~34s of scripted beats plus nvim's own variable start. 37 keeps
-# margin over that. Too small and the summary or the hero hold falls into the
-# compressed middle, which is exactly the ramp-too-late this value fixes.
-TAIL=37
-# The install is the substance of the demo, not dead air to skip past: at 12s a
-# ~7m take ran ~32x and the package and bootstrap lines were unreadable smears.
-# 26s halves that to ~15x, which is fast enough to stay a montage and slow
-# enough to read what is being installed.
+# its 8s hold — 34.5s to 37.0s measured across takes, the spread being nvim's
+# own variable start. 41 covers the LONGEST payoff seen with margin; the
+# margin is paid on a short take as a few seconds of 1:1 spinner before the
+# apply settles, which is the right side to err on — at 45 the boundary
+# landed ~7s early and the GIF sat on a frozen install log. Too small and the
+# summary or the hero hold falls into the compressed middle.
+TAIL=41
+# The install is the substance of the demo, not dead air to skip past: at 12s
+# the middle ran fast enough that the package and bootstrap lines were
+# unreadable smears. 26s halves that rate, which is fast enough to stay a
+# montage and slow enough to read what is being installed. The ramp factor the
+# take actually got is printed by this script when it finishes.
 MIDDLE=26
 # Output seconds each speed transition takes. A hard cut from 1:1 straight to
 # ~15x reads as a glitch, not a montage; easing through sqrt(speed) for a few
@@ -67,11 +72,14 @@ if [ "$frames" -eq 0 ]; then
 fi
 
 # fps 50 divides 100 exactly, so every GIF frame delay is a whole 2-centisecond
-# delay and playback does not drift against the recorded timing. It is also the
-# rate the frames were captured at (`Set Framerate 50`), so the take's own
-# length is its frame count over that rate.
+# delay and playback does not drift against the recorded timing. That is the
+# OUTPUT rate only. The frames are demuxed at the rate the take really achieved,
+# measured off the frames' own mtimes: a take recorded while a package install
+# saturates the host misses the rate its tape declared, and demuxing at the
+# declared rate would replay the session faster than it ran.
 FPS=50
-dur=$(awk -v n="$frames" -v f="$FPS" 'BEGIN { printf "%.3f", n / f }')
+SRC_FPS=$(bash "$(dirname "$0")/capture-rate.sh" "$FRAMES")
+dur=$(awk -v n="$frames" -v f="$SRC_FPS" 'BEGIN { printf "%.3f", n / f }')
 mid_end=$(awk -v d="$dur" -v t="$TAIL" 'BEGIN { printf "%.3f", d - t }')
 # The fast span's speed, solved so the whole compressed region (ease in + fast
 # span + ease out) still plays in exactly MIDDLE output seconds with each ease
@@ -125,14 +133,14 @@ BG="#$(ffmpeg -v error -i "${FRAMES}/frame-text-00001.png" -vf crop=1:1:0:0 -f r
 # (measured against `full` in make-gif-flat.sh: diff lands text colours
 # closer), and diff_mode=rectangle lets each frame store only its changed
 # bounding box — on a terminal recording, where most of the screen is
-# unchanged between frames, that is what keeps a 1320x1000 canvas to a
+# unchanged between frames, that is what keeps the canvas to a
 # README-sized file. dither=none: the background is one flat colour, and
 # dithering it is noise over the whole canvas.
 #
 # Two ffmpeg passes, not one split+palettegen+paletteuse graph: paletteuse's
 # second input can't start consuming until palettegen has seen every frame, so
 # a single-graph split has to buffer the entire ramped clip (85s at 50fps and
-# 1320x1000 is thousands of full-resolution frames) while it waits — the
+# a full-screen canvas is thousands of full-resolution frames) while it waits — the
 # palette pass OOM-killed at ~8GB RSS with the framerate this ramp now records
 # at. Writing the palette to a file first lets pass two read it as a single
 # static frame, so the video side streams through without ever queuing more
@@ -149,7 +157,7 @@ RAMP="[0][1]overlay[merged];\
 [a][b][c][d][e]concat=n=5:v=1:a=0[v];\
 [v]fps=${FPS}[vf]"
 
-INPUTS=(-framerate "$FPS" -i "$TEXT" -framerate "$FPS" -i "$CURSOR")
+INPUTS=(-framerate "$SRC_FPS" -i "$TEXT" -framerate "$SRC_FPS" -i "$CURSOR")
 
 PALETTE=demo/.out/palette.png
 trap 'rm -f "$PALETTE"' EXIT
@@ -160,4 +168,4 @@ ${RAMP};[vf]palettegen=max_colors=256:stats_mode=diff" "$PALETTE"
 ffmpeg -y -loglevel error "${INPUTS[@]}" -i "$PALETTE" -filter_complex "\
 ${RAMP};[vf][2:v]paletteuse=dither=none:diff_mode=rectangle" "$OUT"
 
-echo "Wrote $OUT ($(du -h "$OUT" | cut -f1), ${frames} frames = ${dur}s take ramped ${speed}x in the middle, ${ease_speed}x eases)"
+echo "Wrote $OUT ($(du -h "$OUT" | cut -f1), ${frames} frames at ${SRC_FPS}fps = ${dur}s take ramped ${speed}x in the middle, ${ease_speed}x eases)"

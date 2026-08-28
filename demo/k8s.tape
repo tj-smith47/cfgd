@@ -3,9 +3,10 @@
 # every link in it has to be watchable or the chain is not what was shown.
 Output "demo/.out/k8s/"
 
-# This is the only tape that records on the HOST rather than inside the demo
-# container: the beats are kubectl against a live cluster, and the kind
-# kubeconfig, the kubectl binary and the freshly built cfgd all live here.
+# One of the two tapes that record on the HOST rather than inside the demo
+# container (`connect.tape` is the other, against the same cluster): the beats
+# are kubectl against a live cluster, and the kind kubeconfig, the kubectl
+# binary and the freshly built cfgd all live here.
 # `demo/scripts/setup-k8s-demo.sh up` has already created the cluster,
 # installed the chart and written the fixture (including the cosign key pair
 # the signing beats use) before vhs starts.
@@ -31,9 +32,10 @@ Set Framerate 50
 # COSIGN_PASSWORD matches the passwordless demo key, so the signing pushes
 # never stop at a prompt the recording cannot answer. CFGD_THEME is pinned
 # because this tape records on the HOST, where cfgd reads the recording
-# operator's own ~/.config/cfgd — dracula is the preset every
-# container-recorded tape's hidden `cfgd init --theme dracula` selects, so the
-# whole set renders in one theme whatever the operator's config names.
+# operator's own ~/.config/cfgd — dracula is the preset the rest of the set
+# lands on (`cfgd init --theme dracula`, hidden in four tapes and on camera in
+# init.tape; the sync fixture writes `spec.theme` straight into its cfgd.yaml),
+# so the whole set renders in one theme whatever the operator's config names.
 Hide
 Type "export KUBECONFIG=$HOME/.cache/cfgd-debug/demo-k8s/kubeconfig PATH=$HOME/.cache/cfgd-debug/demo-k8s/bin:$PATH COSIGN_PASSWORD= CFGD_THEME=dracula"
 Enter
@@ -57,7 +59,7 @@ Sleep 1s
 
 # Beat 1: what is about to be shipped. Both files of the module fit on screen
 # at head's default 10 lines, and the `==>` headers name each one — so the
-# artifact the next beat pushes, the CRD after it and the file that finally
+# artifact the next beat pushes, the Module after it and the file that finally
 # runs inside the pod are all visibly the same two files. The cluster object
 # is `module-cr.yaml`, a different basename on purpose: both files are
 # `kind: Module`, and one name for two schemas reads as one file.
@@ -69,7 +71,7 @@ Sleep 5s
 # Beat 2: the module leaves the workstation, signed. `./tools` is an ordinary
 # module directory (module.yaml + bin/hello.sh); push turns it into an OCI
 # artifact in the cluster's registry, signs it with the demo's cosign key, and
-# prints the digest it landed under. The Module CRD applied next carries the
+# prints the digest it landed under. The Module applied next carries the
 # PUBLIC half of the same key, which is what the closing `kubectl cfgd status`
 # beat's `verified` verdict reads.
 Type "cfgd module push ./tools --artifact localhost:5001/demo/tools:v1 --sign --key ./cosign.key"
@@ -77,7 +79,7 @@ Enter
 Wait@60s /demo\$$/
 Sleep 4s
 
-# Beat 3: the module becomes a cluster object. The Module CRD is cluster-scoped
+# Beat 3: the module becomes a cluster object. The Module resource is cluster-scoped
 # and carries the artifact reference under the name the CLUSTER reaches the
 # registry by, which is why the pushed reference and the one printed here name
 # the same registry through two different addresses.
@@ -144,11 +146,11 @@ Enter
 Wait@60s /demo\$$/
 Sleep 4s
 
-# Beat 8: the cluster learns about v2. The CRD's Artifact column flipping to
+# Beat 8: the cluster learns about v2. The Module's Artifact column flipping to
 # :v2 is the desired state moving; the pod annotation moves with it so the
 # next admission asks for the new version. The `get` waits for the operator
 # to have looked at the new spec first: status lags spec by one reconcile,
-# and a `VERIFIED` read before that is v1's verdict beside v2's reference.
+# and a `SIGNATURE` read before that is v1's verdict beside v2's reference.
 Type "sed -i 's/:v1/:v2/' module-cr.yaml pod.yaml && kubectl apply -f module-cr.yaml"
 Enter
 Wait@60s /demo\$$/
@@ -172,8 +174,8 @@ Sleep 6s
 # Beat 10: convergence. Module content is injected at admission, so the pod
 # rolls once (one line: replace, wait) and comes back on v2. `replace --force`
 # is the delete-then-recreate in one command, and it is what keeps this line
-# inside the terminal's 125 columns — a separate delete + apply wrapped the
-# tail onto a second row. The roll is quick only because the fixture pod
+# inside the terminal's width — a separate delete + apply wrapped the tail
+# onto a second row. The roll is quick only because the fixture pod
 # carries `terminationGracePeriodSeconds: 1` (see setup-k8s-demo.sh): busybox's
 # `sleep` as PID 1 ignores SIGTERM, so the default grace would hold the delete
 # for 30s of dead air.
@@ -189,7 +191,7 @@ Sleep 6s
 # Beat 11: the plugin closes the loop. `kubectl cfgd` is cfgd's own kubectl
 # plugin (the same binary, reached through a `kubectl-cfgd` name on PATH), and
 # its `status` is the module inventory the cluster now holds: the v2 artifact,
-# and `verified` — both pushes really were signed, and the CRD carries the key
+# and `verified` — both pushes really were signed, and the Module carries the key
 # to prove it. No `clear` before it: the drift line and the converged line
 # stay on screen six lines apart, which is the before/after of the whole act.
 Type "kubectl cfgd status"
@@ -198,5 +200,5 @@ Wait@60s /demo\$$/
 Sleep 4s
 
 # Closing hold — the last beat's own hold already covers reading it; this is
-# only the breath before the loop snaps back, the same 2s in every tape.
+# only the breath before the loop snaps back.
 Sleep 2s
