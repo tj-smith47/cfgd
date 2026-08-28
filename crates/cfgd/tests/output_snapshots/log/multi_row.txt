@@ -1,6 +1,6 @@
 Apply History
-ID  Age       Scope  Status   Summary       
-────────────────────────────────────────────
-3   just now  gamma  Failed   -             
-2   just now  beta   Partial  2 ok, 1 failed
-1   just now  alpha  Success  1 file applied
+ID  Age  Scope  Status   Summary       
+───────────────────────────────────────
+3   0s   gamma  Failed   -             
+2   0s   beta   Partial  2 ok, 1 failed
+1   0s   alpha  Success  1 file applied

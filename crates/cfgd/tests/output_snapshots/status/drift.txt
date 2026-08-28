@@ -3,7 +3,7 @@ Status
   Profile  default
 
 Last Apply
-  Age      35m ago
+  Age      35m
   Profile  default
   Result   Success
 

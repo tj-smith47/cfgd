@@ -1,5 +1,5 @@
 Compliance Summary
-  Age      2h ago
+  Age      2h
   Machine  test-host
   Profile  default
   Status   Compliant

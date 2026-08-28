@@ -121,15 +121,24 @@ pub fn humanize_age_since(ts: &str, now: &str) -> Option<String> {
     }
     Some(if secs < 5 {
         "just now".to_string()
-    } else if secs < 60 {
-        format!("{secs}s ago")
-    } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
-    } else if secs < 86400 {
-        format!("{}h ago", secs / 3600)
     } else {
-        format!("{}d ago", secs / 86400)
+        format!("{} ago", span_magnitude(secs))
     })
+}
+
+/// The ONE bucketing of a span into `Ns` / `Nm` / `Nh` / `Nd`, read by the
+/// backward twin, the forward twin and the magnitude cell, so one instant
+/// cannot be `59s ago` in one column and `1m` in another.
+fn span_magnitude(secs: i64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86400)
+    }
 }
 
 /// The forward counterpart of [`humanize_age_since`]: how long until `ts`,
@@ -149,14 +158,8 @@ pub fn humanize_until(ts: &str, now: &str) -> Option<String> {
     }
     Some(if secs < 5 {
         "due now".to_string()
-    } else if secs < 60 {
-        format!("in {secs}s")
-    } else if secs < 3600 {
-        format!("in {}m", secs / 60)
-    } else if secs < 86400 {
-        format!("in {}h", secs / 3600)
     } else {
-        format!("in {}d", secs / 86400)
+        format!("in {}", span_magnitude(secs))
     })
 }
 
@@ -171,6 +174,25 @@ pub fn humanize_until(ts: &str, now: &str) -> Option<String> {
 pub fn humanize_age_cell(ts: Option<&str>, now: &str) -> String {
     match ts {
         Some(ts) => humanize_age_since(ts, now).unwrap_or_else(|| ts.to_string()),
+        None => "never".to_string(),
+    }
+}
+
+/// The MAGNITUDE half of [`humanize_age_cell`], for a slot whose KEY or HEADER
+/// is already the dimension (`Age`): `3m`, not `3m ago`. `Age  3m ago` spent
+/// the value restating the pastness its key asserts, and lost the property
+/// that makes `kubectl get`'s `AGE` scannable — every cell a bare magnitude of
+/// one shape. A key naming the EVENT (`Last Applied`, `Created`, `Last Sync`)
+/// keeps [`humanize_age_cell`]: there the value says how far back the moment
+/// is. Absence still reads `never`; an unsubtractable stamp still falls back
+/// to itself; the sub-five-second bucket reads `0s`–`4s` rather than `just
+/// now`, a magnitude having no sentence to be.
+pub fn humanize_age_magnitude_cell(ts: Option<&str>, now: &str) -> String {
+    match ts {
+        Some(ts) => age_since_secs(ts, now)
+            .filter(|secs| *secs >= 0)
+            .map(span_magnitude)
+            .unwrap_or_else(|| ts.to_string()),
         None => "never".to_string(),
     }
 }
@@ -246,6 +268,42 @@ pub fn is_stale_since(ts: &str, now: &str, threshold_secs: i64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The magnitude cell and the relation cell read one bucketing: every
+    /// magnitude is the relation minus its ` ago`, absence and an
+    /// unsubtractable stamp read the same on both, and the magnitude never
+    /// carries a relation word.
+    #[test]
+    fn the_magnitude_cell_is_the_relation_cell_minus_its_relation_word() {
+        let now = "2026-05-14T12:00:00Z";
+        for ts in [
+            "2026-05-14T11:59:58Z",
+            "2026-05-14T11:59:20Z",
+            "2026-05-14T11:57:00Z",
+            "2026-05-14T09:00:00Z",
+            "2026-05-11T12:00:00Z",
+        ] {
+            let relation = super::humanize_age_cell(Some(ts), now);
+            let magnitude = super::humanize_age_magnitude_cell(Some(ts), now);
+            assert!(!magnitude.ends_with(" ago"), "{magnitude}");
+            if let Some(span) = relation.strip_suffix(" ago") {
+                assert_eq!(magnitude, span);
+            } else {
+                assert_eq!(relation, "just now");
+                assert_eq!(magnitude, "2s");
+            }
+        }
+        assert_eq!(super::humanize_age_magnitude_cell(None, now), "never");
+        assert_eq!(
+            super::humanize_age_magnitude_cell(Some("not a stamp"), now),
+            "not a stamp"
+        );
+        assert_eq!(
+            super::humanize_age_magnitude_cell(Some("2026-05-14T13:00:00Z"), now),
+            "2026-05-14T13:00:00Z",
+            "an instant after `now` is unsubtractable and falls back to itself"
+        );
+    }
+
     use super::*;
 
     #[test]

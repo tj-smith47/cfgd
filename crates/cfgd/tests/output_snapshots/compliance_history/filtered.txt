@@ -1,4 +1,4 @@
 Compliance History
-ID  Age       Compliant  Warning  Violation
-───────────────────────────────────────────
-3   just now  12         1        0        
+ID  Age  Compliant  Warning  Violation
+──────────────────────────────────────
+3   0s   12         1        0        

@@ -651,7 +651,7 @@ pub fn build_fleet_status_doc(
                 // is answering how stale the machine's last apply is.
                 let mut s = s.kv(
                     "Age",
-                    cfgd_core::humanize_age_cell(Some(&last.timestamp), now),
+                    cfgd_core::humanize_age_magnitude_cell(Some(&last.timestamp), now),
                 );
                 if let Some((key, value)) = recorded_scope_row(&last.profile) {
                     s = s.kv(key, value);

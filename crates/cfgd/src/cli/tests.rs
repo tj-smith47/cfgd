@@ -16584,6 +16584,7 @@ fn names_a_moment(label: &str) -> bool {
 /// of `cfgd-core`'s one age renderer, plus the domain names layered over them.
 const RELATIVE_TIME_HELPERS: &[&str] = &[
     "humanize_age_cell",
+    "humanize_age_magnitude_cell",
     "humanize_until_cell",
     "humanize_age_since",
     "humanize_until",
@@ -29669,6 +29670,75 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
          `cfgd_core::output::config_profile_rows`, so no two surfaces can name \
          the same pair with different keys or a host-native path (a row about \
          a different profile takes a `// header-row-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A slot keyed on the DIMENSION states the magnitude; a slot keyed on the
+/// EVENT states the relation. `Age  3m ago` spent its value restating the
+/// pastness its key already asserts, beside `Last Applied  3m ago`, which is
+/// right — the key names the moment and the value says how far back it is.
+/// So every function rendering an `Age` key or header reads
+/// `cfgd_core::humanize_age_magnitude_cell`, never `humanize_age_cell`, and
+/// the magnitude twin is read NOWHERE else: a `Created` column rendering `2h`
+/// would be the same doubling inverted. The CRD `Age` printcolumns are
+/// `type: date`, which `kubectl` itself renders as a bare magnitude.
+#[test]
+fn no_age_slot_restates_the_dimension_its_key_names() {
+    let mut age_slots = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        // Every function of the file, as (first line, last line).
+        let mut functions = Vec::new();
+        let mut n = 0;
+        while n < lines.len() {
+            let code = lines[n].trim_start();
+            if !(code.starts_with("fn ") || code.contains(" fn ")) || code.starts_with("//") {
+                n += 1;
+                continue;
+            }
+            let indent = lines[n].len() - code.len();
+            let closer = format!("{}}}", " ".repeat(indent));
+            let end = (n + 1..lines.len())
+                .find(|&i| lines[i] == closer)
+                .unwrap_or(lines.len() - 1);
+            functions.push((n, end));
+            n = end + 1;
+        }
+        for (start, end) in functions {
+            let body = lines[start..=end].join("\n");
+            let keyed_on_age = body.contains("\"Age\"");
+            let relation = body.contains("humanize_age_cell(");
+            let magnitude = body.contains("humanize_age_magnitude_cell(");
+            if keyed_on_age {
+                age_slots += 1;
+                if relation || !magnitude {
+                    offenders.push(format!(
+                        "{}:{}: an `Age` slot renders the magnitude (`humanize_age_magnitude_cell`), \
+                         never `humanize_age_cell`'s `ago`",
+                        path.display(),
+                        start + 1
+                    ));
+                }
+            } else if magnitude {
+                offenders.push(format!(
+                    "{}:{}: a slot keyed on an EVENT renders the relation (`humanize_age_cell`), \
+                     never a bare magnitude",
+                    path.display(),
+                    start + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        age_slots >= 4,
+        "the walk no longer reaches the `Age` slots (`status`, `log`, `compliance list`, \
+         `compliance snapshot`) — it found {age_slots}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "an `Age` key already says the dimension, so its value is the magnitude:\n{}",
         offenders.join("\n")
     );
 }
