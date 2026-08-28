@@ -99,8 +99,8 @@ impl PackageManager for PipxManager {
         pipx_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
-        match detect_brew_system_method(PIPX_FALLBACK_METHOD) {
+    fn bootstrap_plan_given(&self, delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
+        match detect_brew_system_method(PIPX_FALLBACK_METHOD, delivered) {
             // Only the pip fallback installs into the user's own tree; brew and
             // the system managers land pipx on the system PATH.
             // The tool the pip arm would run: whichever is present, else the
@@ -126,7 +126,7 @@ impl PackageManager for PipxManager {
         // which has no decision to read and resolves the cascade as before.
         let method = cx
             .planned_method()
-            .unwrap_or_else(|| detect_brew_system_method(PIPX_FALLBACK_METHOD));
+            .unwrap_or_else(|| detect_brew_system_method(PIPX_FALLBACK_METHOD, &|_| false));
         match method {
             "pip" => pipx_pip_scripts_dir()
                 .into_iter()
@@ -330,6 +330,7 @@ pub(super) fn parse_pipx_list_versions(
 mod tests {
     use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::super::shared::brew_available;
     use super::*;

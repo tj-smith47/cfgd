@@ -1,6 +1,7 @@
 use super::*;
 use crate::cli::output_types::DoctorConfigState;
 use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder};
+use cfgd_core::providers::PackageManagerExt;
 
 pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     // A failed verdict must fail the process so `cfgd doctor && cfgd apply`

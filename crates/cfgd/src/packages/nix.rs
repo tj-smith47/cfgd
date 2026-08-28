@@ -52,7 +52,7 @@ impl PackageManager for NixManager {
         nix_env_available() || nix_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // The multi-user (`--daemon`) install puts the nix binaries in the
         // default profile; a per-user profile only appears once something is
         // installed into it.

@@ -81,7 +81,10 @@ impl PackageManager for MockPackageManager {
         self.registers_sources
     }
 
-    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<cfgd_core::providers::BootstrapPlan> {
         self.bootstrappable
             .then(|| cfgd_core::providers::BootstrapPlan::new("stub"))
     }
@@ -142,7 +145,10 @@ impl PackageManager for GoLikeMockManager {
     fn is_available(&self) -> bool {
         self.available
     }
-    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<cfgd_core::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
@@ -1786,7 +1792,7 @@ fn detect_system_method_names_only_a_manager_this_host_can_run() {
             tool,
         )
     };
-    match shared::detect_system_method() {
+    match shared::detect_system_method(&|_| false) {
         Some("apt") => assert!(runnable("apt-get")),
         Some("dnf") => assert!(runnable("dnf")),
         Some("zypper") => assert!(runnable("zypper")),
@@ -1801,7 +1807,7 @@ fn detect_system_method_names_only_a_manager_this_host_can_run() {
 #[test]
 fn detect_brew_system_method_returns_valid_manager() {
     // detect_brew_system_method cascades brew → apt → dnf → fallback
-    let method = shared::detect_brew_system_method("pip");
+    let method = shared::detect_brew_system_method("pip", &|_| false);
     assert!(
         method == "brew" || method == "apt" || method == "dnf" || method == "pip",
         "expected brew, apt, dnf, or pip, got: {}",
@@ -3140,6 +3146,35 @@ fn all_package_managers_bootstrap_consistency() {
     }
 }
 
+/// Every manager whose bootstrap has a brew arm plans `via brew` when the run
+/// being planned delivers brew, whatever this host has. The brew arm is
+/// declared by `mediated_packages("brew")`, so a manager that grows one is
+/// walked here without being named.
+#[test]
+fn every_manager_with_a_brew_arm_plans_via_the_brew_this_run_delivers() {
+    let brew_delivered = |m: &str| m == "brew";
+    let mut walked = Vec::new();
+    for m in all_package_managers() {
+        if m.mediated_packages("brew").is_none() || m.name() == "brew" {
+            continue;
+        }
+        let plan = m
+            .bootstrap_plan_given(&brew_delivered)
+            .unwrap_or_else(|| panic!("{} plans nothing with brew delivered", m.name()));
+        assert_eq!(
+            plan.method,
+            "brew",
+            "{} probed the host instead of the plan it joins",
+            m.name()
+        );
+        walked.push(m.name().to_string());
+    }
+    assert!(
+        walked.iter().any(|n| n == "npm"),
+        "the walk must cover npm, the manager the hero take routed through apt: {walked:?}"
+    );
+}
+
 #[test]
 fn every_bootstrap_plan_declares_usable_tools_and_dirs() {
     // One gate over the whole registry, so a manager added later cannot declare
@@ -3914,7 +3949,10 @@ impl PackageManager for CiVersionedMockManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<cfgd_core::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
@@ -4053,7 +4091,10 @@ impl PackageManager for PkgLikeMockManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<cfgd_core::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {

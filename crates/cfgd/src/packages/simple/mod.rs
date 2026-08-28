@@ -122,7 +122,7 @@ impl PackageManager for SimpleManager {
         }
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // A native system manager ships with its distribution: there is no host
         // where cfgd could install `apt` or `pacman` from something else.
         None

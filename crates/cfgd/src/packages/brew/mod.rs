@@ -147,7 +147,7 @@ impl PackageManager for BrewTapManager {
         brew_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // A sub-manager has no bootstrap of its own: `brew` provisions the one
         // binary all three share.
         None
@@ -227,7 +227,7 @@ impl PackageManager for BrewCaskManager {
         brew_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // A sub-manager has no bootstrap of its own: `brew` provisions the one
         // binary all three share.
         None
@@ -305,7 +305,7 @@ impl PackageManager for BrewManager {
         brew_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // `curl` is named, not gated on: the installer needs it, but brew has
         // always offered to provision itself regardless, and narrowing that here
         // would drop the manager instead of reporting the missing tool.
