@@ -40,6 +40,9 @@ fn every_variable_the_detection_reads_is_one_a_test_can_clear() {
     const READS: [&str; 2] = ["std::env::var(\"", "std::env::var_os(\""];
     // A turbofish names a TYPE, not a module that could read the environment.
     const REACHABLE_PATHS: [&str; 3] = ["std::env::var(", "std::env::var_os(", "parse::<"];
+    // A prelude constructor names no body to follow, so it is not a call that
+    // could carry a read out of this scan's reach.
+    const PRELUDE_CALLS: [&str; 4] = ["Some", "Ok", "Err", "None"];
 
     // A trailing comment is prose, not a path or a read; split on the SPACE
     // before it so a `://` inside a literal survives.
@@ -78,6 +81,7 @@ fn every_variable_the_detection_reads_is_one_a_test_can_clear() {
 
     let mut scopes = Vec::new();
     let mut seen: Vec<String> = Vec::new();
+    let mut unfollowable = Vec::new();
     let mut queue = vec![PREDICATE.to_string()];
     while let Some(name) = queue.pop() {
         if seen.contains(&name) {
@@ -85,6 +89,9 @@ fn every_variable_the_detection_reads_is_one_a_test_can_clear() {
         }
         seen.push(name.clone());
         let Some((start, end)) = fn_body(&body, &name) else {
+            if !PRELUDE_CALLS.contains(&name.as_str()) {
+                unfollowable.push(name);
+            }
             continue;
         };
         queue.extend(calls_in(&body[start..end]));
@@ -95,10 +102,19 @@ fn every_variable_the_detection_reads_is_one_a_test_can_clear() {
         "the predicate is no longer at {}",
         src.display()
     );
+    assert!(
+        unfollowable.is_empty(),
+        "every function the predicate calls must have its body at {}, so an environment \
+         read cannot hide in a helper this scan cannot follow; a helper imported from \
+         elsewhere belongs beside the predicate, and a prelude constructor in \
+         PRELUDE_CALLS:\n{}",
+        src.display(),
+        unfollowable.join("\n")
+    );
 
     let mut unclearable = Vec::new();
     for (start, end) in &scopes {
-        let first = body[..*start].lines().count();
+        let first = body[..*start].matches('\n').count();
         for (n, line) in body[*start..*end].lines().enumerate() {
             let line = code(line);
             for call in READS {
