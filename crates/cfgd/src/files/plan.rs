@@ -401,10 +401,10 @@ impl super::CfgdFileManager {
     /// backing implementation of
     /// [`FileManager::link_deployed_content_hashes`](cfgd_core::providers::FileManager::link_deployed_content_hashes).
     ///
-    /// Only single-file sources are reported. A directory-shaped entry (a
-    /// module's whole `lua/` tree) has no one content hash to record, and the
-    /// consumer asks a per-file question, so it is left out rather than answered
-    /// with a digest of a tree.
+    /// A directory-shaped entry (a whole `lua/` tree deployed by one link)
+    /// records the digest of every file under it, through the same
+    /// [`cfgd_core::reconciler::link_deployed_digest`] a module's aggregate
+    /// reads, so an edit anywhere under the link moves the row.
     pub(super) fn link_deployed_content(
         &self,
         profile: &MergedProfile,
@@ -416,9 +416,6 @@ impl super::CfgdFileManager {
                 continue;
             }
             let source_path = self.resolve_source_path(&managed.source)?;
-            if !source_path.is_file() {
-                continue;
-            }
             let strategy = self.effective_strategy(&source_path, managed.strategy);
             if !matches!(strategy, FileStrategy::Symlink | FileStrategy::Hardlink) {
                 continue;
@@ -430,11 +427,9 @@ impl super::CfgdFileManager {
             // A source that exists but cannot be read leaves the question
             // unanswered, which is not the same as an answer of "unchanged":
             // report nothing for it and let the recorded hash stand.
-            match fs::read(&source_path) {
-                Ok(bytes) => deployed.push((target_path, cfgd_core::sha256_hex(&bytes))),
-                Err(e) => {
-                    tracing::debug!("cannot hash {}: {}", source_path.posix(), e);
-                }
+            match cfgd_core::reconciler::link_deployed_digest(&source_path) {
+                Some((digest, _)) => deployed.push((target_path, digest)),
+                None => tracing::debug!("cannot hash {}", source_path.posix()),
             }
         }
 

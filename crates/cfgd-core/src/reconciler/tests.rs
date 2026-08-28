@@ -27379,3 +27379,72 @@ fn a_failing_write_over_an_adopted_target_still_names_the_copy_it_took() {
         "got: {row}"
     );
 }
+
+/// A module deploying a whole directory by symlink — the nvim shape — records
+/// one aggregate row over every file the link exposes. An edit two levels
+/// down is the deployed content moving, so the refresh must see it; skipping
+/// every non-file source left the aggregate pinned to the entries that
+/// happened to be file-shaped and the sync tick blind to the pull it carried.
+#[test]
+#[cfg(unix)]
+fn a_module_deploying_a_directory_by_symlink_reports_the_file_that_moved_inside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("lua");
+    std::fs::create_dir_all(source.join("config")).unwrap();
+    std::fs::write(source.join("config/options.lua"), "opt.number = true\n").unwrap();
+    std::fs::write(source.join("init.lua"), "require('config')\n").unwrap();
+    let target = dir.path().join("home/.config/nvim/lua");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&source, &target).unwrap();
+
+    let mut module = make_resolved_module("nvim");
+    module.packages.clear();
+    module.files = vec![ResolvedFile {
+        source: source.clone(),
+        target: target.clone(),
+        is_git_source: false,
+        strategy: Some(FileStrategy::Symlink),
+        encryption: None,
+        permissions: None,
+        patch: None,
+    }];
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let (rtype, rid) = super::format::parse_resource_from_description(
+        &super::format::module_files_description("nvim", 1),
+    );
+    state
+        .upsert_managed_resource(&rtype, &rid, "local", None, None)
+        .unwrap();
+
+    let modules = vec![module];
+    assert_eq!(
+        reconciler
+            .refresh_link_deployed_hashes(None, &make_empty_resolved(), &modules)
+            .unwrap(),
+        1,
+        "a directory the module deploys by symlink contributes its files to the aggregate"
+    );
+    assert_eq!(
+        reconciler
+            .refresh_link_deployed_hashes(None, &make_empty_resolved(), &modules)
+            .unwrap(),
+        0,
+        "nothing moved, so the aggregate stands"
+    );
+
+    std::fs::write(
+        source.join("config/options.lua"),
+        "opt.number = true\nopt.relativenumber = true\n",
+    )
+    .unwrap();
+    assert_eq!(
+        reconciler
+            .refresh_link_deployed_hashes(None, &make_empty_resolved(), &modules)
+            .unwrap(),
+        1,
+        "an edit two levels under the directory entry moves the module's aggregate"
+    );
+}

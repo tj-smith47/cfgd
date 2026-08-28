@@ -4551,3 +4551,56 @@ fn a_repeated_render_reuses_the_registration_it_already_made() {
     );
     assert_eq!(fm.tera.lock().unwrap().registrations(), 2);
 }
+
+/// The profile half of the recorded-hash refresh, over a directory entry:
+/// `spec.files.managed` deploys whole trees by symlink too, and a row whose
+/// hash could never move is the same fiction a module's aggregate was.
+#[test]
+#[cfg(unix)]
+fn link_deployed_content_covers_every_file_under_a_directory_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let files_dir = dir.path().join("files/lua/config");
+    fs::create_dir_all(&files_dir).unwrap();
+    fs::write(files_dir.join("options.lua"), "opt.number = true\n").unwrap();
+
+    let target = dir.path().join("output/lua");
+    let resolved = make_resolved_profile(
+        vec![],
+        FilesSpec {
+            managed: vec![ManagedFileSpec {
+                patch: None,
+                source: "files/lua".to_string(),
+                target: target.clone(),
+                strategy: Some(FileStrategy::Symlink),
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        },
+    );
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+    let actions = fm.plan(&resolved.merged).unwrap();
+    fm.apply(&actions, &test_printer()).unwrap();
+    assert!(target.is_symlink(), "the tree is deployed as one link");
+
+    let before = fm.link_deployed_content(&resolved.merged).unwrap();
+    assert_eq!(
+        before.len(),
+        1,
+        "the directory entry has one row: {before:?}"
+    );
+    assert_eq!(before[0].0, target);
+
+    fs::write(
+        files_dir.join("options.lua"),
+        "opt.number = true\nopt.relativenumber = true\n",
+    )
+    .unwrap();
+    let after = fm.link_deployed_content(&resolved.merged).unwrap();
+    assert_ne!(
+        before[0].1, after[0].1,
+        "an edit two levels under the entry moves its recorded digest"
+    );
+}
