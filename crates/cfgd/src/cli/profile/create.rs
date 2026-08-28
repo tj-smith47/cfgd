@@ -294,6 +294,7 @@ pub fn cmd_profile_create(
         out = out.kv("Inherits", doc.spec.inherits.join(", "));
     }
     if !doc.spec.modules.is_empty() {
+        // modules-row-ok: the list this verb just WROTE into the document, echoed back, not a resolution of it
         out = out.kv("Modules", doc.spec.modules.join(", "));
     }
     out = out

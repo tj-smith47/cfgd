@@ -54,6 +54,7 @@ const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
 fn sample_status_basic() -> DaemonStatusResponse {
     DaemonStatusResponse {
+        modules: vec!["base".to_string(), "dev-tools".to_string()],
         running: true,
         pid: 4242,
         uptime_secs: 3600,
@@ -96,6 +97,7 @@ fn sample_status_with_update() -> DaemonStatusResponse {
 
 fn sample_status_no_timestamps() -> DaemonStatusResponse {
     DaemonStatusResponse {
+        modules: vec![],
         running: true,
         pid: 1,
         uptime_secs: 1,

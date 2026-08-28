@@ -5,11 +5,15 @@ use cfgd_core::output::{Doc, OwnerLabel, Role};
 pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
     printer.heading("Sync");
 
-    let (cfg, profile_name, _resolved) = load_config_and_profile(cli, printer)?;
-    printer.kv_rows(cfgd_core::output::config_profile_rows(
-        Some(&cli.config),
-        Some(&profile_name),
+    let (cfg, profile_name, resolved) = load_config_and_profile(cli, printer)?;
+    let mut rows = cfgd_core::output::config_profile_rows(Some(&cli.config), Some(&profile_name));
+    // The profile's own module list, through the builder every run header
+    // reads: what a sync pulls is what those modules will be applied from.
+    rows.extend(cfgd_core::output::modules_header_row(
+        &resolved.merged.modules,
+        &[],
     ));
+    printer.kv_rows(rows);
 
     let config_dir = config_dir(cli);
 

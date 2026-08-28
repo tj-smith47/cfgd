@@ -1,6 +1,7 @@
 Status
   Config   /etc/cfgd/cfgd.yaml
   Profile  default
+  Modules  base, dev-tools
 
 Last Apply
   Age      5m

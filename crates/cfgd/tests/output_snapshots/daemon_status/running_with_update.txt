@@ -4,6 +4,7 @@ Daemon Status
 
 Config              /home/u/.config/cfgd/cfgd.yaml
 Profile             work
+Modules             base, dev-tools
 PID                 4242
 Uptime              1h
 Reconcile Interval  300s

@@ -275,6 +275,42 @@ pub fn config_profile_rows(
     rows
 }
 
+/// The `Modules` header row — the ONE builder of the row naming what a
+/// resolved profile puts on this machine.
+///
+/// Sits directly under `Profile` on every surface that reports on a resolved
+/// profile: the run header, `cfgd status`, `cfgd diff`, `cfgd sync` and
+/// `cfgd daemon status`. Only the run header printed it, so the README demo
+/// opened on a `cfgd status` naming a profile and nothing it resolved to, two
+/// commands above an apply header that named `nvim`.
+///
+/// A module `skips` names contributed no work, so it leaves the value and
+/// returns as the annotation — the render of `PhaseName::Modules`, which
+/// prints no block of its own. The names and the annotation travel in separate
+/// slots because the renderer owns the muted coat and the parentheses, and
+/// folds the names, which are module-supplied. `None` when a profile resolves
+/// to nothing at all, which renders no row.
+///
+/// A surface with no plan to read skips off passes `&[]`; a row naming a COUNT
+/// of modules or a cache directory is a different fact and carries a
+/// `// modules-row-ok: <why>` marker instead.
+pub fn modules_header_row(names: &[String], skips: &[(&str, &str)]) -> Option<KvPair> {
+    let listed: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !skips.iter().any(|(skipped, _)| skipped == name))
+        .collect();
+    let annotation = skips
+        .iter()
+        .map(|(name, reason)| format!("{name} skipped: {reason}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if listed.is_empty() && annotation.is_empty() {
+        return None;
+    }
+    Some(KvPair::annotated("Modules", listed.join(", "), annotation))
+}
+
 /// A `command_list` row: a shell command (or a `name <type>` pair) and its
 /// description.
 ///

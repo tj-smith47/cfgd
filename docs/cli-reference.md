@@ -767,6 +767,7 @@ same coordinate the plan and apply trees would use to fix it:
 Diff
   Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  work
+  Modules  nvim
 
 Files
   profile:work

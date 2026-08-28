@@ -245,6 +245,7 @@ override the path for advanced setups (test harnesses, multi-instance
 isolation). Query with `cfgd daemon status` to get:
 
 - Whether the daemon is running
+- The config file and profile the loop was started against, and the modules that profile resolves to (`modules` in `-o json`), the same header rows `cfgd status`, `cfgd diff`, `cfgd sync` and every run header open with
 - How long ago the last reconcile ran (`2m ago`; the stored ISO 8601 instant stays in `-o json`)
 - The reconcile and sync intervals the loop is currently on (`reconcileIntervalSecs` / `syncIntervalSecs` in `-o json`), so a SIGHUP reload can be confirmed without reading the log
 - Drift count

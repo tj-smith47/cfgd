@@ -94,7 +94,10 @@ pub fn cmd_diff(
         // on: a title that owns no rows would put its blank line straight
         // under the heading, which no other titled run does.
         let mut rows = cfgd_core::output::config_profile_rows(Some(&cli.config), None);
-        rows.push(cfgd_core::output::KvPair::new("Modules", mod_name));
+        rows.extend(cfgd_core::output::modules_header_row(
+            &[mod_name.to_string()],
+            &[],
+        ));
         printer.kv_rows(rows);
         return cmd_diff_module(&ctx, mod_name, exit_code);
     }
@@ -102,10 +105,14 @@ pub fn cmd_diff(
     printer.heading("Diff");
 
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
-    printer.kv_rows(cfgd_core::output::config_profile_rows(
-        Some(&cli.config),
-        Some(profile_name),
+    let mut rows = cfgd_core::output::config_profile_rows(Some(&cli.config), Some(profile_name));
+    // What that profile resolves to, on the same terms the run header this
+    // report's fix will print names them.
+    rows.extend(cfgd_core::output::modules_header_row(
+        &local_resolved.merged.modules,
+        &[],
     ));
+    printer.kv_rows(rows);
     // Drift is reported under the same owner that would be named in the plan
     // that fixes it, so the two surfaces read as one coordinate system.
     let profile_owner = Owner::profile(profile_name.to_string());

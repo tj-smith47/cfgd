@@ -619,12 +619,15 @@ pub fn build_fleet_status_doc(
     now: &str,
     decision_contents: &super::DecisionContents,
 ) -> Doc {
-    let mut doc = Doc::new()
-        .heading("Status")
-        .kv_rows(cfgd_core::output::config_profile_rows(
-            Some(config_path),
-            derivable_profile(profile_name),
-        ));
+    let mut header =
+        cfgd_core::output::config_profile_rows(Some(config_path), derivable_profile(profile_name));
+    // The names the payload's `modules` array already carries, in the order the
+    // resolved profile lists them, through the builder every run header reads:
+    // a dashboard that named the profile and nothing it resolves to sat two
+    // commands above an apply header that named them.
+    let module_names: Vec<String> = output.modules.iter().map(|m| m.name.clone()).collect();
+    header.extend(cfgd_core::output::modules_header_row(&module_names, &[]));
+    let mut doc = Doc::new().heading("Status").kv_rows(header);
 
     // Only the recorded-state dashboard needs a staleness signal: a `--scan`/
     // `--exit-code` run just checked the machine itself, so its Drift section
@@ -2290,6 +2293,89 @@ mod tests {
         assert_eq!(display_type("files"), display_type("file"));
         assert_eq!(display_type("packages"), display_type("package"));
         assert_eq!(display_type("Running script"), display_type("script"));
+    }
+
+    /// The dashboard opens on the same `Modules` row a run header does.
+    ///
+    /// The README demo opened on a `cfgd status` naming a profile and nothing
+    /// it resolved to, two commands above an apply header that named `nvim` —
+    /// one machine, two headers, only one of which said what was on it. Both
+    /// rows come from `cfgd_core::output::modules_header_row`, so this asserts
+    /// the two renders carry the same value rather than the same literal.
+    #[test]
+    fn status_header_names_the_profiles_modules_like_the_apply_header() {
+        let entry = |name: &str| ModuleStatusEntry {
+            name: name.to_string(),
+            packages: 0,
+            files: 0,
+            scripts: 0,
+            status: "installed".to_string(),
+            declared: ModuleDeclared::default(),
+        };
+        let output = StatusOutput {
+            last_apply: None,
+            drift: Vec::new(),
+            sources: Vec::new(),
+            pending_decisions: Vec::new(),
+            modules: vec![entry("nvim"), entry("tools")],
+            managed_resources: Vec::new(),
+            warnings: Vec::new(),
+            classification_degraded: false,
+            classification_degraded_code: None,
+            classification_degraded_reason: None,
+            drift_checked_live: false,
+            last_scan_at: None,
+        };
+        let config = std::path::Path::new("/etc/cfgd/cfgd.yaml");
+
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_fleet_status_doc(
+            &output,
+            &[],
+            config,
+            "work",
+            "2026-05-12T14:30:25Z",
+            &Default::default(),
+        ));
+        drop(printer);
+        let dashboard = cfgd_core::test_helpers::captured_text(&buf);
+
+        let names: Vec<String> = output.modules.iter().map(|m| m.name.clone()).collect();
+        let plan = cfgd_core::reconciler::Plan {
+            phases: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        cfgd_core::reconciler::ApplyRun::new(
+            cfgd_core::reconciler::RunContext {
+                title: cfgd_core::reconciler::RunTitle::Apply,
+                config_path: Some(config),
+                profile: Some("work"),
+                sources: &[],
+                modules: &names,
+                trigger: None,
+                subject: None,
+                unit_source: None,
+            },
+            &plan,
+        )
+        .header(&printer);
+        drop(printer);
+        let run = cfgd_core::test_helpers::captured_text(&buf);
+
+        let modules_row = |out: &str| {
+            out.lines()
+                .find(|l| l.trim_start().starts_with("Modules"))
+                .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+                .unwrap_or_else(|| panic!("no Modules row rendered: {out}"))
+        };
+        assert_eq!(
+            modules_row(&dashboard),
+            modules_row(&run),
+            "the dashboard and the run header must name the profile's modules \
+             identically:\n{dashboard}\n---\n{run}"
+        );
+        assert_eq!(modules_row(&dashboard), "Modules nvim, tools");
     }
 
     /// The module health line's units agree with their own counts: a module

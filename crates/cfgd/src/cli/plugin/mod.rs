@@ -502,6 +502,7 @@ pub fn build_debug_doc(
             format!("Created ephemeral debug container on pod {namespace}/{pod}"),
         )
         .kv_block([
+            // modules-row-ok: the modules this invocation injects into a POD, named by the caller, not this host's resolved profile
             ("Modules", module_names.join(", ")),
             ("Mount Path", mount_dirs.join(", ")),
             // name-row-ok: PATH is the variable's own spelling; the row names what the container prepends to it
@@ -604,6 +605,7 @@ pub fn build_exec_doc(
             format!("Executing in {namespace}/{pod} with modules"),
         )
         .kv_block([
+            // modules-row-ok: the modules this invocation injects into a POD, named by the caller, not this host's resolved profile
             ("Modules", module_names.join(", ")),
             ("Mount Path", mount_dirs.join(", ")),
             // name-row-ok: PATH is the variable's own spelling; the row names what the container prepends to it
