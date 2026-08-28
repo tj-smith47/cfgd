@@ -979,6 +979,26 @@ how long.
 
 Pull from all remotes, show changes, prompt for apply.
 
+The header opens on `Config` and `Profile` before the first fetch, so a failed
+pull is still attributed to a named configuration. The `Modules` row comes
+last, beside the closing `cfgd apply` hint, because a sync exists to bring a
+changed config down: it names what the config on disk resolves to **now**, not
+what it declared before the pull.
+
+```
+Sync
+  Config   /home/you/.config/cfgd/cfgd.yaml
+  Profile  work
+
+Local Repo
+  ✓ Pulled new changes from remote — commit: 9b1c3d4e5f60 -> 4f2a8c1d9e07
+
+✓ Synced
+
+Modules  core, editor
+→ Run `cfgd plan` to preview changes, then `cfgd apply`
+```
+
 ### `cfgd pull`
 
 Pull remote changes (git pull only, no apply).

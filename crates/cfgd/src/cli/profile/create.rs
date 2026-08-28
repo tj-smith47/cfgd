@@ -290,13 +290,19 @@ pub fn cmd_profile_create(
     )?;
 
     let mut out = Doc::new().status(Role::Ok, format!("Created at {}", profile_path.posix()));
+    // One block, so the two rows share a key column.
+    let mut rows = Vec::new();
     if !doc.spec.inherits.is_empty() {
-        out = out.kv("Inherits", doc.spec.inherits.join(", "));
+        rows.push(cfgd_core::output::KvPair::new(
+            "Inherits",
+            doc.spec.inherits.join(", "),
+        ));
     }
-    if !doc.spec.modules.is_empty() {
-        // modules-row-ok: the list this verb just WROTE into the document, echoed back, not a resolution of it
-        out = out.kv("Modules", doc.spec.modules.join(", "));
-    }
+    rows.extend(cfgd_core::output::modules_header_row(
+        &doc.spec.modules,
+        &[],
+    ));
+    out = out.kv_rows(rows);
     out = out
         .hint(crate::cli::success_next_step(
             crate::cli::Mutation::ProfileCreated { name },

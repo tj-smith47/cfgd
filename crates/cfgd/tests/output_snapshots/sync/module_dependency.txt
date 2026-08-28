@@ -1,0 +1,10 @@
+Sync
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  tiny
+
+Local Repo
+  ⚠ Pull failed — open repo: could not find repository at '<CONFIG_DIR>'; class=Repository (6); code=NotFound (-3)
+
+✓ Synced
+
+Modules  core, editor

@@ -127,9 +127,8 @@ fn configured_source_catalog(cli: &Cli) -> Vec<SourceListEntry> {
     super::source::list::configured_source_entries(&cfg, &state)
 }
 
-fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
+pub(super) fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
     cfgd_core::daemon::DaemonStatusResponse {
-        modules: vec![],
         running: false,
         pid: 0,
         uptime_secs: 0,
@@ -143,6 +142,7 @@ fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
         sync_interval_secs: None,
         config_path: None,
         profile: None,
+        modules: vec![],
     }
 }
 
@@ -190,7 +190,7 @@ pub fn build_daemon_status_doc(
             // What that profile resolves to, as the loop resolved it at
             // startup — under the profile, ahead of the facts about the
             // process, exactly where every other header names them.
-            rows.extend(cfgd_core::output::modules_header_row(&s.modules, &[]));
+            rows.extend(cfgd_core::output::modules_header_row_for(&s.modules));
             rows.push(KvPair::new("PID", s.pid.to_string()));
             // A measured duration, not a declared one: the intervals below
             // are the operator's own literals and stay verbatim.
@@ -539,7 +539,6 @@ mod tests {
 
     fn make_status(running: bool) -> cfgd_core::daemon::DaemonStatusResponse {
         cfgd_core::daemon::DaemonStatusResponse {
-            modules: vec![],
             running,
             pid: if running { 12345 } else { 0 },
             uptime_secs: if running { 300 } else { 0 },
@@ -561,6 +560,7 @@ mod tests {
             sync_interval_secs: None,
             config_path: None,
             profile: None,
+            modules: vec![],
         }
     }
 

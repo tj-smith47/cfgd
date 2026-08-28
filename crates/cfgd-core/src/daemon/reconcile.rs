@@ -670,6 +670,11 @@ fn reconcile_tick(
             st.module_last_reconcile.insert(name.to_string(), timestamp);
         } else {
             st.last_reconcile = Some(timestamp);
+            // The one resolution the loop performs, handed to the status
+            // endpoint so `daemon status` names what `cfgd status` and a run
+            // header name. A per-module tick resolved a SUBSET and says
+            // nothing about the profile.
+            st.modules = crate::output::HeaderModule::of_resolved(&resolved_modules_ref);
         }
     });
 
