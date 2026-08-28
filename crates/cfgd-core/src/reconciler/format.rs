@@ -648,7 +648,7 @@ fn format_module_action_body(action: &ModuleAction) -> String {
             // PRODUCES and so is the row's detail (`deploy_files_summary`),
             // the slot the sibling env-write row already puts its counts in.
             let targets: Vec<String> = files.iter().map(|f| f.target.display_posix()).collect();
-            format!("deploy {}", elided_list(&targets, 2))
+            format!("deploy {}", elided_list(&targets, SUBJECT_LIST_KEEP))
         }
         ModuleActionKind::RunScript { script, phase } => {
             // Raw body: this same string feeds both `ApplyRun::preview`
@@ -679,6 +679,16 @@ fn format_module_action_body(action: &ModuleAction) -> String {
 /// The ONE elision in this file: every other subject builder names every
 /// operand it holds, which is what `every_elided_operand_list_says_so` walks
 /// the module-action kinds to keep true.
+/// How many operands a subject names before `elided_list` cuts, and so the
+/// ONE threshold every detail arm reasons about: a list at most one longer is
+/// stated in full, and a longer one carries `+N more`, which with the named
+/// operands already gives the total. A produced-detail arm therefore never
+/// restates a full count over an elided subject — `deploy a, b, +4 more —
+/// 6 files` said six twice — and the walk
+/// `no_produced_detail_restates_a_total_the_subject_already_gives` renders
+/// every arm over `SUBJECT_LIST_KEEP + 3` operands to keep it so.
+pub(super) const SUBJECT_LIST_KEEP: usize = 2;
+
 fn elided_list(items: &[String], keep: usize) -> String {
     if items.len() <= keep + 1 {
         return items.join(", ");

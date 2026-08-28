@@ -25,7 +25,7 @@ impl<'p> SectionGuard<'p> {
 
     /// A bullet carrying a detail — the plan-preview counterpart of a status
     /// line's `.detail(...)`, for a planned action whose row states what it
-    /// will produce (`deploy a, b — 6 files`). Rendered muted after the
+    /// will produce (`deploy a, b — 2 of 6 files`). Rendered muted after the
     /// em-dash, the way an apply row's own produced fact is.
     pub fn bullet_detail(&self, text: impl Into<String>, detail: impl Into<String>) -> &Self {
         self.renderer.render_bullet(

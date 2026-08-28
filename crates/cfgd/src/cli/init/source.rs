@@ -120,7 +120,7 @@ pub(super) fn checkout_detail(dir: &Path) -> Option<String> {
 /// `short_commit` owns a commit's display FORM; nothing owned its SPELLING,
 /// and the gap let the clone row put a bare `27d1d2046c0a` in the same slot,
 /// after the same em dash, in the same dim style as every other detail the run
-/// prints — each of which names its unit (`3 vars, 3 aliases`, `6 files`,
+/// prints — each of which names its unit (`3 vars, 3 aliases`, `1 of 6 files`,
 /// `8 of 12 packages`). Nothing there names the hex token a commit, and a
 /// second `cfgd init` reports the same fact about the same directory in the
 /// other shape.

@@ -7465,8 +7465,9 @@ fn format_module_action_item_deploy_truncates_many_files() {
         "the count is the row's detail, never the subject's trailer: {item}"
     );
     assert_eq!(
-        super::action_produced_detail(&Action::Module(action), None, &[]).as_deref(),
-        Some("5 files")
+        super::action_produced_detail(&Action::Module(action), None, &[]),
+        None,
+        "the subject's `+3 more` gives the total; a detail would state it twice"
     );
 }
 
@@ -11019,6 +11020,99 @@ fn every_manager_node_states_what_it_produced() {
             "a hatched node states nothing beyond its subject: {node:?}"
         );
     }
+}
+
+/// A produced detail never restates a total the subject already gives.
+///
+/// `elided_list` cuts a subject at `SUBJECT_LIST_KEEP` and appends `+N more`,
+/// so the names it kept plus the marker ARE the operand total; a detail that
+/// then says `6 files` states one number twice on one row
+/// (`deploy …/init.lua, …/lazy-lock.json, +4 more — 6 files`). Every arm of
+/// `action_produced_detail` is rendered here over `SUBJECT_LIST_KEEP + 3`
+/// operands, each with the executor's re-read saying everything landed, and a
+/// detail opening on that total fails. A SHORTFALL (`1 of 6 files`) is a
+/// different fact and keeps its count.
+#[test]
+fn no_produced_detail_restates_a_total_the_subject_already_gives() {
+    use super::format::SUBJECT_LIST_KEEP;
+    use super::types::ManagerAction;
+
+    let total = SUBJECT_LIST_KEEP + 3;
+    let names: Vec<String> = (0..total).map(|i| format!("op{i}")).collect();
+    let file = |target: &str| ResolvedFile {
+        source: std::path::PathBuf::from("src"),
+        target: std::path::PathBuf::from(target),
+        is_git_source: false,
+        strategy: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    let pkg = |name: &str| ResolvedPackage {
+        canonical_name: name.to_string(),
+        resolved_name: name.to_string(),
+        manager: "brew".to_string(),
+        manager_declared: false,
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+        min_version: None,
+    };
+    let actions = [
+        Action::Module(ModuleAction::local(
+            "m",
+            ModuleActionKind::DeployFiles {
+                files: names.iter().map(|n| file(n)).collect(),
+                declared_total: total,
+            },
+        )),
+        Action::Module(ModuleAction::local(
+            "m",
+            ModuleActionKind::InstallPackages {
+                resolved: names.iter().map(|n| pkg(n)).collect(),
+            },
+        )),
+        Action::Package(PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: names.clone(),
+            origin: "local".to_string(),
+        }),
+        Action::Manager(ManagerAction::Provision {
+            manager: names[0].clone(),
+            via: "apt".to_string(),
+            declared: None,
+            batched: names[1..].to_vec(),
+            depends_on: Vec::new(),
+        }),
+        Action::Env(super::types::EnvAction::WriteEnvFile {
+            path: std::path::PathBuf::from("/home/u/.cfgd.env"),
+            content: String::new(),
+            vars: total,
+            aliases: 0,
+        }),
+    ];
+    let mut elided = 0;
+    for action in &actions {
+        let subject = super::format::action_display_subject(action).to_string();
+        let detail = super::action_produced_detail(action, Some(total), &[]);
+        if subject.contains(" more") {
+            elided += 1;
+            assert!(
+                detail
+                    .as_deref()
+                    .is_none_or(|d| !d.starts_with(&format!("{total} "))),
+                "the subject's `+N more` already gives {total}; the detail says it again: \
+                 `{subject} — {}`",
+                detail.unwrap_or_default()
+            );
+        }
+    }
+    assert!(
+        elided > 0,
+        "no subject elided at {total} operands, so the walk proved nothing"
+    );
 }
 
 /// The executor reads the version off the manager it just verified, and only
@@ -14897,7 +14991,11 @@ fn format_module_action_item_deploy_many_files_truncates() {
         .actions()
         .map(|a| super::action_produced_detail(a, None, &[]))
         .collect();
-    assert_eq!(details, vec![Some("5 files".to_string())]);
+    assert_eq!(
+        details,
+        vec![None],
+        "a full deploy's `+3 more` already gives its total; no detail restates it"
+    );
 }
 
 #[test]
