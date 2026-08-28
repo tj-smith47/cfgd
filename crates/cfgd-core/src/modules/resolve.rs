@@ -26,17 +26,33 @@ use super::{LoadedModule, ResolvedFile, ResolvedModule, ResolvedPackage, SourceM
 ///
 /// Algorithm:
 /// 0. If `platforms` is non-empty and current platform doesn't match → return None (skipped)
-/// 1. Determine candidate managers: `prefer` list, or `[platform.native_manager()]`
+/// 1. Determine candidate managers: `prefer` list, or — for a bare entry — the
+///    available manager that already HOLDS the package, falling back to
+///    `[platform.native_manager()]` (see [`holding_manager`])
 /// 2. For each candidate:
 ///    a. If `"script"` — always available, uses the `script` field as installer
 ///    b. Otherwise: check available + alias resolve + min-version check
 /// 3. First satisfying candidate wins
 /// 4. If none satisfies, return error with details
+///
+/// `installed` is the run's installed-state reader. A bare `- name: npm`
+/// means "npm on this machine", not "npm through apt": with a reader wired,
+/// a manager that is available and already reports the package installed
+/// wins over the platform default, so the entry is satisfied rather than
+/// re-installed as a second copy through the default. `None` (a surface with
+/// no state to read) keeps the platform default. The in-run twin of this rule
+/// is `Reconciler::provisioned`: a tool THIS run's own `Prerequisites` phase
+/// delivered is not yet in any listing when the plan is read, so
+/// `Reconciler::package_survives_elision` elides it from the run's own record
+/// of what it provisioned instead. Resolution answers "already here before
+/// the run", elision answers "landed by the run"; between them every copy
+/// cfgd could know about is counted exactly once.
 pub fn resolve_package(
     entry: &ModulePackageEntry,
     module_name: &str,
     platform: &Platform,
     managers: &HashMap<String, &dyn PackageManager>,
+    installed: Option<&crate::providers::PackageContext<'_>>,
 ) -> Result<Option<ResolvedPackage>> {
     // Platform filter: skip entirely if platforms is non-empty and doesn't match
     if !crate::platform::PlatformGated::applies_to(entry, platform) {
@@ -44,7 +60,13 @@ pub fn resolve_package(
     }
 
     let candidates: Vec<String> = if entry.prefer.is_empty() {
-        vec![platform.native_manager().to_string()]
+        let default = platform.native_manager();
+        vec![
+            installed
+                .and_then(|cx| holding_manager(entry, default, managers, cx))
+                .unwrap_or(default)
+                .to_string(),
+        ]
     } else {
         entry.prefer.clone()
     };
@@ -177,16 +199,60 @@ pub fn resolve_package(
     .into())
 }
 
+/// The available manager that already holds a bare entry's package, when one
+/// does.
+///
+/// The platform default is asked first, so a converged machine pays one
+/// listing and no more; only when the default does not hold the package are
+/// the other available, non-denied managers asked, in name order so two
+/// holders answer the same way on every run. A `prefer` list never reaches
+/// here: an authored order is a statement about WHICH manager, and it is
+/// honoured even when another manager holds the package. A manager that
+/// cannot be enumerated answers "does not hold it", the same fail-open the
+/// planner's own elision takes.
+fn holding_manager<'m>(
+    entry: &ModulePackageEntry,
+    default: &'m str,
+    managers: &HashMap<String, &'m dyn PackageManager>,
+    cx: &crate::providers::PackageContext<'_>,
+) -> Option<&'m str> {
+    let holds = |name: &str| {
+        let mgr = *managers.get(name)?;
+        if entry.deny.iter().any(|d| d == name) || !mgr.is_available() {
+            return None;
+        }
+        let resolved_name = entry
+            .aliases
+            .get(name)
+            .map_or(entry.name.as_str(), String::as_str);
+        cx.installed_for(mgr)
+            .ok()?
+            .contains(&mgr.package_identity(resolved_name))
+            .then_some(mgr.name())
+    };
+    if let Some(found) = holds(default) {
+        return Some(found);
+    }
+    let mut others: Vec<&str> = managers
+        .keys()
+        .map(String::as_str)
+        .filter(|name| *name != default)
+        .collect();
+    others.sort_unstable();
+    others.into_iter().find_map(holds)
+}
+
 /// Resolve all packages in a module spec.
 /// Packages filtered out by platform constraints are silently skipped.
 pub fn resolve_module_packages(
     module: &LoadedModule,
     platform: &Platform,
     managers: &HashMap<String, &dyn PackageManager>,
+    installed: Option<&crate::providers::PackageContext<'_>>,
 ) -> Result<Vec<ResolvedPackage>> {
     let mut resolved = Vec::new();
     for entry in &module.spec.packages {
-        if let Some(pkg) = resolve_package(entry, &module.name, platform, managers)? {
+        if let Some(pkg) = resolve_package(entry, &module.name, platform, managers, installed)? {
             resolved.push(pkg);
         }
     }
@@ -352,6 +418,11 @@ pub fn resolve_module_files(
 
 /// Resolve a set of modules: load, sort dependencies, resolve packages and files.
 /// Includes both local modules and remote modules from the lockfile.
+///
+/// `installed` is what [`resolve_package`] reads to satisfy a bare entry from
+/// the manager that already holds it; every planning path passes the run's own
+/// context so resolution and the plan's elision read one enumeration.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_modules(
     requested: &[String],
     config_dir: &Path,
@@ -359,6 +430,7 @@ pub fn resolve_modules(
     source_roots: &[SourceModuleRoot],
     platform: &Platform,
     managers: &HashMap<String, &dyn PackageManager>,
+    installed: Option<&crate::providers::PackageContext<'_>>,
     printer: &crate::output::Printer,
 ) -> Result<Vec<ResolvedModule>> {
     let all_modules = load_all_modules(config_dir, cache_base, source_roots, printer)?;
@@ -419,7 +491,7 @@ pub fn resolve_modules(
                 continue;
             }
 
-            let packages = resolve_module_packages(module, platform, managers)?;
+            let packages = resolve_module_packages(module, platform, managers, installed)?;
             let files = resolve_module_files(module, cache_base, printer)?;
 
             let scripts = module.spec.scripts.as_ref();

@@ -393,6 +393,10 @@ pub(crate) fn cmd_module_show(
         spec: module.spec.clone(),
     };
 
+    // Which manager already holds a bare entry is part of what "resolved"
+    // means, so the display reads the same installed state the plan does.
+    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+    let installed = Some(&pkg_cx);
     let packages: Vec<PackageDisplay> = if module.spec.packages.is_empty() {
         Vec::new()
     } else {
@@ -430,7 +434,7 @@ pub(crate) fn cmd_module_show(
                     format!(", platforms: {}", entry.platforms.join("/"))
                 };
 
-                match modules::resolve_package(entry, name, platform, &mgr_map) {
+                match modules::resolve_package(entry, name, platform, &mgr_map, installed) {
                     Ok(Some(mut resolved)) => {
                         // `module show` prints the version beside each package,
                         // so it is one of the surfaces that asks for one.

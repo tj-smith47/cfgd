@@ -1494,6 +1494,11 @@ pub(in crate::cli) fn resolve_desired_state(
             })
             .manager_map();
         let cache_base = module_cache_dir(cli)?;
+        // The run's own installed-state memo: a bare entry resolves to the
+        // manager that already holds it, and the plan's elision then reads
+        // the same enumeration. A run with no state to open keeps the
+        // platform default.
+        let pkg_cx = ctx.package_context().ok();
         // Resolution is atomic over the whole requested-name list: any
         // failure — including a genuinely unknown module name, or a source
         // constraint (`ScriptsNotAllowed`) — propagates as the error it is.
@@ -1508,6 +1513,7 @@ pub(in crate::cli) fn resolve_desired_state(
             &source_module_roots,
             platform,
             &mgr_map,
+            pkg_cx.as_ref(),
             printer,
         )?
     };

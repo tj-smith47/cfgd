@@ -16,6 +16,10 @@ use crate::errors::Result;
 /// that mapping — so asking both is asking the machine the same question twice.
 /// The versioned call is the one that survives, because the version half cannot
 /// be recovered from a bare name set while the name set is a fold away.
+/// `Default` is the EMPTY listing — what a caller that could not read a
+/// manager judges against, so the fail-open arm and the read arm share one
+/// predicate instead of two filters.
+#[derive(Default)]
 pub struct InstalledPackages {
     identities: HashSet<String>,
     listed: Vec<PackageInfo>,

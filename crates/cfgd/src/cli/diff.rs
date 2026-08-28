@@ -425,6 +425,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     let platform = Platform::current();
     let mgr_map = registry.manager_map();
     let cache_base = module_cache_dir(cli)?;
+    let pkg_cx = ctx.package_context()?;
     let resolved_modules = match modules::resolve_modules(
         &[mod_name.to_string()],
         config_dir,
@@ -432,6 +433,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         &[],
         platform,
         &mgr_map,
+        Some(&pkg_cx),
         printer,
     ) {
         Ok(mods) => mods,

@@ -317,7 +317,13 @@ fn collect_doctor_output(
                     .packages
                     .iter()
                     .map(|entry| {
-                        match modules::resolve_package(entry, mod_name, platform, &mgr_map) {
+                        match modules::resolve_package(
+                            entry,
+                            mod_name,
+                            platform,
+                            &mgr_map,
+                            doctor_cx.as_ref(),
+                        ) {
                             Ok(Some(mut resolved)) => {
                                 // Doctor prints the version per package, so it
                                 // is one of the surfaces that asks for one.

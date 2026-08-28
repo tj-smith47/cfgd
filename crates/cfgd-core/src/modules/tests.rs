@@ -11,7 +11,8 @@ use crate::output::Role;
 use crate::platform::Platform;
 use crate::providers::{PackageManager, StubPackageManager as MockManager};
 use crate::test_helpers::{
-    linux_ubuntu_platform, macos_platform, make_manager_map, make_test_modules, test_printer,
+    linux_ubuntu_platform, macos_platform, make_manager_map, make_test_modules,
+    test_package_context, test_printer, test_state,
 };
 
 // Cross-cutting tests reach into private helpers of submodules; expose them.
@@ -243,7 +244,7 @@ fn resolve_package_simple_native() {
         ..Default::default()
     };
 
-    let mut result = resolve_package(&entry, "test", &platform, &managers)
+    let mut result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.canonical_name, "ripgrep");
@@ -255,6 +256,105 @@ fn resolve_package_simple_native() {
     assert_eq!(result.version, None);
     fill_available_versions(std::slice::from_mut(&mut result), &managers);
     assert_eq!(result.version, Some("14.1.0".into()));
+}
+
+/// A bare `- name: npm` means "npm on this machine". apt is Ubuntu's default
+/// and does not hold it; brew is available and does. Resolving to apt planned
+/// `apt-get install npm` — six hundred node-* debs — on a machine whose own
+/// bootstrap had put npm on it through brew one run earlier.
+#[test]
+fn a_bare_entry_resolves_to_the_available_manager_that_already_holds_it() {
+    let apt = MockManager::new("apt").with_package("npm", "9.2.0");
+    let brew = MockManager::new("brew").with_installed(&["npm"]);
+    let managers = make_manager_map(&[("apt", &apt), ("brew", &brew)]);
+    let platform = linux_ubuntu_platform();
+    let printer = test_printer();
+    let state = test_state();
+    let cx = test_package_context(&printer, &state);
+
+    let entry = ModulePackageEntry {
+        name: "npm".into(),
+        ..Default::default()
+    };
+
+    let result = resolve_package(&entry, "nvim", &platform, &managers, Some(&cx))
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.manager, "brew", "the manager that holds npm wins");
+    assert!(
+        !result.manager_declared,
+        "cfgd chose the holder; the author named no manager"
+    );
+
+    // Nothing to read from: the platform default stands, as it always has.
+    let unread = resolve_package(&entry, "nvim", &platform, &managers, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(unread.manager, "apt");
+}
+
+/// `prefer` is an AUTHORED order and a statement about WHICH manager. With
+/// brew holding npm, `prefer: [apt]` still resolves to apt — the author said
+/// so — and the plan installs it there.
+#[test]
+fn an_authored_prefer_list_outranks_the_manager_that_holds_the_package() {
+    let apt = MockManager::new("apt").with_package("npm", "9.2.0");
+    let brew = MockManager::new("brew").with_installed(&["npm"]);
+    let managers = make_manager_map(&[("apt", &apt), ("brew", &brew)]);
+    let platform = linux_ubuntu_platform();
+    let printer = test_printer();
+    let state = test_state();
+    let cx = test_package_context(&printer, &state);
+
+    let entry = ModulePackageEntry {
+        name: "npm".into(),
+        prefer: vec!["apt".into()],
+        ..Default::default()
+    };
+
+    let result = resolve_package(&entry, "nvim", &platform, &managers, Some(&cx))
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.manager, "apt", "an authored prefer list is honoured");
+    assert!(result.manager_declared);
+}
+
+/// The holder's own alias is what it is asked about, and a denied manager is
+/// never a holder: `aliases: {brew: node}` with brew holding `node` resolves
+/// to brew under that name; `deny: [brew]` falls back to the default.
+#[test]
+fn a_holder_is_asked_under_its_alias_and_never_when_denied() {
+    let apt = MockManager::new("apt").with_package("npm", "9.2.0");
+    let brew = MockManager::new("brew").with_installed(&["node"]);
+    let managers = make_manager_map(&[("apt", &apt), ("brew", &brew)]);
+    let platform = linux_ubuntu_platform();
+    let printer = test_printer();
+    let state = test_state();
+    let cx = test_package_context(&printer, &state);
+
+    let aliased = ModulePackageEntry {
+        name: "npm".into(),
+        aliases: [("brew".to_string(), "node".to_string())]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+    let result = resolve_package(&aliased, "nvim", &platform, &managers, Some(&cx))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (result.manager.as_str(), result.resolved_name.as_str()),
+        ("brew", "node")
+    );
+
+    let denied = ModulePackageEntry {
+        deny: vec!["brew".into()],
+        ..aliased
+    };
+    let result = resolve_package(&denied, "nvim", &platform, &managers, Some(&cx))
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.manager, "apt");
 }
 
 #[test]
@@ -284,7 +384,7 @@ fn resolve_package_with_prefer_list() {
     };
 
     // brew is unavailable, so snap should be tried next
-    let result = resolve_package(&entry, "nvim", &platform, &managers)
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "snap");
@@ -313,7 +413,7 @@ fn resolve_package_min_version_check() {
     };
 
     // apt has 0.6.1 which is < 0.9, so snap (0.10.3) should be chosen
-    let result = resolve_package(&entry, "nvim", &platform, &managers)
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "snap");
@@ -337,7 +437,7 @@ fn resolve_package_unresolvable() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "nvim", &platform, &managers);
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None);
     assert!(result.is_err());
     assert!(
         result
@@ -366,7 +466,7 @@ fn resolve_package_alias_applied() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.canonical_name, "fd");
@@ -389,7 +489,7 @@ fn resolve_package_records_whether_the_author_named_the_manager() {
     let platform = linux_ubuntu_platform();
 
     let resolve = |entry: ModulePackageEntry| {
-        resolve_package(&entry, "test", &platform, &managers)
+        resolve_package(&entry, "test", &platform, &managers, None)
             .unwrap()
             .unwrap()
     };
@@ -450,7 +550,7 @@ fn resolve_package_alias_winget() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "editor", &platform, &managers)
+    let result = resolve_package(&entry, "editor", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.canonical_name, "vscode");
@@ -477,7 +577,7 @@ fn resolve_package_alias_chocolatey() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "runtime", &platform, &managers)
+    let result = resolve_package(&entry, "runtime", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.canonical_name, "node");
@@ -504,7 +604,7 @@ fn resolve_package_alias_scoop() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "tools", &platform, &managers)
+    let result = resolve_package(&entry, "tools", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.canonical_name, "ripgrep");
@@ -529,7 +629,7 @@ fn resolve_package_manager_not_registered() {
     };
 
     // brew not in managers map → unresolvable
-    let result = resolve_package(&entry, "test", &platform, &managers);
+    let result = resolve_package(&entry, "test", &platform, &managers, None);
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("ripgrep"),
@@ -748,6 +848,7 @@ spec:
         &[],
         &platform,
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -805,6 +906,7 @@ spec:
         &[],
         &platform,
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -871,6 +973,7 @@ spec:
         &[],
         &linux_ubuntu_platform(),
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -898,6 +1001,7 @@ spec:
         &[],
         &macos_platform(),
         &mac_managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -951,6 +1055,7 @@ spec:
         &[],
         &linux_ubuntu_platform(),
         &managers,
+        None,
         &printer,
     )
     .expect_err("active module depending on a skipped module must be a config error");
@@ -1117,7 +1222,7 @@ fn resolve_package_script_manager() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "script");
@@ -1146,7 +1251,7 @@ fn resolve_package_script_fallback() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "nvim", &platform, &managers)
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "script");
@@ -1171,7 +1276,7 @@ fn resolve_package_script_preferred_over_manager() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "nvim", &platform, &managers)
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "script");
@@ -1193,7 +1298,7 @@ fn resolve_package_script_missing_errors() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers);
+    let result = resolve_package(&entry, "test", &platform, &managers, None);
     assert!(result.is_err());
     assert!(
         result
@@ -1222,7 +1327,7 @@ fn resolve_package_platform_match_os() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
+    let result = resolve_package(&entry, "test", &platform, &managers, None).unwrap();
     assert!(result.is_some());
     assert_eq!(result.unwrap().manager, "apt");
 }
@@ -1245,7 +1350,7 @@ fn resolve_package_platform_skip_wrong_os() {
     };
 
     // On Linux, this should be skipped (None), not an error
-    let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
+    let result = resolve_package(&entry, "test", &platform, &managers, None).unwrap();
     assert!(result.is_none());
 }
 
@@ -1266,7 +1371,7 @@ fn resolve_package_platform_match_distro() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
+    let result = resolve_package(&entry, "test", &platform, &managers, None).unwrap();
     assert!(result.is_some());
 }
 
@@ -1290,7 +1395,7 @@ fn resolve_package_platform_match_arch() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
+    let result = resolve_package(&entry, "test", &platform, &managers, None).unwrap();
     assert!(result.is_some());
 }
 
@@ -1311,7 +1416,7 @@ fn resolve_package_platform_empty_matches_all() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
+    let result = resolve_package(&entry, "test", &platform, &managers, None).unwrap();
     assert!(result.is_some());
 }
 
@@ -1353,7 +1458,7 @@ fn resolve_module_packages_skips_filtered() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
     // Only ripgrep should be resolved; apt-only-tool is filtered out on macOS
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].canonical_name, "ripgrep");
@@ -2295,7 +2400,7 @@ fn resolve_package_deny_excludes_manager() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers);
+    let result = resolve_package(&entry, "test", &platform, &managers, None);
     // brew is the only/native manager on macOS but is denied, so resolution should fail
     let err = result.unwrap_err().to_string();
     assert!(
@@ -2811,7 +2916,7 @@ fn resolve_package_deny_skips_manager() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     // brew is denied, so apt should be used
@@ -2836,7 +2941,7 @@ fn resolve_package_platform_filter_skips() {
     };
 
     // Linux platform should be filtered out
-    let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
+    let result = resolve_package(&entry, "test", &platform, &managers, None).unwrap();
     assert!(result.is_none());
 }
 
@@ -2856,7 +2961,7 @@ fn resolve_package_script_manager_with_deny() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "script");
@@ -2880,7 +2985,7 @@ fn resolve_package_script_no_script_field_errors() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers);
+    let result = resolve_package(&entry, "test", &platform, &managers, None);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("script"));
 }
@@ -3449,6 +3554,7 @@ fn resolve_modules_loads_source_delivered_body_and_tags_origin() {
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -3499,6 +3605,7 @@ fn resolve_modules_consumer_local_shadows_source_offered() {
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -3551,6 +3658,7 @@ fn resolve_modules_higher_priority_source_wins() {
         &roots,
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -3591,6 +3699,7 @@ fn resolve_modules_offered_but_body_missing_names_source() {
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .expect_err("a declared-but-missing module body must error");
@@ -3626,6 +3735,7 @@ fn resolve_modules_unknown_module_is_plain_not_found() {
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .expect_err("an unknown module must be NotFound");
@@ -3661,6 +3771,7 @@ fn resolve_modules_body_present_but_not_offered_is_gated_out() {
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .expect_err("an undeclared body must not be loaded (allow-list gate)");
@@ -4072,6 +4183,7 @@ fn enrich_not_found_names_highest_priority_offering_source() {
         &roots,
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .expect_err("a declared-but-missing body offered by several sources must error");
@@ -4113,6 +4225,7 @@ fn resolve_modules_source_module_depends_on_source_module() {
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -4164,6 +4277,7 @@ fn resolve_modules_source_module_depends_on_consumer_local_module() {
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -4209,6 +4323,7 @@ fn resolve_modules_source_module_with_unoffered_transitive_dep_is_missing_depend
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .expect_err("a dependent on an unoffered transitive dep must error");
@@ -4578,7 +4693,7 @@ fn a_resolution_that_renders_no_version_asks_no_manager_for_one() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
     assert_eq!(resolved.len(), 2);
     assert!(resolved.iter().all(|p| p.version.is_none()));
     assert_eq!(
@@ -4702,7 +4817,7 @@ fn resolve_module_packages_multiple_packages() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
     assert_eq!(resolved.len(), 3);
     assert_eq!(resolved[0].canonical_name, "ripgrep");
     assert_eq!(resolved[1].canonical_name, "fd");
@@ -4726,7 +4841,7 @@ fn resolve_module_packages_empty_packages() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
     assert!(
         resolved.is_empty(),
         "module with no packages should resolve to empty"
@@ -4769,7 +4884,7 @@ fn resolve_module_packages_mixed_platforms() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
     assert_eq!(
         resolved.len(),
         2,
@@ -4957,7 +5072,7 @@ fn module_resolution_keeps_a_manager_whose_bootstrap_plan_is_satisfiable() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "cargo");
@@ -4985,7 +5100,7 @@ fn resolve_package_skips_an_unavailable_manager_that_plans_no_bootstrap() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "brew");
@@ -5010,7 +5125,7 @@ fn resolve_package_deny_script_still_works() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "script", "should fall through to script");
@@ -5030,7 +5145,7 @@ fn resolve_package_deny_script_also_denied() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers);
+    let result = resolve_package(&entry, "test", &platform, &managers, None);
     assert!(
         result.is_err(),
         "denying script should make package unresolvable"
@@ -6445,6 +6560,7 @@ spec:
         &[],
         &linux_ubuntu_platform(),
         &managers,
+        None,
         &test_printer(),
     )
     .unwrap();

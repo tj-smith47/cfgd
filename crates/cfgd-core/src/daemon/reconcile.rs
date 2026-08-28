@@ -567,6 +567,7 @@ fn reconcile_tick(
             resolved,
             &config_dir,
             source_module_roots,
+            Some(&pkg_cx),
             printer,
             scope,
         );

@@ -43,6 +43,8 @@ pub(in crate::cli) struct RunContext<'a> {
     deprecations_drained: Cell<bool>,
     profile: OnceCell<(String, ResolvedProfile)>,
     state: OnceCell<StateStore>,
+    /// The installed-state memo every [`Self::package_context`] lends.
+    enumerations: cfgd_core::providers::InstalledEnumerations,
     base_registry: OnceCell<ProviderRegistry>,
     manifests: ManifestCache,
 }
@@ -57,6 +59,7 @@ impl<'a> RunContext<'a> {
             deprecations_drained: Cell::new(false),
             profile: OnceCell::new(),
             state: OnceCell::new(),
+            enumerations: cfgd_core::providers::InstalledEnumerations::default(),
             base_registry: OnceCell::new(),
             manifests: ManifestCache::default(),
         }
@@ -148,6 +151,26 @@ impl<'a> RunContext<'a> {
     /// advisory paths that record if they can and carry on if they cannot.
     pub(in crate::cli) fn state_opt(&self) -> Option<&StateStore> {
         self.state().ok()
+    }
+
+    /// A package context over this run's ONE installed-state memo.
+    ///
+    /// Every context built here lends [`Self::enumerations`], so module
+    /// resolution (which asks which manager already holds a bare entry), the
+    /// profile planner and the reconciler's elision all read one enumeration
+    /// per manager for the whole invocation — a context built with
+    /// `PackageContext::new` owns a memo of its own and re-asks.
+    pub(in crate::cli) fn package_context(
+        &self,
+    ) -> anyhow::Result<cfgd_core::providers::PackageContext<'_>> {
+        let state = self.state()?;
+        Ok(
+            cfgd_core::providers::PackageContext::with_shared_enumerations(
+                self.printer,
+                state,
+                &self.enumerations,
+            ),
+        )
     }
 
     /// The config-free provider registry, built at most once.

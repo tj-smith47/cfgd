@@ -144,7 +144,7 @@ declarations fold together rather than replace one another); on Linux only the f
 |---|---|---|---|
 | `name` | yes | string | Canonical package name |
 | `minVersion` | no | string | Minimum acceptable version (semver) |
-| `prefer` | no | list | Ordered list of managers to try. `"script"` uses the `script` field as a custom installer. If omitted, uses platform's native manager. |
+| `prefer` | no | list | Ordered list of managers to try. `"script"` uses the `script` field as a custom installer. If omitted, the available manager that already holds the package wins (the platform's native manager is asked first), and a package nobody holds installs through the native manager. |
 | `deny` | no | list | Managers to never use for this package, even if available and preferred |
 | `aliases` | no | map | Per-manager name overrides when the package name differs |
 | `script` | no | string | Inline shell script or path. Used when `prefer` includes `"script"` |
@@ -250,7 +250,7 @@ If no candidate satisfies → interactive prompt with all options
 The full resolution logic for each package entry:
 
 1. **Platform filter.** If `platforms` is non-empty and the current OS, distro, or arch doesn't match, the entry is skipped entirely.
-2. **Determine candidate managers.** If `prefer` is specified, walk that list in order. If `prefer` is omitted, use the platform's native manager (e.g., `apt` on Ubuntu, `brew` on macOS).
+2. **Determine candidate managers.** If `prefer` is specified, walk that list in order: an authored list is a statement about WHICH manager, and it is honoured even when another manager already holds the package. If `prefer` is omitted, a bare entry means "this package on this machine": the available manager that already reports it installed wins (the platform's native manager is asked first, then the others by name), so a tool that brew put on an Ubuntu host is not installed a second time through `apt`. Only when no manager holds it does the platform's native manager apply (e.g., `apt` on Ubuntu, `brew` on macOS).
 3. **For each candidate manager:**
    - If the candidate is `"script"`, the `script` field must be present (error if missing). Scripts are always considered "available," and version checks are skipped (the script manages its own versioning). See [Script Execution](#script-execution) below.
    - Otherwise, check that the manager is installed and available on this machine. If not, skip to the next candidate.

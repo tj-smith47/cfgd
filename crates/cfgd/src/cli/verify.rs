@@ -25,6 +25,7 @@ pub fn cmd_verify(
         let platform = Platform::current();
         let mgr_map = registry.manager_map();
         let cache_base = module_cache_dir(cli)?;
+        let pkg_cx = ctx.package_context()?;
         let mods = match modules::resolve_modules(
             &[mod_name.to_string()],
             config_dir,
@@ -32,6 +33,7 @@ pub fn cmd_verify(
             &[],
             platform,
             &mgr_map,
+            Some(&pkg_cx),
             printer,
         ) {
             Ok(mods) => mods,
