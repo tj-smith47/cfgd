@@ -112,6 +112,10 @@ impl PackageManager for SimpleManager {
         self.mgr_name
     }
 
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(cmd_with_seam(self.mgr_name).arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         if let Some(f) = self.is_available_fn {
             f()

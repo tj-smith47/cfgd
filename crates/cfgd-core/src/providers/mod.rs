@@ -681,6 +681,20 @@ pub trait PackageManager: Send + Sync {
 
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()>;
 
+    /// The version this manager's own binary reports, read off the machine
+    /// NOW, or `None` when it cannot be asked (absent, no version flag, an
+    /// unparseable banner).
+    ///
+    /// The fact a provision PRODUCES that its subject cannot already state:
+    /// `provision brew via homebrew installer` names the manager and the
+    /// method, so the only thing left for the row's detail is what landed —
+    /// `— 4.6.3`. Read by the executor after its post-install verification,
+    /// the way the package arm re-reads its count; never at plan time, which
+    /// has nothing to read yet.
+    fn tool_version(&self) -> Option<String> {
+        None
+    }
+
     /// The packages `via` installs to deliver THIS manager, when this manager's
     /// bootstrap through `via` is an ordinary package install.
     ///

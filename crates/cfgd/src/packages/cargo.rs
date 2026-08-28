@@ -44,6 +44,10 @@ impl PackageManager for CargoManager {
         "cargo"
     }
 
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(cargo_cmd().arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         cargo_available()
     }

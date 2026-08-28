@@ -16335,17 +16335,17 @@ fn every_produced_count_is_an_action_rows_detail() {
         origin: "local".to_string(),
     });
     assert_eq!(
-        action_produced_detail(&deploy, None).as_deref(),
+        action_produced_detail(&deploy, None, &[]).as_deref(),
         Some("1 of 6 files"),
         "a deploy states its shortfall from the action alone"
     );
     assert_eq!(
-        action_produced_detail(&install, Some(1)).as_deref(),
+        action_produced_detail(&install, Some(1), &[]).as_deref(),
         Some("1 of 2 packages"),
         "an install states its shortfall from the count the executor re-read"
     );
     assert_eq!(
-        action_produced_detail(&install, None),
+        action_produced_detail(&install, None, &[]),
         None,
         "a preview has no executed count, so it qualifies nothing"
     );

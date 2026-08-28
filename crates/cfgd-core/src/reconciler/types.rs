@@ -1113,6 +1113,11 @@ pub struct ActionResult {
     /// the action installed everything it named, or installs nothing at all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub installed: Option<usize>,
+    /// The version each manager a provision LANDED reports, keyed by
+    /// manager — what the row's detail states (`— 4.6.3`). Empty, and
+    /// absent from the wire, for every other action.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub versions: std::collections::BTreeMap<String, String>,
 }
 
 /// Result of an entire apply operation.

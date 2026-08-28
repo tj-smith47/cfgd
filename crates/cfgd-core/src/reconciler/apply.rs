@@ -179,17 +179,47 @@ fn installed_packages_summary(action: &Action, installed: Option<usize>) -> Opti
 /// names every manager it provisions, so a trailing `— 2 managers` could only
 /// restate the row. The same rule the two arms above state for their own
 /// subjects.
-fn provisioned_managers_summary(action: &Action, installed: Option<usize>) -> Option<String> {
+///
+/// And what it DELIVERED: the version each landed manager's own binary
+/// reports (`PackageManager::tool_version`, re-read by the executor after its
+/// verification), the one fact about a provision its subject cannot already
+/// hold. A node naming one manager states the version bare (`— 4.6.3`); a
+/// batch names each (`— npm 11.4.2, pipx 1.7.1`); a shortfall keeps its count
+/// and parenthesises what did land (`— 1 of 2 managers (npm 11.4.2)`). A
+/// manager that answers no version leaves the slot as it was, so a preview
+/// and a mock render exactly as before.
+fn provisioned_managers_summary(
+    action: &Action,
+    installed: Option<usize>,
+    versions: &[(String, String)],
+) -> Option<String> {
     let Action::Manager(node @ ManagerAction::Provision { .. }) = action else {
         return None;
     };
-    let planned = node.provisioned_managers().len();
-    installed.filter(|landed| *landed < planned).map(|landed| {
+    let members = node.provisioned_managers();
+    let planned = members.len();
+    let shortfall = installed.filter(|landed| *landed < planned).map(|landed| {
         format!(
             "{landed} of {planned} {}",
             crate::plural_noun(planned, "manager")
         )
-    })
+    });
+    let delivered = (!versions.is_empty()).then(|| {
+        if planned == 1 && versions.len() == 1 {
+            versions[0].1.clone()
+        } else {
+            versions
+                .iter()
+                .map(|(manager, version)| format!("{manager} {version}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    });
+    match (shortfall, delivered) {
+        (Some(count), Some(delivered)) => Some(format!("{count} ({delivered})")),
+        (Some(count), None) => Some(count),
+        (None, delivered) => delivered,
+    }
 }
 
 /// The fact an action PRODUCES, worded for the detail slot of its own row —
@@ -197,16 +227,21 @@ fn provisioned_managers_summary(action: &Action, installed: Option<usize>) -> Op
 /// status line state the same count one beat apart, and `-o json`'s plan
 /// payload carries it as `detail` rather than folded into `description`.
 ///
-/// `installed` is the one fact a preview cannot supply: how many of the
-/// entries an install NAMED it still had to land. A plan passes `None` and gets
+/// `installed` and `versions` are the facts a preview cannot supply: how many
+/// of the entries an install NAMED it still had to land, and what version each
+/// manager a provision landed reports. A plan passes `None` and `&[]` and gets
 /// the same detail it always did.
 ///
-/// `None` for an action that produces nothing worth a count.
-pub fn action_produced_detail(action: &Action, installed: Option<usize>) -> Option<String> {
+/// `None` for an action that produces nothing worth stating.
+pub fn action_produced_detail(
+    action: &Action,
+    installed: Option<usize>,
+    versions: &[(String, String)],
+) -> Option<String> {
     env_write_summary(action)
         .or_else(|| deploy_files_summary(action))
         .or_else(|| installed_packages_summary(action, installed))
-        .or_else(|| provisioned_managers_summary(action, installed))
+        .or_else(|| provisioned_managers_summary(action, installed, versions))
 }
 
 /// A planned action that is a no-op by construction. Its subject already states
@@ -309,6 +344,11 @@ pub(super) struct ActionRun {
     /// one and only knows by how much once it has run. `None` for every action
     /// that installs nothing and for a preview, which has not run yet.
     pub installed: Option<usize>,
+    /// The version each manager a provision LANDED reports, `(manager,
+    /// version)` in provision order — the executor's re-read after its
+    /// verification, and empty for every other action and for a member that
+    /// was already here or answers no version.
+    pub versions: Vec<(String, String)>,
 }
 
 impl ActionRun {
@@ -318,7 +358,13 @@ impl ActionRun {
             changed,
             script_output: None,
             installed: None,
+            versions: Vec::new(),
         }
+    }
+
+    /// The same run, carrying what the provision delivered.
+    pub(super) fn delivering(self, versions: Vec<(String, String)>) -> Self {
+        Self { versions, ..self }
     }
 
     /// The same run, carrying the count the executor re-read off the machine.
@@ -815,6 +861,7 @@ fn merge_env_result(results: &mut Vec<ActionResult>, description: String, change
         skipped: !changed,
         not_attempted: None,
         installed: None,
+        versions: Default::default(),
     });
 }
 
@@ -1625,6 +1672,7 @@ impl<'a> super::Reconciler<'a> {
                                 skipped: false,
                                 not_attempted: None,
                                 installed: None,
+                                versions: Default::default(),
                             });
                         }
                     }
@@ -1678,6 +1726,7 @@ impl<'a> super::Reconciler<'a> {
                             skipped: false,
                             not_attempted: None,
                             installed: None,
+                            versions: Default::default(),
                         });
                     }
                     Err(e) => {
@@ -1692,6 +1741,7 @@ impl<'a> super::Reconciler<'a> {
                             skipped: false,
                             not_attempted: None,
                             installed: None,
+                            versions: Default::default(),
                         });
                         if !continue_on_err {
                             return Err(e);
@@ -1759,6 +1809,7 @@ impl<'a> super::Reconciler<'a> {
                                 skipped: false,
                                 not_attempted: None,
                                 installed: None,
+                                versions: Default::default(),
                             });
                         }
                         Err(e) => {
@@ -1777,6 +1828,7 @@ impl<'a> super::Reconciler<'a> {
                                 skipped: false,
                                 not_attempted: None,
                                 installed: None,
+                                versions: Default::default(),
                             });
                             if !continue_on_err {
                                 return Err(e);
@@ -2038,7 +2090,8 @@ impl<'a> super::Reconciler<'a> {
         // detail rather than as a status line above it — on the failure row as
         // much as the success one, since the copy was taken either way.
         let sidecar_detail = sidecar_detail(&sidecars);
-        let (desc, success, action_changed, installed, error, should_abort) = match result {
+        let (desc, success, action_changed, installed, versions, error, should_abort) = match result
+        {
             Ok(run) => {
                 if let Some(jid) = journal_id
                     && let Err(e) = self.state.journal_complete(
@@ -2068,6 +2121,7 @@ impl<'a> super::Reconciler<'a> {
                     true,
                     run.changed,
                     run.installed,
+                    run.versions,
                     None,
                     false,
                 )
@@ -2118,6 +2172,7 @@ impl<'a> super::Reconciler<'a> {
                     false,
                     false,
                     None,
+                    Vec::new(),
                     Some(e.to_string()),
                     !continue_on_err,
                 )
@@ -2153,8 +2208,9 @@ impl<'a> super::Reconciler<'a> {
             // a count `-o json` carries is one the report also states.
             installed: installed.filter(|_| {
                 installed_packages_summary(action, installed).is_some()
-                    || provisioned_managers_summary(action, installed).is_some()
+                    || provisioned_managers_summary(action, installed, &[]).is_some()
             }),
+            versions: versions.iter().cloned().collect(),
         });
 
         if action_reports_its_own_status(action) {
@@ -2209,7 +2265,7 @@ impl<'a> super::Reconciler<'a> {
                         "unchanged".to_string()
                     })
                 } else {
-                    action_produced_detail(action, installed)
+                    action_produced_detail(action, installed, &versions)
                 };
                 // Every action that DID something is timed, however briefly: a
                 // threshold makes the suffix's absence ambiguous between "fast"

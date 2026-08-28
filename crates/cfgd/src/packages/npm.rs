@@ -566,6 +566,10 @@ impl PackageManager for NpmManager {
         "npm"
     }
 
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(npm_cmd().arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         npm_available()
     }

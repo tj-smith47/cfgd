@@ -637,6 +637,7 @@ fn apply_result_counts() {
                 skipped: false,
                 not_attempted: None,
                 installed: None,
+                versions: Default::default(),
             },
             ActionResult {
                 phase: "files".to_string(),
@@ -647,6 +648,7 @@ fn apply_result_counts() {
                 skipped: false,
                 not_attempted: None,
                 installed: None,
+                versions: Default::default(),
             },
         ],
         status: ApplyStatus::Partial,
@@ -7463,7 +7465,7 @@ fn format_module_action_item_deploy_truncates_many_files() {
         "the count is the row's detail, never the subject's trailer: {item}"
     );
     assert_eq!(
-        super::action_produced_detail(&Action::Module(action), None).as_deref(),
+        super::action_produced_detail(&Action::Module(action), None, &[]).as_deref(),
         Some("5 files")
     );
 }
@@ -10892,7 +10894,9 @@ fn a_provision_whose_manager_was_already_delivered_states_the_count_that_says_so
     );
 }
 
-/// Every manager node states the fact it produced, or states why it cannot.
+/// Every manager node that changes the machine states the fact it produced
+/// for at least one thing the executor can observe, or is hatched here with
+/// the reason its subject already is the whole fact.
 ///
 /// A provision that landed hundreds of packages reported only its elapsed
 /// time, one row below package installs that do say what they produced —
@@ -10900,13 +10904,40 @@ fn a_provision_whose_manager_was_already_delivered_states_the_count_that_says_so
 /// count is the executor's own re-read, carried out on `ActionRun::installed`
 /// exactly as the package arm's is: a node promises an AVAILABLE manager, and
 /// an earlier node or the `Prerequisites` phase may already have delivered one
-/// of the managers it names.
+/// of the managers it names. The count only fires on a shortfall, so every
+/// single-manager node that lands its manager stated nothing; the VERSION the
+/// landed binary reports (`ActionRun::versions`) is the fact the subject
+/// cannot hold, and it fires whenever the manager answers one.
 ///
 /// Every variant is bound with no `..`, so a new manager node is classified
 /// here before this file compiles.
 #[test]
 fn every_manager_node_states_what_it_produced() {
     use super::types::{DeclaredProvision, ManagerAction};
+
+    let landed = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(m, v)| ((*m).to_string(), (*v).to_string()))
+            .collect()
+    };
+    let brew = Action::Manager(ManagerAction::Provision {
+        manager: "brew".to_string(),
+        via: "homebrew installer".to_string(),
+        declared: None,
+        batched: Vec::new(),
+        depends_on: Vec::new(),
+    });
+    assert_eq!(
+        super::action_produced_detail(&brew, Some(1), &landed(&[("brew", "4.6.3")])).as_deref(),
+        Some("4.6.3"),
+        "a node naming one manager states the version it delivered, bare"
+    );
+    assert_eq!(
+        super::action_produced_detail(&brew, Some(1), &[]),
+        None,
+        "a manager that answers no version leaves the slot as it was"
+    );
 
     let batch = ManagerAction::Provision {
         manager: "cargo".to_string(),
@@ -10927,25 +10958,45 @@ fn every_manager_node_states_what_it_produced() {
     };
     let batch = Action::Manager(batch);
     assert_eq!(
-        super::action_produced_detail(&batch, Some(1)).as_deref(),
+        super::action_produced_detail(&batch, Some(1), &[]).as_deref(),
         Some("1 of 2 managers"),
         "a node that landed fewer managers than it named says how many"
     );
     assert_eq!(
-        super::action_produced_detail(&batch, Some(2)),
+        super::action_produced_detail(&batch, Some(2), &[]),
         None,
         "a node that landed every manager it named would only restate its subject"
     );
     assert_eq!(
-        super::action_produced_detail(&batch, None),
+        super::action_produced_detail(&batch, None, &[]),
         None,
         "a preview has not run, so it has no count of its own to state"
     );
     assert_eq!(
-        super::action_produced_detail(&Action::Manager(solo), Some(0)).as_deref(),
+        super::action_produced_detail(
+            &batch,
+            Some(2),
+            &landed(&[("cargo", "1.89.0"), ("npm", "11.4.2")])
+        )
+        .as_deref(),
+        Some("cargo 1.89.0, npm 11.4.2"),
+        "a batch names each version beside its manager"
+    );
+    assert_eq!(
+        super::action_produced_detail(&batch, Some(1), &landed(&[("npm", "11.4.2")])).as_deref(),
+        Some("1 of 2 managers (npm 11.4.2)"),
+        "a shortfall keeps its count and parenthesises what did land"
+    );
+    assert_eq!(
+        super::action_produced_detail(&Action::Manager(solo), Some(0), &[]).as_deref(),
         Some("0 of 1 manager"),
         "a node whose one manager was already there states the count that says so"
     );
+    // The hatched variants, each with the reason its subject is the whole
+    // fact: an index refresh names no artifact; a refusal produces nothing by
+    // construction and its subject carries the reason; a prerequisite's
+    // subject already spends the detail grammar on `required by`, and the
+    // tool is a means the run needed rather than a product it delivered.
     for action in [
         ManagerAction::RefreshIndex {
             manager: "apt".to_string(),
@@ -10963,11 +11014,70 @@ fn every_manager_node_states_what_it_produced() {
     ] {
         let node = Action::Manager(action);
         assert_eq!(
-            super::action_produced_detail(&node, Some(1)),
+            super::action_produced_detail(&node, Some(1), &landed(&[("curl", "8.5.0")])),
             None,
-            "a node that installs exactly what its subject names has no count to add: {node:?}"
+            "a hatched node states nothing beyond its subject: {node:?}"
         );
     }
+}
+
+/// The executor reads the version off the manager it just verified, and only
+/// for a manager THIS node landed: the row states `— <version>` and `-o json`
+/// carries it under `versions`.
+#[test]
+fn a_landed_provision_states_the_version_it_delivered() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("brew")
+            .unavailable()
+            .bootstrappable_via("homebrew installer")
+            .bootstrap_succeeds()
+            .reporting_version("4.6.3"),
+    ));
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("apt").reporting_version("2.8.3"),
+    ));
+    let state = test_state();
+    let plan = prerequisites_phase(vec![
+        provision_node("brew", "homebrew installer", &[]),
+        provision_node("apt", "system", &[]),
+    ]);
+
+    let (result, rendered) =
+        apply_manager_plan_at(&registry, &state, &plan, crate::output::Verbosity::Normal);
+
+    assert_eq!(result.status, ApplyStatus::Success, "{rendered}");
+    let row = rendered
+        .lines()
+        .find(|l| l.contains("provision brew via homebrew installer"))
+        .unwrap_or_else(|| panic!("no brew row: {rendered}"));
+    assert!(
+        row.contains("— 4.6.3"),
+        "the landed provision states the version it delivered: {row}"
+    );
+    let brew = result
+        .action_results
+        .iter()
+        .find(|r| r.description == "manager:provision:brew")
+        .expect("brew result");
+    assert_eq!(brew.versions.get("brew").map(String::as_str), Some("4.6.3"));
+    let apt = result
+        .action_results
+        .iter()
+        .find(|r| r.description == "manager:provision:apt")
+        .expect("apt result");
+    assert!(
+        apt.versions.is_empty(),
+        "a manager that was here already produced nothing this row can claim: {apt:?}"
+    );
+    let apt_row = rendered
+        .lines()
+        .find(|l| l.contains("provision apt via system"))
+        .unwrap_or_else(|| panic!("no apt row: {rendered}"));
+    assert!(
+        !apt_row.contains("2.8.3"),
+        "an already-present manager's version is not this run's product: {apt_row}"
+    );
 }
 
 /// A run that installs everything it named states no count: the subject
@@ -11008,13 +11118,13 @@ fn an_install_that_landed_everything_it_named_states_no_count() {
         },
         origin: None,
     });
-    assert_eq!(super::action_produced_detail(&action, Some(2)), None);
+    assert_eq!(super::action_produced_detail(&action, Some(2), &[]), None);
     assert_eq!(
-        super::action_produced_detail(&action, Some(1)).as_deref(),
+        super::action_produced_detail(&action, Some(1), &[]).as_deref(),
         Some("1 of 2 packages")
     );
     // A preview has not run, so it has no count of its own to state.
-    assert_eq!(super::action_produced_detail(&action, None), None);
+    assert_eq!(super::action_produced_detail(&action, None, &[]), None);
 }
 
 /// A tool the module declares as a PACKAGE is provisioned by the module's own
@@ -14785,7 +14895,7 @@ fn format_module_action_item_deploy_many_files_truncates() {
     );
     let details: Vec<Option<String>> = phase
         .actions()
-        .map(|a| super::action_produced_detail(a, None))
+        .map(|a| super::action_produced_detail(a, None, &[]))
         .collect();
     assert_eq!(details, vec![Some("5 files".to_string())]);
 }
@@ -22631,7 +22741,18 @@ fn apply_manager_plan(
     state: &crate::state::StateStore,
     plan: &Plan,
 ) -> (ApplyResult, String) {
-    let (printer, buf) = Printer::for_test();
+    apply_manager_plan_at(registry, state, plan, crate::output::Verbosity::Quiet)
+}
+
+/// `apply_manager_plan` at a chosen verbosity, for a test reading a settled
+/// row's DETAIL: `Quiet` suppresses the human tree and keeps only what fails.
+fn apply_manager_plan_at(
+    registry: &ProviderRegistry,
+    state: &crate::state::StateStore,
+    plan: &Plan,
+    verbosity: crate::output::Verbosity,
+) -> (ApplyResult, String) {
+    let (printer, buf) = Printer::for_test_at(verbosity);
     let reconciler = Reconciler::new(registry, state);
     let result = reconciler
         .apply(
@@ -22652,7 +22773,7 @@ fn apply_manager_plan(
 
 #[test]
 fn a_node_waits_for_the_node_it_names() {
-    // The §3.3 edge `apt(index) -> curl(prereq) -> brew(provision)`, minus the
+    // The edge `apt(index) -> curl(prereq) -> brew(provision)`, minus the
     // refresh: brew's provision may not begin while the tool its cascade shells
     // out to is still being installed.
     let probe = LaneProbe::holding(&["apt:curl"]);
@@ -22755,7 +22876,7 @@ fn two_nodes_on_one_manager_share_its_lane() {
 
 #[test]
 fn a_failed_node_fails_its_dependents_with_the_root_cause() {
-    // §3.4: brew's provision fails, so neither npm nor pnpm — which install
+    // brew's provision fails, so neither npm nor pnpm — which install
     // through it, one at a remove — runs at all, and each names brew rather
     // than the link above it.
     let log = new_dispatch_log();
@@ -23022,7 +23143,7 @@ fn an_index_refresh_in_a_lane_reads_the_real_state_store() {
 
 #[test]
 fn the_managers_group_completes_before_the_env_group_begins() {
-    // §4's producer-before-consumer rule, which the phase's split dispatch is
+    // The producer-before-consumer rule, which the phase's split dispatch is
     // what could break: `cfgd:managers` creates the binaries and `cfgd:env`
     // publishes where they live, so no env surface may be written while a
     // provision is still running.
@@ -25353,7 +25474,7 @@ fn a_deployed_file_matching_its_source_is_elided_and_the_subset_names_itself() {
     );
     let details: Vec<String> = files_phase
         .actions()
-        .filter_map(|a| super::action_produced_detail(a, None))
+        .filter_map(|a| super::action_produced_detail(a, None, &[]))
         .collect();
     assert_eq!(
         details,

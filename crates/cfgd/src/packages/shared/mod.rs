@@ -1384,6 +1384,39 @@ pub(super) fn sudo_cmd_with_seam(program: &str) -> Command {
     sudo_cmd(program)
 }
 
+/// The version a manager's own binary reports, for
+/// [`PackageManager::tool_version`]: `cmd` run to completion, its first
+/// dotted number taken. `None` on a spawn failure, a non-zero exit or a
+/// banner holding no version, so a row that cannot state the fact states
+/// nothing rather than a guess.
+pub(super) fn tool_version_from(cmd: &mut Command) -> Option<String> {
+    let out = cfgd_core::command_output_with_timeout(cmd, cfgd_core::COMMAND_TIMEOUT).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_tool_version(&cfgd_core::stdout_lossy_trimmed(&out))
+}
+
+/// The first dotted number in a `--version` banner, its `v`/`go` prefix and
+/// trailing punctuation dropped: `Homebrew 4.6.3` → `4.6.3`, `go version
+/// go1.24.1 linux/amd64` → `1.24.1`, `v1.8.1911` → `1.8.1911`, `apk-tools
+/// 2.14.4, compiled for x86_64.` → `2.14.4`. A token with no digit after its
+/// letters, or no dot, is a word.
+pub(super) fn parse_tool_version(banner: &str) -> Option<String> {
+    banner
+        .split_whitespace()
+        .map(|token| token.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
+        .map(|token| token.trim_start_matches(|c: char| c.is_ascii_alphabetic()))
+        .find(|token| {
+            token.contains('.')
+                && token.chars().next().is_some_and(|c| c.is_ascii_digit())
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
+        })
+        .map(str::to_string)
+}
+
 /// Parse a "Version: X.Y.Z" line from command output.
 /// Used by flatpak, winget, and scoop version queries.
 pub(super) fn parse_version_field(output: &str) -> Option<String> {

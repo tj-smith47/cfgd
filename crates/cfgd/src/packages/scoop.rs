@@ -90,6 +90,10 @@ impl PackageManager for ScoopManager {
         "scoop"
     }
 
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(scoop_cmd().arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         cfgd_core::command_available("scoop")
     }

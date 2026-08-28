@@ -559,9 +559,11 @@ impl<'x> PackageExec<'x> {
         };
         let mut changed = true;
         // How many of the managers this node NAMES it actually had to install,
-        // for the detail beside its own row. Set by the provision arm alone —
-        // every other node installs exactly what its subject names.
+        // and what version each of those reports once it is here, for the
+        // detail beside its own row. Set by the provision arm alone — every
+        // other node installs exactly what its subject names.
         let mut provisioned_now: Option<usize> = None;
+        let mut delivered: Vec<(String, String)> = Vec::new();
         match action {
             // An index refresh is best-effort and never fails the phase: a
             // flaky mirror must not turn a run into a failure the installs
@@ -680,6 +682,14 @@ impl<'x> PackageExec<'x> {
                         }
                         .into());
                     }
+                    // What the run PUT here, read off the binary it just
+                    // verified; a member that was here already produced
+                    // nothing this row can claim.
+                    if pending.contains(name)
+                        && let Some(version) = pm.tool_version()
+                    {
+                        delivered.push(((*name).to_string(), version));
+                    }
                 }
             }
             ManagerAction::Prerequisite {
@@ -700,7 +710,7 @@ impl<'x> PackageExec<'x> {
                 .into());
             }
         }
-        let run = ActionRun::new(action.node_id(), changed);
+        let run = ActionRun::new(action.node_id(), changed).delivering(delivered);
         Ok(match provisioned_now {
             Some(landed) => run.installed(landed),
             None => run,
