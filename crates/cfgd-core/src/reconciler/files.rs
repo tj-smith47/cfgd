@@ -97,24 +97,17 @@ impl<'a> super::Reconciler<'a> {
                 if !matches!(strategy, FileStrategy::Symlink | FileStrategy::Hardlink) {
                     continue;
                 }
-                // A directory-shaped entry has no one content hash, and a
-                // Hardlink one is deployed as a copy rather than as a link.
-                if !file.source.is_file() {
-                    continue;
-                }
                 let target = crate::expand_tilde(&file.target);
+                // A Hardlink directory is deployed as a copy, and the
+                // convergence predicate already answers false for it.
                 if !super::modules::planned_file_converged(file, &target, strategy, None) {
                     continue;
                 }
-                let Ok(bytes) = std::fs::read(&file.source) else {
+                let Some((digest, _)) = link_deployed_digest(&file.source) else {
                     parts.clear();
                     break;
                 };
-                parts.push(format!(
-                    "{}:{}",
-                    crate::to_posix_string(&target),
-                    crate::sha256_hex(&bytes)
-                ));
+                parts.push(format!("{}:{digest}", crate::to_posix_string(&target)));
             }
             if parts.is_empty() {
                 continue;
@@ -162,4 +155,48 @@ impl<'a> super::Reconciler<'a> {
         };
         Ok(description)
     }
+}
+
+/// The content digest of everything a converged link entry deploys, and how
+/// many files that is: a file's own sha256 (so a single-file row records the
+/// bytes the deployed file holds), or for a directory link the fold of
+/// `<relative path>:<sha256>` over every regular file under it — the same
+/// tree the deploy walks (symlinks skipped, matching `copy_dir_recursive`).
+/// Read by BOTH halves of the recorded-hash refresh, the profile-level
+/// `spec.files.managed` rows and a module's aggregate, so a directory
+/// entry cannot be visible to one and invisible to the other.
+///
+/// `None` on any unreadable file: a digest over a partial reading is a
+/// confident wrong answer, and the recorded value must stand instead.
+pub fn link_deployed_digest(source: &std::path::Path) -> Option<(String, usize)> {
+    if !source.is_dir() {
+        return std::fs::read(source)
+            .ok()
+            .map(|bytes| (crate::sha256_hex(&bytes), 1));
+    }
+    let mut parts = Vec::new();
+    // A worklist rather than recursion: the tree's depth is module-supplied.
+    let mut pending = vec![source.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).ok()? {
+            let entry = entry.ok()?;
+            let ft = entry.file_type().ok()?;
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                pending.push(entry.path());
+                continue;
+            }
+            let bytes = std::fs::read(entry.path()).ok()?;
+            let relative = entry.path().strip_prefix(source).ok()?.to_path_buf();
+            parts.push(format!(
+                "{}:{}",
+                crate::to_posix_string(&relative),
+                crate::sha256_hex(&bytes)
+            ));
+        }
+    }
+    let files = parts.len();
+    Some((super::apply::hash_sorted_parts(parts), files))
 }
