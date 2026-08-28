@@ -29626,3 +29626,75 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
         offenders.join("\n")
     );
 }
+
+/// Every verb that runs a plan records `managed_resources` rows with no hash,
+/// and settles them through the ONE `refresh_link_deployed_hashes` seam
+/// before it returns — or the daemon's first tick after it backfills the
+/// rows and reports the backfill as deployed files having moved. `init
+/// --apply` skipped the seam `apply` used, which is how a freshly bootstrapped
+/// machine's first idle tick read `1 deployed file refreshed`. A preview
+/// writes no row and needs no refresh; it hatches with
+/// `// no-hash-refresh-ok: <why>` on the `ApplyRun::new` line or the one above.
+#[test]
+fn every_plan_running_verb_settles_its_link_deployed_hashes() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut sources = Vec::new();
+    let mut pending = vec![root];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                sources.push(path);
+            }
+        }
+    }
+    // The daemon's own applying tick is the third apply path; it holds its
+    // file manager apart from the registry, so it reaches the core seam
+    // directly rather than through the CLI helper.
+    sources.push(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../cfgd-core/src/daemon/reconcile.rs"),
+    );
+    let mut seen = 0usize;
+    let mut unsettled = Vec::new();
+    for path in sources {
+        let body = production_body(&std::fs::read_to_string(&path).unwrap());
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains("ApplyRun::new(") {
+                continue;
+            }
+            // The title is on this line's context: a `RunTitle::Plan` run or
+            // a `.preview_only()` run executes nothing and records nothing.
+            let statement: String = lines[n..(n + 12).min(lines.len())].join("\n");
+            let statement = statement.split(';').next().unwrap_or("");
+            if statement.contains("RunTitle::Plan") || statement.contains(".preview_only()") {
+                continue;
+            }
+            let hatched = lines[n.saturating_sub(1)..=n]
+                .iter()
+                .any(|l| l.contains("// no-hash-refresh-ok:"));
+            if hatched {
+                continue;
+            }
+            seen += 1;
+            let rest = lines[n..].join("\n");
+            if !rest.contains("refresh_link_deployed_hashes(") {
+                unsettled.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        seen >= 4,
+        "the walk no longer reaches the apply paths (apply, init --apply, module create \
+         --apply, the daemon tick) — it found {seen}"
+    );
+    assert!(
+        unsettled.is_empty(),
+        "a verb that runs a plan must settle its link-deployed hashes through \
+         `refresh_link_deployed_hashes` before it returns:\n{}",
+        unsettled.join("\n")
+    );
+}

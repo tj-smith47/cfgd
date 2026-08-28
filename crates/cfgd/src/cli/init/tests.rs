@@ -5756,3 +5756,80 @@ fn every_checkout_row_spells_its_revision_through_the_one_derivation() {
         offenders.join("\n")
     );
 }
+
+/// `init --apply` records the same hashless rows `apply` does, and `apply`
+/// settles them before it returns; `init` did not, so the daemon's first tick
+/// on a freshly bootstrapped machine backfilled them and reported the backfill
+/// as `N deployed files refreshed`. One seam for every verb that applies.
+#[test]
+#[cfg(unix)]
+fn init_apply_settles_the_hash_of_every_link_deployed_row_before_it_returns() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("modules/nvim/files/init.lua");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "require('config')\n").unwrap();
+    let target = dir.path().join("home/.config/nvim/init.lua");
+
+    let (printer, _cap) = Printer::for_test_doc();
+    let registry = super::build_registry_with_config(None);
+    let store = super::open_state_store(Some(dir.path()), cfgd_core::Scope::User).unwrap();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+    let resolved = config::ResolvedProfile {
+        layers: Vec::new(),
+        merged: config::MergedProfile::default(),
+    };
+    let mut module = cfgd_core::test_helpers::make_resolved_module("nvim");
+    module.packages.clear();
+    module.files = vec![cfgd_core::modules::ResolvedFile {
+        source,
+        target: target.clone(),
+        is_git_source: false,
+        strategy: Some(cfgd_core::config::FileStrategy::Symlink),
+        encryption: None,
+        permissions: None,
+        patch: None,
+    }];
+    let modules = vec![module];
+    let mut plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules.clone(),
+            cfgd_core::reconciler::ReconcileContext::Apply,
+        )
+        .unwrap();
+    assert!(!plan.is_empty(), "the module's link is work to do");
+
+    apply_plan(
+        &mut plan,
+        reconciler,
+        &resolved,
+        &modules,
+        dir.path(),
+        ApplyPlanOpts {
+            dry_run: false,
+            yes: true,
+            state_dir: Some(dir.path()),
+            scope: cfgd_core::Scope::User,
+            profile: None,
+            state: &store,
+            on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
+        },
+        &printer,
+    )
+    .unwrap();
+    assert!(target.is_symlink(), "the apply deployed the link");
+
+    let rows = store.managed_resources().unwrap();
+    let module_row = rows
+        .iter()
+        .find(|r| r.resource_type == "module" || r.resource_id.contains("nvim"))
+        .unwrap_or_else(|| panic!("the apply recorded the module's files row: {rows:?}"));
+    assert!(
+        module_row.last_hash.is_some(),
+        "init --apply must settle the row's hash before it returns, so the daemon's \
+         first tick has nothing to backfill: {module_row:?}"
+    );
+}

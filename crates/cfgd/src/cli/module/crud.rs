@@ -366,6 +366,15 @@ pub fn cmd_module_create(
             match run.execute(printer, confirm, &mut exec)? {
                 cfgd_core::reconciler::RunDisposition::Applied { result, .. } => {
                     apply_status = result.status.clone();
+                    // The rows this apply just recorded carry no hash; settle
+                    // them here as every applying verb does, or the daemon's
+                    // next tick backfills them and reports the backfill as
+                    // deployed files having moved.
+                    crate::cli::apply::refresh_link_deployed_hashes(
+                        &reconciler,
+                        &resolved,
+                        &resolved_modules,
+                    );
                     // A module whose packages come from a manager this apply
                     // bootstrapped leaves the invoking shell one `source` away
                     // from reaching them.
