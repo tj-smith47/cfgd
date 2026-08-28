@@ -2,6 +2,7 @@
   "apiVersion": "cfgd.io/v1alpha1",
   "description": "A reusable unit of packages, files, scripts, and environment.",
   "docs": "docs/spec/module.md#fields",
+  "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/module.md#fields",
   "fields": [
     {
       "children": [

@@ -4,7 +4,7 @@ Explain: Module
 apiVersion  cfgd.io/v1alpha1
 kind        Module
 Location    modules/<name>/module.yaml
-Docs        docs/spec/module.md#fields
+Docs        https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/module.md#fields
 
 Fields (under spec)
   aliases    <[]ShellAlias>         [+] — Shell aliases this module contributes.

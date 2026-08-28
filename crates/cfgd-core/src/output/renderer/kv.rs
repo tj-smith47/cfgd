@@ -225,12 +225,25 @@ impl Emitting<'_> {
     /// parenthesising it would enclose the whole column and read as an aside
     /// about nothing.
     fn compose_kv_value(&self, pair: &KvPair) -> String {
+        // A linked value is the link's TEXT only where the terminal can open
+        // it; anywhere else the URL is the value, because a partial path is
+        // something no reader can click and no terminal auto-links.
+        let shown = match pair.link.as_deref() {
+            Some(url) if !self.theme.hyperlinks() => url,
+            _ => pair.value.as_str(),
+        };
         let value = match pair.value_role {
-            Some(role) if !pair.value.is_empty() => {
+            Some(role) if !shown.is_empty() => {
                 let (_, style) = super::role_glyph(self.theme, role);
-                style.apply_to(cursor_safe(&pair.value)).to_string()
+                style.apply_to(cursor_safe(shown)).to_string()
             }
-            _ => cursor_safe(&pair.value),
+            _ => cursor_safe(shown),
+        };
+        let value = match pair.link.as_deref() {
+            Some(url) if self.theme.hyperlinks() => {
+                crate::output::osc8_hyperlink(&cursor_safe(url), &value)
+            }
+            _ => value,
         };
         let Some(annotation) = pair.annotation.as_deref().filter(|a| !a.is_empty()) else {
             return value;

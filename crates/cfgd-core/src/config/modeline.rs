@@ -17,6 +17,22 @@ const MODELINE_PREFIX: &str = "# yaml-language-server: $schema=";
 /// and is not what a modeline may depend on).
 const SCHEMA_URL_BASE: &str = "https://raw.githubusercontent.com/tj-smith47/cfgd";
 
+/// Where a docs pointer resolves: the repository's `docs/` tree rendered by
+/// GitHub, at the release tag of the running cfgd. Pinned to the binary's
+/// version for the reason `SCHEMA_URL_BASE` is — the page then matches the
+/// schema the binary explains, not whatever `master` has moved on to.
+const DOCS_URL_BASE: &str = "https://github.com/tj-smith47/cfgd/blob";
+
+/// The URL a repo-relative docs pointer (`docs/spec/module.md#fields`) opens
+/// at, for the running cfgd: `https://github.com/tj-smith47/cfgd/blob/v<version>/docs/...`.
+///
+/// `version` is the **cfgd binary crate's**, exactly as [`schema_modeline`]
+/// takes it and for the same reason: the release tag is `v<cfgd version>`, and
+/// cfgd-core's own version is not a tag anything is published under.
+pub fn docs_url(path: &str, version: &str) -> String {
+    format!("{DOCS_URL_BASE}/v{version}/{path}")
+}
+
 /// Document kinds cfgd scaffolds, keyed to their schema filename under
 /// `schemas/` (`cfgd-<slug>.schema.json`).
 ///

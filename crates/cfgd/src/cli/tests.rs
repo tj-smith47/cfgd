@@ -30206,3 +30206,50 @@ fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
         offenders.join("\n")
     );
 }
+
+/// A docs pointer is a repo-relative path (`docs/spec/module.md#fields`) —
+/// something no terminal auto-links and no reader can paste into a browser.
+/// `ResourceSchema::docs_url` is the ONE derivation that turns it into the
+/// release-pinned GitHub URL, and `KvPair::linked` the ONE slot that renders
+/// it: the short path where the terminal opens an OSC 8 hyperlink, the URL
+/// itself everywhere else. A second `Docs` row built with the plain kv shapes
+/// would print the bare path again, which is the state this pin retires.
+#[test]
+fn every_docs_pointer_the_cli_renders_goes_through_the_linked_slot() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = walk_rust_files(&src);
+    files.sort();
+    let mut linked = 0usize;
+    let mut offenders = Vec::new();
+    for path in files {
+        if path.file_name().is_some_and(|n| n == "tests.rs")
+            || path.components().any(|c| c.as_os_str() == "tests")
+        {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (n, line) in production_body(&body).lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || !code.contains("\"Docs\"") {
+                continue;
+            }
+            if code.contains("KvPair::linked(\"Docs\"") {
+                linked += 1;
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a `Docs` row carries the URL `ResourceSchema::docs_url` derives, through \
+         `KvPair::linked` — never the bare repo-relative path a reader cannot open:\n{}",
+        offenders.join("\n")
+    );
+    assert_eq!(
+        linked, 1,
+        "explain's schema overview is the one surface rendering a `Docs` row; found {linked}"
+    );
+}

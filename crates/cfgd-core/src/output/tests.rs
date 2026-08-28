@@ -16,6 +16,8 @@ mod corners;
 mod cursor_safe_slots;
 mod fences;
 #[cfg(feature = "test-helpers")]
+mod hyperlinks;
+#[cfg(feature = "test-helpers")]
 mod indent;
 #[cfg(feature = "test-helpers")]
 mod kv_nested;

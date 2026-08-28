@@ -316,6 +316,13 @@ pub struct Theme {
     /// slots and the decision disagreeing — every preset is built here and
     /// stamped by the `Printer` that will render through it.
     colors: bool,
+    /// Whether a linked value may emit an OSC 8 hyperlink, stamped by
+    /// [`Theme::with_hyperlinks`]. Held beside `colors` because the two are
+    /// one decision: a hyperlink is an escape sequence, so a printer that may
+    /// not emit colour may not emit one either. Private for the same reason
+    /// `colors` is — a preset cannot be assembled with the slots and the
+    /// decision disagreeing.
+    hyperlinks: bool,
 
     // Style slots (14)
     /// Style for an action subject at the deepest level of the run tree.
@@ -364,6 +371,7 @@ impl Default for Theme {
     fn default() -> Self {
         Self {
             colors: false,
+            hyperlinks: false,
             // No palette foreground exists to spend here, and the terminal's
             // own default is the fall-through this slot exists to avoid — so
             // the subject keeps its role style.
@@ -406,6 +414,9 @@ impl Theme {
     /// an unrelated thread flipped a process-global flag mid-render.
     pub fn with_colors(mut self, enabled: bool) -> Self {
         self.colors = enabled;
+        // Colour withdrawn withdraws the hyperlink with it, whatever order the
+        // two stamps arrive in: an OSC 8 sequence is an escape like any other.
+        self.hyperlinks &= enabled;
         self.primary = self.primary.map(|s| s.with_colors(enabled));
         self.header = self.header.with_colors(enabled);
         self.success = self.success.with_colors(enabled);
@@ -426,6 +437,20 @@ impl Theme {
     /// Whether styles from this theme may emit colour.
     pub fn colors(&self) -> bool {
         self.colors
+    }
+
+    /// Stamp whether a linked value may emit an OSC 8 hyperlink. Only the
+    /// production printer stamps `true`, and only when colour is on and the
+    /// terminal is a known OSC 8 emitter ([`super::terminal_supports_hyperlinks`]);
+    /// every capture leaves it off, so goldens stay ANSI-free.
+    pub fn with_hyperlinks(mut self, enabled: bool) -> Self {
+        self.hyperlinks = enabled && self.colors;
+        self
+    }
+
+    /// Whether a linked value may emit an OSC 8 hyperlink.
+    pub fn hyperlinks(&self) -> bool {
+        self.hyperlinks
     }
 
     /// The ONE arrow glyph for a rendered `old -> new` relationship
@@ -854,6 +879,7 @@ impl Theme {
     fn minimal() -> Self {
         Self {
             colors: false,
+            hyperlinks: false,
             // minimal spends no colour at all.
             primary: None,
             header: ThemedStyle::plain().bold(),

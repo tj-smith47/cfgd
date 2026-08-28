@@ -80,6 +80,71 @@ mod cursor;
 pub use cursor::claim_termination_signals;
 
 pub mod printer;
+
+/// The `TERM_PROGRAM` values of terminals that render OSC 8 hyperlinks.
+const HYPERLINK_TERM_PROGRAMS: &[&str] = &["iTerm.app", "WezTerm", "vscode", "ghostty", "Hyper"];
+
+/// Terminals that identify themselves by a variable of their own rather than
+/// by `TERM_PROGRAM`; presence alone is the identification.
+const HYPERLINK_TERMINAL_VARS: &[&str] = &[
+    "WT_SESSION",
+    "KITTY_WINDOW_ID",
+    "ALACRITTY_WINDOW_ID",
+    "ALACRITTY_SOCKET",
+    "KONSOLE_VERSION",
+];
+
+/// The minimum VTE release that renders OSC 8, in VTE's own `MMmmpp` encoding
+/// (0.50.0). GNOME Terminal, Tilix and every other VTE embedder reports it.
+const HYPERLINK_MIN_VTE_VERSION: u32 = 5000;
+
+/// Every environment variable [`terminal_supports_hyperlinks`] reads — the
+/// list a test clears to assert the negative, so the two cannot drift apart.
+#[cfg(test)]
+const HYPERLINK_ENV_VARS: &[&str] = &[
+    "TERM_PROGRAM",
+    "VTE_VERSION",
+    "WT_SESSION",
+    "KITTY_WINDOW_ID",
+    "ALACRITTY_WINDOW_ID",
+    "ALACRITTY_SOCKET",
+    "KONSOLE_VERSION",
+];
+
+/// Whether the terminal this process writes to renders OSC 8 hyperlinks.
+///
+/// DETECTED, never a flag: a hyperlink is a per-terminal capability, not a
+/// presentation knob a reader chooses. The answer is the terminal's own
+/// identification — `TERM_PROGRAM` for the emitters that set it, and the
+/// per-terminal variables for those that do not. A terminal not on the list
+/// prints the plain URL a linked value falls back to, so an unknown terminal
+/// costs a reader nothing but a longer line. Colour is a separate gate, judged
+/// by the caller ([`Theme::with_hyperlinks`]): a printer that may not emit
+/// colour may not emit this escape either.
+pub fn terminal_supports_hyperlinks() -> bool {
+    let program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+    if HYPERLINK_TERM_PROGRAMS.contains(&program.as_str()) {
+        return true;
+    }
+    if HYPERLINK_TERMINAL_VARS
+        .iter()
+        .any(|v| std::env::var_os(v).is_some_and(|value| !value.is_empty()))
+    {
+        return true;
+    }
+    // VTE-based terminals (GNOME Terminal, Tilix, …) render OSC 8 from 0.50.
+    std::env::var("VTE_VERSION")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .is_some_and(|v| v >= HYPERLINK_MIN_VTE_VERSION)
+}
+
+/// The OSC 8 hyperlink wrapping `text` so a click opens `url`; the text stays
+/// the terminal's visible bytes. The ONE spelling of the escape, read by the
+/// kv renderer's linked slot.
+pub(crate) fn osc8_hyperlink(url: &str, text: &str) -> String {
+    format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\")
+}
 pub use printer::{ColorChoice, DocCapture, Printer, PromptAnswer};
 
 pub mod owner_label;

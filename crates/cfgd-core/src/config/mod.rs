@@ -36,7 +36,7 @@ pub use daemon::{
     ReconcilePatch, ReconcilePatchKind,
 };
 pub use image_lock::{ImageLockEntry, ImagesLockfile};
-pub use modeline::{SchemaDocKind, schema_modeline, with_schema_modeline};
+pub use modeline::{SchemaDocKind, docs_url, schema_modeline, with_schema_modeline};
 pub use module::{
     ModuleDocument, ModuleFileEntry, ModuleLockEntry, ModuleLockfile, ModuleMetadata,
     ModulePackageEntry, ModuleRegistryEntry, ModuleSpec, ScriptCommand, ScriptEntry, ScriptShell,
