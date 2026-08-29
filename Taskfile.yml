@@ -361,25 +361,28 @@ tasks:
       # two version bumps both are stale, so verify compiles the crate under test
       # against an older copy of its sibling. Drop ours, unpack and build alike;
       # an index.crates.io-* unpack is a real published crate and is never touched.
+      # The build half globs every profile dir rather than debug/ alone: the
+      # verify runs in dev today, and a profile the flag or config moves it to
+      # would leave the stale rlib in a dir a debug-only scan cannot see.
       - |
         tgt="${CARGO_TARGET_DIR:-target}"
         src="${CARGO_HOME:-$HOME/.cargo}/registry/src"
-        cargo metadata --no-deps --format-version 1 \
+        crates=$(cargo metadata --no-deps --format-version 1 \
           | grep -o '"name":"[^"]*","version":"[^"]*"' \
-          | sed 's/"name":"\([^"]*\)","version":"\([^"]*\)"/\1-\2/' \
-          | while IFS= read -r crate; do
-              for d in "$src"/*/"$crate"; do
-                case "$d" in "$src"/index.crates.io-*) continue ;; esac
-                if [ -d "$d" ]; then rm -rf "$d"; fi
-              done
-              for f in "$tgt"/debug/deps/*.d; do
-                [ -f "$f" ] || continue
-                grep -q "registry/src/[^ ]*/$crate/" "$f" || continue
-                h=${f##*-}; h=${h%.d}
-                rm -rf "$tgt"/debug/deps/*-"$h" "$tgt"/debug/deps/*-"$h".* \
-                       "$tgt"/debug/.fingerprint/*-"$h"
-              done
-            done
+          | sed 's/"name":"\([^"]*\)","version":"\([^"]*\)"/\1-\2/')
+        [ -n "$crates" ] || exit 0
+        for crate in $crates; do
+          for d in "$src"/*/"$crate"; do
+            case "$d" in "$src"/index.crates.io-*) continue ;; esac
+            if [ -d "$d" ]; then rm -rf "$d"; fi
+          done
+        done
+        pat=$(printf '%s\n' "$crates" | sed 's|.*|registry/src/[^ ]*/&/|' | tr '\n' '|' | sed 's/|$//')
+        for f in $(grep -lE "$pat" "$tgt"/*/deps/*.d 2>/dev/null); do
+          h=${f##*-}; h=${h%.d}
+          d=${f%/deps/*}
+          rm -rf "$d"/deps/*-"$h" "$d"/deps/*-"$h".* "$d"/.fingerprint/*-"$h"
+        done
       # No --no-verify: the verify build compiles each crate FROM ITS TARBALL —
       # the only local gate that catches sources escaping the crate directory
       # (e.g. include_str! of workspace-root files), which packages fine but
