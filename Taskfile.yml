@@ -384,7 +384,7 @@ tasks:
           | sed 's/[][^$.*+?(){}|\\]/\\&/g' \
           | sed 's|.*|registry/src/[^ ]*/&/|' \
           | tr '\n' '|' | sed 's/|$//')
-        for f in $(grep -lE "$pat" "$tgt"/*/deps/*.d 2>/dev/null); do
+        grep -lZE "$pat" "$tgt"/*/deps/*.d 2>/dev/null | while IFS= read -r -d '' f; do
           h=${f##*-}; h=${h%.d}
           d=${f%/deps/*}
           rm -rf "$d"/deps/*-"$h" "$d"/deps/*-"$h".* "$d"/.fingerprint/*-"$h"
