@@ -601,6 +601,24 @@ packages only: it does not evaluate the module's system-config contribution
 (`effective_system_map` folds that into the profile-wide scan) or manager
 drift, matching the scope of `cfgd diff --module`.
 
+The fleet report's `Managed Resources` table names an owner per row, in the same
+vocabulary the plan and apply trees head their groups with and `cfgd diff`
+reports drift under: `profile:<name>` for a resource the profile declared,
+`module:<name>` for one a module declared, and `cfgd` for what cfgd manages on
+its own behalf (the generated env file, the rc source line, the live-session
+publish). A run that resolves no profile has no name to state, and its
+profile-declared rows read the bare kind word `profile`.
+
+```
+Managed Resources
+  Type     Owner             Resource                           Source
+  ────────────────────────────────────────────────────────────────────
+  env      cfgd              /home/you/.cfgd.env                local
+  file     module:nvim       /home/you/.config/nvim (12 files)  local
+  file     profile:work      ~/.bashrc                          local
+  package  profile:work      brew: bat, ripgrep                 local
+```
+
 The default module report is a summary: one count per declared surface, then
 what the scan found. `Scripts` is the total, broken down one indented row per
 hook in the order the hooks run, so a module's `preApply` work is
