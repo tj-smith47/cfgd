@@ -20,9 +20,9 @@ Managed Resources
   Type     Owner             Resource                                    Source
   ─────────────────────────────────────────────────────────────────────────────
   env      cfgd              /home/user/.cfgd.env                        local 
-  file     cfgd              ~/.bashrc                                   local 
   file     module:dev-tools  /home/user/.config/nvim (12 files)          local 
-  package  cfgd              brew: bat, ripgrep                          local 
+  file     profile:default   ~/.bashrc                                   local 
   package  module:dev-tools  apt: cargo, gcc, git                        local 
   package  module:dev-tools  brew: age, fd, neovim                       local 
+  package  profile:default   brew: bat, ripgrep                          local 
   script   module:dev-tools  preApply (1 script), postApply (2 scripts)  local 
