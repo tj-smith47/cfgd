@@ -639,7 +639,10 @@ pub(super) fn stage_payload(
     let payload = dir.path().join("payload");
     let meta = std::fs::symlink_metadata(source).map_err(staging_failed)?;
     if meta.is_dir() {
-        crate::copy_dir_recursive(source, &payload).map_err(staging_failed)?;
+        // Links preserved: a snapshot payload never holds one (the snapshot
+        // writer skips them), but a rollback's payload is the sidecar beside a
+        // live source, which does.
+        crate::copy_dir_recursive_preserving_symlinks(source, &payload).map_err(staging_failed)?;
     } else {
         std::fs::copy(source, &payload).map_err(staging_failed)?;
     }
@@ -714,9 +717,18 @@ fn overlay_dir(payload: &Path, target: &Path) -> std::io::Result<()> {
         } else if kind.is_file() {
             let meta = entry.metadata()?;
             super::copy_file_snapshot(&source, &meta, &destination)?;
+        } else if kind.is_symlink() {
+            // A rollback's payload is a sidecar beside live data, so it carries
+            // the links the sidecar writer recreated. Whatever occupies the
+            // destination is removed unfollowed first, for the reason this
+            // whole walker exists: writing through a link that is already there
+            // reaches outside the target.
+            let link = std::fs::read_link(&source)?;
+            super::remove_existing(&destination)?;
+            crate::create_symlink(&link, &destination)?;
         }
-        // Nothing else can appear: the payload is a copy of a snapshot, and the
-        // snapshot writer skips symlinks and special files outright.
+        // Nothing else can appear: a payload holds regular files, directories,
+        // and — for a rollback — the symlinks its sidecar preserved.
     }
     crate::carry_dir_mode(payload, target);
     Ok(())

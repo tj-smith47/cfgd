@@ -562,6 +562,28 @@ fn backup_rollback_puts_back_what_the_restore_overwrote() {
     );
 }
 
+/// The newest `<source>.cfgd-backup*` beside `source` — what
+/// `cfgd_core::backup::rollback_copy` selects, read off the filesystem so an
+/// integration test needs no `BackupUnit` of its own.
+fn newest_sidecar_beside(source: &Path) -> std::path::PathBuf {
+    let dir = source.parent().expect("source has a parent");
+    let base = format!(
+        "{}.cfgd-backup",
+        source.file_name().expect("source name").to_string_lossy()
+    );
+    std::fs::read_dir(dir)
+        .expect("read the source directory")
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&base))
+        .max_by_key(|e| {
+            e.metadata()
+                .and_then(|m| m.modified())
+                .expect("sidecar mtime")
+        })
+        .map(|e| e.path())
+        .expect("a sidecar beside the source")
+}
+
 #[test]
 fn backup_rollback_is_its_own_inverse() {
     // A rollback copies the contents it displaces aside, so the second one puts
@@ -580,7 +602,17 @@ fn backup_rollback_is_its_own_inverse() {
     };
     roll();
     assert_eq!(std::fs::read_to_string(&source).unwrap(), "live");
+
+    // The second rollback's payload is the stamped sidecar the first left, and
+    // the safety copy it takes reuses the primary — whose prune then deletes
+    // that very payload. Staging it first is what makes that harmless, and this
+    // is the assertion that says so out loud.
+    let payload = newest_sidecar_beside(&source);
     roll();
+    assert!(
+        !payload.exists(),
+        "the prune really does delete the copy the rollback was reading from"
+    );
     assert_eq!(
         std::fs::read_to_string(&source).unwrap(),
         "hello backup",

@@ -101,11 +101,18 @@ pub fn backup_file(target: &Path) -> Result<SidecarOutcome> {
     }
 
     if meta.is_dir() {
-        // Same reservation, and load-bearing here: `copy_dir_recursive` writes
-        // INTO an existing directory, so an occupied sidecar would silently
-        // merge two different originals into one tree.
+        // Same reservation, and load-bearing here: the tree copy writes INTO an
+        // existing directory, so an occupied sidecar would silently merge two
+        // different originals into one tree.
+        //
+        // Links are RECREATED rather than skipped, which is where this copy
+        // parts company with a snapshot's: a snapshot is a point-in-time record
+        // and skipping a link loses nothing that can be put back wrongly, while
+        // this sidecar is the promise that what cfgd displaced can be restored
+        // — and a link it drops is one the overlay that puts the tree back can
+        // never replace, leaving the target as neither generation.
         let backup_path = reserve_backup_path(target, None)?;
-        crate::copy_dir_recursive(target, &backup_path)
+        crate::copy_dir_recursive_preserving_symlinks(target, &backup_path)
             .map_err(|e| failed(target, format!("{e}")))?;
         prune_stamped_sidecars(target, &backup_path);
         return Ok(SidecarOutcome::new(backup_path, false));

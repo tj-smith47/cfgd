@@ -1043,7 +1043,7 @@ fn staging_path(target: &Path) -> PathBuf {
 /// The metadata is read **unfollowed**, so a symlink occupying the path is
 /// deleted itself rather than having its target truncated — the property the
 /// restore overlay depends on to never write outside its target.
-fn remove_existing(path: &Path) -> std::io::Result<()> {
+pub(super) fn remove_existing(path: &Path) -> std::io::Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
         // Windows reports a directory symlink or junction as a symlink, not a
