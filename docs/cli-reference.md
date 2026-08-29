@@ -1935,8 +1935,9 @@ without `--yes` is an error rather than a silent no-op. See [Restoring](backups.
 wrong snapshot. It runs through the same envelope: the unit's lock, the one `preBackup` /
 `postBackup` hook list (seeing `CFGD_OPERATION=rollback`), and the same confirmation and `--yes`
 rule, including the safety copy: the contents it displaces are copied aside as their own sidecar
-first, so a rollback is itself reversible and a second one returns the source to where it
-started. One copy is retained per source: a new displacement prunes the older stamped
+first — symlinks inside a directory source included — so a rollback is itself reversible and a
+second one returns the source to where it started. A failed safety copy refuses the rollback
+before anything is written. One copy is retained per source: a new displacement prunes the older stamped
 sidecars cfgd itself wrote for that path, and nothing else in the directory. With no name it
 lists what it could put back and changes nothing; a unit with no copy beside its source is exit
 `6` with a `cfgd backup restore <name>` hint. See
@@ -2205,7 +2206,7 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | Code | Meaning | Emitted by |
 |---|---|---|
 | `0` | Operation succeeded. | All commands on success. |
-| `1` | Generic failure (network, IO, unclassified internal error). Also a `cfgd backup run` that recorded a failed or unclean snapshot (see [Run Semantics](backups.md#run-semantics)), a `cfgd backup restore` or `cfgd backup rollback` whose overlay or hooks failed, and `cfgd diff --exit-code` when a system configurator's own check failed — drift is undetermined rather than absent, which outranks `5`. | Any command whose `Result` resolves to a non-config error, and `cfgd diff --exit-code` on a failed configurator check. |
+| `1` | Generic failure (network, IO, unclassified internal error). Also a `cfgd backup run` that recorded a failed or unclean snapshot (see [Run Semantics](backups.md#run-semantics)), a `cfgd backup restore` or `cfgd backup rollback` whose overlay, safety copy or hooks failed, and `cfgd diff --exit-code` when a system configurator's own check failed — drift is undetermined rather than absent, which outranks `5`. | Any command whose `Result` resolves to a non-config error, and `cfgd diff --exit-code` on a failed configurator check. |
 | `2` | An upgrade is available but not installed. | `cfgd upgrade --check` only. |
 | `3` | No cfgd config file at the resolved path. | Any command when `--config` points to a missing file. |
 | `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |

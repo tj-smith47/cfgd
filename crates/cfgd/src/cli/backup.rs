@@ -1030,6 +1030,28 @@ mod tests {
         assert_eq!((tally.succeeded, tally.failed), (0, 1));
     }
 
+    /// The arm where the hint matters most: the copy landed and the overlay
+    /// then failed, which for a directory unit leaves a mixed tree — so the
+    /// line naming the complete copy IS the recovery instruction, and it must
+    /// be on screen beside the failure rather than only beside a success.
+    #[test]
+    fn a_failed_rollback_still_says_where_the_copy_it_took_went() {
+        let mut outcome = rollback_outcome(Some("target busy"), false);
+        outcome.safety_copy = Some(cfgd_core::reconciler::SidecarOutcome {
+            path: std::path::PathBuf::from("/home/u/notes.txt.cfgd-backup.20260101T000000Z"),
+            reused: false,
+        });
+        let (human, tally) = rendered_rollback(&outcome);
+        assert_eq!(tally.status, cfgd_core::state::ApplyStatus::Failed);
+        assert!(rollback_row(&human).contains("target busy"), "{human}");
+        assert!(
+            human.contains(
+                "Previous contents backed up to /home/u/notes.txt.cfgd-backup.20260101T000000Z"
+            ),
+            "{human}"
+        );
+    }
+
     /// Where the displaced contents went is the one thing an operator who
     /// regrets a rollback needs, and the sidecar's own outcome words it.
     #[test]

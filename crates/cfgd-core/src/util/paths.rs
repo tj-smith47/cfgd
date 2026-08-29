@@ -1082,7 +1082,9 @@ pub fn dir_size(path: &std::path::Path) -> std::result::Result<u64, std::io::Err
 
 /// Recursively copy a directory from source to target.
 ///
-/// Skips symlinks to prevent symlink-following attacks and infinite loops.
+/// Skips symlinks to prevent symlink-following attacks and infinite loops. Use
+/// [`copy_dir_recursive_preserving_symlinks`] where the copy must be able to
+/// put the tree back exactly as it was.
 /// `fs::copy` already carries file modes across; each directory's mode is
 /// applied too (Unix), so a `0700` tree does not land as a `0755` copy that
 /// exposes what the original protected. Windows has no mode bits, so the copy
@@ -1096,28 +1098,69 @@ pub fn copy_dir_recursive(
     src: &std::path::Path,
     dst: &std::path::Path,
 ) -> std::result::Result<(), std::io::Error> {
+    copy_dir_tree(src, dst, SymlinkPolicy::Skip)
+}
+
+/// The same copy, with every symlink RECREATED at its counterpart name instead
+/// of skipped — its target string written back verbatim, relative or absolute,
+/// and never followed.
+///
+/// For a copy that is a REVERSIBILITY guarantee rather than a snapshot: the
+/// sidecar [`crate::reconciler::backup_file`] leaves beside a directory it
+/// displaces, and the staging `backup restore` and `backup rollback` publish
+/// from. A link the operator made inside a directory source is part of what
+/// that copy promises to put back, and one it drops is one the overlay can
+/// never replace — an overlay adds and replaces but never deletes, so the
+/// source lands as neither generation. Recreating a link is not following one:
+/// nothing is read or written through it, so the traversal stays inside the
+/// source exactly as the skip did.
+///
+/// A snapshot keeps the skip on purpose — see [`copy_dir_recursive`].
+pub fn copy_dir_recursive_preserving_symlinks(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> std::result::Result<(), std::io::Error> {
+    copy_dir_tree(src, dst, SymlinkPolicy::Recreate)
+}
+
+/// What a tree copy does with a symlink it meets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SymlinkPolicy {
+    Skip,
+    Recreate,
+}
+
+fn copy_dir_tree(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    links: SymlinkPolicy,
+) -> std::result::Result<(), std::io::Error> {
     std::fs::create_dir_all(dst)?;
     // Resolved once, up front: a lexically disjoint `dst` can still land inside
     // `src` through a symlinked ancestor, and the walk would then find its own
     // output and descend into it forever.
     let dst_root = dst.canonicalize().unwrap_or_else(|_| dst.to_path_buf());
-    copy_dir_into(src, dst, &dst_root)
+    copy_dir_into(src, dst, &dst_root, links)
 }
 
 fn copy_dir_into(
     src: &std::path::Path,
     dst: &std::path::Path,
     dst_root: &std::path::Path,
+    links: SymlinkPolicy,
 ) -> std::result::Result<(), std::io::Error> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
-        // Skip symlinks — prevents following links outside the source tree
+        let dst_path = dst.join(entry.file_name());
         if file_type.is_symlink() {
+            if links == SymlinkPolicy::Recreate {
+                let dest = std::fs::read_link(entry.path())?;
+                super::fs_perms::create_symlink(&dest, &dst_path)?;
+            }
             continue;
         }
-        let dst_path = dst.join(entry.file_name());
         if file_type.is_dir() {
             let entry_path = entry.path();
             if entry_path
@@ -1126,7 +1169,7 @@ fn copy_dir_into(
             {
                 continue;
             }
-            copy_dir_into(&entry_path, &dst_path, dst_root)?;
+            copy_dir_into(&entry_path, &dst_path, dst_root, links)?;
         } else {
             std::fs::copy(entry.path(), &dst_path)?;
         }

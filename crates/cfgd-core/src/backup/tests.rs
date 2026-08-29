@@ -3272,6 +3272,48 @@ fn a_rollback_whose_pre_backup_hook_failed_writes_nothing() {
     assert!(staging_leftovers(&h.root).is_empty());
 }
 
+/// The sidecar is a reversibility guarantee, so it carries the links inside a
+/// directory source — and the whole round trip does, or the source lands as
+/// neither generation: an overlay cannot replace a link the copy never held.
+#[cfg(unix)]
+#[test]
+fn a_symlink_inside_a_directory_unit_survives_a_rollback_and_its_undo() {
+    let h = Harness::new();
+    let source = h.root.join("journal");
+    std::fs::create_dir_all(&source).expect("source dir");
+    std::fs::write(source.join("a.md"), b"snapshot era").expect("write");
+    let s = spec("journal", &source);
+    h.run(&s);
+
+    std::fs::write(source.join("a.md"), b"edited later").expect("write");
+    crate::create_symlink(std::path::Path::new("a.md"), &source.join("latest.md"))
+        .expect("the operator's own link");
+    h.restore(&s, None, None).expect("restore runs");
+
+    let link = source.join("latest.md");
+    let first = h.rollback(&s).expect("rollback runs");
+    assert_eq!(std::fs::read(source.join("a.md")).unwrap(), b"edited later");
+    let aside = first
+        .safety_copy
+        .expect("a rollback takes a safety copy")
+        .path;
+    assert_eq!(
+        std::fs::read_link(aside.join("latest.md")).expect("the copy carries the link"),
+        std::path::Path::new("a.md"),
+        "the target string is copied verbatim, never followed"
+    );
+
+    // Removed so the undo has to PUT IT BACK: an overlay adds and replaces but
+    // never deletes, so a link left standing would survive either way and prove
+    // nothing about what the copy held.
+    std::fs::remove_file(&link).expect("drop the link");
+    h.rollback(&s).expect("the undo runs");
+    assert_eq!(
+        std::fs::read_link(&link).expect("the undo recreates it from the copy"),
+        std::path::Path::new("a.md"),
+    );
+}
+
 /// A file cfgd did not write is a file cfgd will not publish. The pruner
 /// protects `<source>.cfgd-backup.mine` from deletion; the read side must
 /// refuse it for the same reason, however new its mtime.

@@ -704,8 +704,10 @@ cfgd --output json backup rollback       # the same listing, as an array
 The rollback runs through the same envelope a restore does: the unit's lock, its one
 `preBackup` / `postBackup` hook list (with `CFGD_OPERATION=rollback`), the same confirmation, and
 the same safety copy. The contents the rollback displaces are copied aside as their own sidecar
-first, so work written after the restore is never lost and the rollback is itself reversible:
-rolling back twice returns the source to where it started.
+first — regular files, directory structure and symlinks alike — so work written after the restore
+is never lost and the rollback is itself reversible: rolling back twice returns the source to
+where it started. A rollback whose safety copy fails is refused before anything is written, the
+same row of [What a restore refuses](#what-a-restore-refuses) that governs a restore.
 
 **One copy is retained per source.** When a displacement writes a new copy, the older stamped
 sidecars for that path are pruned, so a rollback always undoes the *most recent* displacement.
@@ -741,9 +743,14 @@ rsync -a --delete ~/.local/state/cfgd/backups/journal/journal.20260813T061306Z/ 
   fire takes the next 3am, not the one it slept through. (Interval schedules do resume from the last
   recorded run; see [`schedule`](#schedule).)
 - Snapshots are full copies: no incremental, deduplicating, or compressed modes.
-- Symlinks inside a directory source are skipped rather than recreated. On restore, a symlink
-  occupying a name the snapshot owns is replaced by the snapshot's own entry.
-- A directory restore is not atomic as a whole; see [What a restore does](#what-a-restore-does).
+- Symlinks inside a directory source are skipped rather than recreated **in a snapshot**. On
+  restore, a symlink occupying a name the snapshot owns is replaced by the snapshot's own entry.
+  The `.cfgd-backup` sidecar is the other way round: it recreates them, because it is the copy
+  [`cfgd backup rollback`](#rolling-back-a-restore) puts back and a link it dropped is one the
+  overlay could never replace.
+- Neither a directory restore nor a directory rollback is atomic as a whole; see
+  [What a restore does](#what-a-restore-does). A rollback interrupted partway leaves a mixed tree,
+  and the complete pre-rollback contents are in the sidecar its own row names — run the verb again.
 - Concurrent runs of one backup are refused, not queued: the second caller is told who holds the
   unit (see above).
 - `cfgd backup restore` overlays; it never deletes a name the snapshot does not contain, but it
