@@ -1156,8 +1156,16 @@ fn copy_dir_into(
         let dst_path = dst.join(entry.file_name());
         if file_type.is_symlink() {
             if links == SymlinkPolicy::Recreate {
-                let dest = std::fs::read_link(entry.path())?;
-                super::fs_perms::create_symlink(&dest, &dst_path)?;
+                let link = entry.path();
+                let dest = std::fs::read_link(&link)?;
+                // A host that will not make links refuses LOUDLY, naming the
+                // link inside the SOURCE tree — the entry an operator can see
+                // and act on, rather than the counterpart under a copy cfgd
+                // named. Degrading to the skip would drop the link silently,
+                // which is exactly the neither-generation loss this policy
+                // exists to prevent. `create_symlink` words the fix already.
+                super::fs_perms::create_symlink(&dest, &dst_path)
+                    .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", link.posix())))?;
             }
             continue;
         }

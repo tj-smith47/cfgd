@@ -575,10 +575,17 @@ fn newest_sidecar_beside(source: &Path) -> std::path::PathBuf {
         .expect("read the source directory")
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with(&base))
+        // Mtime AND name, the tie-break `rollback_copy` itself breaks toward
+        // the stamped spelling: a filesystem with coarse timestamps can stamp
+        // the primary and its stamped neighbour alike, and picking the other
+        // one would fail this test for a reason it is not about.
         .max_by_key(|e| {
-            e.metadata()
-                .and_then(|m| m.modified())
-                .expect("sidecar mtime")
+            (
+                e.metadata()
+                    .and_then(|m| m.modified())
+                    .expect("sidecar mtime"),
+                e.file_name(),
+            )
         })
         .map(|e| e.path())
         .expect("a sidecar beside the source")
