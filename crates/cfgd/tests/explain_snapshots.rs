@@ -3,9 +3,10 @@
 //! Three cases mapping to the three command shapes:
 //!   - `explain/index.{txt,json}`  — bare `cfgd explain` (schema table + hints)
 //!   - `explain/module.{txt,json}` — `cfgd explain module` (overview + fields)
-//!   - `explain/profile-packages-brew.txt` — `cfgd explain profile.spec.packages.brew`
+//!   - `explain/profile-packages-brew.{txt,json}` — `cfgd explain profile.spec.packages.brew`
 //!     (a union field: the shapes under `Variants`, the one object shape's
-//!     fields under `Fields`, and a legend whose placeholder resolves)
+//!     fields under `Fields`, a legend whose placeholder resolves, and the
+//!     field page's own `Docs` row / `docs`+`docsUrl` pair)
 //!   - `explain/unknown.txt`       — `cfgd explain bogus` (error path; the
 //!     command short-circuits with `anyhow::bail!` so the snapshot captures
 //!     the Err string rather than a rendered Doc)
@@ -152,6 +153,27 @@ fn explain_union_drilldown_human() {
     printer.emit(build_explain_drilldown_doc(schema, &path, fields, false));
     drop(printer);
     assert_human(&cap, "explain/profile-packages-brew.txt");
+}
+
+#[test]
+fn explain_union_drilldown_json() {
+    let schema = find_schema("profile").expect("profile schema is registered");
+    let path = ["packages", "brew"];
+    let fields = resolve_field_path(&schema.fields, &path).expect("brew resolves");
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_explain_drilldown_doc(schema, &path, fields, false));
+    drop(printer);
+    let actual = cap.json().expect("doc captured json");
+    assert_eq!(
+        actual.get("path").and_then(|v| v.as_str()),
+        Some("profile.spec.packages.brew"),
+        "drilldown payload must carry path=profile.spec.packages.brew, got: {actual}"
+    );
+    assert!(
+        actual.get("docsUrl").and_then(|v| v.as_str()).is_some(),
+        "drilldown payload must carry the same docs/docsUrl pair a kind page carries, got: {actual}"
+    );
+    assert_json(&cap, "explain/profile-packages-brew.json");
 }
 
 #[test]

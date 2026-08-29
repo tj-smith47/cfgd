@@ -30880,7 +30880,8 @@ fn every_docs_pointer_the_cli_renders_goes_through_the_linked_slot() {
     );
     assert_eq!(
         linked, 1,
-        "explain's schema overview is the one surface rendering a `Docs` row; found {linked}"
+        "a `Docs` row (a kind page's or a field drilldown's) renders through the one \
+         `KvPair::linked` composer; found {linked} call sites"
     );
     assert!(
         pointers.is_empty(),
