@@ -1884,8 +1884,6 @@ fn the_unix_pip_arm_declares_the_home_local_bin() {
 #[cfg(windows)]
 #[test]
 fn the_windows_pip_arm_declares_a_scripts_dir_under_roaming_appdata() {
-    use cfgd_core::providers::PackageManager;
-
     let _guard = cfgd_core::test_helpers::path_env_read_guard();
     let pip_present = ["pip3", "pip"]
         .iter()
