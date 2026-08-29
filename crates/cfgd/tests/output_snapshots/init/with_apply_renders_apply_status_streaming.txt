@@ -11,7 +11,7 @@ Initialize cfgd
 ✓ Set active profile: default
 
 Plan
-  Config   ~/bridge-cfg/cfgd.yaml
+  Config   <TARGET_DIR>/cfgd.yaml
   Profile  default
 
 ✓ Nothing to do — everything is up to date

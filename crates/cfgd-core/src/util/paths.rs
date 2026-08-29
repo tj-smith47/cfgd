@@ -1388,10 +1388,20 @@ pub fn normalize_for_snapshot(captured: &str, paths: &[(&std::path::Path, &str)]
     let lf = normalize_line_endings(captured);
     let posix = posixify_text(&lf);
     let os = posixify_os_error_text(&posix);
-    let mut subs: Vec<(String, &str)> = paths
-        .iter()
-        .map(|(p, label)| (to_posix_string(p), *label))
-        .collect();
+    // Each path in BOTH spellings a report can render it in: the absolute one,
+    // and the `~/`-folded one every display slot goes through. A temp directory
+    // lives under the home directory on Windows, so the fold rewrote the very
+    // prefix the substitution was looking for and three goldens diverged there
+    // alone.
+    let mut subs: Vec<(String, &str)> = Vec::with_capacity(paths.len() * 2);
+    for (path, label) in paths {
+        let posix_path = to_posix_string(path);
+        let folded = fold_home_in_text(&posix_path);
+        if folded != posix_path {
+            subs.push((folded, *label));
+        }
+        subs.push((posix_path, *label));
+    }
     subs.sort_by_key(|(p, _)| std::cmp::Reverse(p.len()));
     let mut out = os.into_owned();
     for (p, label) in subs {
