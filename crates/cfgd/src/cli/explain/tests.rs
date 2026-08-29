@@ -526,6 +526,16 @@ fn explain_cmd_field_path_oneof_recursive_expands_object_variant() {
         output.contains("continueOnError"),
         "expected the object variant's own fields expanded, got: {output}"
     );
+    // The recursive tree expands every subtree row, but the page's own Docs
+    // row is emitted once, before the tree — never once per subtree.
+    let docs_lines = output
+        .lines()
+        .filter(|l| l.trim_start().starts_with("Docs "))
+        .count();
+    assert_eq!(
+        docs_lines, 1,
+        "a recursive field page carries exactly one Docs row, got {docs_lines} in: {output}"
+    );
 }
 
 #[test]
@@ -658,9 +668,12 @@ fn explain_drilldown_renders_the_documented_shape() {
     cmd_explain(&printer, Some("profile.spec.packages.brew"), false).unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
-    let expected = "\
+    let expected = format!(
+        "\
 Explain: profile.spec.packages.brew <([]string | BrewSpec)>
   Homebrew packages (macOS/Linux).
+
+Docs  https://github.com/tj-smith47/cfgd/blob/v{}/docs/spec/profile.md#specpackagesbrew
 
 Variants
   []string — Package names, as a bare list.
@@ -671,7 +684,9 @@ Fields
   file      <string>   — Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.
   formulae  <[]string> — Homebrew formulae (CLI packages) to install.
   taps      <[]string> — Third-party taps to add before installing formulae/casks.
-";
+",
+        env!("CARGO_PKG_VERSION")
+    );
     pretty_assertions::assert_eq!(output, expected);
 }
 
@@ -805,51 +820,146 @@ fn explain_points_every_kind_at_its_docs_page() {
     }
 }
 
-/// Every docs pointer `explain` prints names a real file and a heading that
-/// really exists in it. cfgd-core pins the registry-derived kinds; TeamConfig
-/// is hand-authored here and reaches no registry entry, so its pointer would
-/// otherwise be the one nobody checks.
-#[test]
-fn every_explain_docs_pointer_names_a_real_heading() {
-    fn slug(heading: &str) -> String {
-        heading
-            .to_lowercase()
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '-')
-            .map(|c| if c == ' ' { '-' } else { c })
-            .collect()
-    }
-
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for schema in all_schemas() {
-        let (rel, anchor) = schema
-            .docs
-            .split_once('#')
-            .unwrap_or_else(|| panic!("{} docs pointer carries no anchor", schema.name));
-        let path = root.join(rel);
-        let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!("{} points at {rel}, which cannot be read: {e}", schema.name)
-        });
-        // A `#` inside a fenced block is a shell comment or a YAML key, not a
-        // heading, so an anchor could otherwise pass against text no renderer
-        // ever turns into a link target.
-        let mut in_fence = false;
-        let found = body.lines().any(|line| {
+/// Every raw heading text in a doc file's body, in document order. Skips
+/// fenced code blocks, so a `#` inside a shell comment or a YAML key is
+/// never read as a heading.
+fn raw_headings(body: &str) -> Vec<String> {
+    let mut in_fence = false;
+    body.lines()
+        .filter_map(|line| {
             if line.trim_start().starts_with("```") {
                 in_fence = !in_fence;
-                return false;
+                return None;
             }
             if in_fence {
-                return false;
+                return None;
             }
             line.strip_prefix('#')
-                .is_some_and(|h| slug(h.trim_start_matches('#').trim()) == anchor)
-        });
+                .map(|h| h.trim_start_matches('#').trim().to_string())
+        })
+        .collect()
+}
+
+/// Every dotted path `resolve_field_path` can walk to in a field tree —
+/// children first, then a union's own variant children, exactly as
+/// `resolve_field_path` traverses — so the population this test drives
+/// matches the population `cfgd explain <resource>.<field>` actually accepts.
+fn collect_field_paths(fields: &[FieldNode]) -> Vec<Vec<String>> {
+    fn walk(fields: &[FieldNode], prefix: &[String], out: &mut Vec<Vec<String>>) {
+        for f in fields {
+            let mut path = prefix.to_vec();
+            path.push(f.name.clone());
+            out.push(path.clone());
+            if !f.children.is_empty() {
+                walk(&f.children, &path, out);
+            }
+            for v in &f.variants {
+                walk(&v.children, &path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(fields, &[], &mut out);
+    out
+}
+
+/// A doc pointer names a real file and a heading that really exists in it.
+/// cfgd-core pins the registry-derived kinds' own kind-level pointer;
+/// TeamConfig is hand-authored here and reaches no registry entry, so its
+/// pointer would otherwise be the one nobody checks.
+///
+/// Extended to every FIELD path each kind's tree can be drilled into, not
+/// just the kind page: a field's own `Docs` row points at its `spec.<path>`
+/// heading when the kind's doc page carries one, or falls back to the kind's
+/// own pointer otherwise (`ResourceSchema::field_docs_path`) — this walks
+/// `all_schemas()` end to end, computing that same derivation for every
+/// field and asserting it lands on a real heading whenever it did not fall
+/// back. The second half runs the check in reverse: every `spec.<path>`
+/// heading actually committed in a doc file must be reached by SOME field's
+/// own pointer, so a rename that orphans a heading (or a heading the anchor
+/// scheme cannot reconstruct) cannot hide behind the `#fields` fallback.
+#[test]
+fn every_explain_docs_pointer_names_a_real_heading() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut headings_by_file: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    let mut reached_by_file: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeSet<String>,
+    > = std::collections::BTreeMap::new();
+
+    fn headings_of<'a>(
+        root: &std::path::Path,
+        rel: &str,
+        schema_name: &str,
+        cache: &'a mut std::collections::BTreeMap<String, Vec<String>>,
+    ) -> &'a [String] {
+        cache
+            .entry(rel.to_string())
+            .or_insert_with(|| {
+                let body = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| {
+                    panic!("{schema_name} points at {rel}, which cannot be read: {e}")
+                });
+                raw_headings(&body)
+            })
+            .as_slice()
+    }
+
+    fn assert_resolves(
+        root: &std::path::Path,
+        schema_name: &str,
+        pointer: &str,
+        cache: &mut std::collections::BTreeMap<String, Vec<String>>,
+    ) {
+        let (rel, anchor) = pointer
+            .split_once('#')
+            .unwrap_or_else(|| panic!("{schema_name} docs pointer carries no anchor: {pointer}"));
+        let found = headings_of(root, rel, schema_name, cache)
+            .iter()
+            .any(|h| github_anchor(h) == anchor);
         assert!(
             found,
-            "{} points at {rel}#{anchor}, which is no heading in that file",
-            schema.name
+            "{schema_name} points at {rel}#{anchor}, which is no heading in that file"
         );
+    }
+
+    for schema in all_schemas() {
+        assert_resolves(&root, &schema.name, &schema.docs, &mut headings_by_file);
+
+        for path in collect_field_paths(&schema.fields) {
+            let parts: Vec<&str> = path.iter().map(String::as_str).collect();
+            let pointer = schema.field_docs_path(&parts);
+            if pointer == schema.docs {
+                // Fell back to the kind's own pointer, already checked above.
+                continue;
+            }
+            assert_resolves(&root, &schema.name, &pointer, &mut headings_by_file);
+            let (rel, anchor) = pointer.split_once('#').expect("checked above");
+            reached_by_file
+                .entry(rel.to_string())
+                .or_default()
+                .insert(anchor.to_string());
+        }
+    }
+
+    // Every heading that IS a field path (`spec.<dotted.path>`, no prose
+    // words) in a doc file this walk visited must be reached by some field's
+    // own pointer. A heading annotating a variant in prose
+    // (`spec.theme (object form)`) carries a space and is not itself an
+    // addressable path, so it is exempt.
+    for (rel, headings) in &headings_by_file {
+        let empty = std::collections::BTreeSet::new();
+        let reached = reached_by_file.get(rel).unwrap_or(&empty);
+        for heading in headings {
+            if !heading.starts_with("spec.") || heading.contains(' ') {
+                continue;
+            }
+            let anchor = github_anchor(heading);
+            assert!(
+                reached.contains(&anchor),
+                "{rel} has a heading `{heading}` (#{anchor}) that no field's own docs pointer reaches"
+            );
+        }
     }
 }
 

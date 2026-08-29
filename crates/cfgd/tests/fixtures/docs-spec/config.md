@@ -1,0 +1,672 @@
+# Config Spec Reference
+
+The Config document (`cfgd.yaml`) is the root configuration file for cfgd. It controls the active
+profile, daemon behaviour, secret backend, remote sources, module registries, theming, and AI
+integration.
+
+## Document Structure
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: string
+spec:
+  profile: string
+
+  # Origin: where this config lives remotely (single object or list)
+  origin:
+    type: Git | Server
+    url: string
+    branch: string
+    auth: string
+    sshStrictHostKeyChecking: AcceptNew | Yes | No
+
+  daemon:
+    enabled: bool
+    reconcile:
+      interval: string
+      onChange: bool
+      autoApply: bool
+      driftPolicy: Auto | NotifyOnly | Prompt
+      policy:
+        newRecommended: Notify | Accept | Reject | Ignore
+        newOptional: Notify | Accept | Reject | Ignore
+        lockedConflict: Notify | Accept | Reject | Ignore
+      patches:
+        - kind: Module | Profile
+          name: string
+          interval: string
+          autoApply: bool
+          driftPolicy: Auto | NotifyOnly | Prompt
+    sync:
+      autoPush: bool
+      autoPull: bool
+      interval: string
+    notify:
+      drift: bool
+      method: Desktop | Stdout | Webhook
+      webhookUrl: string
+    windowsEventLog: bool
+
+  secrets:
+    backend: string
+    sops:
+      ageKey: path
+    integrations:
+      - name: string
+        # provider-specific extra fields
+
+  sources:
+    - name: string
+      origin:
+        type: Git | Server
+        url: string
+        branch: string
+        auth: string
+        sshStrictHostKeyChecking: AcceptNew | Yes | No
+      subscription:
+        profile: string
+        priority: uint
+        acceptRecommended: bool
+        optIn:
+          - string
+        allowScripts: bool
+        requireSignedCommits: bool
+        overrides: {}
+        reject: {}
+      sync:
+        interval: string
+        autoApply: bool
+        pinVersion: string
+        required: bool
+
+  modules:
+    registries:
+      - name: string
+        url: string
+    security:
+      requireSignatures: bool
+
+  security:
+    allowUnsigned: bool
+
+  fileStrategy: Symlink | Copy | Template | Hardlink
+
+  aliases:
+    alias-name: command string
+
+  theme: string
+  # or:
+  theme:
+    name: string
+    overrides:
+      header: string
+      success: string
+      warning: string
+      error: string
+      info: string
+      muted: string
+      running: string
+      diffAdd: string
+      diffRemove: string
+      diffContext: string
+      accent: string
+      secondary: string
+      typeHint: string
+      iconOk: string
+      iconWarn: string
+      iconFail: string
+      iconPending: string
+      iconRunning: string
+      iconSkipped: string
+      iconArrow: string
+      iconInfo: string
+
+  ai:
+    provider: string
+    model: string
+    apiKeyEnv: string
+
+  compliance:
+    enabled: bool
+    interval: string
+    retention: string
+    scope:
+      files: bool
+      packages: bool
+      system: bool
+      secrets: bool
+      watchPaths:
+        - string
+      watchPackageManagers:
+        - string
+    export:
+      format: json | yaml
+      path: string
+
+  update:
+    policy: Auto | Prompt | Notify | Manual
+    interval: string
+    channel: stable | prerelease
+    skills:
+      policy: Inherit | Auto | Prompt | Notify | Manual
+```
+
+---
+
+## Fields
+
+### metadata
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Human-readable name for this configuration (e.g. `my-workstation`). |
+
+---
+
+### spec
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `profile` | string | No | | Name of the active profile. Run `cfgd profile create <name>` to set. |
+| `origin` | object or list | No | | Remote git or server origin(s) for this config. See [spec.origin](#specorigin). |
+| `daemon` | object | No | | Daemon and reconciliation settings. See [spec.daemon](#specdaemon). |
+| `secrets` | object | No | | Secret backend configuration. See [spec.secrets](#specsecrets). |
+| `sources` | list | No | `[]` | Remote config sources to subscribe to. See [spec.sources[]](#specsources). |
+| `modules` | object | No | | Module registry and security settings. See [spec.modules](#specmodules). |
+| `security` | object | No | | Source signature verification overrides. See [spec.security](#specsecurity). |
+| `fileStrategy` | enum | No | `Symlink` | Global default file deployment strategy. See [FileStrategy](#filestrategy-values). |
+| `aliases` | map | No | `{}` | CLI aliases: map of alias name to command string. |
+| `theme` | string or object | No | | Output theme name or detailed theme config. See [spec.theme](#spectheme). |
+| `ai` | object | No | | AI assistant configuration. See [spec.ai](#specai). |
+| `compliance` | object | No | | Continuous compliance snapshot settings. See [spec.compliance](#speccompliance). |
+| `update` | object | No | | Update policy for the cfgd binary and authored skills. See [spec.update](#specupdate). |
+
+---
+
+### spec.origin
+
+Controls where this configuration lives remotely. Used by `cfgd sync` and the daemon sync loop.
+
+Can be written as a single object or as a list (first entry is the primary origin).
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `type` | enum | Yes | | Origin type. See [OriginType values](#origintype-values). |
+| `url` | string | Yes | | Remote URL. For `Git`: a git clone URL. For `Server`: the device gateway base URL. |
+| `branch` | string | No | `master` | Git branch to track. Only used when `type: Git`. |
+| `auth` | string | No | | SSH key path or credential reference for authenticated access. |
+| `sshStrictHostKeyChecking` | enum | No | `AcceptNew` | SSH `StrictHostKeyChecking` policy for git operations. See [SshHostKeyPolicy values](#sshhostkeypolicy-values). |
+
+#### OriginType values
+
+| Value | Description |
+|-------|-------------|
+| `Git` | Git repository (SSH or HTTPS). |
+| `Server` | cfgd device gateway HTTP endpoint. |
+
+#### SshHostKeyPolicy values
+
+| Value | Description |
+|-------|-------------|
+| `AcceptNew` | Accept first-seen keys, reject changed keys (safe default for automation). **(default)** |
+| `Yes` | Require keys to already exist in `known_hosts` (high-security environments). |
+| `No` | Accept any key without verification (insecure, not recommended). |
+
+**Examples:**
+
+Single origin (shorthand):
+```yaml
+origin:
+  type: Git
+  url: git@github.com:you/machine-config.git
+  branch: main
+```
+
+Multiple origins (list form):
+```yaml
+origin:
+  - type: Git
+    url: git@github.com:you/machine-config.git
+    branch: main
+  - type: Server
+    url: https://cfgd.example.com
+```
+
+---
+
+### spec.daemon
+
+Controls the long-running daemon process started with `cfgd daemon`.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `enabled` | bool | No | `false` | Whether the daemon is active. |
+| `reconcile` | object | No | | Reconciliation loop settings. See [spec.daemon.reconcile](#specdaemonreconcile). |
+| `sync` | object | No | | Git sync settings. See [spec.daemon.sync](#specdaemonsync). |
+| `notify` | object | No | | Notification settings. See [spec.daemon.notify](#specdaemonnotify). |
+| `windowsEventLog` | bool | No | `false` | Mirror daemon log output into the Windows Event Log under the `cfgd` source, in addition to the file appender at `%LOCALAPPDATA%\cfgd\daemon.log`. No effect on Unix. Read by `cfgd daemon install`; changes require reinstalling the service to take effect. |
+
+---
+
+### spec.daemon.reconcile
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `interval` | string | No | `5m` | How often to check for drift. Duration string: `30s`, `5m`, `1h`. |
+| `onChange` | bool | No | `false` | Also trigger reconciliation when config files change on disk (inotify/kqueue). |
+| `autoApply` | bool | No | `false` | Apply new or changed source-recommended items automatically, through the [policy](#specdaemonreconcilepolicy) tiers. Independent of `driftPolicy`, which governs drift in items already declared. |
+| `driftPolicy` | enum | No | `NotifyOnly` | Governs what the daemon does when drift is detected. See [DriftPolicy values](#driftpolicy-values). |
+| `policy` | object | No | | Fine-grained `autoApply` policy per change category. See [spec.daemon.reconcile.policy](#specdaemonreconcilepolicy). |
+| `patches` | list | No | `[]` | Per-module or per-profile reconcile overrides. See [spec.daemon.reconcile.patches[]](#specdaemonreconcilepatches). |
+
+#### DriftPolicy values
+
+| Value | Description |
+|-------|-------------|
+| `Auto` | Silently apply drift corrections. Must be explicitly opted in to. |
+| `NotifyOnly` | Notify and record drift but do not apply. User must run `cfgd apply`. **(default)** |
+| `Prompt` | Notify with actionable prompt (future interactive mode). |
+
+---
+
+### spec.daemon.reconcile.policy
+
+Fine-grained policy for different categories of `autoApply` decisions. All fields default to safe
+values (notify or ignore).
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `newRecommended` | enum | No | `Notify` | Action when a remote source pushes a new recommended item. |
+| `newOptional` | enum | No | `Ignore` | Action when a remote source pushes a new optional item. |
+| `lockedConflict` | enum | No | `Notify` | Action when a locked item conflicts with an incoming change. |
+
+#### PolicyAction values
+
+| Value | Description |
+|-------|-------------|
+| `Notify` | Send a notification but do not apply. |
+| `Accept` | Accept and apply the change automatically. |
+| `Reject` | Reject the change and record the conflict. |
+| `Ignore` | Silently ignore the change. |
+
+---
+
+### spec.daemon.reconcile.patches[]
+
+Kustomize-style per-target overrides for reconcile settings. Each patch targets all entities of the
+given kind (when `name` is omitted) or a single named entity.
+
+Precedence: Module patch > Profile patch > global reconcile settings.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `kind` | enum | Yes | | Target kind. `Module` or `Profile`. |
+| `name` | string | No | | Name of the specific module or profile to patch. Omit to target all of that kind. |
+| `interval` | string | No | | Override reconcile interval for this target. |
+| `autoApply` | bool | No | | Override `autoApply` for this target. |
+| `driftPolicy` | enum | No | | Override `driftPolicy` for this target. See [DriftPolicy values](#driftpolicy-values). |
+
+**Example** (disable `autoApply` for a sensitive module while enabling it everywhere else):
+```yaml
+daemon:
+  reconcile:
+    autoApply: true
+    patches:
+      - kind: Module
+        name: ssh-keys
+        autoApply: false
+        driftPolicy: NotifyOnly
+```
+
+---
+
+### spec.daemon.sync
+
+Controls automatic git synchronisation (push/pull) in the daemon sync loop.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `autoPush` | bool | No | `false` | Automatically push local changes to the remote origin after applying. |
+| `autoPull` | bool | No | `false` | Automatically pull from the remote origin before reconciling. |
+| `interval` | string | No | `1h` | How often to sync with the remote. Duration string: `30s`, `5m`, `1h`. |
+
+---
+
+### spec.daemon.notify
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `drift` | bool | No | `false` | Send notifications when drift is detected. |
+| `method` | enum | No | `Desktop` | Notification delivery method. See [NotifyMethod values](#notifymethod-values). |
+| `webhookUrl` | string | No | | Webhook URL. Required when `method: Webhook`. |
+
+#### NotifyMethod values
+
+| Value | Description |
+|-------|-------------|
+| `Desktop` | OS desktop notification (macOS: `osascript`, Linux: `notify-send`). **(default)** |
+| `Stdout` | Print to stdout (useful for systemd journal or log aggregators). |
+| `Webhook` | HTTP POST to `webhookUrl` with JSON payload. |
+
+---
+
+### spec.secrets
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `backend` | string | No | `sops` | Secret backend identifier. Built-in values: `sops`, `age`. |
+| `sops` | object | No | | SOPS-specific configuration. See [spec.secrets.sops](#specsecretssops). |
+| `integrations` | list | No | `[]` | Additional secret integrations (1Password, Bitwarden, Vault). See [spec.secrets.integrations[]](#specsecretsintegrations). |
+
+---
+
+### spec.secrets.sops
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `ageKey` | path | No | | Path to the age private key file. Supports `~/` expansion. |
+
+---
+
+### spec.secrets.integrations[]
+
+Each entry enables an additional secret provider alongside the primary backend.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Integration identifier (e.g. `onepassword`, `bitwarden`, `vault`). |
+| *(extra fields)* | any | No | | Provider-specific configuration fields merged inline. |
+
+**Example:**
+```yaml
+secrets:
+  backend: sops
+  sops:
+    ageKey: ~/.config/cfgd/age-key.txt
+  integrations:
+    - name: onepassword
+      account: my.1password.com
+```
+
+---
+
+### spec.sources[]
+
+Remote config sources that cfgd subscribes to. Each source is a git repository or server endpoint
+that publishes profiles and modules. See `docs/sources.md` for the full multi-source model.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Short name for this source (used in status output and overrides). |
+| `origin` | object | Yes | | Where to fetch the source. Same structure as [spec.origin](#specorigin). |
+| `subscription` | object | No | | How to subscribe to this source's content. See [spec.sources[].subscription](#specsourcessubscription). |
+| `sync` | object | No | | Sync schedule and pinning. See [spec.sources[].sync](#specsourcessync). |
+
+---
+
+### spec.sources[].subscription
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `profile` | string | No | | Profile name from this source to activate. |
+| `priority` | uint | No | `500` | Merge priority. Higher values win conflicts when multiple sources provide the same key. |
+| `acceptRecommended` | bool | No | `false` | Automatically accept all items in the source's `recommended` policy tier. |
+| `optIn` | list of string | No | `[]` | Explicit list of optional item names to opt in to from this source. |
+| `allowScripts` | bool | No | `false` | Opt in to running lifecycle scripts (profile-layer and source-delivered module bodies) from this source even when the source's `constraints.noScripts` would otherwise reject them. When `false`, the source's own `noScripts` constraint governs. |
+| `requireSignedCommits` | bool | No | `false` | Demand a valid GPG or SSH signature on this source's HEAD commit. ORed with the source manifest's `spec.policy.constraints.requireSignedCommits`, so it only adds strictness: a manifest `true` is never weakened by a subscriber `false`. Set it here rather than relying on the manifest alone, because the manifest is read from inside the cached clone. `spec.security.allowUnsigned` still bypasses both. |
+| `overrides` | object | No | | Free-form YAML overrides merged on top of the source's profile after fetching. |
+| `reject` | object | No | | Free-form YAML specifying items to reject from this source's output. |
+
+---
+
+### spec.sources[].sync
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `interval` | string | No | `1h` | How often to pull updates from this source. Duration string: `30s`, `5m`, `1h`. |
+| `autoApply` | bool | No | `false` | After a refresh that changed this source, reconcile the whole profile on that tick with the drift policy forced to `Auto`, regardless of `spec.daemon.reconcile.driftPolicy`. The source-decision gate (`spec.daemon.reconcile.autoApply`) is untouched. |
+| `pinVersion` | string | No | | Pin this source to a git ref resolved against the repo's tags or commits. Accepts a semver range (`~2`, `^1.5`, `>=1.0.0`) selecting the highest matching tag, an exact tag name, or a commit SHA (7–40 hex, immutable). Mutually exclusive with `branch`; branches are not allowed as a pin. |
+| `required` | bool | No | `false` | Fail-closed marker. When `true`, a failure to load this source (fetch, manifest, signature, or an unresolvable `pinVersion`) is fatal — apply/plan/compose abort rather than silently dropping the source. When `false`, load failures warn and continue. Use it for security or team baselines that must always be composed in. |
+
+---
+
+### spec.modules
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `registries` | list | No | `[]` | Git repositories that act as module registries. See [spec.modules.registries[]](#specmodulesregistries). |
+| `security` | object | No | | Module-level signature enforcement. See [spec.modules.security](#specmodulessecurity). |
+
+---
+
+### spec.modules.registries[]
+
+A module registry is a git repository with modules stored under `modules/<name>/module.yaml`.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Short alias for this registry (defaults to GitHub org name when cloned). |
+| `url` | string | Yes | | Git clone URL of the registry repository. |
+
+**Example:**
+```yaml
+modules:
+  registries:
+    - name: acme
+      url: git@github.com:acme-corp/cfgd-modules.git
+```
+
+---
+
+### spec.modules.security
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `requireSignatures` | bool | No | `false` | Require GPG or SSH signatures on all remote module git tags. Unsigned modules are rejected unless `--allow-unsigned` is passed at the CLI. |
+
+---
+
+### spec.security
+
+Global source security overrides. Intended for development and testing environments.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `allowUnsigned` | bool | No | `false` | Allow unsigned source content even when the source's `constraints.requireSignedCommits` is true. |
+
+---
+
+### FileStrategy values
+
+Used by `spec.fileStrategy` (global default) and per-file `strategy` overrides in profile and
+module file entries.
+
+| Value | Description | Valid as `spec.fileStrategy` |
+|-------|-------------|------------------------------|
+| `Symlink` | Create a symbolic link from target to source file. **(default)** | yes |
+| `Copy` | Copy the source file content to the target path. | yes |
+| `Template` | Render the source as a Tera template and write the output. Auto-selected for `.tera` files. | yes |
+| `Hardlink` | Create a hard link from target to source. | yes |
+| `Patch` | Merge structured keys/values into the target, or pipe it through a script, leaving the rest untouched. Requires a per-file `patch:` block. | **no** — rejected at config load |
+
+---
+
+### spec.theme
+
+Controls the visual output style of all cfgd commands. Can be written as a bare theme name string
+or as an object with optional colour/icon overrides.
+
+**Shorthand (string):**
+```yaml
+theme: dracula
+```
+
+**Full form:**
+```yaml
+theme:
+  name: dracula
+  overrides:
+    success: "#50fa7b"
+    error: "#ff5555"
+```
+
+#### spec.theme (object form)
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | No | `default` | Built-in theme name: `default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, or `minimal`. |
+| `overrides` | object | No | | Per-colour/icon overrides. See [spec.theme.overrides](#specthemeoverrides). |
+
+---
+
+### spec.theme.overrides
+
+All fields are optional CSS-style hex colour strings (e.g. `#ff5555`) or single-character icon
+strings. An omitted field inherits the value from the active theme.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `primary` | string | Colour for an action subject at the deepest level of the run tree. Unset in presets that carry no palette foreground of their own, in which case the subject keeps its status colour. |
+| `header` | string | Colour for section headers. |
+| `success` | string | Colour for success messages and checkmarks. |
+| `warning` | string | Colour for warnings. |
+| `error` | string | Colour for errors. |
+| `info` | string | Colour for informational output. |
+| `muted` | string | Colour for de-emphasised (secondary) text. |
+| `running` | string | Colour for running/in-progress text. |
+| `diffAdd` | string | Colour for added lines in diffs. |
+| `diffRemove` | string | Colour for removed lines in diffs. |
+| `diffContext` | string | Colour for context lines in diffs. |
+| `accent` | string | Colour for "attention without alarm" highlights (notable but non-severity changes, e.g. new versions). |
+| `secondary` | string | Colour for structural pivots / identifiers (source names, scope labels). |
+| `typeHint` | string | Colour for schema type annotations in `cfgd explain` output (`<[]ModuleFileEntry>`), in field rows and drill-down headings alike. |
+| `iconOk` | string | Icon character for success state. |
+| `iconWarn` | string | Icon character for warning state. |
+| `iconFail` | string | Icon character for error state. |
+| `iconPending` | string | Icon character for pending/in-progress state. |
+| `iconRunning` | string | Icon character for running state. |
+| `iconSkipped` | string | Icon character for skipped state. |
+| `iconArrow` | string | Icon character for directional arrows (e.g. plan output). |
+| `iconInfo` | string | Icon character for informational notices. Defaults to `◉`; pick a glyph your terminal font carries, or the line renders with a tofu box in the icon column. |
+
+---
+
+### spec.ai
+
+AI assistant configuration for `cfgd generate` and the MCP server.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `provider` | string | No | `claude` | AI provider identifier. Currently `claude` (Anthropic) is supported. |
+| `model` | string | No | `claude-sonnet-5` | Model identifier passed to the provider API. |
+| `apiKeyEnv` | string | No | `ANTHROPIC_API_KEY` | Name of the environment variable that holds the API key. |
+
+**Example:**
+```yaml
+ai:
+  provider: claude
+  model: claude-opus-5
+  apiKeyEnv: ANTHROPIC_API_KEY
+```
+
+---
+
+### spec.compliance
+
+Continuous compliance snapshot configuration. When enabled, the daemon captures machine state on its own interval (independent of the reconcile interval) and writes structured snapshot files. Snapshots are content-hashed: if nothing changed since the last snapshot, no new file is written.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `enabled` | bool | No | `false` | Enable compliance snapshots. |
+| `interval` | duration | No | `1h` | How often to capture a snapshot. Duration string: `30s`, `5m`, `1h`. |
+| `retention` | duration | No | `30d` | How long to keep snapshots locally before the daemon deletes them. Duration string: `30s`, `5m`, `1h`, `30d`. |
+| `scope.files` | bool | No | `true` | Include managed file state. Each present file is content-checked: its on-disk bytes are compared to its rendered source, so a file that exists but drifted is a violation (not only existence + permissions + encryption status). |
+| `scope.packages` | bool | No | `true` | Include managed package state (installed version per manager). |
+| `scope.system` | bool | No | `true` | Include system configurator state (covers `sshKeys`, `gpgKeys`, `git`, and all other configurators). |
+| `scope.secrets` | bool | No | `true` | Include secret target existence and permissions. Secret values are never recorded. |
+| `scope.watchPaths` | list | No | `[]` | Additional unmanaged paths to audit for existence, permissions, and ownership. |
+| `scope.watchPackageManagers` | list | No | `[]` | Package managers from which to capture a full installed-package inventory. Runs in parallel across managers. |
+| `export.format` | enum | No | `json` | Snapshot output format: `json` or `yaml`. |
+| `export.path` | string | No | `~/.local/state/cfgd/compliance/` | Directory where snapshot files are written (under the state dir — machine-local generated data). |
+
+**Example:**
+```yaml
+compliance:
+  enabled: true
+  interval: 1h
+  retention: 30d
+  scope:
+    files: true
+    packages: true
+    system: true
+    secrets: true
+    watchPaths:
+      - ~/.ssh
+      - ~/.gnupg
+      - ~/.aws
+    watchPackageManagers:
+      - brew
+      - apt
+  export:
+    format: json
+    path: ~/.local/state/cfgd/compliance/
+```
+
+Compliance reports the **effective** desired state (the active profile combined with the modules it pulls in), so files, packages, and system settings contributed by a module are first-class in every compliance surface (snapshot, export, diff, history) and in the checkin summary, exactly as they appear in `cfgd verify` and `cfgd diff`. Module resources are attributed to their module in the check detail. File checks are content-aware on both profile and module files.
+
+Snapshot summaries are included in device checkin payloads to the operator gateway. The fleet dashboard shows per-device compliance scores. Use `cfgd compliance` to run a snapshot on demand, `cfgd compliance history` to list past snapshots, and `cfgd compliance diff <id1> <id2>` to compare two snapshots.
+
+**History records changes, not ticks.** The daemon collects a snapshot every interval but stores one only when its content differs from the newest stored row: the comparison is a hash of the snapshot with its collection timestamp excluded, so an unchanged machine hashes identically every time. A machine that has stopped changing therefore stops adding rows, and the newest row's timestamp is the last time something *changed*, not the last time cfgd looked. Do not read row arrival as a liveness signal: a device that is healthy and stable is indistinguishable in `compliance history` from one whose daemon has stopped. Use the daemon's own liveness surfaces for that: `cfgd daemon status`, the checkin timestamp on the gateway, or the service manager. `cfgd compliance` run by hand always stores its snapshot, because you asked for one.
+
+---
+
+### spec.update
+
+Update policy governing self-update checks for the cfgd binary and update checks for authored
+skills (`cfgd skill update`).
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `policy` | enum | No | `Prompt` | How update checks for the cfgd binary behave. See [UpdatePolicy values](#updatepolicy-values). |
+| `interval` | duration | No | `24h` | How often to check for updates. Duration string: `30m`, `24h`, `7d`, or a plain number of seconds. |
+| `channel` | string | No | `stable` | Release channel to track. `stable` follows the latest stable release; `prerelease` also includes prereleases. Matching is case-insensitive; an unrecognised value logs a warning and falls back to `stable`. |
+| `skills` | object | No | | Update policy for authored skills. See [spec.update.skills](#specupdateskills). |
+
+#### UpdatePolicy values
+
+| Value | Description |
+|-------|-------------|
+| `Auto` | Apply updates automatically without prompting. |
+| `Prompt` | Ask before applying an available update. **(default)** |
+| `Notify` | Report that an update is available, but take no action. |
+| `Manual` | Disable automatic update checks; the user runs `cfgd upgrade` themselves. |
+
+Values are matched case-insensitively.
+
+#### Suppressing the automatic check via environment
+
+Any of `CFGD_NO_UPDATE_CHECK`, `NO_UPDATE_NOTIFIER` (npm's `update-notifier`
+convention), or `DO_NOT_TRACK` (consoledonottrack.com) silences the automatic
+check regardless of `policy`; see
+[configuration.md](../configuration.md#suppressing-the-automatic-check) for
+the full precedence and value rules. `cfgd upgrade` (explicit) is unaffected.
+
+---
+
+### spec.update.skills
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `policy` | enum | No | `Inherit` | How skill update checks behave. `Inherit` defers to the binary-level `spec.update.policy`; the other values (`Auto`, `Prompt`, `Notify`, `Manual`) mirror [UpdatePolicy values](#updatepolicy-values). |
+
+**Example:**
+```yaml
+update:
+  policy: Notify
+  interval: 24h
+  channel: stable
+  skills:
+    policy: Inherit
+```

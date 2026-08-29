@@ -45,6 +45,112 @@ impl ResourceSchema {
     pub fn field_tree(&self) -> Vec<FieldNode> {
         self.fields.clone()
     }
+
+    /// A drilldown field's own docs pointer: the field's `spec.<path>`
+    /// heading in this kind's own doc page when the committed page carries
+    /// one, or the kind's own pointer otherwise — the same fallback the kind
+    /// page's `Docs` row renders, so a field with no heading of its own reads
+    /// exactly like the page one level up.
+    fn field_docs_path(&self, field_path: &[&str]) -> String {
+        field_heading_anchor(self, field_path).unwrap_or_else(|| self.docs.clone())
+    }
+
+    /// The field pointer above, through the SAME release-pinned derivation
+    /// `docs_url` uses.
+    fn field_docs_url(&self, field_path: &[&str]) -> String {
+        cfgd_core::config::docs_url(&self.field_docs_path(field_path), env!("CARGO_PKG_VERSION"))
+    }
+}
+
+/// The field's own heading anchor in `kind_docs`'s file, when the committed
+/// page carries a `spec.<path>` heading for it. `None` when it does not (a
+/// field nested past what the doc breaks out on its own, or a kind whose
+/// pointer names a page this lookup does not embed), so the caller falls
+/// back to the kind's own pointer.
+fn field_heading_anchor(schema: &ResourceSchema, field_path: &[&str]) -> Option<String> {
+    let (rel, _) = schema.docs.split_once('#')?;
+    let body = doc_body(&schema.name)?;
+    let wanted = github_anchor(&format!("spec.{}", field_path.join(".")));
+    heading_anchors(body)
+        .any(|a| a == wanted)
+        .then(|| format!("{rel}#{wanted}"))
+}
+
+/// The compiled-in body of a kind's own `docs/spec/` page, keyed by the
+/// schema's display name — the only kinds a field heading can be found for;
+/// `ConfigSource` and the CRD `Module` (whose pointers name a different
+/// page) always fall back to their own kind-level pointer.
+///
+/// Embedded from a crate-local fixture copy, not the workspace-root
+/// `docs/spec/` a reader clicks through to: `cargo package` builds this
+/// binary crate in isolation, and `include_str!` cannot reach a path outside
+/// the crate directory in that tree. The fixture is pinned byte-for-byte to
+/// its canonical `docs/spec/` source by
+/// `explain_docs_ground_truth.rs::embedded_doc_bodies_match_workspace_docs`,
+/// the same shape `cfgd-core`'s `skill_model` examples already use for the
+/// same reason.
+fn doc_body(schema_name: &str) -> Option<&'static str> {
+    match schema_name {
+        "Module" => Some(include_str!("../../../tests/fixtures/docs-spec/module.md")),
+        "Profile" => Some(include_str!("../../../tests/fixtures/docs-spec/profile.md")),
+        "Config" => Some(include_str!("../../../tests/fixtures/docs-spec/config.md")),
+        "MachineConfig" => Some(include_str!(
+            "../../../tests/fixtures/docs-spec/machineconfig.md"
+        )),
+        "ConfigPolicy" => Some(include_str!(
+            "../../../tests/fixtures/docs-spec/configpolicy.md"
+        )),
+        "ClusterConfigPolicy" => Some(include_str!(
+            "../../../tests/fixtures/docs-spec/clusterconfigpolicy.md"
+        )),
+        "DriftAlert" => Some(include_str!(
+            "../../../tests/fixtures/docs-spec/driftalert.md"
+        )),
+        "TeamConfig" => Some(include_str!(
+            "../../../tests/fixtures/docs-spec/teamconfig.md"
+        )),
+        _ => None,
+    }
+}
+
+/// Every heading's anchor in a doc page, in document order. Skips fenced
+/// code blocks, so a `#` inside a shell comment or a YAML key is never read
+/// as a heading.
+fn heading_anchors(body: &str) -> impl Iterator<Item = String> + '_ {
+    let mut in_fence = false;
+    body.lines().filter_map(move |line| {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            return None;
+        }
+        if in_fence {
+            return None;
+        }
+        line.strip_prefix('#')
+            .map(|h| github_anchor(h.trim_start_matches('#').trim()))
+    })
+}
+
+/// GitHub's own markdown heading slugification: lowercase, drop every
+/// character that is not a letter, digit, space or hyphen, then fold spaces
+/// to hyphens. `spec.env` and `spec.env[]` collide on the same anchor
+/// (`specenv`) because the dot and the brackets are both dropped, which is
+/// what lets a field's own dotted path double as its heading's anchor with
+/// no bracket bookkeeping at the call site.
+fn github_anchor(heading: &str) -> String {
+    heading
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '-')
+        .map(|c| if c == ' ' { '-' } else { c })
+        .collect()
+}
+
+/// The `Docs` header row, through the ONE composer both a kind page and a
+/// field drilldown render it with — `KvPair::linked` over a release-pinned
+/// `config::docs_url`, never a second composer for the other page kind.
+fn docs_row(path: &str, url: impl Into<String>) -> KvPair {
+    KvPair::linked("Docs", path, url)
 }
 
 #[cfg(test)]
@@ -325,6 +431,12 @@ pub struct ExplainField {
 #[serde(rename_all = "camelCase")]
 pub struct ExplainDrilldownOutput {
     pub path: String,
+    /// Where this field is documented — the same slot the kind page's `docs`
+    /// carries, so a payload consumer reads either shape identically.
+    pub docs: String,
+    /// `docs` as the URL the human row links to. Additive beside `docs`,
+    /// which keeps the bare path.
+    pub docs_url: String,
     pub fields: Vec<ExplainField>,
 }
 
@@ -629,7 +741,7 @@ pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc
             // name-row-ok: a KRM field name, spelled as the YAML spells it
             KvPair::new("kind", schema.kind.as_str()),
             KvPair::new("Location", schema.location.as_str()),
-            KvPair::linked("Docs", &schema.docs, schema.docs_url()),
+            docs_row(&schema.docs, schema.docs_url()),
         ])
         .section("Fields (under spec)", |s| {
             append_fields(s, &fields, recursive)
@@ -676,6 +788,8 @@ pub fn build_explain_drilldown_doc(
     // this defensive against a path `resolve_field_path` accepted but this
     // walk did not (should not happen: same schema, same path).
     let node = find_field_node(&schema.fields, field_path);
+    let docs_path = schema.field_docs_path(field_path);
+    let docs_url = schema.field_docs_url(field_path);
     // The queried field's own type belongs to the heading — the same
     // `<type> (required)` vocabulary the field rows render, on the line that
     // names the field, so no lone kv row repeats it below.
@@ -693,6 +807,9 @@ pub fn build_explain_drilldown_doc(
     let mut marked: Vec<&FieldNode> = Vec::new();
     if let Some(f) = node {
         doc = doc.paragraph(described_with_enum(f));
+        // Same header slot the kind page renders: `KvPair::linked` +
+        // `config::docs_url`, never a second composer.
+        doc = doc.kv_rows([docs_row(&docs_path, docs_url.clone())]);
         let variants: Vec<&FieldNode> = f.variants.iter().collect();
         doc = doc.section_if_nonempty("Variants", &variants, |s, variants| {
             append_fields(s, variants, recursive)
@@ -713,6 +830,7 @@ pub fn build_explain_drilldown_doc(
             ));
         }
     } else {
+        doc = doc.kv_rows([docs_row(&docs_path, docs_url.clone())]);
         let all = sorted_by_name(fields.iter());
         doc = doc.section("Fields", |s| append_fields(s, &all, recursive));
         marked.extend(all.iter().copied());
@@ -722,6 +840,8 @@ pub fn build_explain_drilldown_doc(
     }
     doc.with_data(ExplainDrilldownOutput {
         path: path_str,
+        docs: docs_path,
+        docs_url,
         fields: fields.iter().map(schema_field_to_explain).collect(),
     })
 }

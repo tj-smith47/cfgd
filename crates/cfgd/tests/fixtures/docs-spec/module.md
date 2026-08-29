@@ -1,0 +1,616 @@
+# Module Spec Reference
+
+A Module document is a self-contained, portable configuration package for one tool or capability.
+It bundles cross-platform package declarations, config files, environment variables, shell aliases,
+and lifecycle scripts into a single deployable unit. Modules live in `modules/` in your
+config directory, or in a remote module registry.
+
+## Document Structure
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: string
+  description: string
+  version: string
+
+spec:
+  depends:
+    - string
+
+  packages:
+    - name: string
+      minVersion: string
+      prefer:
+        - string
+      aliases:
+        manager-name: package-name
+      script: string
+      creates: string
+      onlyIf: string
+      unless: string
+      deny:
+        - string
+      platforms:
+        - string
+
+  files:
+    - source: string
+      target: string
+      strategy: Symlink | Copy | Template | Hardlink | Patch
+      private: bool
+      encryption:
+        backend: string
+        mode: InRepo | Always
+      permissions: string
+      patch:
+        format: Ini | Json | Yaml | Toml
+        ensure: {}
+        script: string
+
+  env:
+    - name: string
+      value: string
+
+  aliases:
+    - name: string
+      command: string
+
+  scripts:
+    preApply:
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
+    postApply:
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
+    preReconcile:
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
+    postReconcile:
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
+    onChange:
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
+    onDrift:
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
+```
+
+---
+
+## Fields
+
+### metadata
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Module name. Must be unique within a registry. Referenced by profiles via `spec.modules`. |
+| `description` | string | No | | Human-readable description of what this module provides. |
+| `version` | string | No | | The module's own release version, as strict semver — `MAJOR.MINOR.PATCH` with optional pre-release and build metadata. See [metadata.version](#metadataversion). |
+
+---
+
+### metadata.version
+
+`version` is the module's release version, independent of the cfgd version and of any package
+version inside it. It is strict semver: `1.4.0`, `2.0.0-rc.1`, and `1.0.0+build.5` are accepted;
+`0.10`, `v1.2.3`, and `latest` are rejected at parse time with an error naming the field.
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+  version: 1.4.0
+
+spec:
+  packages:
+    - name: neovim
+```
+
+The field is optional, and a module without it loads exactly as before. Two surfaces read it:
+
+- The release workflow written by `cfgd workflow generate` tags a changed module `<name>/v<version>`.
+  A module with no `version` fails that job rather than being tagged with a guessed value, and an
+  already-published tag fails it too; bump `metadata.version` instead of rewriting a tag.
+- `cfgd module show <name>` reports it, so CI reads a module's version from cfgd rather than
+  grepping YAML:
+
+```sh
+cfgd module show nvim -o jsonpath='{.metadata.version}'   # → 1.4.0
+```
+
+`cfgd module create` scaffolds new modules with `version: 0.1.0`.
+
+---
+
+### spec
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `depends` | list of string | No | `[]` | Other module names this module depends on. Dependency modules are applied first. |
+| `platforms` | list of string | No | `[]` | Platform filter for the whole module. When set and the current platform matches none, the entire module is skipped. See [spec.platforms[]](#specplatforms). |
+| `packages` | list | No | `[]` | Cross-platform package declarations. See [spec.packages[]](#specpackages). |
+| `files` | list | No | `[]` | Files to deploy from the module directory to the machine. See [spec.files[]](#specfiles). |
+| `env` | list | No | `[]` | Environment variables to export, each optionally gated to named platforms. See [spec.env[]](#specenv). |
+| `aliases` | list | No | `[]` | Shell aliases to install, each optionally gated to named platforms. See [spec.aliases[]](#specaliases). |
+| `system` | map | No | `{}` | System configurator settings. Keys are configurator names, values are configurator-specific config. Same schema as profile `spec.system`. See [spec.system](#specsystem). |
+| `scripts` | object | No | | Lifecycle scripts. See [spec.scripts](#specscripts). |
+
+---
+
+### spec.depends[]
+
+A list of module names that must be applied before this module. cfgd resolves the full dependency
+graph, detects cycles, and applies modules in topological order.
+
+**Example:**
+```yaml
+spec:
+  depends:
+    - node
+    - python
+```
+
+---
+
+### spec.platforms[]
+
+A platform filter gating the **whole module**. When `platforms` is non-empty and the current
+platform matches none of the listed tags, the module is skipped in its entirety: its packages,
+files, scripts, env, and aliases are all omitted. Tags match against the platform's OS
+(`linux`, `macos`, `freebsd`, `windows`), distro (`ubuntu`, `fedora`, `arch`, ...), or
+architecture (`x86_64`, `aarch64`). The canonical macOS token is `macos` (not `darwin`). Omit
+the field to apply the module on every platform.
+
+This is the module-level analogue of per-package [`spec.packages[].platforms`](#specpackages):
+use `spec.platforms` when an entire module is platform-specific, and the per-package filter when
+only some packages within an otherwise cross-platform module are.
+
+**Skip behavior:** a platform-skipped module is not silently dropped. It appears in the plan as a
+**Skipped** action, so it is always visible that the module was gated out rather than missing.
+
+**Dependency rule:** an active module may not `depends` on a module that is skipped on the current
+platform. Doing so is a configuration error (the dependency would never be applied). Gate the
+dependent module with the same `platforms` if it should also be platform-specific.
+
+**Example (a macOS-only module):**
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: mac-desktop
+spec:
+  platforms: [macos]
+  packages:
+    - name: rectangle
+  system:
+    macosDefaults:
+      com.apple.dock:
+        autohide: true
+```
+
+---
+
+### spec.packages[]
+
+Cross-platform package declarations. Each entry describes one logical package and how to install it
+across different package managers. cfgd selects the best available manager for the current machine
+based on `prefer` order and platform availability.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Canonical package name. Used as the install name unless overridden by `aliases`. |
+| `minVersion` | string | No | | Minimum acceptable installed version (semver, 1-3 part). cfgd skips installation if a newer version is already present. |
+| `prefer` | list of string | No | | Ordered list of package managers to try. cfgd tries each in order and uses the first available. The special value `"script"` directs cfgd to run the `script` field. When omitted, the platform's default manager is used. |
+| `aliases` | map | No | `{}` | Per-manager name overrides. Key is the manager name, value is the package name to use with that manager. Use when a package has different names across managers. |
+| `script` | string | No | | Inline shell script or path to a script. Executed when `"script"` appears in `prefer`. |
+| `creates` | string (path) | No | | Idempotency guard for a `prefer: [script]` install: skip the script if this path already exists. `~` expands to home; a relative path resolves against the script's working directory. Ignored for manager-backed installs. |
+| `onlyIf` | string (command) | No | | Idempotency guard for a `prefer: [script]` install: run the script only if this command exits **zero**. Ignored for manager-backed installs. |
+| `unless` | string (command) | No | | Idempotency guard for a `prefer: [script]` install: run the script only if this command exits **non-zero**. Ignored for manager-backed installs. |
+| `deny` | list of string | No | `[]` | Package manager names that must not be used for this package, even if available. |
+| `platforms` | list of string | No | `[]` | Platform filter. When set, this entry is skipped on non-matching platforms. Values: OS (`linux`, `macos`), distro (`ubuntu`, `fedora`, `arch`), or architecture (`x86_64`, `aarch64`). Omit to match all platforms. |
+
+**Example (cross-platform tool with manager aliases):**
+```yaml
+packages:
+  - name: neovim
+    minVersion: "0.9"
+    prefer: [brew, snap, apt]
+    aliases:
+      snap: nvim
+
+  - name: fd
+    aliases:
+      apt: fd-find
+      dnf: fd-find
+
+  - name: pynvim
+    prefer: [pipx]
+```
+
+**Example (platform-specific entry):**
+```yaml
+packages:
+  - name: xdg-utils
+    platforms: [linux]
+
+  - name: open
+    platforms: [macos]
+```
+
+**Example (custom install script):**
+```yaml
+packages:
+  - name: my-tool
+    prefer: [script]
+    script: |
+      curl -fsSL https://example.com/install.sh | sh
+```
+
+A `prefer: [script]` install has no installed-package set to query, so cfgd
+cannot tell whether the tool is already present. **Without a guard the script
+runs on every apply** (reported as changed) and is invisible to drift
+detection: making the script idempotent is the author's responsibility. Add a
+`creates`, `onlyIf`, or `unless` guard to make the install re-run-safe: the
+guards are evaluated before the script (`creates` → `onlyIf` → `unless`, all
+must permit running) and any guard that says "skip" turns the install into a
+no-op reported as unchanged. They share the semantics of the
+[lifecycle-script guards](#specscripts).
+
+**Example (idempotent install via `creates`):**
+```yaml
+packages:
+  - name: rustup
+    prefer: [script]
+    creates: ~/.cargo/bin/rustc
+    script: |
+      curl -fsSL https://sh.rustup.rs | sh -s -- -y
+```
+
+---
+
+### spec.files[]
+
+Files (or directories) to deploy from the module directory to the machine. Module files use the
+same deployment strategies as profile files. Paths are resolved relative to the module directory.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `source` | string | Only when `strategy` is not `Patch` | | Path to the source file or directory, relative to the module directory. Also accepts a git URL with `@ref` suffix (e.g. `https://github.com/user/nvim-config.git@v2.1.0`) to clone a remote source. Not required when `strategy: Patch`. |
+| `target` | string | Yes | | Absolute destination path on the machine. Supports `~/` expansion. |
+| `strategy` | enum | No | Global `fileStrategy` | Deployment strategy for this file. Overrides the global default from `cfgd.yaml`. See [FileStrategy values](#filestrategy-values). |
+| `private` | bool | No | `false` | When `true`, the source file is local-only: automatically added to `.gitignore` and silently skipped on machines where it does not exist. |
+| `encryption` | object | No | | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`, default `InRepo`). Rejected with `strategy: Patch`, which has no source to enforce it on. Same semantics as profile managed-file encryption — see the encryption fields in `docs/spec/profile.md`. |
+| `permissions` | string | No | | Octal permission mode to enforce on the deployed target file (e.g. `"755"`). Applied after deployment; ignored on Windows (NTFS uses inherited ACLs). |
+| `patch` | object | Only when `strategy: Patch` | | Structured merge or script configuration, used only when `strategy: Patch`. Has `format` (`Ini`/`Json`/`Yaml`/`Toml`, inferred from `target`'s extension when omitted), `ensure` (keys/values to deep-merge into the target), and `script` (a script that receives the target's current content on stdin and writes the new content to stdout). Exactly one of `ensure` or `script` must be set. See [FileStrategy values](#filestrategy-values). |
+
+**Example:**
+```yaml
+files:
+  - source: config/
+    target: ~/.config/nvim/
+
+  - source: https://github.com/user/nvim-config.git@v2.1.0
+    target: ~/.config/nvim/
+
+  - source: local-overrides.lua
+    target: ~/.config/nvim/local.lua
+    strategy: Copy
+    private: true
+
+  - source: bin/git-helper
+    target: ~/.local/bin/git-helper
+    strategy: Copy
+    permissions: "755"
+
+  - target: /etc/hosts
+    strategy: Patch
+    patch:
+      script: scripts/ensure-hosts-entry.sh
+```
+
+#### FileStrategy values
+
+| Value | Description |
+|-------|-------------|
+| `Symlink` | Create a symbolic link from `target` to the source file. **(default)** |
+| `Copy` | Copy source content to `target`. The target is independent; changes to source are not reflected until the next reconcile. |
+| `Template` | Render the source as a Tera template and write the output to `target`. Automatically selected for `.tera` source files. |
+| `Hardlink` | Create a hard link from `target` to source. Changes to either file are immediately visible in both. |
+| `Patch` | Merge structured keys/values into the target, or pipe it through a script, leaving everything else untouched. Requires a `patch` block; `source` is not required. |
+
+---
+
+### spec.env[]
+
+Environment variables to export into the shell environment. These are merged with the activating
+profile's env vars during reconciliation. On a name conflict, the module's value takes precedence
+over the profile's value.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Environment variable name. |
+| `value` | string | Yes | | Value to assign. |
+| `platforms` | list of string | No | `[]` | Platform tags gating this entry alone. Same vocabulary as [`spec.platforms`](#specplatforms). |
+
+`platforms` is the third level of platform gating cfgd offers, below the whole module
+([`spec.platforms`](#specplatforms)) and one package ([`spec.packages[].platforms`](#specpackages)):
+when it is non-empty and the current platform matches none of the tags, the entry is not part of
+this machine's desired state at all and appears on no surface. `cfgd module show` and
+`cfgd status <module>` list it anyway — they describe what the module declares — annotated
+`(platforms: macos)`.
+
+`PATH` is the one name whose surviving declarations **concatenate** rather than replace, so a
+common declaration and a gated one both reach the generated env file, in declaration order with
+`$PATH` written once. Every other name is last-writer-wins.
+
+**Example:**
+```yaml
+env:
+  - name: EDITOR
+    value: nvim
+  - name: NVIM_APPNAME
+    value: my-nvim
+  - name: PATH
+    value: /opt/homebrew/opt/ruby/bin:$PATH
+    platforms: [macos]
+```
+
+---
+
+### spec.aliases[]
+
+Shell aliases to install. Merged with profile aliases during reconciliation; module values win on
+name conflicts.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Alias name (the command you type). |
+| `command` | string | Yes | | Shell command the alias expands to. |
+| `platforms` | list of string | No | `[]` | Platform tags gating this entry alone. Same vocabulary as [`spec.platforms`](#specplatforms). |
+
+`platforms` gates one alias, exactly as [`spec.env[]`](#specenv)'s does.
+
+**Example:**
+```yaml
+aliases:
+  - name: vim
+    command: nvim
+  - name: vi
+    command: nvim
+  - name: pbcopy
+    command: xclip -selection clipboard
+    platforms: [linux]
+```
+
+---
+
+### spec.system
+
+System configurator settings for this module. Keys map to configurator names; values are passed directly to the configurator. Follows the same schema as `spec.system` in profiles: see `docs/system-configurators.md` for the full list of available configurators.
+
+Module system values are deep-merged into the activating profile's system config during reconciliation. Module values win on conflict, consistent with other merge rules.
+
+Note: system configurator values do not support Tera template expansion. Use literal values in module system config. Dynamic values (such as email addresses) should be set via profile-level system config.
+
+**Example:**
+```yaml
+system:
+  sshKeys:
+    - name: corp
+      type: ed25519
+      comment: "jane@work.com"
+  git:
+    commit.gpgSign: true
+    gpg.format: ssh
+    user.signingKey: ~/.ssh/id_ed25519.pub
+```
+
+---
+
+### spec.scripts
+
+Lifecycle scripts executed at different points during module apply and reconciliation.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `preApply` | list | No | `[]` | Run before the module's packages and files are applied. Failure aborts. |
+| `postApply` | list | No | `[]` | Run after the module is fully applied. |
+| `preReconcile` | list | No | `[]` | Run before daemon-initiated reconciliation of this module. |
+| `postReconcile` | list | No | `[]` | Run after daemon-initiated reconciliation of this module. |
+| `onChange` | list | No | `[]` | Run after apply/reconcile only if this module's resources changed. |
+| `onDrift` | list | No | `[]` | Run in the daemon when drift is detected in this module's own resources, before the drift policy decides how to respond. Observability, not remediation. Fires on both whole-profile and per-module reconcile ticks. |
+
+Each entry can be a simple string or a full object with `run`, `shell`, `timeout`, `idleTimeout`, `continueOnError`, `interactive`, `workdir`, and the idempotency guards `onlyIf`, `unless`, and `creates`. `idleTimeout` kills a script that produces no output for the given duration, e.g. `30s`.
+
+The `shell` field selects the interpreter for inline commands: `bash`, `zsh`, `sh`, `pwsh`, `cmd`, or `auto` (default). `auto` uses `sh` on Unix and `cmd.exe` on Windows. `shell` only applies to inline commands; file scripts use their shebang.
+
+When `shell` is `bash` or `zsh`, the script automatically sources `~/.cfgd.env` before execution, making all resolved `spec.env` vars and `spec.aliases` available (with alias expansion enabled). See [Lifecycle Scripts](../lifecycle-scripts.md) for details.
+
+### Idempotency guards
+
+The guards make a script re-run-safe by construction, so authors no longer need to hand-roll `command -v x && exit 0`. They are evaluated **before** the script body, in this order; any guard that says "skip" skips the body and reports `changed=false` with a `Skipped` status line naming the guard:
+
+| Field | Type | Skips the body when… |
+|---|---|---|
+| `creates` | string (path) | the path already exists |
+| `onlyIf` | string (command) | the command exits **non-zero** (the condition to run is not met) |
+| `unless` | string (command) | the command exits **zero** (the guarded state already holds) |
+
+When more than one guard is set, **all** must permit running for the body to run. `onlyIf`/`unless` commands run with the same shell, working directory, and environment as the body, bounded by a timeout so a guard can never hang. A guard command that fails to spawn (e.g. a missing interpreter) is a hard error, distinct from a non-zero exit.
+
+`creates` path resolution: a leading `~` expands to the home directory; a relative path resolves against the script's working directory (the home directory by default; see below); an absolute path is used as-is. Existence follows symlinks.
+
+### Working directory
+
+Scripts run in the user's **home directory** by default, never the module source tree, so a relative write can't pollute the config repo. Reach module assets via the injected `$CFGD_MODULE_DIR` / `$CFGD_CONFIG_DIR` variables. Set `workdir` to override (a leading `~` expands to home; `$VAR` / `${VAR}` expand against the script environment, including `$CFGD_MODULE_DIR`):
+
+```yaml
+postApply:
+  - run: touch .cfgd-managed
+    workdir: ~/.local/share/clift   # default would be $HOME
+  - run: ./install.sh
+    workdir: $CFGD_MODULE_DIR
+```
+
+See [Lifecycle Scripts](../lifecycle-scripts.md#working-directory) for the full contract and the injected-variable table.
+
+### Interactive scripts
+
+Set `interactive: true` on a script entry that needs to prompt the user (for example, pausing until a manual step is done). The script runs **attached to the terminal** (inherited stdin/stdout/stderr, no spinner, no output capture) and is **not** subject to the idle timeout, because an interactive step is attended by definition.
+
+An interactive script requires a TTY. When stdin is **not** a terminal (CI, piped input, or any run by the `cfgd daemon`, which never has a TTY), the script is **skipped with a warning** rather than hanging on instant EOF, and reports `changed=false`. This is the intended daemon-safe behavior: interactive steps run only during an attended `cfgd apply`, never under unattended reconcile.
+
+The child shares cfgd's own process group instead of getting a new detached one, so the terminal's foreground group still includes it: a Ctrl-C typed at the terminal reaches the script directly, and a raw-mode TUI or a `sudo` password prompt behaves normally. By default an interactive script has **no timeout at all**: force-killing a step that's mid-raw-mode or waiting on a password would be worse than an unbounded wait. Set `timeout:` on the entry when a step does need a ceiling; once it elapses cfgd terminates the script (SIGTERM, then SIGKILL after a grace period).
+
+```yaml
+scripts:
+  postApply:
+    - run: |
+        echo "Install Azure VPN from Self Service, then press Enter"
+        read
+      interactive: true
+```
+
+See [Lifecycle Scripts](../lifecycle-scripts.md#interactive-scripts) for the
+full contract, including the process-group-sharing and opt-in-timeout
+rationale.
+
+**Example:**
+```yaml
+scripts:
+  postApply:
+    - nvim --headless "+Lazy! sync" +qa
+    - run: echo "BASH_VERSION=$BASH_VERSION"
+      shell: bash
+    - run: scripts/rebuild-index.sh
+      timeout: 60s
+      continueOnError: true
+    # Only clone if the checkout doesn't exist yet.
+    - run: git clone https://example.com/repo ~/.local/share/repo
+      creates: ~/.local/share/repo
+    # Only run the installer when the tool is missing.
+    - run: ./install.sh
+      unless: command -v mytool
+    # Only rebuild when a marker says we must.
+    - run: make rebuild
+      onlyIf: test -f .needs-rebuild
+```
+
+Default timeout: 2 minutes. Scripts run in the module directory.
+
+---
+
+## Complete Example
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+  description: Neovim editor with plugins, LSP, and config files
+  version: 1.4.0
+
+spec:
+  depends:
+    - node
+    - python
+
+  packages:
+    - name: neovim
+      minVersion: "0.9"
+      prefer: [brew, snap, apt]
+      aliases:
+        snap: nvim
+
+    - name: ripgrep
+
+    - name: fd
+      aliases:
+        apt: fd-find
+        dnf: fd-find
+
+    - name: pynvim
+      prefer: [pipx]
+
+    - name: neovim
+      prefer: [npm]
+
+  files:
+    - source: config/
+      target: ~/.config/nvim/
+
+    - source: https://github.com/user/nvim-config.git@v2.1.0
+      target: ~/.config/nvim/
+
+  env:
+    - name: EDITOR
+      value: nvim
+    - name: NVIM_APPNAME
+      value: nvim
+
+  aliases:
+    - name: vim
+      command: nvim
+    - name: vi
+      command: nvim
+
+  scripts:
+    postApply:
+      - nvim --headless "+Lazy! sync" +qa
+      - nvim --headless -c "MasonInstallAll" -c "qa"
+```
+
+---
+
+## Module Resolution and Merge Semantics
+
+When a profile activates a module, cfgd merges the module's declarations on top of the profile's
+merged spec using the following rules:
+
+| Field | Merge rule |
+|-------|-----------|
+| `packages` | Platform-filtered, manager-preferenced resolution per entry. Module packages extend the profile's package list. |
+| `files.managed` | Overlay by `target` — the module's entry for a given target replaces any profile entry for the same target. |
+| `env` | Override by name — module variable wins over profile variable of the same name. |
+| `aliases` | Override by name — same rule as `env`. |
+| `system` | Deep merge — module keys overwrite profile keys at the leaf level. |
+| `scripts` | Each hook list is appended after the profile's corresponding hook list. |
+
+This merged (effective) view drives every read surface, not only apply: a module's files, packages, and system settings are first-class in `cfgd verify`, `cfgd diff`, `cfgd compliance` (snapshot, export, diff, history), and the device checkin summary. Compliance file checks are content-aware on module files (a deployed module file whose bytes drifted is a violation).
+
+---
+
+## Remote Modules
+
+Modules can be pulled from a remote registry (a git repository with modules under
+`modules/<name>/module.yaml`). Register a registry in `cfgd.yaml`:
+
+```yaml
+spec:
+  modules:
+    registries:
+      - name: acme
+        url: git@github.com:acme-corp/cfgd-modules.git
+```
+
+Then reference modules from that registry in a profile:
+
+```yaml
+spec:
+  modules:
+    - acme/nvim
+    - acme/kubectl
+```
+
+Remote module versions are pinned in `modules.lock` at the config root. Run `cfgd module upgrade <name>`
+to fetch new versions (`cfgd module update` edits a local module's spec, it does not re-fetch).
+
+A registry reference without an explicit `@tag` (e.g. `acme/nvim`) resolves to the module's
+**latest published git tag** (module versions are git tags named `<module>/<version>`), never a
+branch HEAD. If the registry exposes no tags for that module, the reference is rejected with
+`No tags found for module '<name>' in registry '<registry>'`. To pin a specific version, append the
+tag: `acme/nvim@v1.4.0`.
+
+cfgd never tracks a floating branch for a remote module. A direct git URL carrying a branch ref
+(`...repo.git?ref=main`), or one with no ref at all, is rejected with *"remote module requires a
+pinned ref (tag or commit) — branch tracking is not allowed for security"*. This is a deliberate
+supply-chain safety choice: a branch ref lets an upstream push silently change the code cfgd
+executes, so only immutable refs (tags or commit SHAs) are accepted.

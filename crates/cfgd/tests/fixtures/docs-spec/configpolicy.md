@@ -1,0 +1,200 @@
+# ConfigPolicy Spec Reference
+
+`ConfigPolicy` is a namespaced Kubernetes custom resource (`cfgd.io/v1alpha1`) that declares a set
+of configuration requirements that must hold across a fleet of machines. The cfgd operator evaluates
+each `ConfigPolicy` against all `MachineConfig` resources that match its `targetSelector` and
+reports compliance counts in the status.
+
+**API group:** `cfgd.io/v1alpha1`
+**Scope:** Namespaced
+
+## Document Structure
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigPolicy
+metadata:
+  name: string
+  namespace: string
+
+spec:
+  requiredModules:
+    - name: string
+      required: bool
+
+  debugModules:
+    - name: string
+      required: bool
+
+  packages:
+    - name: string
+      version: semver-requirement  # optional
+
+  settings:
+    key: value
+
+  targetSelector:
+    matchLabels:
+      label-key: label-value
+
+status:
+  compliantCount: int
+  nonCompliantCount: int
+  nonCompliantMachines:
+    - string
+
+  conditions:
+    - type: string
+      status: string
+      reason: string
+      message: string
+      lastTransitionTime: string
+```
+
+---
+
+## Fields
+
+### metadata
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Resource name. |
+| `namespace` | string | Yes | | Kubernetes namespace. |
+
+---
+
+### spec
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `requiredModules` | list of ModuleRef | No | `[]` | Modules that must be present in every matched `MachineConfig`. Each entry has a `name` (required) and optional `required` bool. |
+| `debugModules` | list of ModuleRef | No | `[]` | Modules staged as debug-only (CSI volume without volumeMount on declared containers). Same entry shape as `requiredModules`. |
+| `packages` | list of PackageRef | No | `[]` | Required packages. Each entry has a `name` (required) and optional `version` constraint (semver range, e.g. `>=1.28`, `~2.40`). |
+| `settings` | map | No | `{}` | Key/value system settings that must be present in every matched `MachineConfig`'s `systemSettings`. Keys must not be empty. |
+| `targetSelector` | LabelSelector | No | `{}` | Kubernetes-style label selector applied to `MachineConfig` resources. Uses `matchLabels` (and optional `matchExpressions`); only matching resources are evaluated. An empty selector matches all resources in the namespace. |
+
+#### packages[].version format
+
+Version constraints are semver requirement strings parsed by the `semver` crate. Supported operators:
+
+| Operator | Example | Meaning |
+|----------|---------|---------|
+| `>=` | `>=1.28` | At least this version. |
+| `>` | `>1.27` | Strictly greater than. |
+| `<` | `<2.0` | Strictly less than. |
+| `~` | `~2.40` | Compatible with patch-level changes. |
+| `^` | `^1.28` | Compatible with minor-level changes. |
+| `=` | `=1.28.3` | Exact version match. |
+
+**Example:**
+```yaml
+packages:
+  - name: kubectl
+    version: ">=1.28"
+  - name: git
+    version: "~2.40"
+  - name: terraform
+    version: ">=1.5, <2.0"
+```
+
+---
+
+### status
+
+Written by the operator after each evaluation pass. Do not set manually.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `compliantCount` | uint | Number of matched `MachineConfig` resources that satisfy all requirements. |
+| `nonCompliantCount` | uint | Number of matched `MachineConfig` resources that violate one or more requirements. Always the exact total, never capped. |
+| `nonCompliantMachines` | list | `namespace/name` of violating `MachineConfig` resources, sorted, capped at 500 entries. The operator emits a `PolicyViolation` event when a machine enters this list, not once per evaluation. |
+| `conditions` | list | Standard Kubernetes condition list. See [status.conditions[]](#statusconditions). |
+
+The 500-entry cap keeps a status object every operator replica watches inside
+etcd's object size limit. The cap applies to the list only: `nonCompliantCount`
+stays exact, so the number is right even when the enumeration is short. Sorting
+happens before the truncation, so which machines fall outside the list is
+deterministic rather than arbitrary per evaluation.
+
+A machine past the cap is absent from the list the operator uses as its
+transition memory, so it re-fires its `PolicyViolation` event on every evaluation
+instead of once. That is the documented behaviour above 500 violators: the count
+tells you the real scale, and the event stream is noisy until the fleet drops
+back under the cap.
+
+---
+
+### status.conditions[]
+
+Follows the standard Kubernetes condition convention.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Condition type identifier (e.g. `Evaluated`, `AllCompliant`, `Ready`). |
+| `status` | string | `"True"`, `"False"`, or `"Unknown"`. |
+| `reason` | string | Short CamelCase reason token. |
+| `message` | string | Human-readable explanation. |
+| `lastTransitionTime` | string (ISO 8601) | When this condition last changed status. |
+
+---
+
+## Deletion
+
+The operator adds the finalizer `cfgd.io/config-policy-cleanup` to every
+ConfigPolicy it reconciles. The verdict a policy writes lives on the machines it
+targets (the `Compliant` condition of each matched `MachineConfig`), so deleting
+the policy without clearing that verdict would leave every machine reporting a
+judgement no policy makes any more.
+
+On deletion the operator resets `Compliant` to `Unknown` / `NotEvaluated` /
+"Awaiting policy evaluation" on the union of the machines the selector matches
+at deletion time and the machines named in the policy's
+`status.nonCompliantMachines`, then removes its finalizer. The memory half of
+that union retires the stale `Compliant=False` on a machine that was relabelled
+out of the selector after being judged. The reset cannot reach every machine the
+policy ever judged: a compliant machine relabelled away is in neither set, so it
+keeps its stale `Compliant=True` until any policy next evaluates it. Each
+machine is re-read from the API server immediately before the write, so the
+reset does not revert a condition another controller wrote after the operator's
+cache was populated. A machine still targeted by another policy is re-evaluated
+by that policy on its next pass. Clearing is best effort per machine: a machine
+the API server refuses is logged and skipped, so one unreachable object cannot
+strand the deleted policy.
+
+The deletion reconcile also removes the policy's
+`cfgd_operator_devices_compliant` series, so a deleted policy stops exporting a
+compliant count.
+
+---
+
+## Full Example
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigPolicy
+metadata:
+  name: k8s-node-baseline
+  namespace: team-platform
+spec:
+  requiredModules:
+    - name: containerd
+      required: true
+    - name: kubelet
+      required: true
+    - name: apparmor
+      required: true
+  packages:
+    - name: socat
+    - name: conntrack
+    - name: kubectl
+      version: ">=1.28"
+    - name: containerd
+      version: ">=1.7"
+  settings:
+    net.ipv4.ip_forward: "1"
+    net.bridge.bridge-nf-call-iptables: "1"
+  targetSelector:
+    matchLabels:
+      cfgd.io/role: k8s-node
+```
