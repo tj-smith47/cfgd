@@ -663,6 +663,8 @@ fn reconcile_tick(
     // Update daemon state. For a per-module tick we only touch
     // `module_last_reconcile` so the profile-wide "last reconcile" timestamp
     // continues to reflect the default reconcile cadence.
+    let header_modules = crate::output::HeaderModule::of_resolved(&resolved_modules_ref);
+    let composed_sources = crate::reconciler::ComposedSource::from_profile_layers(&resolved.layers);
     let rt = tokio::runtime::Handle::current();
     rt.block_on(async {
         let mut st = state.lock().await;
@@ -671,10 +673,12 @@ fn reconcile_tick(
         } else {
             st.last_reconcile = Some(timestamp);
             // The one resolution the loop performs, handed to the status
-            // endpoint so `daemon status` names what `cfgd status` and a run
+            // endpoint and to the scheduled backup fire so `daemon status` and
+            // an unattended run header name what `cfgd status` and an apply
             // header name. A per-module tick resolved a SUBSET and says
             // nothing about the profile.
-            st.modules = crate::output::HeaderModule::of_resolved(&resolved_modules_ref);
+            st.modules = header_modules.clone();
+            st.composed_sources = composed_sources.clone();
         }
     });
 
@@ -912,18 +916,12 @@ fn reconcile_tick(
         // branch, because an applying tick and a notify-only tick differ in
         // what they do — never in what they are reconciling.
         let trigger = format!("drift ({effective_total} resources)");
-        let module_names: Vec<String> = resolved_modules_ref
-            .iter()
-            .map(|module| module.name.clone())
-            .collect();
-        let composed_sources =
-            crate::reconciler::ComposedSource::from_profile_layers(&resolved.layers);
         let run_ctx = || crate::reconciler::RunContext {
             title: crate::reconciler::RunTitle::Reconcile,
             config_path: Some(config_path),
             profile: Some(profile_name),
             sources: &composed_sources,
-            modules: &module_names,
+            modules: &header_modules,
             trigger: Some(&trigger),
             subject: None,
             unit_source: None,

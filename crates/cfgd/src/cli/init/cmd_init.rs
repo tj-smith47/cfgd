@@ -627,7 +627,7 @@ pub(super) fn apply_plan(
     // The names the run acts on, not the names the flags asked for: a module
     // that failed to resolve is absent from the plan, so naming it in the
     // header would describe work no phase below can show.
-    let module_names: Vec<String> = modules.iter().map(|m| m.name.clone()).collect();
+    let header_modules = cfgd_core::output::HeaderModule::of_resolved(modules);
     let config_path = config_dir.join(cfgd_core::config::CONFIG_FILENAME);
     let title = if opts.dry_run {
         cfgd_core::reconciler::RunTitle::Plan
@@ -641,7 +641,7 @@ pub(super) fn apply_plan(
         config_path: Some(config_path.as_path()),
         profile: opts.profile,
         sources: &composed_sources,
-        modules: &module_names,
+        modules: &header_modules,
         trigger: None,
         subject: None,
         unit_source: None,

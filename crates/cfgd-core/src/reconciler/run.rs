@@ -93,7 +93,12 @@ pub struct RunContext<'a> {
     /// The sources this run's composition drew from, in the order they were
     /// layered. Empty for a run that composed none, which renders no row.
     pub sources: &'a [ComposedSource],
-    pub modules: &'a [String],
+    /// What the run's profile resolves to, through the ONE derivation every
+    /// surface reporting on a resolved profile reads
+    /// ([`crate::output::HeaderModule::of_resolved`]) — so membership, order
+    /// and platform gating cannot differ between this header and the `status`
+    /// beside it. Empty for a run under no profile, which renders no row.
+    pub modules: &'a [crate::output::HeaderModule],
     /// What woke this run — the daemon's only extra row (`drift (3 resources)`,
     /// `schedule (daily)`).
     pub trigger: Option<&'a str>,
@@ -484,10 +489,22 @@ impl<'a> ApplyRun<'a> {
                     .join(", "),
             ));
         }
-        rows.extend(crate::output::modules_header_row(
-            self.ctx.modules,
-            &platform_skips(self.plan),
-        ));
+        // A plan carries its own `Skip` actions, built from the very
+        // `platform_skip_reason` a `HeaderModule` holds, so a planned run reads
+        // the gate off the plan; a plan-less run has no actions to read it off
+        // and reads the resolution directly.
+        rows.extend(match self.plan {
+            Some(_) => crate::output::modules_header_row(
+                &self
+                    .ctx
+                    .modules
+                    .iter()
+                    .map(|module| module.name.clone())
+                    .collect::<Vec<_>>(),
+                &platform_skips(self.plan),
+            ),
+            None => crate::output::modules_header_row_for(self.ctx.modules),
+        });
         if let Some(trigger) = self.ctx.trigger {
             rows.push(KvPair::new("Trigger", trigger.to_string()));
         }

@@ -19546,6 +19546,7 @@ mod backup_timers {
                 &config_path,
                 &config_dir,
                 state_dir,
+                &crate::daemon::backup::ResolvedConfiguration::default(),
                 printer,
                 &abort,
             );
@@ -19610,6 +19611,7 @@ mod backup_timers {
             &config_path,
             &config_dir,
             &state_dir,
+            &crate::daemon::backup::ResolvedConfiguration::default(),
             &printer,
             &abort,
         );
@@ -19629,6 +19631,7 @@ mod backup_timers {
                 &config_path,
                 &config_dir,
                 &state_dir,
+                &crate::daemon::backup::ResolvedConfiguration::default(),
                 &printer,
                 &abort,
             );

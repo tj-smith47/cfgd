@@ -459,7 +459,7 @@ fn init_apply_then_next_steps_bridge_invariant() {
         )],
         warnings: Vec::new(),
     };
-    let modules: Vec<String> = Vec::new();
+    let modules: Vec<cfgd_core::output::HeaderModule> = Vec::new();
     let run = ApplyRun::new(
         RunContext {
             title: cfgd_core::reconciler::RunTitle::Plan,

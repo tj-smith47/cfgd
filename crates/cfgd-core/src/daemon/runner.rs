@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use super::backup::{
-    BackupReloadSummary, BackupTimers, DegradedReason, resolve_backup_tasks, run_scheduled_backups,
+    BackupReloadSummary, BackupTimers, DegradedReason, ResolvedConfiguration, resolve_backup_tasks,
+    run_scheduled_backups,
 };
 use super::reconcile::{ReconcileCtx, handle_reconcile};
 use super::sync::{handle_compliance_snapshot, handle_sync, handle_version_check};
@@ -669,12 +670,21 @@ pub(super) async fn handle_backup_tick(
     let printer = Arc::clone(&ctx.printer);
     let abort = Arc::clone(&ctx.abort);
     let config_path = ctx.config_path.clone();
+    let resolved = {
+        let st = ctx.state.lock().await;
+        ResolvedConfiguration {
+            profile: st.profile.clone(),
+            sources: st.composed_sources.clone(),
+            modules: st.modules.clone(),
+        }
+    };
     crate::spawn_blocking_with_test_home(move || {
         run_scheduled_backups(
             &due,
             &config_path,
             &config_dir,
             &state_dir,
+            &resolved,
             &printer,
             &abort,
         );

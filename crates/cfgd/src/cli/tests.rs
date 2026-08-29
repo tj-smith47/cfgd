@@ -30101,6 +30101,75 @@ fn every_resolved_profile_header_names_its_modules_through_the_one_builder() {
     );
 }
 
+/// A run under a resolved profile names that profile's modules.
+///
+/// The row is derived from a resolution, so a `RunContext` naming a profile
+/// while handing the header an empty module slice is a header that states half
+/// the configuration it ran under — which is what every backup verb did, three
+/// of them beside a `Sources` row they filled correctly. A run with genuinely
+/// no profile to resolve carries `// no-modules-row-ok: <why>`.
+#[test]
+fn every_run_under_a_resolved_profile_names_its_modules() {
+    let mut checked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains("RunContext {") {
+                continue;
+            }
+            // The literal's own slots, which every `RunContext` spells within a
+            // few lines of its opening brace — in the `key: value` form or in
+            // field-init shorthand, which names a binding and so is never the
+            // empty slice this rule is about.
+            let slot = |key: &str| {
+                lines[n..]
+                    .iter()
+                    .take(12)
+                    .map(|l| l.trim_start())
+                    .find(|l| l.starts_with(&format!("{key}:")) || *l == format!("{key},"))
+            };
+            let (Some(profile), Some(modules)) = (slot("profile"), slot("modules")) else {
+                continue;
+            };
+            checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
+            if profile == "profile: None," || modules != "modules: &[]," {
+                continue;
+            }
+            let marked = (0..n)
+                .rev()
+                .take_while(|&p| lines[p].trim_start().starts_with("//"))
+                .any(|p| lines[p].trim_start().starts_with("// no-modules-row-ok:"));
+            if marked {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {profile}", path.display(), n + 1));
+        }
+    }
+    // The four runs the rule was written over, so a gather that stopped
+    // reaching either crate cannot pass by finding nothing at all.
+    assert!(
+        checked
+            .iter()
+            .filter(|c| c.contains("cli/backup.rs"))
+            .count()
+            == 3
+            && checked.iter().any(|c| c.contains("daemon/backup.rs")),
+        "the walk no longer reaches every backup run — it checked {checked:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a run reporting under a resolved profile names that profile's modules, \
+         through `cfgd_core::output::HeaderModule::of_resolved` over the \
+         resolution the verb already performed (a run with no profile takes a \
+         `// no-modules-row-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// A `tracing!` line is a JOURNAL, not a display slot: it is read by scripts
 /// and from other hosts, and as another user `~` there is ambiguous in a way
 /// it is not in a report addressed to whoever ran the command — the same

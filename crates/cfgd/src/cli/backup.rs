@@ -417,17 +417,23 @@ pub fn run_backup_restore(
     // Enforce, like `backup run`: a restore executes the unit's hooks and
     // overwrites live data, so a source constraint violation must abort rather
     // than be recorded and stepped over.
-    let composition = compose_with_sources(
+    // The whole desired state rather than the composition alone: `spec.backups[]`
+    // is profile-declared, so this run reports under a resolved profile and its
+    // header names that profile's modules like every other run does. One
+    // resolution — `resolve_desired_state` composes internally.
+    let desired = resolve_desired_state(
         &ctx,
         cfg,
         local_resolved,
+        &[],
+        false,
         printer,
         false,
         composition::ConstraintMode::Enforce,
     )?;
-    let sources =
-        cfgd_core::reconciler::ComposedSource::from_profile_layers(&composition.resolved.layers);
-    let backups = composition.resolved.merged.backups;
+    let sources = desired.sources;
+    let header_modules = cfgd_core::output::HeaderModule::of_resolved(&desired.modules);
+    let backups = desired.resolved.merged.backups;
 
     let spec = find_backup_spec(&backups, args.name)?;
 
@@ -454,7 +460,7 @@ pub fn run_backup_restore(
         config_path: Some(cli.config.as_path()),
         profile: Some(profile_name),
         sources: &sources,
-        modules: &[],
+        modules: &header_modules,
         trigger: None,
         subject: Some(args.name),
         unit_source: Some(&unit_source),
@@ -665,17 +671,23 @@ pub fn run_backup_rollback(
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     // Enforce, like the other two mutating verbs: a rollback executes the
     // unit's hooks and overwrites live data.
-    let composition = compose_with_sources(
+    // The whole desired state rather than the composition alone: `spec.backups[]`
+    // is profile-declared, so this run reports under a resolved profile and its
+    // header names that profile's modules like every other run does. One
+    // resolution — `resolve_desired_state` composes internally.
+    let desired = resolve_desired_state(
         &ctx,
         cfg,
         local_resolved,
+        &[],
+        false,
         printer,
         false,
         composition::ConstraintMode::Enforce,
     )?;
-    let sources =
-        cfgd_core::reconciler::ComposedSource::from_profile_layers(&composition.resolved.layers);
-    let backups = composition.resolved.merged.backups;
+    let sources = desired.sources;
+    let header_modules = cfgd_core::output::HeaderModule::of_resolved(&desired.modules);
+    let backups = desired.resolved.merged.backups;
 
     let spec = find_backup_spec(&backups, name)?;
 
@@ -694,7 +706,7 @@ pub fn run_backup_rollback(
         config_path: Some(cli.config.as_path()),
         profile: Some(profile_name),
         sources: &sources,
-        modules: &[],
+        modules: &header_modules,
         trigger: None,
         subject: Some(name),
         unit_source: Some(&unit_source),
@@ -836,17 +848,23 @@ pub fn run_backup_run(
     // mutating surface like apply/plan/daemon and must abort on a source
     // violation rather than record it and continue. Only `backup list`, which
     // reads, composes in Report.
-    let composition = compose_with_sources(
+    // The whole desired state rather than the composition alone: `spec.backups[]`
+    // is profile-declared, so this run reports under a resolved profile and its
+    // header names that profile's modules like every other run does. One
+    // resolution — `resolve_desired_state` composes internally.
+    let desired = resolve_desired_state(
         &ctx,
         cfg,
         local_resolved,
+        &[],
+        false,
         printer,
         false,
         composition::ConstraintMode::Enforce,
     )?;
-    let sources =
-        cfgd_core::reconciler::ComposedSource::from_profile_layers(&composition.resolved.layers);
-    let backups = composition.resolved.merged.backups;
+    let sources = desired.sources;
+    let header_modules = cfgd_core::output::HeaderModule::of_resolved(&desired.modules);
+    let backups = desired.resolved.merged.backups;
 
     let targets: Vec<&config::BackupSpec> = match name {
         Some(n) => vec![find_backup_spec(&backups, n)?],
@@ -881,7 +899,7 @@ pub fn run_backup_run(
         config_path: Some(cli.config.as_path()),
         profile: Some(profile_name),
         sources: &sources,
-        modules: &[],
+        modules: &header_modules,
         trigger: None,
         subject: named.map(|spec| spec.name.as_str()),
         unit_source: unit_source.as_deref(),

@@ -1214,7 +1214,10 @@ fn header_omits_every_empty_row_and_skips_the_modules_phase() {
         ),
         phase(PhaseName::Files, vec![create("/tmp/one")]),
     ]);
-    let modules = vec!["nvim".to_string()];
+    let modules = vec![crate::output::HeaderModule {
+        name: "nvim".to_string(),
+        platform_skip_reason: None,
+    }];
     let run = ApplyRun::new(
         RunContext {
             title: RunTitle::Apply,

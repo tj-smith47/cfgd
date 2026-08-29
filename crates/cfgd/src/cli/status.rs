@@ -2511,7 +2511,9 @@ mod tests {
 
     /// A config dir whose profile resolves to something its DECLARED list does
     /// not say: one module pulled in by a `depends`, and one gated off this
-    /// host. Returns `(config_dir, state_dir, config_path)`.
+    /// host. It also declares a `spec.backups[]` unit, so the surfaces that
+    /// report under this profile include the backup verbs.
+    /// Returns `(config_dir, state_dir, config_path)`.
     fn setup_env_with_resolved_modules()
     -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
         let config_dir = tempfile::tempdir().unwrap();
@@ -2520,9 +2522,15 @@ mod tests {
         std::fs::write(&config_path, CONFIG_YAML).unwrap();
         let profiles_dir = config_dir.path().join("profiles");
         std::fs::create_dir_all(&profiles_dir).unwrap();
+        let backup_source = config_dir.path().join("data").join("notes.txt");
+        std::fs::create_dir_all(backup_source.parent().unwrap()).unwrap();
+        std::fs::write(&backup_source, "hello backup").unwrap();
         std::fs::write(
             profiles_dir.join("default.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - editor\n    - off-host\n",
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - editor\n    - off-host\n  backups:\n    - name: docs\n      source: {}\n      retention: 3\n",
+                backup_source.display()
+            ),
         )
         .unwrap();
         let module = |name: &str, body: &str| {
@@ -2685,6 +2693,11 @@ mod tests {
         let status = render(&|p| cmd_status(&cli, p, None, false, false, false).unwrap());
         let diff = render(&|p| crate::cli::diff::cmd_diff(&cli, p, None, false).unwrap());
         let sync = render(&|p| crate::cli::sync::cmd_sync(&cli, p).unwrap());
+        // `spec.backups[]` is profile-declared, so a backup run reports under a
+        // resolved profile exactly as an apply does.
+        let backup = render(&|p| {
+            crate::cli::backup::run_backup_run(&cli, p, Some("docs")).unwrap();
+        });
 
         // The daemon's reader is another process, so it renders what the
         // reconcile tick put on the wire: the same derivation, carried.
@@ -2715,7 +2728,12 @@ mod tests {
             ))
         });
 
-        for (surface, row) in [("diff", &diff), ("sync", &sync), ("daemon status", &daemon)] {
+        for (surface, row) in [
+            ("diff", &diff),
+            ("sync", &sync),
+            ("daemon status", &daemon),
+            ("backup run", &backup),
+        ] {
             assert_eq!(
                 &status, row,
                 "`cfgd {surface}` names the profile's modules differently from \

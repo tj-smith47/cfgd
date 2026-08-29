@@ -319,13 +319,16 @@ pub fn cmd_module_create(
 
         // The module just created is the whole of this run: one owner, no
         // profile, and the same skeleton `cfgd apply` renders.
-        let module_names = vec![name.to_string()];
+        let header_modules = vec![cfgd_core::output::HeaderModule {
+            name: name.to_string(),
+            platform_skip_reason: None,
+        }];
         let ctx = cfgd_core::reconciler::RunContext {
             title: cfgd_core::reconciler::RunTitle::Apply,
             config_path: Some(config_path.as_path()),
             profile: None,
             sources: &[],
-            modules: &module_names,
+            modules: &header_modules,
             trigger: None,
             subject: None,
             unit_source: None,
