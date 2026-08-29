@@ -384,13 +384,15 @@ pub fn cmd_diff(
     Ok(())
 }
 
-/// Env findings in the order they render: by kind, then by the item named.
+/// Env findings in the order they render: by kind, then by the item named —
+/// aliases ahead of env vars, as every surface naming the shell pair renders
+/// them.
 ///
 /// `env_verify_results` answers in check order (the managed file and its rc
 /// lines, then each declared item), which says nothing about the machine — two
 /// runs finding the same drift must read the same rather than reordering by
 /// whatever the check reached first.
-fn env_drift_ordered(
+pub(super) fn env_drift_ordered(
     results: Vec<cfgd_core::reconciler::VerifyResult>,
 ) -> Vec<cfgd_core::reconciler::VerifyResult> {
     let mut drifted: Vec<_> = results.into_iter().filter(|r| !r.matches).collect();

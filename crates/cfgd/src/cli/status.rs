@@ -623,7 +623,7 @@ pub(super) fn recorded_scope_row(recorded: &str) -> Option<(&'static str, &str)>
 /// row for being unparseable.
 fn scope_row(recorded: &str) -> KvPair {
     let owners: Option<Vec<cfgd_core::output::OwnerLabel>> = recorded
-        .split(", ")
+        .split(cfgd_core::reconciler::Owner::TOKEN_SEPARATOR)
         .map(|token| owner_from_token(token).map(|owner| owner.label()))
         .collect();
     match owners {
@@ -2698,6 +2698,25 @@ mod tests {
         let backup = render(&|p| {
             crate::cli::backup::run_backup_run(&cli, p, Some("docs")).unwrap();
         });
+        // The two verbs that put data back report under the same profile, off
+        // the same resolution — and a restore is what leaves the safety copy a
+        // rollback puts back, so the legs run in that order.
+        let restore = render(&|p| {
+            crate::cli::backup::run_backup_restore(
+                &cli,
+                p,
+                &crate::cli::backup::RestoreArgs {
+                    name: "docs",
+                    at: None,
+                    to: None,
+                    yes: true,
+                },
+            )
+            .unwrap();
+        });
+        let rollback = render(&|p| {
+            crate::cli::backup::run_backup_rollback(&cli, p, "docs", true).unwrap();
+        });
 
         // The daemon's reader is another process, so it renders what the
         // reconcile tick put on the wire: the same derivation, carried.
@@ -2733,6 +2752,8 @@ mod tests {
             ("sync", &sync),
             ("daemon status", &daemon),
             ("backup run", &backup),
+            ("backup restore", &restore),
+            ("backup rollback", &rollback),
         ] {
             assert_eq!(
                 &status, row,

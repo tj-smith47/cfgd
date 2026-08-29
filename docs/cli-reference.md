@@ -712,7 +712,8 @@ Scripts
 Packages, files, aliases and env vars list alphabetically; scripts stay in
 execution order, because that order is the fact. Aliases precede env vars
 wherever the pair is named — the counts, these inventories, `cfgd module
-show`'s sections and `-o json`'s field order alike. `--show-values` renders the
+show`'s sections, the profile inventory `cfgd profile show`, `cfgd source show`
+and `cfgd source add` render, and `-o json`'s field order alike. `--show-values` renders the
 same inventories with each declared value (`EDITOR="nvim"`, quoted the way the
 generated env file writes it) and each script's whole body instead of its
 condensed first line, and implies `-o wide`.

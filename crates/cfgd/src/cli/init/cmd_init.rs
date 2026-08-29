@@ -244,7 +244,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                         .iter()
                         .map(|m| cfgd_core::reconciler::Owner::module(m).token())
                         .collect::<Vec<_>>()
-                        .join(", "),
+                        .join(cfgd_core::reconciler::Owner::TOKEN_SEPARATOR),
                 );
             // Survivor-gated pricing: only a package this plan will surface is
             // asked for the version its install action renders and persists.

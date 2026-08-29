@@ -2,8 +2,8 @@
 //!
 //! Three cases:
 //!   - `profile_show/happy.{txt,json}` — multi-layer profile with env,
-//!     packages (brew + cargo + simple lists), files, system keys, and secrets
-//!     all populated. Exercises every section + the with_data(&ResolvedProfile)
+//!     packages (brew + cargo + simple lists), aliases, files, system keys, and
+//!     secrets all populated. Exercises every section + the with_data(&ResolvedProfile)
 //!     payload round-trip.
 //!   - `profile_show/empty.txt` — single-layer profile with no env / packages /
 //!     files / system / secrets. Exercises section_if_nonempty skipping every
@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use cfgd::cli::profile::show::build_profile_show_doc;
 use cfgd_core::config::{
     AptSpec, BrewSpec, CargoSpec, EnvVar, FilesSpec, LayerPolicy, ManagedFileSpec, MergedProfile,
-    PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile, SecretSpec,
+    PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile, SecretSpec, ShellAlias,
 };
 use cfgd_core::output::Printer;
 use pretty_assertions::assert_eq;
@@ -63,7 +63,18 @@ fn happy_resolved() -> ResolvedProfile {
                 },
             ],
             env_scope: cfgd_core::config::EnvScope::All,
-            aliases: Vec::new(),
+            aliases: vec![
+                ShellAlias {
+                    name: "gs".into(),
+                    command: "git status".into(),
+                    platforms: vec![],
+                },
+                ShellAlias {
+                    name: "ll".into(),
+                    command: "ls -lah".into(),
+                    platforms: vec![],
+                },
+            ],
             packages: PackagesSpec {
                 brew: Some(BrewSpec {
                     file: None,

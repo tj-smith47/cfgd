@@ -5,6 +5,10 @@ Layers
   base         source=local priority=1000
   workstation  source=local priority=1000
 
+Aliases
+  gs  git status
+  ll  ls -lah
+
 Env
   EDITOR  nvim
   LANG    en_US.UTF-8

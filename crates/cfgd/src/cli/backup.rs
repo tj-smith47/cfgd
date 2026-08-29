@@ -65,6 +65,73 @@ fn unit_context<'a>(
     Ok((config_dir, state, state_dir))
 }
 
+/// What `cfgd backup restore` / `cfgd backup rollback` report under: the
+/// composed sources, the resolved profile's modules for the header row, and the
+/// units to choose from.
+///
+/// A module-resolution failure DEGRADES here rather than refusing. Resolution
+/// clones or fetches every module's git file source, and none of a restore's
+/// actual work depends on it — it is spent on a header row — so an unreachable
+/// module remote would otherwise veto putting data back, plausibly during the
+/// very incident that made it unreachable. The row is dropped and the reason is
+/// stated instead. `cfgd backup run` stays fatal: it executes the profile's own
+/// hooks, so a profile it cannot resolve is a run it cannot make.
+///
+/// A COMPOSITION failure still refuses, on the fallback's own `?`: a source
+/// constraint violation is about the config the run would act under, not about
+/// a header row.
+fn restoring_verb_state(
+    ctx: &RunContext<'_>,
+    cfg: &config::CfgdConfig,
+    local_resolved: &cfgd_core::config::ResolvedProfile,
+    printer: &Printer,
+) -> anyhow::Result<(
+    Vec<cfgd_core::reconciler::ComposedSource>,
+    Vec<cfgd_core::output::HeaderModule>,
+    Vec<config::BackupSpec>,
+)> {
+    match resolve_desired_state(
+        ctx,
+        cfg,
+        local_resolved,
+        &[],
+        false,
+        printer,
+        false,
+        composition::ConstraintMode::Enforce,
+    ) {
+        Ok(desired) => Ok((
+            desired.sources,
+            cfgd_core::output::HeaderModule::of_resolved(&desired.modules),
+            desired.resolved.merged.backups,
+        )),
+        Err(e) => {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Modules not resolved — {}",
+                    cfgd_core::output::collapse_to_subject_line(&e)
+                ),
+            );
+            let composition = compose_with_sources(
+                ctx,
+                cfg,
+                local_resolved,
+                printer,
+                false,
+                composition::ConstraintMode::Enforce,
+            )?;
+            Ok((
+                cfgd_core::reconciler::ComposedSource::from_profile_layers(
+                    &composition.resolved.layers,
+                ),
+                Vec::new(),
+                composition.resolved.merged.backups,
+            ))
+        }
+    }
+}
+
 /// Build the `cfgd backup list` Doc from a populated entries vector. Pure; the
 /// caller assembles the entries from config + the state store and passes `now`,
 /// so a render pins in a test rather than reading a clock inside the builder.
@@ -414,26 +481,8 @@ pub fn run_backup_restore(
 ) -> anyhow::Result<Option<cfgd_core::backup::RestoreOutcome>> {
     let ctx = RunContext::new(cli, printer);
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
-    // Enforce, like `backup run`: a restore executes the unit's hooks and
-    // overwrites live data, so a source constraint violation must abort rather
-    // than be recorded and stepped over.
-    // The whole desired state rather than the composition alone: `spec.backups[]`
-    // is profile-declared, so this run reports under a resolved profile and its
-    // header names that profile's modules like every other run does. One
-    // resolution — `resolve_desired_state` composes internally.
-    let desired = resolve_desired_state(
-        &ctx,
-        cfg,
-        local_resolved,
-        &[],
-        false,
-        printer,
-        false,
-        composition::ConstraintMode::Enforce,
-    )?;
-    let sources = desired.sources;
-    let header_modules = cfgd_core::output::HeaderModule::of_resolved(&desired.modules);
-    let backups = desired.resolved.merged.backups;
+    let (sources, header_modules, backups) =
+        restoring_verb_state(&ctx, cfg, local_resolved, printer)?;
 
     let spec = find_backup_spec(&backups, args.name)?;
 
@@ -669,25 +718,8 @@ pub fn run_backup_rollback(
 ) -> anyhow::Result<Option<cfgd_core::backup::RollbackOutcome>> {
     let ctx = RunContext::new(cli, printer);
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
-    // Enforce, like the other two mutating verbs: a rollback executes the
-    // unit's hooks and overwrites live data.
-    // The whole desired state rather than the composition alone: `spec.backups[]`
-    // is profile-declared, so this run reports under a resolved profile and its
-    // header names that profile's modules like every other run does. One
-    // resolution — `resolve_desired_state` composes internally.
-    let desired = resolve_desired_state(
-        &ctx,
-        cfg,
-        local_resolved,
-        &[],
-        false,
-        printer,
-        false,
-        composition::ConstraintMode::Enforce,
-    )?;
-    let sources = desired.sources;
-    let header_modules = cfgd_core::output::HeaderModule::of_resolved(&desired.modules);
-    let backups = desired.resolved.merged.backups;
+    let (sources, header_modules, backups) =
+        restoring_verb_state(&ctx, cfg, local_resolved, printer)?;
 
     let spec = find_backup_spec(&backups, name)?;
 

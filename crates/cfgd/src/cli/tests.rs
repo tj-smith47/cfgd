@@ -30101,6 +30101,192 @@ fn every_resolved_profile_header_names_its_modules_through_the_one_builder() {
     );
 }
 
+/// Aliases lead env vars on every surface that names the pair — enforced over
+/// the POPULATION, not over a list.
+///
+/// The sibling pin renders five surfaces named by hand; it can only fail a
+/// surface somebody remembered to add, and it cannot fail one that renders an
+/// env block and no alias block at all — which is what `profile show`,
+/// `source show` and `source add` did, on a profile whose aliases the apply
+/// path deploys. This walks the source instead, so the next surface trips over
+/// the rule the day it is written.
+///
+/// Judged on the render CALL (or a bare block name in a builder's own vec), and
+/// scoped to the enclosing function: a surface names both halves in one place
+/// or names neither. A block naming aliases alone is no offence — `generate
+/// --scan-only`'s `Aliases`/`Exports` pair is a different pair.
+#[test]
+fn every_surface_naming_an_env_block_names_its_aliases_first() {
+    const RENDER_CALLS: &[&str] = &[
+        ".section(",
+        ".section_if_nonempty(",
+        ".section_or_collapse(",
+        ".subsection(",
+        ".subsection_if_nonempty(",
+        ".kv(",
+        "KvPair::new(",
+        "KvPair::nested(",
+        "KvPair::annotated(",
+    ];
+    // A builder returning named blocks names one per line, in a vec of tuples.
+    let names_a_block = |code: &str, word: &str| {
+        let quoted = format!("\"{word}\"");
+        code.contains(&quoted)
+            && (RENDER_CALLS.iter().any(|call| code.contains(call)) || code == format!("{quoted},"))
+    };
+    let mut checked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if !["Env", "Environment"]
+                .iter()
+                .any(|word| names_a_block(code, word))
+            {
+                continue;
+            }
+            checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
+            let fn_start = (0..n)
+                .rev()
+                .find(|&p| lines[p].trim_start().starts_with("fn ") || lines[p].contains(" fn "))
+                .unwrap_or(0);
+            if lines[fn_start..n]
+                .iter()
+                .any(|l| names_a_block(l.trim_start(), "Aliases"))
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {code}", path.display(), n + 1));
+        }
+    }
+    // The surfaces the rule was written over, so a gather that stopped reaching
+    // the CLI sources cannot pass by finding nothing at all.
+    for surface in [
+        "cli/profile/show.rs",
+        "cli/status.rs",
+        "cli/module/list_show.rs",
+        "cli/module/registry.rs",
+    ] {
+        assert!(
+            checked.iter().any(|c| c.contains(surface)),
+            "the walk no longer reaches {surface} — it checked {checked:?}"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a surface that renders an env block renders its aliases block first, \
+         the order every surface naming the pair holds — the halves carry no \
+         header of their own to say which is which:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Whether the marker heads `lines[n]` or the contiguous comment block above
+/// it — the ONE reading of a hatch, so every walk in this file accepts a marker
+/// in the same two places and a typo in one cannot pass in the other.
+fn hatched(lines: &[&str], n: usize, marker: &str) -> bool {
+    lines[n].trim_start().contains(marker)
+        || (0..n)
+            .rev()
+            .take_while(|&p| lines[p].trim_start().starts_with("//"))
+            .any(|p| lines[p].trim_start().starts_with(marker))
+}
+
+/// Whether a `RunContext`'s `modules` slot hands the header nothing.
+///
+/// Judged on the VALUE rather than on one literal spelling: `&[]`, `&[][..]`
+/// and an empty `Vec` all render no row, and a field-init shorthand names a
+/// binding — which is empty exactly when the same function initialised it
+/// empty, the one place the walk can see it.
+fn names_no_modules(lines: &[&str], n: usize, slot: &str) -> bool {
+    const EMPTY: &[&str] = &[
+        "&[]",
+        "&[][..]",
+        "&Vec::new()",
+        "Vec::new()",
+        "vec![]",
+        "&vec![]",
+        "&[] as &[HeaderModule]",
+        "Default::default()",
+        "&Default::default()",
+    ];
+    let Some(value) = slot
+        .strip_prefix("modules:")
+        .map(|v| v.trim().trim_end_matches(','))
+    else {
+        // Shorthand: the binding is the slot's own name.
+        return binding_is_empty(lines, n, "modules", EMPTY);
+    };
+    EMPTY.contains(&value) || binding_is_empty(lines, n, value.trim_start_matches('&'), EMPTY)
+}
+
+/// Whether `name` was bound to one of `empty` in the forty lines above `n` —
+/// as much of the enclosing function as a walk over lines can honestly claim
+/// to have read.
+fn binding_is_empty(lines: &[&str], n: usize, name: &str, empty: &[&str]) -> bool {
+    let head = format!("let {name}");
+    lines[n.saturating_sub(40)..n]
+        .iter()
+        .map(|l| l.trim_start())
+        .filter(|l| l.starts_with(&head))
+        .any(|l| {
+            l.split_once('=')
+                .is_some_and(|(_, init)| empty.contains(&init.trim().trim_end_matches(';').trim()))
+        })
+}
+
+/// The hatch is read the same two ways wherever a walk offers one, and neither
+/// of them is "anywhere in the file".
+#[test]
+fn a_hatch_is_read_on_its_own_line_and_on_the_comment_block_above_it() {
+    let lines = [
+        "// no-modules-row-ok: a run with no profile",
+        "let ctx = RunContext {",
+        "    modules: &[], // no-modules-row-ok: same, inline",
+        "",
+        "let bare = RunContext {",
+    ];
+    assert!(hatched(&lines, 1, "// no-modules-row-ok:"), "comment above");
+    assert!(hatched(&lines, 2, "// no-modules-row-ok:"), "own line");
+    assert!(
+        !hatched(&lines, 4, "// no-modules-row-ok:"),
+        "a blank line ends the block, so a marker further up does not reach"
+    );
+}
+
+/// An empty `modules` slot is caught in every spelling that renders no row,
+/// not only in the one the backup verbs happened to use.
+#[test]
+fn an_empty_modules_slot_is_caught_however_it_is_spelled() {
+    let empty = [
+        "let x = RunContext {|    modules: &[],",
+        "let x = RunContext {|    modules: &[][..],",
+        "let none: Vec<HeaderModule> = Vec::new();|let x = RunContext {|    modules: &none,",
+        "let modules = vec![];|let x = RunContext {|    modules,",
+    ];
+    for case in empty {
+        let lines: Vec<&str> = case.split('|').collect();
+        let n = lines.len() - 1;
+        assert!(
+            names_no_modules(&lines, n, lines[n].trim_start()),
+            "not caught: {case}"
+        );
+    }
+    let filled = [
+        "let x = RunContext {|    modules: &header_modules,",
+        "let modules = HeaderModule::of_resolved(&resolved);|let x = RunContext {|    modules,",
+    ];
+    for case in filled {
+        let lines: Vec<&str> = case.split('|').collect();
+        let n = lines.len() - 1;
+        assert!(
+            !names_no_modules(&lines, n, lines[n].trim_start()),
+            "wrongly caught: {case}"
+        );
+    }
+}
+
 /// A run under a resolved profile names that profile's modules.
 ///
 /// The row is derived from a resolution, so a `RunContext` naming a profile
@@ -30136,14 +30322,10 @@ fn every_run_under_a_resolved_profile_names_its_modules() {
                 continue;
             };
             checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
-            if profile == "profile: None," || modules != "modules: &[]," {
+            if profile == "profile: None," || !names_no_modules(&lines, n, modules) {
                 continue;
             }
-            let marked = (0..n)
-                .rev()
-                .take_while(|&p| lines[p].trim_start().starts_with("//"))
-                .any(|p| lines[p].trim_start().starts_with("// no-modules-row-ok:"));
-            if marked {
+            if hatched(&lines, n, "// no-modules-row-ok:") {
                 continue;
             }
             offenders.push(format!("{}:{}: {profile}", path.display(), n + 1));

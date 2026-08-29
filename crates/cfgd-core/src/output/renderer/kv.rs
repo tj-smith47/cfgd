@@ -251,7 +251,7 @@ impl Emitting<'_> {
                 .iter()
                 .map(|owner| owner.styled(self.theme))
                 .collect::<Vec<_>>()
-                .join(crate::output::component::OWNER_VALUE_SEPARATOR)
+                .join(crate::reconciler::Owner::TOKEN_SEPARATOR)
         };
         let value = match pair.link.as_deref() {
             Some(url) if self.theme.hyperlinks() => {
@@ -810,7 +810,7 @@ mod tests {
             .iter()
             .map(|o| o.styled(&theme))
             .collect::<Vec<_>>()
-            .join(crate::output::component::OWNER_VALUE_SEPARATOR);
+            .join(crate::reconciler::Owner::TOKEN_SEPARATOR);
         assert!(
             out.contains(&expected),
             "the value is not the owner tokens' own coat: {out:?}"
