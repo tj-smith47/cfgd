@@ -1374,6 +1374,20 @@ fn a_relative_link_to_a_directory_lands_as_a_directory_link() {
 }
 
 #[test]
+fn a_snapshot_normalizer_substitutes_the_home_folded_spelling_too() {
+    let home = tempfile::tempdir().unwrap();
+    let target = home.path().join("data").join("notes.txt");
+    with_test_home(home.path(), || {
+        let rendered = format!("rollback {}", fold_home_in_text(&to_posix_string(&target)));
+        assert_eq!(
+            normalize_for_snapshot(&rendered, &[(target.as_path(), "<SOURCE>")]),
+            "rollback <SOURCE>",
+            "a display slot folds the home directory, so the normalizer has to know that spelling"
+        );
+    });
+}
+
+#[test]
 fn dir_size_sums_the_whole_tree() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("sub/deeper")).unwrap();
