@@ -141,7 +141,7 @@ elif [ -z "$DAEMON_PID" ]; then
     skip_test "DM06" "DM05 did not produce a live daemon"
 else
     run $C daemon status
-    if assert_ok && assert_contains "$OUTPUT" "Daemon is running"; then
+    if assert_ok && assert_contains "$OUTPUT" "Daemon running"; then
         pass_test "DM06"
     else
         fail_test "DM06"
