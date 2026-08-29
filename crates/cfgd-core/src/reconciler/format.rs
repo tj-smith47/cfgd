@@ -230,7 +230,7 @@ pub fn format_action_description(action: &Action) -> String {
 /// `Action::Script` arm and `format_module_action_body`'s
 /// `ModuleActionKind::RunScript` arm both embed `run_str()` verbatim), or an
 /// operand LIST longer than a row states (every package and file subject,
-/// cut by [`elided_list`] into [`action_display_subject`]). `-o json`
+/// cut by `elided_list` into [`action_display_subject`]). `-o json`
 /// payloads and `ActionResult.description` stay byte-identical to the
 /// source body and name every operand. Callers must keep the raw `desc` for
 /// `ActionResult.description` / journal persistence / the `-o json` plan
@@ -338,7 +338,7 @@ pub fn action_display_subject(action: &Action) -> DisplaySubject {
 /// `budget` is the columns the subject may occupy — [`Printer::subject_budget`]
 /// on the sink the row is drawn to — and an operand list fills it before it
 /// cuts, so a wide terminal names as many packages as fit and a narrow one
-/// still names [`SUBJECT_LIST_KEEP`]. `None` is the floor alone, the answer a
+/// still names `SUBJECT_LIST_KEEP`. `None` is the floor alone, the answer a
 /// capture or a redirected stream gets, and every surface that renders ONE
 /// report reads the same budget: the preview bullet, the alignment column,
 /// the apply ledger, the live tree and the lane dispatcher's wait lines, so

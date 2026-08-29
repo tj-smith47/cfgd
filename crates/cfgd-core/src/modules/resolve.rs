@@ -28,7 +28,7 @@ use super::{LoadedModule, ResolvedFile, ResolvedModule, ResolvedPackage, SourceM
 /// 0. If `platforms` is non-empty and current platform doesn't match → return None (skipped)
 /// 1. Determine candidate managers: `prefer` list, or — for a bare entry — the
 ///    available manager that already HOLDS the package, falling back to
-///    `[platform.native_manager()]` (see [`holding_manager`])
+///    `[platform.native_manager()]` (see `holding_manager`)
 /// 2. For each candidate:
 ///    a. If `"script"` — always available, uses the `script` field as installer
 ///    b. Otherwise: check available + alias resolve + min-version check

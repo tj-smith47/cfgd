@@ -500,8 +500,8 @@ pub(super) fn outcome_detail(error: Option<&str>, size: Option<String>) -> Optio
 /// Report a completed run on the status line every surface shares. `cfgd
 /// apply`, `cfgd backup run`, and the daemon's scheduled fire all render
 /// through here so a run cannot look different depending on which surface
-/// produced it; the role and the detail are [`outcome_role`]'s and
-/// [`outcome_detail`]'s.
+/// produced it; the role and the detail are `outcome_role`'s and
+/// `outcome_detail`'s.
 ///
 /// Returns the [`BackupItem`] for the line it just emitted, so the rollup counts
 /// from the same value the screen was written from. A recorded run always

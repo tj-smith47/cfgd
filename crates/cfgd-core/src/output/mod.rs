@@ -318,7 +318,7 @@ pub fn measure_width(text: &str) -> usize {
 /// flattened first. The first non-empty line becomes the head; subsequent
 /// non-empty lines are joined with ` — ` so trailing systemctl/launchd
 /// context (e.g. `"See system logs and 'systemctl status …' for details."`)
-/// stays visible on a single physical row. Bounded through [`bounded_lines`],
+/// stays visible on a single physical row. Bounded through `bounded_lines`,
 /// so a slot that must be one row cannot become forty screens of a child's
 /// progress output.
 pub fn collapse_to_subject_line(err: impl std::fmt::Display) -> String {

@@ -149,7 +149,7 @@ fn span_magnitude(secs: i64) -> String {
 /// `None` when `ts` or `now` fails to parse, or when `ts` is already PAST —
 /// "in -2h" is not a thing a schedule column may say, and a caller holding an
 /// overdue instant reaches for `humanize_age_since` to word it as an age.
-/// Shares [`age_since_secs`] with its backward twin, so the two cannot disagree
+/// Shares `age_since_secs` with its backward twin, so the two cannot disagree
 /// about where an hour ends.
 pub fn humanize_until(ts: &str, now: &str) -> Option<String> {
     let secs = -age_since_secs(ts, now)?;

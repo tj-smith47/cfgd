@@ -604,7 +604,7 @@ impl NoteSink {
 ///
 /// A manager that cannot be provisioned at all — it ships with the OS (`winget`),
 /// it is a sub-manager of one that does (`brew-tap`), or nothing on this host can
-/// install it — answers [`PackageManager::bootstrap_plan`] with `None`. `Some` is
+/// install it — answers [`PackageManagerExt::bootstrap_plan`] with `None`. `Some` is
 /// the plan this run would carry out, resolved against what is available NOW: two
 /// hosts with different system managers get different methods for the same
 /// manager, which is what makes the plan a plan rather than a description.
@@ -866,7 +866,7 @@ pub trait PackageManager: Send + Sync {
     }
 }
 
-/// The question-only view of [`PackageManager::bootstrap_plan`], for call sites
+/// The question-only view of [`PackageManagerExt::bootstrap_plan`], for call sites
 /// that ask whether a manager can be provisioned without caring what that takes.
 ///
 /// Blanket-implemented over every `PackageManager` — including `dyn

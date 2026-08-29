@@ -150,7 +150,7 @@ pub struct ControllerContext {
 const REGISTRY_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// The registry visits that failed recently, so the next reconcile inside
-/// [`REGISTRY_RETRY_AFTER`] answers from the failure instead of repeating it.
+/// `REGISTRY_RETRY_AFTER` answers from the failure instead of repeating it.
 ///
 /// Keyed by what was attempted AND against what, because reading an artifact's
 /// manifests and verifying its signature are two visits that can fail
