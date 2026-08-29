@@ -68,7 +68,14 @@ runs:
         echo "Downloading $url"
         curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 \
           -o "${RUNNER_TEMP}/${asset}" "$url"
-        echo "${sha}  ${RUNNER_TEMP}/${asset}" | shasum -a 256 -c -
+        # Git Bash on windows runners carries no perl, so no `shasum`; macOS
+        # carries no coreutils, so no `sha256sum`. Whichever this runner has
+        # verifies — the check is never skipped for want of a checker.
+        if command -v sha256sum >/dev/null 2>&1; then
+          echo "${sha}  ${RUNNER_TEMP}/${asset}" | sha256sum -c -
+        else
+          echo "${sha}  ${RUNNER_TEMP}/${asset}" | shasum -a 256 -c -
+        fi
         unzip -o -q "${RUNNER_TEMP}/${asset}" -d "$dest"
 
         # The protoc zip lays out bin/protoc (bin/protoc.exe on windows).
