@@ -384,7 +384,13 @@ tasks:
           | sed 's/[][^$.*+?(){}|\\]/\\&/g' \
           | sed 's|.*|registry/src/[^ ]*/&/|' \
           | tr '\n' '|' | sed 's/|$//')
-        grep -lZE "$pat" "$tgt"/*/deps/*.d 2>/dev/null | while IFS= read -r -d '' f; do
+        # A plain newline-delimited read, not `grep -lZ` + `read -d ''`: the
+        # task runs under `sh`, whose `read` has no `-d`, so the NUL form
+        # aborted the whole cleanup with `read: invalid option "-d"` and left
+        # every stale rlib in place — which is how a `cargo package` verify
+        # came to compile the CLI against a sibling rmeta predating the API it
+        # had just been given. Nothing under `target/` carries a newline.
+        grep -lE "$pat" "$tgt"/*/deps/*.d 2>/dev/null | while IFS= read -r f; do
           h=${f##*-}; h=${h%.d}
           d=${f%/deps/*}
           rm -rf "$d"/deps/*-"$h" "$d"/deps/*-"$h".* "$d"/.fingerprint/*-"$h"
