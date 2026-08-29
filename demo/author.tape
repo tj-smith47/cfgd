@@ -75,6 +75,17 @@ Enter
 Wait@60s /cfgd\$$/
 Sleep 4s
 
+# Beat 2b: the root kind, so the Docs row (a link on a terminal that opens
+# one, the release-pinned URL everywhere else) lands on screen. A kind, not a
+# field path — the row is a kind's; and not `--recursive`, whose 144 rows
+# would scroll the Docs row off before the hold.
+Type "clear"
+Enter
+Type "cfgd explain Config"
+Enter
+Wait@60s /cfgd\$$/
+Sleep 5s
+
 # Beat 3: mutate the profile from the CLI — a tap, a formula delivered
 # through brew, and a shell alias, one command, no editor. The tap token
 # spells the schema path beat 2 just rendered (`brew.taps`), so what is typed
@@ -138,6 +149,16 @@ Type "cfgd apply --yes"
 Enter
 Wait@60s /cfgd\$$/
 Sleep 5s
+
+# Beat 8: the same status as beat 1, now carrying what the loop authored —
+# the tap, the formula and the alias under the profile's own owner, beside
+# the module's rows.
+Type "clear"
+Enter
+Type "cfgd status"
+Enter
+Wait@60s /cfgd\$$/
+Sleep 6s
 
 # Closing hold — the last beat's own hold already covers reading it; this is
 # only the breath before the loop snaps back.
