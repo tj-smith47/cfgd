@@ -745,6 +745,14 @@ impl Owner {
         self.label().plain()
     }
 
+    /// What joins several owner tokens into one string, wherever a slot holds a
+    /// list of them: the recorded scope of a `--module` run, and the kv value
+    /// [`crate::output::KvPair::owner_valued`] renders it back as. Beside
+    /// [`Owner::token`] because the writer and the reader of that column both
+    /// have to agree with it — spelled by hand at either end, a one-byte change
+    /// stops the reader parsing what the writer wrote.
+    pub const TOKEN_SEPARATOR: &'static str = ", ";
+
     /// The ONE owner comparator: `Profile`(0) `Cfgd`(1) `Module`(2)
     /// `Backup`(3) `Source`(4), then — for cfgd's own closed vocabulary —
     /// [`CFGD_GROUP_ORDER`], then name. It orders **every** phase — there is

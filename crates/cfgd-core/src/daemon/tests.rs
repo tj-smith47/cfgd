@@ -13818,6 +13818,20 @@ spec:
             vec!["off-host"],
             "the gated module must reach the wire carrying its skip reason"
         );
+        // The scheduled backup fire has no composition of its own and reports
+        // under this snapshot, so the profile it compares a due unit against
+        // and the sources it names both have to be here.
+        assert_eq!(
+            st.profile.as_deref(),
+            Some("default"),
+            "the tick must record the profile it resolved"
+        );
+        assert!(
+            st.composed_sources.is_empty(),
+            "a profile composed from the local layer alone subscribes to no \
+             source, so the fire has none to name: {:?}",
+            st.composed_sources
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -19583,6 +19597,75 @@ mod backup_timers {
                 "{label} is its own only phase and prints no phase row: {raw}"
             );
         }
+    }
+
+    /// A scheduled fire under the profile the reconcile tick resolved reports
+    /// on the same configuration every other run does: the composed sources and
+    /// the resolved modules the tick recorded. A due set that names another
+    /// profile — or several — is a fire under no one resolution, so it names
+    /// neither rather than crediting one profile's configuration to another's
+    /// units.
+    #[test]
+    fn a_scheduled_fire_names_the_tick_resolution_only_for_its_own_profile() {
+        fn fire(label: &str, due_profile: &str) -> String {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let home = tmp.path().join(label);
+            let state_dir = home.join("state");
+            std::fs::create_dir_all(&state_dir).unwrap();
+            let source = tmp.path().join("data.db");
+            std::fs::write(&source, b"payload").unwrap();
+            let resolved = crate::daemon::backup::ResolvedConfiguration {
+                profile: Some("workstation".to_string()),
+                sources: vec![crate::reconciler::ComposedSource {
+                    name: "team-config".to_string(),
+                    profile: Some("team".to_string()),
+                }],
+                modules: vec![crate::output::HeaderModule {
+                    name: "nvim".to_string(),
+                    platform_skip_reason: None,
+                }],
+            };
+            let due = vec![(due_profile.to_string(), spec("db", &source, Some("1h")))];
+            let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+            let abort = crate::AbortFlag::default();
+            crate::with_test_home(&home, || {
+                crate::daemon::backup::run_scheduled_backups(
+                    &due,
+                    &tmp.path().join("cfgd.yaml"),
+                    tmp.path(),
+                    &state_dir,
+                    &resolved,
+                    &printer,
+                    &abort,
+                );
+            });
+            drop(printer);
+            crate::test_helpers::captured_text(&buf)
+        }
+
+        let matched = fire("matched", "workstation");
+        assert!(
+            matched.contains("Profile") && matched.contains("workstation"),
+            "a fire under the resolved profile names it: {matched}"
+        );
+        assert!(
+            matched.contains("Sources") && matched.contains("team-config"),
+            "a fire under the resolved profile names the composed sources: {matched}"
+        );
+        assert!(
+            matched.contains("Modules") && matched.contains("nvim"),
+            "a fire under the resolved profile names the resolved modules: {matched}"
+        );
+
+        let other = fire("other", "server");
+        assert!(
+            !other.contains("team-config"),
+            "a fire under another profile must not name this one\'s sources: {other}"
+        );
+        assert!(
+            !other.contains("Modules"),
+            "a fire under another profile must not name this one\'s modules: {other}"
+        );
     }
 
     /// A unit skipped for a held lock must say so in the journal — the only

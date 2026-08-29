@@ -403,7 +403,7 @@ pub fn run_apply(
                 .iter()
                 .map(|m| reconciler::Owner::module(m).token())
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(reconciler::Owner::TOKEN_SEPARATOR)
         } else {
             profile_label.clone().unwrap_or_default()
         });

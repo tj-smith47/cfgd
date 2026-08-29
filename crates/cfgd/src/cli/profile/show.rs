@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{
-    EnvVar, ManagedFileSpec, PackagesSpec, ProfileLayer, ResolvedProfile, SecretSpec,
+    EnvVar, ManagedFileSpec, PackagesSpec, ProfileLayer, ResolvedProfile, SecretSpec, ShellAlias,
 };
 use cfgd_core::output::{Doc, KvPair, Printer};
 
@@ -39,9 +39,9 @@ pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str, config_pat
     }))
 }
 
-/// A profile's own inventory — Env, Packages, Files, System, Secrets — as
-/// named blocks of kv rows, in the order `cfgd profile show` has always
-/// rendered them. A block with no rows is returned empty rather than omitted,
+/// A profile's own inventory — Aliases, Env, Packages, Files, System, Secrets
+/// — as named blocks of kv rows, aliases leading the shell pair as they do on
+/// every surface that names both. A block with no rows is returned empty rather than omitted,
 /// so a caller decides whether an empty block is a skipped section or an
 /// empty-state one.
 ///
@@ -54,8 +54,17 @@ pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str, config_pat
 pub fn profile_inventory_blocks(resolved: &ResolvedProfile) -> Vec<(&'static str, Vec<KvPair>)> {
     let mut env_sorted: Vec<&EnvVar> = resolved.merged.env.iter().collect();
     env_sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut aliases_sorted: Vec<&ShellAlias> = resolved.merged.aliases.iter().collect();
+    aliases_sorted.sort_by(|a, b| a.name.cmp(&b.name));
 
     vec![
+        (
+            "Aliases",
+            aliases_sorted
+                .iter()
+                .map(|al| KvPair::new(&al.name, &al.command))
+                .collect(),
+        ),
         (
             "Env",
             env_sorted

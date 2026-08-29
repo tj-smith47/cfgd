@@ -677,6 +677,14 @@ fn reconcile_tick(
             // an unattended run header name what `cfgd status` and an apply
             // header name. A per-module tick resolved a SUBSET and says
             // nothing about the profile.
+            //
+            // The name comes from this resolution rather than being left at
+            // what the pre-loop setup read: the fire compares a due unit's
+            // profile against it to decide whether these sources and modules
+            // describe that unit's configuration, so a name from one resolution
+            // beside the layers of another is the one way that comparison can
+            // answer wrongly.
+            st.profile = Some(resolved.profile_name().to_string());
             st.modules = header_modules.clone();
             st.composed_sources = composed_sources.clone();
         }

@@ -1645,6 +1645,68 @@ fn backup_restore_json_shape() {
     );
 }
 
+/// A restore is what an operator reaches for when something has gone wrong,
+/// and none of its work depends on the profile's modules — the resolution is
+/// spent on a header row. So a module whose git source cannot be reached
+/// degrades to a stated reason and an absent row, and the data still goes back.
+#[test]
+fn a_restore_completes_over_a_module_whose_source_cannot_be_reached() {
+    let (config_dir, state_dir, source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    // The snapshot is taken before the profile names the module: `backup run`
+    // executes the profile's own hooks and so stays fatal on a profile it
+    // cannot resolve.
+    run_docs(&cli);
+
+    let module_dir = config_dir.path().join("modules").join("broken");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    // A port nothing listens on: the clone is refused at connect, so the fixture
+    // neither reaches the network nor waits on a timeout.
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: broken\nspec:\n  files:\n    - source: https://127.0.0.1:1/broken.git\n      target: ~/broken.txt\n",
+    )
+    .unwrap();
+    let profile = config_dir.path().join("profiles").join("withbackups.yaml");
+    let with_module = std::fs::read_to_string(&profile)
+        .unwrap()
+        .replace("  modules: []\n", "  modules:\n    - broken\n");
+    std::fs::write(&profile, with_module).unwrap();
+
+    std::fs::write(&source, "clobbered").unwrap();
+    let (printer, cap) = Printer::for_test_doc();
+    let outcome = run_backup_restore(&cli, &printer, &restore_args("docs"))
+        .unwrap()
+        .expect("a --yes restore is never declined");
+    drop(printer);
+
+    assert!(outcome.is_clean(), "outcome: {outcome:?}");
+    assert_eq!(
+        std::fs::read_to_string(&source).unwrap(),
+        "hello backup",
+        "the restore must put the snapshot back despite the unreachable module"
+    );
+    let human = cfgd_core::output::strip_ansi(&cap.human());
+    assert!(
+        human.contains("Modules not resolved"),
+        "the reader is owed the reason the row is missing: {human}"
+    );
+    assert!(
+        !human
+            .lines()
+            .any(|l| l.trim_start().starts_with("Modules ")),
+        "an unresolved profile names no modules rather than guessing at them: {human}"
+    );
+
+    // The sibling verb keeps refusing: it executes the profile's own hooks, so
+    // a profile it cannot resolve is a run it cannot make.
+    let (printer, _cap) = Printer::for_test_doc();
+    assert!(
+        cmd_backup_run(&cli, &printer, Some("docs")).is_err(),
+        "`cfgd backup run` must still refuse a profile it cannot resolve"
+    );
+}
+
 #[test]
 fn backup_restore_human() {
     let (config_dir, state_dir, source) = backup_profile_setup();

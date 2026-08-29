@@ -268,17 +268,13 @@ impl KvPair {
             .iter()
             .map(OwnerLabel::plain)
             .collect::<Vec<_>>()
-            .join(OWNER_VALUE_SEPARATOR);
+            .join(crate::reconciler::Owner::TOKEN_SEPARATOR);
         Self {
             owners,
             ..Self::new(k, value)
         }
     }
 }
-
-/// What joins several owner tokens inside one kv value, in the plain form and
-/// in the painted one alike.
-pub(crate) const OWNER_VALUE_SEPARATOR: &str = ", ";
 
 /// The `Config` and `Profile` header rows — the ONE builder for the two facts
 /// every surface reporting ON a machine's configuration opens with.

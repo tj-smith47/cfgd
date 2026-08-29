@@ -7369,14 +7369,18 @@ fn cmd_module_update_preserves_leading_comment_block() {
 
 /// Aliases lead env vars on EVERY surface that names the pair — the per-module
 /// dashboard's counts and its two itemized views, `cfgd module show`'s
-/// sections, and the pre-approval review a remote module is read on. One
-/// surface listing them the other way makes a reader who learned the order on
-/// one screen read the next one wrong, and the halves carry no header of their
-/// own to say which is which.
+/// sections, the pre-approval review a remote module is read on, and the
+/// profile inventory `cfgd profile show` / `cfgd source show` / `cfgd source
+/// add` all render. One surface listing them the other way makes a reader who
+/// learned the order on one screen read the next one wrong, and the halves
+/// carry no header of their own to say which is which.
 ///
-/// `cfgd diff`'s `Shell` section is a member too and needs no arm: its findings
-/// are sorted by recorded kind, and `alias` precedes `env` there for the same
-/// reason it does here.
+/// `cfgd diff`'s `Shell` section is the one member whose order is a ROW order
+/// rather than two blocks: its findings carry the kind they were recorded
+/// under and no heading, so its arm asserts the ordering the section paints
+/// with, over kinds the verifier itself supplies — the sort is lexical, and
+/// `alias` preceding `env` there is otherwise an accident a rename would flip
+/// in silence.
 #[test]
 fn every_surface_naming_the_shell_pair_lists_aliases_first() {
     let env = vec![cfgd_core::config::EnvVar {
@@ -7480,6 +7484,27 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         cfgd_core::test_helpers::captured_text(&buf),
     ));
 
+    let resolved_profile = cfgd_core::config::ResolvedProfile {
+        layers: Vec::new(),
+        merged: cfgd_core::config::MergedProfile {
+            env: env.clone(),
+            aliases: aliases.clone(),
+            ..Default::default()
+        },
+    };
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    printer.emit(crate::cli::profile::show::build_profile_show_doc(
+        &resolved_profile,
+        "workstation",
+        std::path::Path::new("/cfg/config.yaml"),
+    ));
+    drop(printer);
+    surfaces.push((
+        "cfgd profile show",
+        cfgd_core::test_helpers::captured_text(&buf),
+    ));
+
     for (surface, text) in surfaces {
         // The review names the env half `Environment`; every other surface
         // names it `Env`, and both open on the same four letters.
@@ -7493,4 +7518,38 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
             "{surface} lists env vars ahead of aliases:\n{text}"
         );
     }
+
+    // The findings are taken from the verifier itself, so the kinds under test
+    // are whatever the recorder writes rather than two literals a rename would
+    // leave behind, and the rows are located by the ITEM each names.
+    let home = tempfile::tempdir().unwrap();
+    // An env file the run left behind holding none of what is declared: the
+    // whole-file check reports one `env` finding and the per-item check one for
+    // each half, which is the shape the section renders. With no file at all
+    // the per-item check has nothing to read and there are no item rows to order.
+    std::fs::write(
+        cfgd_core::reconciler::primary_env_file(home.path()),
+        "# nothing declared\n",
+    )
+    .unwrap();
+    let ordered = cfgd_core::with_test_home(home.path(), || {
+        crate::cli::diff::env_drift_ordered(cfgd_core::reconciler::env_verify_results(
+            &env,
+            &aliases,
+            &cfgd_core::config::EntryOwners::default(),
+            cfgd_core::config::EnvScope::default(),
+            &[],
+            &[],
+        ))
+    });
+    let row_of = |item: &str| {
+        ordered
+            .iter()
+            .position(|r| r.resource_id == item)
+            .unwrap_or_else(|| panic!("cfgd diff reports no drift for {item}: {ordered:#?}"))
+    };
+    assert!(
+        row_of("gs") < row_of("EDITOR"),
+        "cfgd diff's Shell section lists env vars ahead of aliases: {ordered:#?}"
+    );
 }
