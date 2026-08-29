@@ -630,8 +630,10 @@ pub fn build_fleet_status_doc(
     now: &str,
     decision_contents: &super::DecisionContents,
 ) -> Doc {
-    let mut header =
-        cfgd_core::output::config_profile_rows(Some(config_path), derivable_profile(profile_name));
+    // One derivation for the whole document: the header's `Profile` row and
+    // the Managed Resources Owner column name the same profile or neither does.
+    let profile = derivable_profile(profile_name);
+    let mut header = cfgd_core::output::config_profile_rows(Some(config_path), profile);
     header.extend(cfgd_core::output::modules_header_row_for(header_modules));
     let mut doc = Doc::new().heading("Status").kv_rows(header);
 
@@ -752,7 +754,7 @@ pub fn build_fleet_status_doc(
                 // A package list is what the reader acts on, so a narrow
                 // terminal wraps it rather than cutting names off the tail.
                 .wrapping();
-            for row in managed_resource_rows(items, &output.modules, profile_name) {
+            for row in managed_resource_rows(items, &output.modules, profile) {
                 t = t.row(row);
             }
             s.table(t.without_unfillable_columns())
@@ -791,20 +793,26 @@ const NO_DETAIL: &str = cfgd_core::ABSENT;
 /// split out here, so the table can say whose each resource is and can render
 /// one row per manager rather than one per package.
 ///
-/// `profile` is the resolved profile's name, which the recorded row does not
-/// carry: the Owner column reads the same vocabulary the reconciler assigns
-/// the very actions that wrote these rows, so a package the profile declared
-/// reads [`cfgd_core::reconciler::Owner::profile`]'s token here exactly as the
-/// plan and apply trees head its group and as `diff` reports its drift. A run
-/// always resolves one — `RunContext::config_and_profile` answers a name or an
-/// error — so there is no nameless arm to sort out of place.
+/// `profile` is what [`derivable_profile`] answered for the resolved name,
+/// which the recorded row does not carry: the Owner column reads the same
+/// vocabulary the reconciler assigns the very actions that wrote these rows,
+/// so a package the profile declared reads
+/// [`cfgd_core::reconciler::Owner::profile`]'s token here exactly as the plan
+/// and apply trees head its group and as `diff` reports its drift. The header
+/// leaves its `Profile` row out for a run that resolved none, so the same
+/// derivation decides the column: a nameless token here would name a profile
+/// the row above says nothing has, which is the shape `derivable_profile`
+/// exists to refuse. Those rows carry [`NO_DETAIL`] instead.
 fn managed_resource_rows(
     items: &[cfgd_core::state::ManagedResource],
     modules: &[ModuleStatusEntry],
-    profile: &str,
+    profile: Option<&str>,
 ) -> Vec<[String; 4]> {
     let mut rows: Vec<[String; 4]> = Vec::new();
-    let profile_owner = cfgd_core::reconciler::Owner::profile(profile).token();
+    let profile_owner = profile.map_or_else(
+        || NO_DETAIL.to_string(),
+        |p| cfgd_core::reconciler::Owner::profile(p).token(),
+    );
     // Keyed by (manager, source) rather than manager alone: two sources
     // delivering one manager's packages are two facts, and a merged row would
     // attribute both to whichever source sorted first.
@@ -2172,7 +2180,7 @@ mod tests {
                 recorded("package", "brew/bat"),
             ],
             &[],
-            "base",
+            Some("base"),
         );
         assert_eq!(
             rows,
@@ -2218,7 +2226,7 @@ mod tests {
                 recorded("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
             ],
             &[],
-            "base",
+            Some("base"),
         );
 
         let mut expected = vec![
@@ -2256,7 +2264,11 @@ mod tests {
     fn one_manager_delivered_by_two_sources_stays_two_rows() {
         let mut remote = recorded("package", "brew/fd");
         remote.source = "acme".to_string();
-        let rows = managed_resource_rows(&[recorded("package", "brew/bat"), remote], &[], "base");
+        let rows = managed_resource_rows(
+            &[recorded("package", "brew/bat"), remote],
+            &[],
+            Some("base"),
+        );
         assert_eq!(rows.len(), 2, "{rows:?}");
         assert_eq!(rows[0][2], "brew: bat");
         assert_eq!(rows[0][3], "local");
@@ -2282,7 +2294,7 @@ mod tests {
                 recorded("module", "nvim:script"),
             ],
             &[nvim_entry(declared)],
-            "base",
+            Some("base"),
         );
         let resources: Vec<&str> = rows.iter().map(|r| r[2].as_str()).collect();
         assert!(rows.iter().all(|r| r[1] == "module:nvim"), "{rows:?}");
@@ -2308,7 +2320,7 @@ mod tests {
         let rows = managed_resource_rows(
             &[recorded("module", "nvim:packages:neovim,git")],
             &[nvim_entry(split)],
-            "base",
+            Some("base"),
         );
         assert_eq!(rows[0][2], "git, neovim");
     }
@@ -2325,7 +2337,7 @@ mod tests {
                 recorded("module", "gone:script"),
             ],
             &[],
-            "base",
+            Some("base"),
         );
         let resources: Vec<&str> = rows.iter().map(|r| r[2].as_str()).collect();
         assert_eq!(resources, vec!["4 files", "zsh", "-"]);
@@ -2344,7 +2356,7 @@ mod tests {
             let rows = managed_resource_rows(
                 &[recorded("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID)],
                 &[],
-                "base",
+                Some("base"),
             );
             rows[0][2].clone()
         };
@@ -2383,7 +2395,7 @@ mod tests {
                 recorded("Running script", "echo hi"),
             ],
             &[],
-            "base",
+            Some("base"),
         );
         // Owner order, so the surfaces are named in the order the tree
         // renders them: the profile's two rows, then cfgd's own env file.
@@ -3161,7 +3173,7 @@ mod tests {
         output.managed_resources = resources.clone();
         let out = dashboard(&output);
 
-        let rows = managed_resource_rows(&resources, &output.modules, "base");
+        let rows = managed_resource_rows(&resources, &output.modules, Some("base"));
         let listed: usize = rows
             .iter()
             .filter(|row| row[0] == "package")
@@ -3296,7 +3308,7 @@ mod tests {
             let rows = managed_resource_rows(
                 &[recorded("module", "nvim:packages:thing")],
                 &[nvim_entry(declared)],
-                "base",
+                Some("base"),
             );
             assert_eq!(
                 rows[0][2],
@@ -3315,7 +3327,7 @@ mod tests {
         let rows = managed_resource_rows(
             &[recorded("module", "nvim:packages:neovim")],
             &[nvim_entry(both)],
-            "base",
+            Some("base"),
         );
         assert_eq!(
             rows[0][2], "neovim",

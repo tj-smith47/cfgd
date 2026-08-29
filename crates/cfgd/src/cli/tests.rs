@@ -29920,6 +29920,59 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
     );
 }
 
+/// An owner already held as an [`cfgd_core::reconciler::Owner`] renders through
+/// its own `label()`, never through a hand-composed `OwnerLabel`.
+///
+/// `Owner::token()` is `label().plain()`, so the coloured heading, the plain
+/// table cell and the serialized token are one composition. Five call sites
+/// spelled `OwnerLabel::new(owner.kind.as_str(), owner.name.as_str())` instead,
+/// which is the same string today and a second one the moment either half of
+/// the token changes.
+///
+/// A caller holding no `Owner` — a kind parsed back out of a rendered token, a
+/// `backup` group whose kind is a literal — passes the two words itself and is
+/// not what this walks: the needle is the `.kind` field access.
+#[test]
+fn every_owner_label_of_a_held_owner_comes_from_owner_label() {
+    let mut checked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || !line.contains("OwnerLabel::new(") {
+                continue;
+            }
+            // rustfmt splits a long call over its arguments, so the first
+            // argument may sit on the line below the constructor.
+            let call = format!("{line}{}", lines.get(n + 1).unwrap_or(&""));
+            if !call.contains(".kind") {
+                continue;
+            }
+            checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
+            // `Owner::label` IS the composition every other site comes here for.
+            if path.ends_with("reconciler/types.rs") {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+        }
+    }
+    assert!(
+        checked.iter().any(|c| c.contains("reconciler/types.rs")),
+        "the walk no longer reaches `Owner::label` itself — it checked {checked:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "an owner in hand renders through `Owner::label()` (or `token()` for the \
+         plain form), so a heading, a table cell and a serialized token cannot \
+         come out as three spellings of one owner:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// Every header naming what a resolved profile puts on this machine builds
 /// that row through the one builder.
 ///
