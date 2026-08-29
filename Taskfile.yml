@@ -377,7 +377,13 @@ tasks:
             if [ -d "$d" ]; then rm -rf "$d"; fi
           done
         done
-        pat=$(printf '%s\n' "$crates" | sed 's|.*|registry/src/[^ ]*/&/|' | tr '\n' '|' | sed 's/|$//')
+        # A version may carry ERE metacharacters (1.0.0+build, and every dot),
+        # and an unescaped pattern matches nothing — the unpack would go while
+        # the stale rlib naming it stayed, which is the staleness this removes.
+        pat=$(printf '%s\n' "$crates" \
+          | sed 's/[][^$.*+?(){}|\\]/\\&/g' \
+          | sed 's|.*|registry/src/[^ ]*/&/|' \
+          | tr '\n' '|' | sed 's/|$//')
         for f in $(grep -lE "$pat" "$tgt"/*/deps/*.d 2>/dev/null); do
           h=${f##*-}; h=${h%.d}
           d=${f%/deps/*}
