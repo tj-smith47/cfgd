@@ -7362,3 +7362,135 @@ fn cmd_module_update_preserves_leading_comment_block() {
     assert_eq!(doc.spec.env[0].name, "EDITOR");
     assert_eq!(doc.spec.env[0].value, "nvim");
 }
+
+// -----------------------------------------------------------------------
+// The shell pair's order across every surface that names both halves
+// -----------------------------------------------------------------------
+
+/// Aliases lead env vars on EVERY surface that names the pair — the per-module
+/// dashboard's counts and its two itemized views, `cfgd module show`'s
+/// sections, and the pre-approval review a remote module is read on. One
+/// surface listing them the other way makes a reader who learned the order on
+/// one screen read the next one wrong, and the halves carry no header of their
+/// own to say which is which.
+///
+/// `cfgd diff`'s `Shell` section is a member too and needs no arm: its findings
+/// are sorted by recorded kind, and `alias` precedes `env` there for the same
+/// reason it does here.
+#[test]
+fn every_surface_naming_the_shell_pair_lists_aliases_first() {
+    let env = vec![cfgd_core::config::EnvVar {
+        name: "EDITOR".into(),
+        value: "nvim".into(),
+        platforms: Vec::new(),
+    }];
+    let aliases = vec![cfgd_core::config::ShellAlias {
+        name: "gs".into(),
+        command: "git status".into(),
+        platforms: Vec::new(),
+    }];
+    let spec = config::ModuleSpec {
+        env: env.clone(),
+        aliases: aliases.clone(),
+        ..Default::default()
+    };
+    let declared = cfgd_core::modules::ModuleSurfaces::of(&spec);
+    let module_status = crate::cli::status::ModuleStatus {
+        name: "nvim".into(),
+        packages: 0,
+        files: 0,
+        aliases: declared.aliases.len(),
+        env: declared.env.len(),
+        scripts: Vec::new(),
+        declared,
+        system: Vec::new(),
+        depends: Vec::new(),
+        status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
+        last_applied: None,
+        scope: None,
+        package_state: Vec::new(),
+        deployed_files: Vec::new(),
+        drift: Vec::new(),
+        drift_checked_live: false,
+    };
+    let now = "2026-05-14T12:00:00Z";
+    let mut surfaces: Vec<(&str, String)> = Vec::new();
+    for (surface, view) in [
+        (
+            "cfgd status <module>",
+            crate::cli::status::ModuleStatusView::Compact,
+        ),
+        (
+            "cfgd status <module> -o wide",
+            crate::cli::status::ModuleStatusView::Inventory { show_values: false },
+        ),
+        (
+            "cfgd status <module> --show-values",
+            crate::cli::status::ModuleStatusView::Inventory { show_values: true },
+        ),
+    ] {
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        printer.emit(crate::cli::status::build_module_status_doc(
+            &module_status,
+            view,
+            now,
+        ));
+        drop(printer);
+        surfaces.push((surface, cfgd_core::test_helpers::captured_text(&buf)));
+    }
+
+    let show = super::ModuleShowOutput {
+        name: "nvim".into(),
+        metadata: super::ModuleShowMetadata { version: None },
+        directory: "/cfg/modules/nvim".into(),
+        source: "local".into(),
+        depends: Vec::new(),
+        state: None,
+        spec: spec.clone(),
+    };
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    printer.emit(super::list_show::build_module_show_doc(
+        &show,
+        None,
+        &[],
+        false,
+        "->",
+        now,
+    ));
+    drop(printer);
+    surfaces.push((
+        "cfgd module show",
+        cfgd_core::test_helpers::captured_text(&buf),
+    ));
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::registry::print_module_review_summary(
+        &printer,
+        "nvim",
+        &make_loaded_module("nvim", spec),
+        "abc123",
+        "sha256:def456",
+    );
+    drop(printer);
+    surfaces.push((
+        "cfgd module add (review)",
+        cfgd_core::test_helpers::captured_text(&buf),
+    ));
+
+    for (surface, text) in surfaces {
+        // The review names the env half `Environment`; every other surface
+        // names it `Env`, and both open on the same four letters.
+        let at = |needle: &str| {
+            text.lines()
+                .position(|l| l.trim_start().starts_with(needle))
+                .unwrap_or_else(|| panic!("{surface} renders no {needle} row:\n{text}"))
+        };
+        assert!(
+            at("Aliases") < at("Env"),
+            "{surface} lists env vars ahead of aliases:\n{text}"
+        );
+    }
+}

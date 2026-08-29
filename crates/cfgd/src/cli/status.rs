@@ -175,8 +175,11 @@ pub struct ModuleStatus {
     /// no per-item recorded state: a phase that ran with nothing to say about
     /// it in status is a phase the reader watched happen and then could not
     /// find. `cfgd module show` itemizes what these summarize.
-    pub env: usize,
+    ///
+    /// Aliases precede env vars here as they do on every surface naming the
+    /// pair, so the wire order and the rendered order read alike.
     pub aliases: usize,
+    pub env: usize,
     /// Lifecycle hooks the module declares, by name (`preApply`, `onDrift`, …).
     pub scripts: Vec<String>,
     /// The declared surfaces this report renders from: the counts above come
@@ -607,6 +610,26 @@ pub(super) fn recorded_scope_row(recorded: &str) -> Option<(&'static str, &str)>
     } else {
         ("Profile", value)
     })
+}
+
+/// The `Scope` row of a per-module report: the recorded owner tokens painted
+/// through [`cfgd_core::reconciler::Owner::label`], the tri-colour `kind:name`
+/// form the apply tree's group headings and the Managed Resources Owner column
+/// already render — one owner spelled one way, whichever surface names it.
+///
+/// The recorded column holds one token or the `, `-joined list an isolated run
+/// over several modules writes. A token that does not read back as an owner
+/// keeps the recorded string, so nothing a run recorded is dropped from the
+/// row for being unparseable.
+fn scope_row(recorded: &str) -> KvPair {
+    let owners: Option<Vec<cfgd_core::output::OwnerLabel>> = recorded
+        .split(", ")
+        .map(|token| owner_from_token(token).map(|owner| owner.label()))
+        .collect();
+    match owners {
+        Some(owners) => KvPair::owner_valued("Scope", owners),
+        None => KvPair::new("Scope", recorded),
+    }
 }
 
 /// The recorded-state header's staleness threshold: a daemon's default
@@ -1150,6 +1173,13 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
     // `kv` block — so every row of the header is built here.
     let (state_word, role) = output.state_display();
     let mut rows = vec![KvPair::role_valued("Status", state_word, role)];
+    // Directly under `Status`, so the two rows a reader scans for the module's
+    // standing lead the block together. Only an isolated run's scope:
+    // `recorded_scope_row` answers `Profile` for a profile-wide apply, which
+    // belongs to `cfgd status` rather than to one module's report.
+    if let Some(("Scope", scope)) = output.scope.as_deref().and_then(recorded_scope_row) {
+        rows.push(scope_row(scope));
+    }
     if let Some(last) = &output.last_applied {
         // The age, not the recorded instant: `-o json`'s `lastApplied` carries
         // the exact moment, and the row a person reads answers how long ago.
@@ -1158,31 +1188,26 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
             cfgd_core::humanize_age_cell(Some(last), now),
         ));
     }
-    // Only an isolated run's scope: `recorded_scope_row` answers `Profile` for
-    // a profile-wide apply, which belongs to `cfgd status` rather than to one
-    // module's report.
-    if let Some(("Scope", scope)) = output.scope.as_deref().and_then(recorded_scope_row) {
-        rows.push(KvPair::new("Scope", scope));
-    }
     // The counts are what the compact view has INSTEAD of the inventories: a
     // report that showed both would state every fact twice.
     if view == ModuleStatusView::Compact {
         rows.push(KvPair::new("Packages", output.packages.to_string()));
         rows.push(KvPair::new("Files", output.files.to_string()));
-        // `Env` and `Aliases` are the two halves of the shell surface `diff`
+        // `Aliases` and `Env` are the two halves of the shell surface `diff`
         // reports under `Shell` and the drift engine records as the `shell`
         // kind, so the dashboard names them the same way: a total with the
-        // halves nested under it, the shape `Scripts` already uses.
+        // halves nested under it, the shape `Scripts` already uses. Aliases
+        // lead, the order every surface naming the pair renders them in.
         if output.env > 0 || output.aliases > 0 {
             rows.push(KvPair::new(
                 "Shell",
                 (output.env + output.aliases).to_string(),
             ));
-            if output.env > 0 {
-                rows.push(KvPair::nested("Env", output.env.to_string()));
-            }
             if output.aliases > 0 {
                 rows.push(KvPair::nested("Aliases", output.aliases.to_string()));
+            }
+            if output.env > 0 {
+                rows.push(KvPair::nested("Env", output.env.to_string()));
             }
         }
         // A total with one row per declaring hook beneath it: a single-line
@@ -1330,21 +1355,7 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
     // them as siblings of `Files` said they were two.
     if !output.declared.env.is_empty() || !output.declared.aliases.is_empty() {
         doc = doc.section("Shell", |s| {
-            let s = s.subsection_if_nonempty("Env", &output.declared.env, |s, env| {
-                let mut sorted: Vec<&cfgd_core::config::EnvVar> = env.iter().collect();
-                sorted.sort_by(|a, b| a.name.cmp(&b.name));
-                sorted.into_iter().fold(s, |s, ev| {
-                    let subject = if show_values {
-                        super::helpers::quoted_assignment(&ev.name, &ev.value)
-                    } else {
-                        ev.name.clone()
-                    };
-                    // Declared state, so a gated entry is listed and annotated
-                    // exactly as `module show` annotates it.
-                    s.status(Role::Ok, super::module::list_show::gated_value(subject, ev))
-                })
-            });
-            s.subsection_if_nonempty("Aliases", &output.declared.aliases, |s, aliases| {
+            let s = s.subsection_if_nonempty("Aliases", &output.declared.aliases, |s, aliases| {
                 let mut sorted: Vec<&cfgd_core::config::ShellAlias> = aliases.iter().collect();
                 sorted.sort_by(|a, b| a.name.cmp(&b.name));
                 sorted.into_iter().fold(s, |s, alias| {
@@ -1357,6 +1368,20 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
                         Role::Ok,
                         super::module::list_show::gated_value(subject, alias),
                     )
+                })
+            });
+            s.subsection_if_nonempty("Env", &output.declared.env, |s, env| {
+                let mut sorted: Vec<&cfgd_core::config::EnvVar> = env.iter().collect();
+                sorted.sort_by(|a, b| a.name.cmp(&b.name));
+                sorted.into_iter().fold(s, |s, ev| {
+                    let subject = if show_values {
+                        super::helpers::quoted_assignment(&ev.name, &ev.value)
+                    } else {
+                        ev.name.clone()
+                    };
+                    // Declared state, so a gated entry is listed and annotated
+                    // exactly as `module show` annotates it.
+                    s.status(Role::Ok, super::module::list_show::gated_value(subject, ev))
                 })
             })
         });
@@ -2042,6 +2067,7 @@ pub(super) fn cmd_status_module(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cfgd_core::output::OwnerLabel;
     use cfgd_core::output::Printer;
     use cfgd_core::output::Verbosity;
     use cfgd_core::state::{ApplyRecord, ApplyStatus};
@@ -5233,6 +5259,63 @@ mod tests {
                 "no Scope row for a recorded {recorded:?}: {out}"
             );
         }
+    }
+
+    /// The `Scope` row carries owner TOKENS, not a string: the renderer paints
+    /// each one through `OwnerLabel`'s three slots, the same coat the apply
+    /// tree's group headings and the Managed Resources Owner column wear, so
+    /// one owner is spelled one way whichever surface names it. An isolated run
+    /// over several modules recorded a `, `-joined list, and every member of it
+    /// is its own token.
+    #[test]
+    fn a_scope_row_carries_the_owner_tokens_it_names() {
+        let one = super::scope_row("module:nvim");
+        assert_eq!(one.value, "module:nvim", "the plain value is the token");
+        assert_eq!(
+            one.owners.iter().map(OwnerLabel::plain).collect::<Vec<_>>(),
+            vec!["module:nvim".to_string()],
+            "the row carries the owner the token names"
+        );
+
+        let many = super::scope_row("module:nvim, module:zsh");
+        assert_eq!(
+            many.owners
+                .iter()
+                .map(OwnerLabel::plain)
+                .collect::<Vec<_>>(),
+            vec!["module:nvim".to_string(), "module:zsh".to_string()],
+            "every member of a multi-module scope is its own token"
+        );
+        assert_eq!(many.value, "module:nvim, module:zsh");
+
+        // Nothing a run recorded is dropped for being unreadable: a token no
+        // owner kind claims keeps the recorded string rather than losing the row.
+        let unreadable = super::scope_row("whatever");
+        assert!(unreadable.owners.is_empty());
+        assert_eq!(unreadable.value, "whatever");
+    }
+
+    /// The two rows a reader scans for a module's standing lead its report:
+    /// `Status`, then `Scope`, and only then the recorded `Last Applied` and
+    /// the counts under it.
+    #[test]
+    fn the_status_and_scope_rows_lead_a_module_report() {
+        let out = module_status_render(Some("module:nvim"));
+        let row = |key: &str| {
+            out.lines()
+                .position(|l| l.trim_start().starts_with(key))
+                .unwrap_or_else(|| panic!("the {key} row renders: {out}"))
+        };
+        // `Status: nvim` is the heading, so the Status ROW is the one indented
+        // under it — the first line whose trimmed text opens on the key alone.
+        let status = out
+            .lines()
+            .position(|l| l.trim_start().starts_with("Status "))
+            .unwrap_or_else(|| panic!("the Status row renders: {out}"));
+        assert!(
+            status < row("Scope") && row("Scope") < row("Last Applied"),
+            "Status, then Scope, then Last Applied: {out}"
+        );
     }
 
     /// The payload gains a field only when there is a scope to state, so every

@@ -238,6 +238,14 @@ pub fn build_module_show_doc(
     // This surface describes what the module DECLARES, not what this host will
     // take from it, so a gated entry is listed and annotated — the same
     // annotation vocabulary a platform-filtered package row already carries.
+    // Aliases lead the pair, the order every surface naming both renders them
+    // in.
+    doc = doc.section_if_nonempty("Aliases", &output.spec.aliases, |s, aliases| {
+        aliases.iter().fold(s, |s, alias| {
+            s.kv(&alias.name, gated_value(alias.command.clone(), alias))
+        })
+    });
+
     doc = doc.section_if_nonempty("Env", &output.spec.env, |s, env| {
         env.iter().fold(s, |s, ev| {
             let display = if show_values {
@@ -246,12 +254,6 @@ pub fn build_module_show_doc(
                 mask_value(&ev.value)
             };
             s.kv(&ev.name, gated_value(display, ev))
-        })
-    });
-
-    doc = doc.section_if_nonempty("Aliases", &output.spec.aliases, |s, aliases| {
-        aliases.iter().fold(s, |s, alias| {
-            s.kv(&alias.name, gated_value(alias.command.clone(), alias))
         })
     });
 

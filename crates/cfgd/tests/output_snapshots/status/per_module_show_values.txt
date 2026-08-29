@@ -12,11 +12,11 @@ Deployed Files
   ⚠ /home/user/.zshrc                — content differs
 
 Shell
+  Aliases
+    ✓ gs="git status --short"
   Env
     ✓ EDITOR="nvim"
     ✓ PAGER="less -R"
-  Aliases
-    ✓ gs="git status --short"
 
 Scripts
   ✓ preApply: set -euo pipefail

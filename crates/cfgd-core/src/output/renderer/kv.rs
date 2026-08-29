@@ -224,6 +224,10 @@ impl Emitting<'_> {
     /// An annotation with no value of its own stands alone as the row —
     /// parenthesising it would enclose the whole column and read as an aside
     /// about nothing.
+    ///
+    /// A row carrying owner tokens takes their three-slot coat in place of the
+    /// role tint: the two say different things about the value, and only one
+    /// of them can be its colour.
     fn compose_kv_value(&self, pair: &KvPair) -> String {
         // A linked value is the link's TEXT only where the terminal can open
         // it; anywhere else the URL is the value, because a partial path is
@@ -232,12 +236,22 @@ impl Emitting<'_> {
             Some(url) if !self.theme.hyperlinks() => url,
             _ => pair.value.as_str(),
         };
-        let value = match pair.value_role {
-            Some(role) if !shown.is_empty() => {
-                let (_, style) = super::role_glyph(self.theme, role);
-                style.apply_to(cursor_safe(shown)).to_string()
+        let value = if pair.owners.is_empty() {
+            match pair.value_role {
+                Some(role) if !shown.is_empty() => {
+                    let (_, style) = super::role_glyph(self.theme, role);
+                    style.apply_to(cursor_safe(shown)).to_string()
+                }
+                _ => cursor_safe(shown),
             }
-            _ => cursor_safe(shown),
+        } else {
+            // Each token paints its own three slots and folds each of them, so
+            // the row's value is assembled from already-safe pieces.
+            pair.owners
+                .iter()
+                .map(|owner| owner.styled(self.theme))
+                .collect::<Vec<_>>()
+                .join(crate::output::component::OWNER_VALUE_SEPARATOR)
         };
         let value = match pair.link.as_deref() {
             Some(url) if self.theme.hyperlinks() => {
@@ -767,6 +781,45 @@ mod tests {
                 "{role:?} value is not painted with its own theme slot: {out:?}"
             );
         }
+    }
+
+    /// An owner-valued row's value is the token's own tri-colour coat, byte for
+    /// byte what a section heading over the same owner wears — the whole point
+    /// of the slot being that a `kind:name` in a kv value cannot come out as a
+    /// second spelling of one the tree already renders. Several owners join
+    /// with the same separator the plain value carries.
+    #[test]
+    #[serial_test::serial]
+    fn an_owner_valued_row_paints_its_value_through_owner_label() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let owners = [
+            crate::output::OwnerLabel::new("module", "nvim"),
+            crate::output::OwnerLabel::new("module", "zsh"),
+        ];
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(theme.clone(), Verbosity::Normal);
+        r.render_kv_block(
+            &sink,
+            0,
+            &[KvPair::owner_valued("Scope", owners.iter().cloned())],
+        );
+        // raw-capture-ok: the claim IS OwnerLabel's three-slot SGR, which captured_text would strip
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let expected = owners
+            .iter()
+            .map(|o| o.styled(&theme))
+            .collect::<Vec<_>>()
+            .join(crate::output::component::OWNER_VALUE_SEPARATOR);
+        assert!(
+            out.contains(&expected),
+            "the value is not the owner tokens' own coat: {out:?}"
+        );
+        assert_eq!(
+            KvPair::owner_valued("Scope", owners.iter().cloned()).value,
+            "module:nvim, module:zsh",
+            "the plain value stays the joined tokens every colourless path reads"
+        );
     }
 
     /// Colour-only: the same row rendered without colour is byte-identical to
