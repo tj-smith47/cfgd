@@ -604,19 +604,24 @@ drift, matching the scope of `cfgd diff --module`.
 The fleet report's `Managed Resources` table names an owner per row, in the same
 vocabulary the plan and apply trees head their groups with and `cfgd diff`
 reports drift under: `profile:<name>` for a resource the profile declared,
-`module:<name>` for one a module declared, and `cfgd` for what cfgd manages on
-its own behalf (the generated env file, the rc source line, the live-session
-publish). A run that resolves no profile has no name to state, and its
-profile-declared rows read the bare kind word `profile`.
+`module:<name>` for one a module declared, and `cfgd:env` / `cfgd:session` for
+what cfgd manages on its own behalf (the generated env file and the rc source
+line; the live-session publish). A run that resolves no profile has no name to
+state, and its profile-declared rows read the bare kind word `profile`.
+
+The rows are ordered by owner the way a plan or apply tree orders its groups:
+the profile first, then cfgd's own groups in the order they run, then the
+modules. Within one owner the table sorts by type and resource.
 
 ```
 Managed Resources
   Type     Owner             Resource                           Source
   ────────────────────────────────────────────────────────────────────
-  env      cfgd              /home/you/.cfgd.env                local
-  file     module:nvim       /home/you/.config/nvim (12 files)  local
   file     profile:work      ~/.bashrc                          local
   package  profile:work      brew: bat, ripgrep                 local
+  env      cfgd:env          /home/you/.cfgd.env                local
+  env      cfgd:session      session env                        local
+  file     module:nvim       /home/you/.config/nvim (12 files)  local
 ```
 
 The default module report is a summary: one count per declared surface, then
