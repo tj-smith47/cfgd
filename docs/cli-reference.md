@@ -1127,17 +1127,17 @@ cfgd explain --recursive machineconfig     # expand all fields
 ```
 
 Schemas are derived from the live resource types (the `cfgd-core` kind
-registry), so `explain` always matches what cfgd actually accepts. Every
-page — a kind's header (`cfgd explain module`) and a field drilldown's
-(`cfgd explain profile.spec.packages.brew`) alike — carries a `Docs` row
-pointing at the page in `docs/` that describes it in prose, through the same
-link slot. A drilldown's row points at the field's OWN heading when the doc
-has one (`### spec.packages.brew` becomes the anchor `#specpackagesbrew`:
-lowercase, every character that is not a letter, digit, space or hyphen
-dropped, spaces turned to hyphens), and otherwise falls back to the kind's own
-`#fields` anchor — the same pointer the kind page's row carries. `--recursive`
-keeps this one row at the top of the page; the expanded subtree carries none
-of its own.
+registry), so `explain` always matches what cfgd actually accepts. Every page
+carries a `Docs` row pointing at the page in `docs/` that describes it in
+prose, through the same link slot: a kind's header (`cfgd explain module`)
+and a field drilldown's (`cfgd explain profile.spec.packages.brew`) alike. A
+drilldown's row points at the field's OWN heading when the doc has one
+(`### spec.packages.brew` becomes the anchor `#specpackagesbrew`: lowercase,
+every character that is not a letter, digit, space or hyphen dropped, spaces
+turned to hyphens), and otherwise falls back to the kind's own `#fields`
+anchor (the same pointer the kind page's row carries). `--recursive` keeps
+this one row at the top of the page; the expanded subtree carries none of its
+own.
 
 That row is a link, pinned to the release of cfgd that printed it, so the page
 it opens documents the schema the binary just explained rather than whatever
