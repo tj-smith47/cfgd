@@ -605,7 +605,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
         if let Some(index) = self.groups.iter().position(|group| group.owner == owner) {
             return index;
         }
-        let label = OwnerLabel::new(owner.kind.as_str(), owner.name.as_str());
+        let label = owner.label();
         let heading = match self.preopened {
             // Already on screen, above the whole live region.
             Some((preopened, _)) if preopened == owner => None,

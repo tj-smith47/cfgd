@@ -3,7 +3,7 @@ use crate::PathDisplayExt;
 use crate::config::{LOCAL_LAYER, ResolvedProfile, ScriptShell};
 use crate::errors::{CfgdError, ConfigError, PackageError, Result};
 use crate::modules::ResolvedModule;
-use crate::output::{OwnerLabel, Printer, Role, SectionGuard};
+use crate::output::{Printer, Role, SectionGuard};
 use crate::state::ApplyStatus;
 use crate::to_posix_string;
 
@@ -19,9 +19,9 @@ use super::scripts::{
 };
 use super::sidecar::SidecarOutcome;
 use super::types::{
-    Action, ActionResult, ApplyResult, MANAGER_RESOURCE_TYPE, ManagerAction, ModuleAction,
-    ModuleActionKind, Owner, OwnerKind, PhaseFilter, PhaseName, Plan, ReconcileContext,
-    ScriptAction, ScriptPhase, SystemAction,
+    Action, ActionResult, ApplyResult, ENV_RESOURCE_TYPE, MANAGER_RESOURCE_TYPE, ManagerAction,
+    ModuleAction, ModuleActionKind, Owner, OwnerKind, PhaseFilter, PhaseName, Plan,
+    ReconcileContext, ScriptAction, ScriptPhase, SystemAction,
 };
 use crate::providers::{ActionNote, FileAction, NoteSink, PackageAction, SecretAction};
 
@@ -646,8 +646,7 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
                 continue;
             }
             let section = section.get_or_insert_with(|| printer.section_caveats());
-            let group =
-                section.section_owner(&OwnerLabel::new(owner.kind.as_str(), owner.name.as_str()));
+            let group = section.section_owner(&owner.label());
             reports.sort_by_key(|note| note.role != Role::Warn);
             for note in reports {
                 group.status_simple(note.role, note.body());
@@ -704,10 +703,7 @@ fn emit_phase_tree(
             let target = match already_open {
                 Some(guard) => guard,
                 None => group_section.get_or_insert_with(|| {
-                    let opened = section.section_owner(&OwnerLabel::new(
-                        group.owner.kind.as_str(),
-                        group.owner.name.as_str(),
-                    ));
+                    let opened = section.section_owner(&group.owner.label());
                     opened.live_column(width);
                     opened
                 }),
@@ -1276,8 +1272,7 @@ impl<'a> super::Reconciler<'a> {
                 .as_ref()
                 .zip(sole_lane_owner)
                 .map(|(section, owner)| {
-                    let group = section
-                        .section_owner(&OwnerLabel::new(owner.kind.as_str(), owner.name.as_str()));
+                    let group = section.section_owner(&owner.label());
                     group.live_column(width);
                     group.commit_header();
                     group
@@ -1425,10 +1420,7 @@ impl<'a> super::Reconciler<'a> {
                         // binding would build the new guard first and unwind the
                         // renderer's section stack out of order.
                         drop(owner_section.take());
-                        let group = section.section_owner(&OwnerLabel::new(
-                            owner.kind.as_str(),
-                            owner.name.as_str(),
-                        ));
+                        let group = section.section_owner(&owner.label());
                         group.live_column(width);
                         // The label lands before the action does: an action
                         // that opens an output window or a spinner paints it
@@ -2072,7 +2064,7 @@ impl<'a> super::Reconciler<'a> {
             self.state
                 .upsert_managed_resource(&rtype, &rid, LOCAL_LAYER, None, Some(apply_id))?;
             self.state.resolve_drift(apply_id, &rtype, &rid)?;
-            if rtype == "env" {
+            if rtype == ENV_RESOURCE_TYPE {
                 self.resolve_env_item_drift(apply_id, &rid, resolved, modules)?;
             }
         }

@@ -55,11 +55,6 @@ fn record_file_drift(
     drifted
 }
 
-/// The owner's group heading, from the one token constructor.
-fn owner_label(owner: &Owner) -> OwnerLabel {
-    OwnerLabel::new(owner.kind.as_str(), owner.name.as_str())
-}
-
 /// The modules a surface walks, by name, so two runs over the same machine
 /// report the same findings in the same order.
 fn modules_by_name(
@@ -167,7 +162,7 @@ pub fn cmd_diff(
             registry.default_file_strategy,
         );
         {
-            let _group = files_phase.section_owner_or_collapse(&owner_label(&profile_owner));
+            let _group = files_phase.section_owner_or_collapse(&profile_owner.label());
             for record in fm.diff(&resolved.merged, printer)? {
                 let strategy = strategies.for_target(&cfgd_core::expand_tilde(
                     std::path::Path::new(&record.target),
@@ -234,7 +229,7 @@ pub fn cmd_diff(
         let env_sec = printer.section_or_collapse("Shell");
         let mut drift = false;
         {
-            let env_group = env_sec.section_owner_or_collapse(&owner_label(&profile_owner));
+            let env_group = env_sec.section_owner_or_collapse(&profile_owner.label());
             // Must match the recorded bootstrap PATH dirs `cfgd verify` passes: the
             // whole-file check `env_verify_results` bundles in compares against a
             // freshly generated file, and the file cfgd actually wrote carries the
@@ -307,7 +302,7 @@ pub fn cmd_diff(
         // which is what puts a system action under the profile owner in the
         // plan too (`owner_of`'s fall-through arm).
         {
-            let sys_group = sys_sec.section_owner_or_collapse(&owner_label(&profile_owner));
+            let sys_group = sys_sec.section_owner_or_collapse(&profile_owner.label());
             let mut available_configurators = registry.available_system_configurators();
             available_configurators.sort_by_key(|c| c.name());
             // Combine profile and module system config so module system tweaks
@@ -621,9 +616,8 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                 // module's — report them once, under the profile itself, whichever
                 // declared item made the file stale.
                 {
-                    let group = env_sec.section_owner_or_collapse(&owner_label(&Owner::profile(
-                        profile_name.to_string(),
-                    )));
+                    let group =
+                        env_sec.section_owner_or_collapse(&Owner::profile(profile_name).label());
                     for r in all_results
                         .iter()
                         .filter(|r| matches!(r.resource_type.as_str(), "env" | "env-rc"))
@@ -817,7 +811,7 @@ pub(super) fn print_package_drift(
     }
     Owner::order(&mut owners);
     for owner in &owners {
-        let group = section.section_owner(&owner_label(owner));
+        let group = section.section_owner(&owner.label());
         if *owner == managers_owner {
             for ma in manager_actions {
                 // The line's words come from the one derivation `verify` and
