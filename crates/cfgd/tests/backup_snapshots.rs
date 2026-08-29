@@ -1645,6 +1645,25 @@ fn backup_restore_json_shape() {
     );
 }
 
+/// Put a module the profile names, whose git file source can never be fetched,
+/// into an already-written backup fixture: a port nothing listens on, so the
+/// clone is refused at connect and the fixture neither reaches the network nor
+/// waits on a timeout.
+fn break_the_module_resolution(config_dir: &tempfile::TempDir) {
+    let module_dir = config_dir.path().join("modules").join("broken");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: broken\nspec:\n  files:\n    - source: https://127.0.0.1:1/broken.git\n      target: ~/broken.txt\n",
+    )
+    .unwrap();
+    let profile = config_dir.path().join("profiles").join("withbackups.yaml");
+    let with_module = std::fs::read_to_string(&profile)
+        .unwrap()
+        .replace("  modules: []\n", "  modules:\n    - broken\n");
+    std::fs::write(&profile, with_module).unwrap();
+}
+
 /// A restore is what an operator reaches for when something has gone wrong,
 /// and none of its work depends on the profile's modules — the resolution is
 /// spent on a header row. So a module whose git source cannot be reached
@@ -1658,20 +1677,7 @@ fn a_restore_completes_over_a_module_whose_source_cannot_be_reached() {
     // cannot resolve.
     run_docs(&cli);
 
-    let module_dir = config_dir.path().join("modules").join("broken");
-    std::fs::create_dir_all(&module_dir).unwrap();
-    // A port nothing listens on: the clone is refused at connect, so the fixture
-    // neither reaches the network nor waits on a timeout.
-    std::fs::write(
-        module_dir.join("module.yaml"),
-        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: broken\nspec:\n  files:\n    - source: https://127.0.0.1:1/broken.git\n      target: ~/broken.txt\n",
-    )
-    .unwrap();
-    let profile = config_dir.path().join("profiles").join("withbackups.yaml");
-    let with_module = std::fs::read_to_string(&profile)
-        .unwrap()
-        .replace("  modules: []\n", "  modules:\n    - broken\n");
-    std::fs::write(&profile, with_module).unwrap();
+    break_the_module_resolution(&config_dir);
 
     std::fs::write(&source, "clobbered").unwrap();
     let (printer, cap) = Printer::for_test_doc();
@@ -1704,6 +1710,68 @@ fn a_restore_completes_over_a_module_whose_source_cannot_be_reached() {
     assert!(
         cmd_backup_run(&cli, &printer, Some("docs")).is_err(),
         "`cfgd backup run` must still refuse a profile it cannot resolve"
+    );
+}
+
+/// The restore composes ONCE. Answering "was it the composition or the modules
+/// that failed" by composing a second time would print the `Source Conflicts`
+/// section twice in one command and write a duplicate conflict row per attempt
+/// — and an operator retrying a restore during the incident that broke the
+/// module remote would accrue one duplicate per try.
+#[test]
+#[serial_test::serial]
+fn a_restore_over_a_conflicting_source_composes_once() {
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let (_workspace, config_dir, state_dir, source) =
+        common::backup_profile_with_conflicting_source_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+
+    // The cache a read path composes from: a never-synced source is warned over
+    // and skipped, and would compose no locked layer to conflict on.
+    let (printer, _cap) = Printer::for_test_doc();
+    cfgd::cli::sync::cmd_sync(&cli, &printer).unwrap();
+    drop(printer);
+    run_docs(&cli);
+
+    break_the_module_resolution(&config_dir);
+
+    let before = {
+        let store = cfgd_core::state::StateStore::open_in_dir(state_dir.path()).unwrap();
+        store.source_conflict_count().unwrap()
+    };
+
+    std::fs::write(&source, "clobbered").unwrap();
+    let (printer, cap) = Printer::for_test_doc();
+    let outcome = run_backup_restore(&cli, &printer, &restore_args("docs"))
+        .unwrap()
+        .expect("a --yes restore is never declined");
+    drop(printer);
+
+    assert!(outcome.is_clean(), "outcome: {outcome:?}");
+    assert_eq!(
+        std::fs::read_to_string(&source).unwrap(),
+        "hello backup",
+        "the restore must put the snapshot back"
+    );
+    let human = cfgd_core::output::strip_ansi(&cap.human());
+    assert!(
+        human.contains("Modules not resolved"),
+        "the degraded module resolution must still be stated: {human}"
+    );
+    assert_eq!(
+        human.matches("Source Conflicts").count(),
+        1,
+        "one command composes once and so renders its conflicts once: {human}"
+    );
+
+    let after = {
+        let store = cfgd_core::state::StateStore::open_in_dir(state_dir.path()).unwrap();
+        store.source_conflict_count().unwrap()
+    };
+    assert_eq!(
+        after - before,
+        1,
+        "the one locked item must be persisted once, not once per composition"
     );
 }
 

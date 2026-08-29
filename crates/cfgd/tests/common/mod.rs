@@ -532,6 +532,37 @@ pub fn two_source_setup() -> (
     (workspace, config_dir, state_dir, branch_a, branch_b)
 }
 
+/// The `backup_profile_setup` fixture plus a subscribed source whose manifest
+/// LOCKS one env var, so composing it records exactly one conflict — the
+/// section a composition renders and the row it persists.
+///
+/// Returns `(workspace, config_dir, state_dir, source_file)`; the workspace owns
+/// the bare repo behind the `file://` URL and must outlive the config dir.
+/// Requires `CFGD_ALLOW_LOCAL_SOURCES=1`.
+pub fn backup_profile_with_conflicting_source_setup() -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    PathBuf,
+) {
+    let (config_dir, state_dir, source_file) = backup_profile_setup();
+    let workspace = tempfile::tempdir().unwrap();
+
+    let manifest = "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: locked-team\nspec:\n  provides:\n    profiles:\n      - default\n  policy:\n    locked:\n      env:\n        - name: EDITOR\n          value: nvim\n";
+    let bare = write_manifest_to_bare(workspace.path(), "locked-team", manifest);
+    let branch = detect_branch(&bare);
+    let url = file_url(&bare);
+
+    let config_path = config_dir.path().join("cfgd.yaml");
+    let config = format!(
+        "{}  sources:\n    - name: locked-team\n      origin:\n        type: Git\n        url: {url}\n        branch: {branch}\n",
+        std::fs::read_to_string(&config_path).unwrap()
+    );
+    std::fs::write(&config_path, config).unwrap();
+
+    (workspace, config_dir, state_dir, source_file)
+}
+
 /// Config with one source whose URL points at an unreachable path. Returns
 /// `(config_dir, state_dir)`. Sync's `load_source` fails for this source.
 pub fn unreachable_source_setup() -> (tempfile::TempDir, tempfile::TempDir) {

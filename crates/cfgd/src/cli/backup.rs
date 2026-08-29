@@ -77,9 +77,13 @@ fn unit_context<'a>(
 /// stated instead. `cfgd backup run` stays fatal: it executes the profile's own
 /// hooks, so a profile it cannot resolve is a run it cannot make.
 ///
-/// A COMPOSITION failure still refuses, on the fallback's own `?`: a source
-/// constraint violation is about the config the run would act under, not about
-/// a header row.
+/// A COMPOSITION failure still refuses, as its own error: a source constraint
+/// violation is about the config the run would act under, not about a header
+/// row. Which is why the composition happens HERE and the resolution over it is
+/// a separate step — `compose_with_sources` renders the `Source Conflicts`
+/// section and records every conflict it found, so answering "which half
+/// failed" by composing a second time would print that section twice and write
+/// a duplicate conflict row per attempt.
 fn restoring_verb_state(
     ctx: &RunContext<'_>,
     cfg: &config::CfgdConfig,
@@ -90,20 +94,23 @@ fn restoring_verb_state(
     Vec<cfgd_core::output::HeaderModule>,
     Vec<config::BackupSpec>,
 )> {
-    match resolve_desired_state(
+    let composition = compose_with_sources(
         ctx,
         cfg,
         local_resolved,
-        &[],
-        false,
         printer,
         false,
         composition::ConstraintMode::Enforce,
-    ) {
+    )?;
+    let sources =
+        cfgd_core::reconciler::ComposedSource::from_profile_layers(&composition.resolved.layers);
+    let backups = composition.resolved.merged.backups.clone();
+
+    match resolve_desired_from_composition(ctx, cfg, composition, &[], false, printer) {
         Ok(desired) => Ok((
-            desired.sources,
+            sources,
             cfgd_core::output::HeaderModule::of_resolved(&desired.modules),
-            desired.resolved.merged.backups,
+            backups,
         )),
         Err(e) => {
             printer.status_simple(
@@ -113,21 +120,7 @@ fn restoring_verb_state(
                     cfgd_core::output::collapse_to_subject_line(&e)
                 ),
             );
-            let composition = compose_with_sources(
-                ctx,
-                cfg,
-                local_resolved,
-                printer,
-                false,
-                composition::ConstraintMode::Enforce,
-            )?;
-            Ok((
-                cfgd_core::reconciler::ComposedSource::from_profile_layers(
-                    &composition.resolved.layers,
-                ),
-                Vec::new(),
-                composition.resolved.merged.backups,
-            ))
+            Ok((sources, Vec::new(), backups))
         }
     }
 }
