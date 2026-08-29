@@ -777,19 +777,28 @@ pub fn build_fleet_status_doc(
 pub(super) const SCAN_HINT: &str =
     "`cfgd diff` checks the live machine; `cfgd status --scan` records the result";
 
-/// The owner column's word for what cfgd manages on its OWN behalf — the
-/// generated env file, the rc source line, the live-session publish. The same
-/// groups the plan and apply trees head with `cfgd:`, and never the word for a
-/// resource a user document declared. (A manager cfgd bootstraps belongs to the
-/// same family but reaches no row: `record_managed_resources` refuses the
-/// `manager` type outright.)
-const OWNER_SELF: &str = "cfgd";
-
-/// The recorded `resource_type` of every surface cfgd authors on its own
-/// behalf. The generated env file, the rc source line and the live-session
-/// publish all record under this one token — the recorded-state twin of the
-/// reconciler's owner rule handing every `EnvAction` to a `cfgd:` group.
+/// The recorded `resource_type` of every surface cfgd authors on its OWN
+/// behalf — the generated env file, the rc source line, the live-session
+/// publish. The recorded-state twin of the reconciler's owner rule handing
+/// every `EnvAction` to a `cfgd:` group, and never the type of a resource a
+/// user document declared. (A manager cfgd bootstraps belongs to the same
+/// family but reaches no row: `record_managed_resources` refuses the `manager`
+/// type outright.) A state-store token, so it stays its own constant rather
+/// than borrowing the group name it happens to share.
 const ENV_RESOURCE_TYPE: &str = "env";
+
+/// The two cfgd-owned groups a recorded `env` row belongs to, spelled here
+/// because the table holds no action to ask
+/// [`cfgd_core::reconciler::CFGD_GROUP_ORDER`]'s owner rule for and the
+/// reconciler's own constants for them are internal to that crate. Pinned
+/// against that list by
+/// `the_cfgd_groups_this_table_names_are_the_reconcilers_own`, so a rename or
+/// a reorder there fails here rather than leaving the dashboard naming a group
+/// no tree heads.
+const CFGD_ENV_GROUP: &str = "env";
+/// The sibling of [`CFGD_ENV_GROUP`], for the one row whose id names the act
+/// rather than a file.
+const CFGD_SESSION_GROUP: &str = "session";
 
 /// Stand-in for a resource column with nothing left to say — the same `-` the
 /// Config Sources table renders for a version nobody has fetched.
@@ -844,14 +853,13 @@ fn managed_resource_rows(
             };
             rows.push([
                 display_type(&r.resource_type),
-                recorded_owner(&r.resource_type, &profile_owner),
+                recorded_owner(r, &profile_owner),
                 resource,
                 r.source.clone(),
             ]);
             continue;
         };
-        let owner =
-            OwnerLabel::new(cfgd_core::reconciler::OwnerKind::Module.as_str(), module).plain();
+        let owner = owner_cell(&cfgd_core::reconciler::Owner::module(module));
         let declared = modules
             .iter()
             .find(|m| m.name == module)
@@ -880,23 +888,44 @@ fn managed_resource_rows(
     }
     // The recorded order is the state store's (type, id); grouping and
     // splitting break it, so the table sorts what it renders instead of
-    // letting the shape of the rows decide the order.
-    rows.sort();
+    // letting the shape of the rows decide the order. Owner first, through the
+    // reconciler's own comparator, so a reader moving between this table and a
+    // plan or apply tree meets the owners in one order.
+    let order = owner_render_order(&rows);
+    let rank = |token: &String| order.iter().position(|o| o == token).unwrap_or(order.len());
+    rows.sort_by(|a, b| rank(&a[1]).cmp(&rank(&b[1])).then_with(|| a.cmp(b)));
     rows
 }
 
-/// The Owner column's word for a recorded row that names no module.
+/// The Owner column's rendering of a reconciler owner.
 ///
-/// The split is the reconciler's own: an `env` row is a file cfgd authored and
-/// a session cfgd published, so it is cfgd's own; everything else in this
-/// branch — a package, a managed file, a profile script, a system setting, a
-/// secret — is work a user document declared, which is the profile's.
-fn recorded_owner(resource_type: &str, profile_owner: &str) -> String {
-    if resource_type == ENV_RESOURCE_TYPE {
-        OWNER_SELF.to_string()
-    } else {
-        profile_owner.to_string()
+/// The composition the plan and apply trees head their groups with, asked of
+/// the same [`cfgd_core::reconciler::Owner`] value rather than spelled again
+/// here: a recorded row and the run that wrote it name one owner one way, down
+/// to the group suffix.
+fn owner_cell(owner: &cfgd_core::reconciler::Owner) -> String {
+    OwnerLabel::new(owner.kind.as_str(), owner.name.as_str()).plain()
+}
+
+/// The Owner column's token for a recorded row that names no module.
+///
+/// The split is the reconciler's own: an `env` row is a file cfgd authored or
+/// a session cfgd published, so it is cfgd's own and carries the same group
+/// suffix the tree heads it with — [`cfgd_core::reconciler::SESSION_GROUP`]
+/// for the one row whose id names the act, [`cfgd_core::reconciler::ENV_GROUP`]
+/// for the files. Everything else in this branch — a package, a managed file,
+/// a profile script, a system setting, a secret — is work a user document
+/// declared, which is the profile's.
+fn recorded_owner(r: &cfgd_core::state::ManagedResource, profile_owner: &str) -> String {
+    if r.resource_type != ENV_RESOURCE_TYPE {
+        return profile_owner.to_string();
     }
+    let group = if is_session_env_row(r) {
+        CFGD_SESSION_GROUP
+    } else {
+        CFGD_ENV_GROUP
+    };
+    owner_cell(&cfgd_core::reconciler::Owner::cfgd(group))
 }
 
 /// The owner token a profile-declared row reads.
@@ -906,11 +935,44 @@ fn recorded_owner(resource_type: &str, profile_owner: &str) -> String {
 /// row. The kind word alone says what it can: a user document declared this,
 /// and which one is not on the record.
 fn profile_owner_label(profile: Option<&str>) -> String {
-    let kind = cfgd_core::reconciler::OwnerKind::Profile.as_str();
     profile.map_or_else(
-        || kind.to_string(),
-        |name| OwnerLabel::new(kind, name).plain(),
+        || {
+            cfgd_core::reconciler::OwnerKind::Profile
+                .as_str()
+                .to_string()
+        },
+        |name| owner_cell(&cfgd_core::reconciler::Owner::profile(name)),
     )
+}
+
+/// The owner a rendered token names, read back so the table can be ordered by
+/// the same comparator that ordered the run.
+///
+/// `None` for a token no kind word opens — the bare `profile` a run with no
+/// profile to name renders, which is not an owner value at all. Nothing else
+/// this table builds produces one.
+fn owner_from_token(token: &str) -> Option<cfgd_core::reconciler::Owner> {
+    let (kind, name) = token.split_once(':')?;
+    Some(cfgd_core::reconciler::Owner {
+        kind: cfgd_core::reconciler::OwnerKind::from_token(kind)?,
+        name: name.to_string(),
+    })
+}
+
+/// The Owner column's tokens in the order the plan and apply trees render
+/// their groups, asked of [`cfgd_core::reconciler::Owner::order`] — the one
+/// way to order owners outside the phase builder, so this table and the tree
+/// beside it read the same sequence rather than two.
+///
+/// A token that names no owner keeps a place of its own at the end: it is the
+/// nameless-profile arm, which has nothing to compare by.
+fn owner_render_order(rows: &[[String; 4]]) -> Vec<String> {
+    let mut owners: Vec<cfgd_core::reconciler::Owner> = rows
+        .iter()
+        .filter_map(|r| owner_from_token(&r[1]))
+        .collect();
+    cfgd_core::reconciler::Owner::order(&mut owners);
+    owners.iter().map(owner_cell).collect()
 }
 
 /// Whether this recorded row is the live-session env surface — the one row
@@ -2186,31 +2248,68 @@ mod tests {
     /// The dashboard showed `package  cfgd  brew: gum` two commands after the
     /// apply that installed it printed the same work under `profile:base`.
     ///
-    /// Compared against [`cfgd_core::reconciler::Owner::profile`] rather than a
-    /// literal, so the table cannot drift from the constructor the planner
-    /// heads its groups with.
+    /// Both halves are compared against the reconciler's own owner values
+    /// rather than literals — the constructors the planner heads its groups
+    /// with, put in order by [`cfgd_core::reconciler::Owner::order`], the ONE
+    /// comparator — so neither the spelling nor the order of the Owner column
+    /// can drift from the tree without failing here.
+    /// The group names this table spells are the reconciler's own list, in the
+    /// reconciler's own order. `cfgd-core`'s constants for them are internal to
+    /// that crate, so the two literals live beside the table — and this is what
+    /// keeps them honest: a rename or a reorder of the cfgd-owned groups fails
+    /// here rather than leaving the dashboard naming a group no tree heads.
+    #[test]
+    fn the_cfgd_groups_this_table_names_are_the_reconcilers_own() {
+        assert_eq!(
+            cfgd_core::reconciler::CFGD_GROUP_ORDER,
+            [
+                cfgd_core::reconciler::MANAGERS_GROUP,
+                CFGD_ENV_GROUP,
+                CFGD_SESSION_GROUP
+            ]
+        );
+    }
+
     #[test]
     fn a_profile_declared_row_carries_the_owner_the_apply_tree_heads_its_group_with() {
+        use cfgd_core::reconciler::Owner;
+
         let rows = managed_resource_rows(
             &[
                 recorded("package", "brew/gum"),
+                recorded("module", "nvim:files:1"),
                 recorded("file", "/home/u/.gitconfig"),
                 recorded("env", "/home/u/.cfgd.env"),
+                recorded("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
             ],
             &[],
             Some("base"),
         );
-        let owned: Vec<(&str, &str)> = rows
-            .iter()
-            .map(|r| (r[0].as_str(), r[1].as_str()))
-            .collect();
-        let profile = cfgd_core::reconciler::Owner::profile("base").token();
+
+        let mut expected = vec![
+            Owner::module("nvim"),
+            Owner::cfgd(CFGD_SESSION_GROUP),
+            Owner::profile("base"),
+            Owner::cfgd(CFGD_ENV_GROUP),
+        ];
+        Owner::order(&mut expected);
+        let expected: Vec<String> = expected.iter().map(owner_cell).collect();
+
+        let mut owners: Vec<String> = rows.iter().map(|r| r[1].clone()).collect();
+        owners.dedup();
+        assert_eq!(owners, expected, "{rows:?}");
+        // The two `env` rows are cfgd's own and carry the group suffix the
+        // tree heads them with; the file and the package are the profile's.
         assert_eq!(
-            owned,
+            rows.iter()
+                .map(|r| (r[0].as_str(), r[1].as_str()))
+                .collect::<Vec<_>>(),
             vec![
-                ("env", OWNER_SELF),
-                ("file", profile.as_str()),
-                ("package", profile.as_str()),
+                ("file", "profile:base"),
+                ("package", "profile:base"),
+                ("env", "cfgd:env"),
+                ("env", "cfgd:session"),
+                ("file", "module:nvim"),
             ],
             "{rows:?}"
         );
@@ -2365,12 +2464,14 @@ mod tests {
             &[],
             Some("base"),
         );
+        // Owner order, so the surfaces are named in the order the tree
+        // renders them: the profile's two rows, then cfgd's own env file.
         let types: Vec<&str> = rows.iter().map(|r| r[0].as_str()).collect();
-        assert_eq!(types, vec!["env", "file", "script"]);
+        assert_eq!(types, vec!["file", "script", "env"]);
         // The env file is cfgd's own; the managed file and the profile script
         // are the profile's, and each row says which.
         let owners: Vec<&str> = rows.iter().map(|r| r[1].as_str()).collect();
-        assert_eq!(owners, vec!["cfgd", "profile:base", "profile:base"]);
+        assert_eq!(owners, vec!["profile:base", "profile:base", "cfgd:env"]);
     }
 
     /// Every kind the Type column can print, in the singular — `kubectl get`'s

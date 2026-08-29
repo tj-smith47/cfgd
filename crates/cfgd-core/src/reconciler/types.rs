@@ -642,12 +642,22 @@ impl OwnerKind {
 /// two copies is how the group vocabulary drifted between `--phase` (via
 /// `reconciler::action_matches_phase_filter`) and `--skip`/`--only` (via
 /// `cfgd::cli::plan_ops::pattern_matches_action`) before it was unified here.
-pub const CFGD_GROUP_ORDER: &[&str] = &[MANAGERS_GROUP, "env", "session"];
+pub const CFGD_GROUP_ORDER: &[&str] = &[MANAGERS_GROUP, ENV_GROUP, SESSION_GROUP];
 
 /// The cfgd-owned group every [`ManagerAction`] belongs to. Named once: a
 /// filter that keeps this group and a planner that mints into it must agree on
 /// the spelling, and a mismatch drops the whole phase silently.
 pub const MANAGERS_GROUP: &str = "managers";
+
+/// The cfgd-owned group every [`EnvAction`] but the live-session broadcast
+/// belongs to. Named once for the same reason as [`MANAGERS_GROUP`]: the
+/// assignment rule below and [`CFGD_GROUP_ORDER`] above spelled it twice, and
+/// two spellings of a group name is how a filter and a planner stop agreeing.
+pub const ENV_GROUP: &str = "env";
+
+/// The cfgd-owned group the live-session broadcast belongs to; the sibling of
+/// [`ENV_GROUP`], named for the same reason.
+pub const SESSION_GROUP: &str = "session";
 
 /// Where a cfgd-owned group sits in [`CFGD_GROUP_ORDER`]; `0` for every other
 /// owner kind, and last for a cfgd group the list does not name.
@@ -775,8 +785,8 @@ pub fn owner_of(action: &Action, profile: &Owner) -> Owner {
         // Env surfaces aggregate declarations from the profile *and* every
         // module, so no single user document owns them — cfgd authored the file
         // and cfgd owns it.
-        Action::Env(EnvAction::RefreshLiveSession { .. }) => Owner::cfgd("session"),
-        Action::Env(_) => Owner::cfgd("env"),
+        Action::Env(EnvAction::RefreshLiveSession { .. }) => Owner::cfgd(SESSION_GROUP),
+        Action::Env(_) => Owner::cfgd(ENV_GROUP),
         // A manager is a prerequisite every owner may be waiting on; cfgd
         // provisions it, and no user document declares it.
         Action::Manager(_) => Owner::cfgd(MANAGERS_GROUP),
