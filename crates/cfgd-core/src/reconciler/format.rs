@@ -229,10 +229,11 @@ pub fn format_action_description(action: &Action) -> String {
 /// a raw, potentially multi-line script body (`format_action_description`'s
 /// `Action::Script` arm and `format_module_action_body`'s
 /// `ModuleActionKind::RunScript` arm both embed `run_str()` verbatim), or an
-/// operand LIST longer than a row states (every package and file subject,
-/// cut by `elided_list` into [`action_display_subject`]). `-o json`
-/// payloads and `ActionResult.description` stay byte-identical to the
-/// source body and name every operand. Callers must keep the raw `desc` for
+/// operand LIST, whose display subject folds the home directory
+/// ([`action_display_subject`]) while the wire string keeps the absolute
+/// path a script can `cat`. `-o json` payloads and
+/// `ActionResult.description` stay byte-identical to the
+/// source body. Callers must keep the raw `desc` for
 /// `ActionResult.description` / journal persistence / the `-o json` plan
 /// payload — this helper is display-only.
 pub fn condense_action_desc_for_display(action: &Action, desc: &str) -> String {
@@ -254,8 +255,8 @@ pub fn condense_action_desc_for_display(action: &Action, desc: &str) -> String {
 }
 
 /// Whether `action`'s subject is built over an operand LIST — the shapes
-/// whose display subject is cut by [`elided_list`] while their wire string
-/// names every operand.
+/// whose display subject folds the home directory while their wire string
+/// keeps the absolute path.
 fn carries_operand_list(action: &Action) -> bool {
     matches!(
         action,
@@ -266,31 +267,6 @@ fn carries_operand_list(action: &Action) -> bool {
                 ..
             })
     )
-}
-
-/// How a subject builder renders an operand list: in full for a WIRE string
-/// (`PlanActionOutput.description`, `ActionResult.description`), or cut with
-/// a `+N more` marker for a ROW ([`action_display_subject`]), the cut placed
-/// where the row's `budget` runs out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ListRender {
-    Full,
-    Elided { budget: Option<usize> },
-}
-
-impl ListRender {
-    /// `prefix` followed by the list, the list cut to what fits the subject
-    /// budget BESIDE the prefix — `brew install ` is part of the row, so the
-    /// names are given the room the verb leaves, not the whole line.
-    fn after(self, prefix: &str, items: &[String]) -> String {
-        match self {
-            ListRender::Full => format!("{prefix}{}", items.join(", ")),
-            ListRender::Elided { budget } => {
-                let room = budget.map(|b| b.saturating_sub(crate::output::measure_width(prefix)));
-                format!("{prefix}{}", elided_list(items, SUBJECT_LIST_KEEP, room))
-            }
-        }
-    }
 }
 
 /// An action's display subject, split at the marker the tree paints in its own
@@ -336,13 +312,17 @@ pub fn action_display_subject(action: &Action) -> DisplaySubject {
 /// [`action_display_subject`] for a row that knows how wide it may be.
 ///
 /// `budget` is the columns the subject may occupy — [`Printer::subject_budget`]
-/// on the sink the row is drawn to — and an operand list fills it before it
-/// cuts, so a wide terminal names as many packages as fit and a narrow one
-/// still names `SUBJECT_LIST_KEEP`. `None` is the floor alone, the answer a
-/// capture or a redirected stream gets, and every surface that renders ONE
-/// report reads the same budget: the preview bullet, the alignment column,
-/// the apply ledger, the live tree and the lane dispatcher's wait lines, so
-/// one action is still one string wherever it is painted.
+/// on the sink the row is drawn to — and it binds the one subject part that
+/// has no operands to lose: a script LABEL, which is a body no reader can
+/// reconstruct from a fragment anyway. An operand list never reads it. A
+/// subject names every package, every file and every manager it acts on, and
+/// a list too long for the line WRAPS under the row's own hang indent rather
+/// than being cut, because a row that generalizes what is about to be
+/// installed is a row a reader cannot check. `None` is the answer a capture
+/// or a redirected stream gets, and every surface that renders ONE report
+/// reads the same budget: the preview bullet, the alignment column, the
+/// apply ledger, the live tree and the lane dispatcher's wait lines, so one
+/// action is still one string wherever it is painted.
 ///
 /// [`Printer::subject_budget`]: crate::output::Printer::subject_budget
 pub fn action_display_subject_within(action: &Action, budget: Option<usize>) -> DisplaySubject {
@@ -358,11 +338,11 @@ pub fn action_display_subject_within(action: &Action, budget: Option<usize>) -> 
                 ..
             },
         ) => module_script_subject_within(script.run_str(), phase, ma.origin.as_deref(), budget),
-        // The fold is the DISPLAY seam's alone: `ListRender::Full` feeds the
+        // The fold is the DISPLAY seam's alone: `format_plan_item` feeds the
         // `-o json` plan payload and keeps the absolute path.
         _ => DisplaySubject {
             marker: None,
-            body: crate::fold_home_in_text(&plan_item(action, ListRender::Elided { budget })),
+            body: crate::fold_home_in_text(&plan_item(action)),
         },
     }
 }
@@ -373,9 +353,12 @@ pub fn script_run_subject(run: &str, phase: &ScriptPhase, origin: &str) -> Displ
     script_run_subject_within(run, phase, origin, None)
 }
 
-/// [`script_run_subject`] cut to `budget`, the same budget the operand lists
-/// of the report are cut to; the apply path reads it off the printer, which
-/// answers the claimed report budget while the run holds one.
+/// [`script_run_subject`] cut to `budget`, the report's own subject budget;
+/// the apply path reads it off the printer, which answers the claimed report
+/// budget while the run holds one. A script LABEL is the one subject part a
+/// budget cuts — a body is not a list of operands, and no reader can check a
+/// row against a shell one-liner the way they check one against the packages
+/// it names.
 pub fn script_run_subject_within(
     run: &str,
     phase: &ScriptPhase,
@@ -463,11 +446,10 @@ fn script_body_display(run: &str, origin: &str, budget: Option<usize>, marker: &
 
 /// Format one plan item for display.
 pub fn format_plan_item(action: &Action) -> String {
-    plan_item(action, ListRender::Full)
+    plan_item(action)
 }
 
-/// [`format_plan_item`] with the operand lists rendered as `render` says.
-fn plan_item(action: &Action, render: ListRender) -> String {
+fn plan_item(action: &Action) -> String {
     match action {
         Action::File(fa) => match fa {
             FileAction::Create { target, origin, .. } => {
@@ -509,8 +491,8 @@ fn plan_item(action: &Action, render: ListRender) -> String {
                 origin,
                 ..
             } => format!(
-                "{}{}",
-                render.after(&format!("{manager} install "), packages),
+                "{manager} install {}{}",
+                packages.join(", "),
                 provenance_suffix(origin)
             ),
             PackageAction::Uninstall {
@@ -519,8 +501,8 @@ fn plan_item(action: &Action, render: ListRender) -> String {
                 origin,
                 ..
             } => format!(
-                "{}{}",
-                render.after(&format!("{manager} uninstall "), packages),
+                "{manager} uninstall {}{}",
+                packages.join(", "),
                 provenance_suffix(origin)
             ),
             PackageAction::Skip {
@@ -630,7 +612,7 @@ fn plan_item(action: &Action, render: ListRender) -> String {
                 )
             }
         },
-        Action::Module(ma) => module_action_item(ma, render),
+        Action::Module(ma) => module_action_item(ma),
         Action::Env(ea) => match ea {
             EnvAction::WriteEnvFile { path, .. } => {
                 format!("write {}", path.posix())
@@ -706,16 +688,16 @@ pub fn format_plan_items(group: &OwnerGroup) -> Vec<String> {
 /// (`origin = None`) render with no suffix.
 #[cfg(test)]
 pub(super) fn format_module_action_item(action: &ModuleAction) -> String {
-    module_action_item(action, ListRender::Full)
+    module_action_item(action)
 }
 
-fn module_action_item(action: &ModuleAction, render: ListRender) -> String {
+fn module_action_item(action: &ModuleAction) -> String {
     let suffix = provenance_suffix(action.origin.as_deref().unwrap_or(""));
-    let body = format_module_action_body(action, render);
+    let body = format_module_action_body(action);
     format!("{body}{suffix}")
 }
 
-fn format_module_action_body(action: &ModuleAction, render: ListRender) -> String {
+fn format_module_action_body(action: &ModuleAction) -> String {
     match &action.kind {
         ModuleActionKind::InstallPackages { resolved } => {
             // Group by manager in first-appearance order: this string is also
@@ -745,7 +727,7 @@ fn format_module_action_body(action: &ModuleAction, render: ListRender) -> Strin
             }
             let parts: Vec<String> = by_manager
                 .iter()
-                .map(|(mgr, pkgs)| render.after(&format!("{mgr} install "), pkgs))
+                .map(|(mgr, pkgs)| format!("{mgr} install {}", pkgs.join(", ")))
                 .collect();
             parts.join("; ")
         }
@@ -755,7 +737,7 @@ fn format_module_action_body(action: &ModuleAction, render: ListRender) -> Strin
             // PRODUCES and so is the row's detail (`deploy_files_summary`),
             // the slot the sibling env-write row already puts its counts in.
             let targets: Vec<String> = files.iter().map(|f| f.target.display_posix()).collect();
-            render.after("deploy ", &targets)
+            format!("deploy {}", targets.join(", "))
         }
         ModuleActionKind::RunScript { script, phase } => {
             // Raw body: this same string feeds both `ApplyRun::preview`
@@ -770,74 +752,6 @@ fn format_module_action_body(action: &ModuleAction, render: ListRender) -> Strin
             format!("skip: {reason}")
         }
     }
-}
-
-/// Join `items`, naming at most `keep` of them and saying how many were left
-/// out (`a, b, +4 more`).
-///
-/// The marker is not decoration: this string is the action's subject in every
-/// tree, so a silent cut left `deploy …/init.lua, …/lazy-lock.json — 6 files`
-/// reading as two deploys that produced six files, beside sibling rows naming
-/// all twelve of their own operands. A list short enough to state in full
-/// carries no marker, having elided nothing.
-///
-/// DISPLAY only, through [`ListRender::Elided`]: the wire strings —
-/// `PlanActionOutput.description` in `-o json`, `ActionResult.description`,
-/// the recorded resource id — name every operand ([`ListRender::Full`]). The
-/// cut once lived in the builders that feed both, so `cfgd plan -o json`
-/// emitted `apt install unzip, ripgrep, +9 more` and nine names reached no
-/// wire at all: `action_targets` is empty for both package shapes, so nothing
-/// compensated the way `targets` does for a deploy.
-/// `every_operand_a_plan_action_holds_reaches_the_json_payload` (the cfgd
-/// crate) walks every list-bearing shape's serialized payload.
-///
-/// The ONE elision in this file, read by every subject over an operand LIST
-/// — a module's package segments (one cut per manager, so neither list
-/// vanishes behind the other's marker), its file targets, and a profile's
-/// own install and uninstall. A list named in full instead was cut by the
-/// terminal mid-token (`…, eza, carg…`) with no count anywhere. Every other
-/// subject builder names every operand it holds:
-/// `every_elided_operand_list_says_so` walks the module-action kinds and
-/// `every_operand_list_a_subject_renders_is_cut_with_a_marker` the rendered
-/// string of every list-bearing shape.
-/// How many operands a subject names AT LEAST before `elided_list` cuts, and
-/// so the ONE threshold every detail arm reasons about: a list at most one
-/// longer is stated in full, and a longer one carries `+N more`, which with
-/// the named operands already gives the total. A FLOOR, not the count: a row
-/// that knows its width ([`action_display_subject_within`]) names every
-/// operand that fits before the marker, so a 120-column terminal is not cut
-/// to two names by a constant chosen for the narrowest one. A produced-detail arm therefore never
-/// restates a full count over an elided subject — `deploy a, b, +4 more —
-/// 6 files` said six twice — and the walk
-/// `no_produced_detail_restates_a_total_the_subject_already_gives` renders
-/// every arm over `SUBJECT_LIST_KEEP + 3` operands to keep it so.
-pub(super) const SUBJECT_LIST_KEEP: usize = 2;
-
-fn elided_list(items: &[String], keep: usize, room: Option<usize>) -> String {
-    if items.len() <= keep + 1 {
-        return items.join(", ");
-    }
-    let cut = |named: usize| {
-        format!(
-            "{}, +{} more",
-            items[..named].join(", "),
-            items.len() - named
-        )
-    };
-    let Some(room) = room else {
-        return cut(keep);
-    };
-    let full = items.join(", ");
-    if crate::output::measure_width(&full) <= room {
-        return full;
-    }
-    // Fill towards the room, never below the floor: the marker stays honest
-    // because it is written only over the names it does not hold.
-    let mut named = keep;
-    while named + 1 < items.len() && crate::output::measure_width(&cut(named + 1)) <= room {
-        named += 1;
-    }
-    cut(named)
 }
 
 /// Prefixes whose `format_action_description`/`execute_script` output has a
@@ -914,9 +828,8 @@ mod tests {
     use crate::providers::PackageAction;
 
     use super::{
-        SUBJECT_LIST_KEEP, action_display_subject, action_display_subject_within, elided_list,
-        format_manager_action_item, format_module_action_item, parse_package_description,
-        pre_skip_doubling_error,
+        action_display_subject, action_display_subject_within, format_manager_action_item,
+        parse_package_description, pre_skip_doubling_error,
     };
 
     /// No withheld row states one noun twice.
@@ -968,24 +881,19 @@ mod tests {
         );
     }
 
-    /// The elision marker `elided_list` mints, as a reader sees it.
-    const ELIDED: &str = " more";
-
-    /// A subject that cuts its operand list SAYS it cut it.
+    /// A subject names EVERY operand it acts on, at every width.
     ///
     /// The one string is the plan preview bullet, the alignment column, the
-    /// executed row AND `PlanActionOutput.description`, so a silent cut is a
-    /// silent cut in all four: `deploy …/init.lua, …/lazy-lock.json — 6 files`
-    /// read as two deploys producing six files, beside sibling rows naming all
-    /// twelve of their own operands, and a structured consumer had no way to
-    /// tell the list was short.
-    ///
-    /// Every `ModuleActionKind` is walked, each with more operands than any
-    /// builder here keeps, and each must either name all of them or say how
-    /// many it left out. Bound with no `..`, so a new kind is classified before
-    /// this file compiles.
+    /// executed row AND `PlanActionOutput.description`, so a subject that
+    /// generalized its list generalized it in all four: cfgd never tells a
+    /// person that `a, b, +4 more` is about to be installed, and a list too
+    /// long for the line wraps under the row's own hang indent instead. Every
+    /// `ModuleActionKind` is walked, bound with no `..` so a new kind is
+    /// classified before this file compiles, plus a profile's own install and
+    /// uninstall and a module naming two managers — and every width a report
+    /// can be rendered at, since the budget must reach no operand list.
     #[test]
-    fn every_elided_operand_list_says_so() {
+    fn every_operand_list_a_subject_renders_names_every_operand() {
         let file = |target: &str| crate::modules::ResolvedFile {
             source: std::path::PathBuf::from("src"),
             target: std::path::PathBuf::from(target),
@@ -995,10 +903,10 @@ mod tests {
             permissions: None,
             patch: None,
         };
-        let pkg = |name: &str| crate::modules::ResolvedPackage {
+        let pkg = |name: &str, manager: &str| crate::modules::ResolvedPackage {
             canonical_name: name.to_string(),
             resolved_name: name.to_string(),
-            manager: "brew".to_string(),
+            manager: manager.to_string(),
             manager_declared: false,
             version: None,
             script: None,
@@ -1007,10 +915,14 @@ mod tests {
             unless: None,
             min_version: None,
         };
-        let names = ["a", "b", "c", "d", "e", "f"];
+        let names: Vec<String> = (0..12).map(|i| format!("operand-number-{i}")).collect();
         let kinds = [
             ModuleActionKind::InstallPackages {
-                resolved: names.iter().map(|n| pkg(n)).collect(),
+                resolved: names
+                    .iter()
+                    .map(|n| pkg(n, "brew"))
+                    .chain(names.iter().map(|n| pkg(n, "apt")))
+                    .collect(),
             },
             ModuleActionKind::DeployFiles {
                 files: names.iter().map(|n| file(n)).collect(),
@@ -1024,163 +936,50 @@ mod tests {
                 reason: names.join(", "),
             },
         ];
-        for kind in kinds {
-            let subject = format_module_action_item(&ModuleAction::local("m", kind));
-            let named = names.iter().filter(|n| subject.contains(**n)).count();
-            assert!(
-                named == names.len() || subject.contains(ELIDED),
-                "a subject that names only {named} of {} operands must say so: {subject}",
-                names.len()
-            );
-        }
-    }
-
-    /// Every subject over an operand LIST cuts it at `SUBJECT_LIST_KEEP` and
-    /// says so on the RENDERED string — the one every tree paints, and the
-    /// one a live row clamps to its width. Naming all of them had a module's
-    /// package row read `brew install neovim, ripgrep, fd, bat, eza, carg…`,
-    /// cut mid-token by the terminal with no count anywhere; the marker is
-    /// what a reader gets instead of the clamp. Walked over every list-
-    /// bearing shape: the module package and file kinds, and a profile's own
-    /// install and uninstall; a module naming two managers is cut per manager
-    /// segment, so neither manager's list vanishes behind the other's marker.
-    #[test]
-    fn every_operand_list_a_subject_renders_is_cut_with_a_marker() {
-        let pkg = |name: &str, manager: &str| crate::modules::ResolvedPackage {
-            canonical_name: name.to_string(),
-            resolved_name: name.to_string(),
-            manager: manager.to_string(),
-            manager_declared: false,
-            version: None,
-            script: None,
-            creates: None,
-            only_if: None,
-            unless: None,
-            min_version: None,
-        };
-        let file = |target: &str| crate::modules::ResolvedFile {
-            source: std::path::PathBuf::from("src"),
-            target: std::path::PathBuf::from(target),
-            is_git_source: false,
-            strategy: None,
-            encryption: None,
-            permissions: None,
-            patch: None,
-        };
-        let total = SUBJECT_LIST_KEEP + 3;
-        let names: Vec<String> = (0..total).map(|i| format!("op{i}")).collect();
-        let package = |manager: &str| PackageAction::Install {
-            manager: manager.to_string(),
+        let mut actions: Vec<Action> = kinds
+            .into_iter()
+            .map(|kind| Action::Module(ModuleAction::local("m", kind)))
+            .collect();
+        actions.push(Action::Package(PackageAction::Install {
+            manager: "brew".to_string(),
             packages: names.clone(),
             origin: "local".to_string(),
-        };
-        let actions = [
-            Action::Module(ModuleAction::local(
-                "m",
-                ModuleActionKind::InstallPackages {
-                    resolved: names
-                        .iter()
-                        .map(|n| pkg(n, "brew"))
-                        .chain(names.iter().map(|n| pkg(n, "apt")))
-                        .collect(),
-                },
-            )),
-            Action::Module(ModuleAction::local(
-                "m",
-                ModuleActionKind::DeployFiles {
-                    files: names.iter().map(|n| file(n)).collect(),
-                    declared_total: total,
-                },
-            )),
-            Action::Package(package("brew")),
-            Action::Package(PackageAction::Uninstall {
-                manager: "brew".to_string(),
-                packages: names.clone(),
-                origin: "local".to_string(),
-            }),
-        ];
-        for action in &actions {
-            let subject = action_display_subject(action).to_string();
-            let segments = subject.matches(" install ").count()
-                + subject.matches(" uninstall ").count()
-                + usize::from(subject.starts_with("deploy "));
-            let marker = format!("+{} more", total - SUBJECT_LIST_KEEP);
-            assert_eq!(
-                subject.matches(&marker).count(),
-                segments.max(1),
-                "every operand list on the row is cut with its own marker: {subject}"
-            );
-            assert!(
-                !subject.contains(&names[SUBJECT_LIST_KEEP + 1]),
-                "an operand past the keep is not named: {subject}"
-            );
-        }
-    }
-
-    /// A list short enough to state in full elided nothing, so it says nothing.
-    #[test]
-    fn a_list_that_fits_carries_no_elision_marker() {
-        let items: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(elided_list(&items, 2, None), "a, b, c");
-        assert_eq!(elided_list(&items[..1], 2, None), "a");
-        assert_eq!(
-            elided_list(
-                &["a", "b", "c", "d"]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>(),
-                2,
-                None
-            ),
-            "a, b, +2 more"
-        );
-    }
-
-    /// A row that knows its width names every operand that fits before the
-    /// marker, never fewer than the floor, and drops the marker only when the
-    /// whole list fits — so `+N more` is written over names the row does
-    /// not hold, and over nothing else.
-    #[test]
-    fn a_row_with_room_names_as_many_operands_as_fit_and_never_fewer_than_the_floor() {
-        let items: Vec<String> = ["neovim", "fd", "ripgrep", "bat", "fzf", "jq"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(
-            elided_list(&items, 2, Some(80)),
-            "neovim, fd, ripgrep, bat, fzf, jq",
-            "everything fits: no marker"
-        );
-        assert_eq!(
-            elided_list(&items, 2, Some(30)),
-            "neovim, fd, ripgrep, +3 more",
-            "filled to the room, the marker counting exactly what is unnamed"
-        );
-        assert_eq!(
-            elided_list(&items, 2, Some(5)),
-            "neovim, fd, +4 more",
-            "a room narrower than the floor still names the floor"
-        );
-        let widest = elided_list(&items, 2, Some(30));
-        assert!(crate::output::measure_width(&widest) <= 30);
-
-        let action = Action::Package(PackageAction::Install {
+        }));
+        actions.push(Action::Package(PackageAction::Uninstall {
             manager: "brew".to_string(),
-            packages: items.clone(),
+            packages: names.clone(),
             origin: "local".to_string(),
-        });
-        let budgeted = action_display_subject_within(&action, Some(44)).to_string();
-        assert!(
-            crate::output::measure_width(&budgeted) <= 44
-                && budgeted.contains("ripgrep")
-                && !budgeted.contains("bat"),
-            "the prefix `brew install ` is charged against the same budget: {budgeted}"
-        );
-        assert_eq!(
-            action_display_subject_within(&action, None).to_string(),
-            "brew install neovim, fd, +4 more",
-            "no budget is the floor"
-        );
+        }));
+
+        // A script body is the one subject part a budget still bounds, so it
+        // is walked for the kinds above and excluded from the operand claim.
+        let bounded = |action: &Action| {
+            matches!(
+                action,
+                Action::Module(ModuleAction {
+                    kind: ModuleActionKind::RunScript { .. },
+                    ..
+                })
+            )
+        };
+        for action in &actions {
+            if bounded(action) {
+                continue;
+            }
+            for budget in (80..=200).map(Some).chain(std::iter::once(None)) {
+                let subject = action_display_subject_within(action, budget).to_string();
+                for name in &names {
+                    assert!(
+                        subject.contains(name.as_str()),
+                        "a subject names every operand at budget {budget:?}: {subject}"
+                    );
+                }
+                assert!(
+                    !subject.contains(" more"),
+                    "no subject generalizes its list: {subject}"
+                );
+            }
+        }
     }
 
     /// The operands a manager action holds — every name the subject has to

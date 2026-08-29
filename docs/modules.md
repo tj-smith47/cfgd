@@ -634,8 +634,9 @@ name being installed, and the version that manager reports. When the module entr
 name differs from the manager-specific one, it follows after `alias:`:
 `npm install neovim (5.4.0, alias: neovim-npm)` installs npm's `neovim` for a module entry
 named `neovim-npm`. A profile's own package lines carry neither, since a profile names a
-manager and a package directly. A deploy naming more than three targets lists the first
-two and says how many it left out (`deploy a, b, +10 more`); a deploy of only the
+manager and a package directly. A row names every operand it acts on: a deploy names
+every target and a package line every package, wrapping under the row's own indent when
+the list is wider than the terminal rather than being cut short. A deploy of only the
 files that changed says how many of the module's declared set it left alone as the row's
 detail (`deploy init.lua — 5 already deployed`). The apply row carries the same detail,
 beside the same subject.

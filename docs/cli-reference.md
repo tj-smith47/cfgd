@@ -379,8 +379,7 @@ tree hangs off the row after the em-dash (`- deploy a — 5 already deployed`,
 `- write ~/.cfgd.env — 3 vars, 1 alias`); `description` names the subject
 alone and never folds the count in. A `Files` deploy of only the entries
 that changed counts them against the module's declared set; a full deploy
-carries no count, its subject naming every target or saying how many it
-left out (`deploy a, b, +4 more`).
+carries no count, its subject already naming every target.
 
 A `Prerequisites` action carries a structured `manager` sub-object beside its
 `description`, so a consumer classifies a manager's state without parsing the

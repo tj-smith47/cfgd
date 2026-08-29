@@ -1571,13 +1571,14 @@ fn filter_plan_drops_a_phase_left_entirely_empty() {
 
 /// Every operand a list-bearing action holds reaches the `-o json` payload.
 ///
-/// The display subject cuts a long list to `a, b, +N more`, and that cut once
-/// lived in the builder that also fills `PlanActionOutput.description`, so
-/// `cfgd plan -o json` emitted `apt install unzip, ripgrep, +9 more` and nine
-/// package names reached no field at all — `targets` is empty for both package
-/// shapes. A CI gate diffing two plans could not see a package added to an
-/// eleven-entry segment. Every list-bearing shape is serialized here over more
-/// operands than any row keeps, and every name must be findable in the payload.
+/// A cut that lived in the builder filling `PlanActionOutput.description`
+/// once had `cfgd plan -o json` emit `apt install unzip, ripgrep, +9 more`,
+/// nine package names reaching no field at all — `targets` is empty for both
+/// package shapes. A CI gate diffing two plans could not see a package added
+/// to an eleven-entry segment. The human row names every operand now, but the
+/// payload is a separate string built by a separate walk, so every
+/// list-bearing shape is serialized here and every name must be findable in
+/// it.
 #[test]
 fn every_operand_a_plan_action_holds_reaches_the_json_payload() {
     let names: Vec<String> = (0..8).map(|i| format!("operand{i}")).collect();
