@@ -17470,7 +17470,7 @@ fn provider_note_calls() -> Vec<ProviderNoteCall> {
                 }) else {
                     continue;
                 };
-                let where_ = format!("{}:{}", path.display(), line_no);
+                let where_ = format!("{}:{}", cfgd_core::to_posix_string(path), line_no);
                 let mut args = if named_role.is_some() {
                     head.as_str()
                 } else {
@@ -28886,7 +28886,12 @@ fn every_resolved_package_producer_routes_through_the_one_resolver() {
             .unwrap_or(&body);
         for (i, line) in production.lines().enumerate() {
             if line.contains("ResolvedPackage {") && !line.contains("pub struct ResolvedPackage") {
-                producers.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+                producers.push(format!(
+                    "{}:{}: {}",
+                    cfgd_core::to_posix_string(&path),
+                    i + 1,
+                    line.trim()
+                ));
             }
         }
     }
