@@ -908,9 +908,11 @@ fn recorded_owner(r: &cfgd_core::state::ManagedResource, profile_owner: &str) ->
 /// The owner a rendered token names, read back so the table can be ordered by
 /// the same comparator that ordered the run.
 ///
-/// Every token this table builds comes from
-/// [`cfgd_core::reconciler::Owner::token`], so every one of them parses; the
-/// `Option` is the total read rather than an arm with a behaviour of its own.
+/// A cell naming an owner comes from [`cfgd_core::reconciler::Owner::token`]
+/// and parses. The one cell that does not is [`NO_DETAIL`], the `-` a
+/// profile-declared row carries when the run resolved no profile to name it
+/// after: `None` is that cell, and [`owner_render_order`] leaves it out of the
+/// order, which sorts every such row after the last named owner.
 fn owner_from_token(token: &str) -> Option<cfgd_core::reconciler::Owner> {
     let (kind, name) = token.split_once(':')?;
     Some(cfgd_core::reconciler::Owner {
@@ -923,6 +925,10 @@ fn owner_from_token(token: &str) -> Option<cfgd_core::reconciler::Owner> {
 /// their groups, asked of [`cfgd_core::reconciler::Owner::order`] — the one
 /// way to order owners outside the phase builder, so this table and the tree
 /// beside it read the same sequence rather than two.
+///
+/// A cell naming no owner ([`NO_DETAIL`]) is not in the returned order, so the
+/// caller's rank puts it past every named one: a row nothing can attribute
+/// sorts under the rows that can be.
 fn owner_render_order(rows: &[[String; 4]]) -> Vec<String> {
     let mut owners: Vec<cfgd_core::reconciler::Owner> = rows
         .iter()
@@ -2274,6 +2280,31 @@ mod tests {
         assert_eq!(rows[0][3], "local");
         assert_eq!(rows[1][2], "brew: fd");
         assert_eq!(rows[1][3], "acme");
+    }
+
+    /// A run that resolved no profile names one nowhere: the header leaves its
+    /// `Profile` row out and the Owner column says `-` rather than inventing a
+    /// token for a profile nothing has.
+    ///
+    /// The row also sorts BELOW every named owner — a module row included —
+    /// because a row nothing can attribute belongs under the rows that can be.
+    #[test]
+    fn a_row_no_profile_can_be_named_for_reads_a_dash_and_sorts_last() {
+        let rows = managed_resource_rows(
+            &[
+                recorded("package", "brew/bat"),
+                recorded("module", "nvim:files:2"),
+                recorded("env", "~/.cfgd.env"),
+            ],
+            &[],
+            None,
+        );
+        let owners: Vec<&str> = rows.iter().map(|r| r[1].as_str()).collect();
+        assert_eq!(
+            owners,
+            ["cfgd:env", "module:nvim", cfgd_core::ABSENT],
+            "{rows:?}"
+        );
     }
 
     /// A module row's id carries the owner and the surface; the detail the
