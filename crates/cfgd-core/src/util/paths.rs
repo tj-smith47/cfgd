@@ -340,6 +340,20 @@ pub fn move_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result
     }
 }
 
+/// Recreate `link` — a symlink inside a tree being copied — at `at`.
+///
+/// The ONE recreate both preserving copies take, and the ONE wording of a host
+/// that will not make links: the refusal names the link inside the SOURCE tree,
+/// the entry an operator can see and act on, rather than the counterpart under a
+/// copy cfgd named. Degrading to a skip would drop the link silently, which is
+/// exactly the neither-generation loss a preserving copy exists to prevent;
+/// [`crate::create_symlink`] words the privilege fix already.
+fn recreate_link(link: &std::path::Path, at: &std::path::Path) -> std::io::Result<()> {
+    let dest = std::fs::read_link(link)?;
+    super::fs_perms::create_symlink(&dest, at)
+        .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", link.posix())))
+}
+
 /// Recursively copy a directory tree, recreating symlinks as symlinks (unlike
 /// [`copy_dir_recursive`], which skips them). Used only by [`move_dir`]'s
 /// cross-filesystem fallback, where the whole tree is owned by the mover and
@@ -354,7 +368,7 @@ fn copy_tree_preserving_symlinks(
         let file_type = entry.file_type()?;
         let to = dst.join(entry.file_name());
         if file_type.is_symlink() {
-            crate::create_symlink(&std::fs::read_link(entry.path())?, &to)?;
+            recreate_link(&entry.path(), &to)?;
         } else if file_type.is_dir() {
             copy_tree_preserving_symlinks(&entry.path(), &to)?;
         } else {
@@ -1156,16 +1170,7 @@ fn copy_dir_into(
         let dst_path = dst.join(entry.file_name());
         if file_type.is_symlink() {
             if links == SymlinkPolicy::Recreate {
-                let link = entry.path();
-                let dest = std::fs::read_link(&link)?;
-                // A host that will not make links refuses LOUDLY, naming the
-                // link inside the SOURCE tree — the entry an operator can see
-                // and act on, rather than the counterpart under a copy cfgd
-                // named. Degrading to the skip would drop the link silently,
-                // which is exactly the neither-generation loss this policy
-                // exists to prevent. `create_symlink` words the fix already.
-                super::fs_perms::create_symlink(&dest, &dst_path)
-                    .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", link.posix())))?;
+                recreate_link(&entry.path(), &dst_path)?;
             }
             continue;
         }
