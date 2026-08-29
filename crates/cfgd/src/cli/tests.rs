@@ -28997,6 +28997,21 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
         crate::packages::manager_install_script("brew", &[]).is_none(),
         "only the data-driven system families answer here"
     );
+
+    // The script is written for ANOTHER host, so no line of it may open on
+    // `sudo` — on any family, and whatever this host's own privilege is. The
+    // apply path's strip is conditional on `is_root()`, which made a non-root
+    // author emit `RUN sudo apt-get install -y` into a Dockerfile.
+    for family in ["apt", "dnf", "yum", "apk", "pacman", "zypper", "pkg"] {
+        let script = crate::packages::manager_install_script(family, &["curl".to_string()])
+            .unwrap_or_else(|| panic!("{family} is a data-driven family"));
+        for line in script.update.iter().chain(std::iter::once(&script.install)) {
+            assert!(
+                !line.starts_with("sudo"),
+                "`module export` composes a script for a root container build:                  {family} emitted `{line}`"
+            );
+        }
+    }
 }
 
 /// A command renders its output under ONE section, named for the command, and

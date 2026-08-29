@@ -98,13 +98,28 @@ pub struct SimpleManager {
 
 impl SimpleManager {
     pub(super) fn display_cmd(&self, cmd_parts: &[&str], packages: &[String]) -> String {
-        let effective = strip_sudo_for_exec(cmd_parts);
-        let mut parts: Vec<&str> = effective.to_vec();
-        for p in packages {
-            parts.push(p);
-        }
-        parts.join(" ")
+        join_cmd(strip_sudo_for_exec(cmd_parts), packages)
     }
+
+    /// The same line for a script cfgd EMITS for ANOTHER host to run
+    /// (`module export`), where `sudo` is stripped unconditionally: the
+    /// question is what the consuming build script runs as (a container build,
+    /// already root), never what this host happens to be. `display_cmd` keeps
+    /// the `is_root`/seam logic because it labels what cfgd RUNS here.
+    pub(super) fn export_cmd(&self, cmd_parts: &[&str], packages: &[String]) -> String {
+        join_cmd(
+            cmd_parts.strip_prefix(&["sudo"]).unwrap_or(cmd_parts),
+            packages,
+        )
+    }
+}
+
+fn join_cmd(effective: &[&str], packages: &[String]) -> String {
+    let mut parts: Vec<&str> = effective.to_vec();
+    for p in packages {
+        parts.push(p);
+    }
+    parts.join(" ")
 }
 
 impl PackageManager for SimpleManager {

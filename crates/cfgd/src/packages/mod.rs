@@ -594,8 +594,9 @@ pub fn remove_package(
 /// emits an install composes from here, and a hand-written install verb in a
 /// `format!` is the bug this exists to make unwritable.
 ///
-/// `sudo` is stripped (`SimpleManager::display_cmd`): the consumers are container
-/// build scripts, which already run as root.
+/// `sudo` is stripped unconditionally (`SimpleManager::export_cmd`): the
+/// consumers are container build scripts, which already run as root, so the
+/// privilege of the host composing the script says nothing about it.
 pub struct ManagerInstallScript {
     /// The index refresh the family declares, if it has one.
     pub update: Option<String>,
@@ -608,8 +609,8 @@ pub struct ManagerInstallScript {
 pub fn manager_install_script(manager: &str, packages: &[String]) -> Option<ManagerInstallScript> {
     let mgr = simple::simple_manager(manager)?;
     Some(ManagerInstallScript {
-        update: mgr.update_cmd.map(|cmd| mgr.display_cmd(cmd, &[])),
-        install: mgr.display_cmd(mgr.install_cmd, packages),
+        update: mgr.update_cmd.map(|cmd| mgr.export_cmd(cmd, &[])),
+        install: mgr.export_cmd(mgr.install_cmd, packages),
     })
 }
 
