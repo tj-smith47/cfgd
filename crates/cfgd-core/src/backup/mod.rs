@@ -495,6 +495,21 @@ pub(super) fn outcome_detail(error: Option<&str>, size: Option<String>) -> Optio
     }
 }
 
+/// The closing hint a restore or a rollback leaves when it displaced live
+/// data: where the previous contents went, and how to put them back.
+///
+/// `report_restore` and `report_rollback` are the two mutating verbs that
+/// take a safety copy, and both close on this one sentence so a wording edit
+/// cannot land in one and not the other. The verb inside `safety.detail()`
+/// is the sidecar's own — a copy that was REUSED must not read as one written
+/// this time.
+pub(super) fn safety_copy_hint(safety: &crate::reconciler::SidecarOutcome, name: &str) -> String {
+    format!(
+        "Previous contents {}; put them back with `cfgd backup rollback {name}`",
+        safety.detail()
+    )
+}
+
 /// Join a run's failures, write its record, and prune to `spec.retention`.
 ///
 /// Report a completed run on the status line every surface shares. `cfgd

@@ -322,12 +322,8 @@ pub fn report_rollback(
     if let Some(safety) = &outcome.safety_copy {
         // The same slot a restore closes on, for the same reason: a rollback
         // displaces live data too, and the operator who regrets it needs to be
-        // told where it went. Worded by the sidecar's own outcome.
-        group.hint(format!(
-            "Previous contents {}; put them back with `cfgd backup rollback {}`",
-            safety.detail(),
-            outcome.name
-        ));
+        // told where it went.
+        group.hint(super::safety_copy_hint(safety, &outcome.name));
     }
     crate::reconciler::RunTally {
         succeeded: usize::from(outcome.restored),

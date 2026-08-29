@@ -134,13 +134,8 @@ pub fn report_restore(printer: &Printer, outcome: &RestoreOutcome) -> crate::rec
     if let Some(safety) = &outcome.safety_copy {
         // `hint`, not `note`: where the overwritten data went is the one thing
         // an operator needs after a restore they regret, and `note` is
-        // Verbose-only. The sentence's verb is the sidecar's own: a copy that
-        // was reused must not read as one written this time.
-        group.hint(format!(
-            "Previous contents {}; put them back with `cfgd backup rollback {}`",
-            safety.detail(),
-            outcome.name
-        ));
+        // Verbose-only.
+        group.hint(super::safety_copy_hint(safety, &outcome.name));
     }
     crate::reconciler::RunTally {
         succeeded: usize::from(outcome.restored),
