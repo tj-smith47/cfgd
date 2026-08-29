@@ -1406,8 +1406,28 @@ pub(in crate::cli) fn resolve_desired_state(
     refresh: bool,
     mode: composition::ConstraintMode,
 ) -> anyhow::Result<DesiredState> {
-    let cli = ctx.cli();
     let composition = compose_with_sources(ctx, cfg, local_resolved, printer, refresh, mode)?;
+    resolve_desired_from_composition(ctx, cfg, composition, module_filter, with_profile, printer)
+}
+
+/// The resolution half of [`resolve_desired_state`], over a composition the
+/// caller already holds.
+///
+/// The split is for a caller that has to tell a COMPOSITION failure from a
+/// MODULE-RESOLUTION one — `cfgd backup restore` and `cfgd backup rollback`
+/// degrade the second and refuse the first. Composing a second time to answer
+/// that question is not free: `compose_with_sources` renders the
+/// `Source Conflicts` section and records every conflict it found, so a retry
+/// prints the section twice and doubles the conflict history.
+pub(in crate::cli) fn resolve_desired_from_composition(
+    ctx: &RunContext<'_>,
+    cfg: &config::CfgdConfig,
+    composition: composition::CompositionResult,
+    module_filter: &[String],
+    with_profile: bool,
+    printer: &Printer,
+) -> anyhow::Result<DesiredState> {
+    let cli = ctx.cli();
     let composition::CompositionResult {
         resolved,
         source_env,

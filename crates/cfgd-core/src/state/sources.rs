@@ -175,6 +175,22 @@ impl StateStore {
         Ok(())
     }
 
+    /// How many composition conflicts have been recorded, for a caller counting
+    /// what one command persisted.
+    ///
+    /// Nothing reads the table in production — it is history for a surface that
+    /// does not exist yet — so the count is the only way a test can tell one
+    /// composition from two.
+    #[cfg(feature = "test-helpers")]
+    pub fn source_conflict_count(&self) -> Result<usize> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM source_conflicts", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map(|n| n as usize)
+            .map_err(|e| StateError::Database(e.to_string()).into())
+    }
+
     /// Get the stored config hash for a source.
     pub fn source_config_hash(&self, source: &str) -> Result<Option<SourceConfigHash>> {
         let result = self.conn.query_row(
