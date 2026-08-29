@@ -58,6 +58,7 @@ impl PackageManager for SnapManager {
         }
         #[cfg(not(target_os = "linux"))]
         {
+            let _ = delivered;
             None
         }
     }

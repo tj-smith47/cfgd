@@ -55,6 +55,7 @@ impl PackageManager for FlatpakManager {
         }
         #[cfg(not(target_os = "linux"))]
         {
+            let _ = delivered;
             None
         }
     }
