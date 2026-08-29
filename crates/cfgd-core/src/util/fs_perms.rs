@@ -1,5 +1,6 @@
 /// Create a symbolic link. On Unix, uses `std::os::unix::fs::symlink`.
-/// On Windows, uses `symlink_file` or `symlink_dir` based on the source type.
+/// On Windows, uses `symlink_file` or `symlink_dir` based on what the target
+/// resolves to from the link's own parent.
 /// If symlink creation fails on Windows due to insufficient privileges,
 /// returns an error with guidance to enable Developer Mode or run as admin.
 pub fn create_symlink(source: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
@@ -9,23 +10,64 @@ pub fn create_symlink(source: &std::path::Path, target: &std::path::Path) -> std
     }
     #[cfg(windows)]
     {
-        use super::paths::PathDisplayExt;
-        create_symlink_impl(source, target).map_err(|e| {
-            if e.raw_os_error() == Some(1314) {
-                // ERROR_PRIVILEGE_NOT_HELD
-                return std::io::Error::new(
-                    e.kind(),
-                    format!(
-                        "symlink creation requires Developer Mode or admin privileges: {} -> {}\n\
-                         Enable Developer Mode: Settings > Update & Security > For developers",
-                        source.posix(),
-                        target.posix()
-                    ),
-                );
-            }
-            e
-        })
+        create_symlink_impl(source, target).map_err(|e| symlink_error(source, target, e))
     }
+}
+
+/// Windows' `ERROR_PRIVILEGE_NOT_HELD`: the host will not make symbolic links
+/// for this user at all.
+#[cfg(any(windows, test))]
+const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+
+/// The ONE wording for a host that refused to create a symbolic link.
+///
+/// A refusal reaches an operator through whatever verb was copying — a backup
+/// sidecar, a restore's staging, an adopted target — so `os error 1314` is the
+/// one thing it must never be: the number names neither the link nor the fix.
+/// `mklink /J` needs no privilege at all and Rust reports the junction it makes
+/// as a symlink, so a stock Windows box can hold links it cannot recreate, and
+/// the sentence has to say what to turn on.
+///
+/// Compiled under `test` on every host: the mapping is pure, and pinning it
+/// needs a `raw_os_error`, not a Windows kernel.
+#[cfg(any(windows, test))]
+pub(crate) fn symlink_error(
+    dest: &std::path::Path,
+    link: &std::path::Path,
+    err: std::io::Error,
+) -> std::io::Error {
+    use super::paths::PathDisplayExt;
+    if err.raw_os_error() != Some(ERROR_PRIVILEGE_NOT_HELD) {
+        return err;
+    }
+    std::io::Error::new(
+        err.kind(),
+        format!(
+            "symlink creation requires Developer Mode or admin privileges: {} -> {}\n\
+             Enable Developer Mode: Settings > Update & Security > For developers",
+            dest.posix(),
+            link.posix()
+        ),
+    )
+}
+
+/// Where to look to decide whether a link points at a directory.
+///
+/// `dest` is the link's TARGET STRING, written back verbatim by every copy that
+/// preserves links, so a relative one is relative to the LINK's own parent.
+/// Probing the bare string asks the process CWD instead, and a directory link
+/// then lands as `symlink_file` — the wrong reparse type, which Windows will
+/// not traverse as a directory.
+#[cfg(any(windows, test))]
+pub(crate) fn symlink_dir_probe(
+    dest: &std::path::Path,
+    link: &std::path::Path,
+) -> std::path::PathBuf {
+    if dest.is_absolute() {
+        return dest.to_path_buf();
+    }
+    link.parent()
+        .map_or_else(|| dest.to_path_buf(), |parent| parent.join(dest))
 }
 
 #[cfg(unix)]
@@ -35,7 +77,7 @@ fn create_symlink_impl(source: &std::path::Path, target: &std::path::Path) -> st
 
 #[cfg(windows)]
 fn create_symlink_impl(source: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
-    if source.is_dir() {
+    if symlink_dir_probe(source, target).is_dir() {
         std::os::windows::fs::symlink_dir(source, target)
     } else {
         std::os::windows::fs::symlink_file(source, target)

@@ -1286,6 +1286,94 @@ fn copy_dir_recursive_does_not_descend_into_a_symlinked_output() {
 }
 
 #[test]
+fn a_host_that_will_not_make_links_names_the_privilege_it_needs() {
+    // 1314 is a Windows kernel's answer, but the mapping that turns it into a
+    // sentence is pure — so the wording pins on any host, which is the whole
+    // reason a Windows operator can be promised it.
+    let refused = crate::symlink_error(
+        std::path::Path::new("a.md"),
+        std::path::Path::new("/copy/link.md"),
+        std::io::Error::from_raw_os_error(1314),
+    );
+    let text = refused.to_string();
+    assert!(
+        text.contains("Developer Mode") && text.contains("a.md -> /copy/link.md"),
+        "a refused link must name itself and the fix, not an error number: {text}"
+    );
+    assert!(
+        !text.contains("1314"),
+        "the operator gets a sentence: {text}"
+    );
+
+    let other = crate::symlink_error(
+        std::path::Path::new("a.md"),
+        std::path::Path::new("/copy/link.md"),
+        std::io::Error::from_raw_os_error(2),
+    );
+    assert!(
+        !other.to_string().contains("Developer Mode"),
+        "only a privilege refusal carries the privilege advice"
+    );
+}
+
+#[test]
+fn a_relative_link_target_is_probed_against_the_links_own_parent() {
+    let root = tempfile::tempdir().unwrap();
+    let tree = root.path().join("tree");
+    std::fs::create_dir_all(tree.join("data")).unwrap();
+    let probe = crate::symlink_dir_probe(std::path::Path::new("data"), &tree.join("link"));
+    assert!(
+        probe.is_dir(),
+        "a relative target resolves against the link's parent, not the process CWD"
+    );
+    let absolute =
+        crate::symlink_dir_probe(&tree.join("data"), std::path::Path::new("/elsewhere/link"));
+    assert_eq!(absolute, tree.join("data"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_a_copy_cannot_recreate_names_the_link_inside_the_source() {
+    let root = tempfile::tempdir().unwrap();
+    let src = root.path().join("tree");
+    std::fs::create_dir_all(&src).unwrap();
+    std::os::unix::fs::symlink("a.md", src.join("link.md")).unwrap();
+    // The counterpart name is already taken, so the recreate refuses — the same
+    // shape a Windows host without the privilege takes, on a host that has it.
+    let dst = root.path().join("copy");
+    std::fs::create_dir_all(&dst).unwrap();
+    std::fs::write(dst.join("link.md"), "occupied").unwrap();
+
+    let err = copy_dir_recursive_preserving_symlinks(&src, &dst)
+        .expect_err("an occupied counterpart name cannot be linked over");
+
+    assert!(
+        err.to_string()
+            .contains(&src.join("link.md").display().to_string()),
+        "the refusal must name the link inside the source tree: {err}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_relative_link_to_a_directory_lands_as_a_directory_link() {
+    let root = tempfile::tempdir().unwrap();
+    let tree = root.path().join("tree");
+    std::fs::create_dir_all(tree.join("data")).unwrap();
+    std::fs::write(tree.join("data/a.txt"), "a").unwrap();
+    let link = tree.join("link");
+    if create_symlink(std::path::Path::new("data"), &link).is_err() {
+        // A host without the privilege makes no link at all, so the reparse
+        // type it would have chosen is not observable from here.
+        return;
+    }
+    assert!(
+        std::fs::metadata(&link).is_ok_and(|m| m.is_dir()),
+        "a relative link to a directory must be traversable as one"
+    );
+}
+
+#[test]
 fn dir_size_sums_the_whole_tree() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("sub/deeper")).unwrap();

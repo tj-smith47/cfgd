@@ -747,7 +747,10 @@ rsync -a --delete ~/.local/state/cfgd/backups/journal/journal.20260813T061306Z/ 
   restore, a symlink occupying a name the snapshot owns is replaced by the snapshot's own entry.
   The `.cfgd-backup` sidecar is the other way round: it recreates them, because it is the copy
   [`cfgd backup rollback`](#rolling-back-a-restore) puts back and a link it dropped is one the
-  overlay could never replace.
+  overlay could never replace. A host that will not create symbolic links at all — Windows
+  without Developer Mode or an elevated shell, where even a `mklink /J` junction reads back as a
+  link — refuses the sidecar rather than dropping the entry, naming the link inside the source
+  and how to grant the privilege.
 - Neither a directory restore nor a directory rollback is atomic as a whole; see
   [What a restore does](#what-a-restore-does). A rollback interrupted partway leaves a mixed tree,
   and the complete pre-rollback contents are in the sidecar its own row names — run the verb again.
