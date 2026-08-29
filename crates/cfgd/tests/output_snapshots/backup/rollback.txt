@@ -10,4 +10,4 @@ backup:docs
 
 ✓ Rollback complete — 1 action succeeded (XXs wall)
 
-→ Run `cfgd diff` to see how the machine now differs from your config
+→ Run `cfgd backup run docs` to take a snapshot of what was just put back

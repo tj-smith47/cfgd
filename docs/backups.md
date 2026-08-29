@@ -664,8 +664,9 @@ staging removed      ← on every path, success or failure
 
 **Restores are not recorded.** The `backup_runs` table is the ledger retention walks, and a
 restore produces no artifact for it to prune; the safety copy it takes is a sidecar beside the
-source, outside the ledger too — it is retained one-per-source and put back by
-[`cfgd backup rollback`](#rolling-back-a-restore), never by `spec.backups[].retention`.
+source, outside the ledger too — the primary sidecar (the first displacement, never pruned) plus
+at most one stamped copy (the newest displacement) survive, and the newest is what
+[`cfgd backup rollback`](#rolling-back-a-restore) puts back, never `spec.backups[].retention`.
 `cfgd rollback` covers cfgd's own file writes and is unrelated to both.
 
 ### Rolling back a restore
@@ -689,7 +690,7 @@ backup:notes-db
 
 ✓ Rollback complete — 1 action succeeded (0.2s wall)
 
-→ Run `cfgd diff` to see how the machine now differs from your config
+→ Run `cfgd backup run notes-db` to take a snapshot of what was just put back
 ```
 
 With no name it lists what it could put back and leaves the machine alone:
@@ -709,19 +710,22 @@ is never lost and the rollback is itself reversible: rolling back twice returns 
 where it started. A rollback whose safety copy fails is refused before anything is written, the
 same row of [What a restore refuses](#what-a-restore-refuses) that governs a restore.
 
-**One copy is retained per source.** When a displacement writes a new copy, the older stamped
-sidecars for that path are pruned, so a rollback always undoes the *most recent* displacement.
-Only names cfgd itself would have written are pruned; anything else beside the source is left
-alone — and the same rule decides what a rollback will put back, so a file cfgd never wrote is
-never published over your live source either.
+**The primary sidecar plus at most one stamped copy are retained per source.** The primary
+`<source>.cfgd-backup` — the first displacement, from before cfgd ever touched the source — is
+never pruned. When a later displacement writes a new stamped copy, the older stamped sidecars for
+that path are pruned, so at most one stamped copy survives alongside the primary and a rollback
+always undoes the *most recent* displacement. Only names cfgd itself would have written are
+pruned; anything else beside the source is left alone — and the same rule decides what a rollback
+will put back, so a file cfgd never wrote is never published over your live source either.
 
-A unit with no copy beside its source is refused, exit `6`, naming the verb that leaves one:
+A unit with no copy beside its source is refused, exit `6`, pointed at the read-only surfaces
+instead of the restore that would create one:
 
 ```console
 $ cfgd backup rollback notes-db
 ✗ Backup 'notes-db' has no copy to roll back to
 
-→ restore first with `cfgd backup restore notes-db`
+→ A copy is left beside a source by `cfgd backup restore <name>`, and by any file `cfgd apply` adopts; see `cfgd backup list notes-db` for its snapshots
 ```
 
 ### Restoring by hand

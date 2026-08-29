@@ -8,6 +8,12 @@ use cfgd_core::format_bytes;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 use cfgd_core::state::BackupRunRecord;
 
+/// How a rollback copy comes to exist, read by both the empty-listing hint
+/// and the "nothing to roll back to" error: a `cfgd backup restore` or an
+/// adopting `cfgd apply` is what leaves one beside a source, never the
+/// rollback itself.
+const ROLLBACK_COPY_ORIGIN: &str = "A copy is left beside a source by `cfgd backup restore <name>`, and by any file `cfgd apply` adopts";
+
 fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
     let hint = if valid.is_empty() {
         "no backups are declared in the active profile".to_string()
@@ -538,11 +544,12 @@ fn confirm_restore(
 
 /// Turn "nothing displaced this source" into the CLI's structured error shape.
 ///
-/// The hint names the verb that WOULD leave a copy: a rollback undoes a
-/// displacement, so a unit nothing has displaced has nothing to undo, and the
-/// reader's next move is the restore itself rather than another rollback.
+/// The hint never instructs the destructive write that would create a copy —
+/// an operator with nothing to undo is not told to overwrite live data on
+/// the strength of a rollback error. It states how a copy comes to exist and
+/// points at the read-only surface that shows its snapshots.
 fn no_rollback_copy_error(name: &str, source: &Path) -> anyhow::Error {
-    let hint = format!("restore first with `cfgd backup restore {name}`");
+    let hint = format!("{ROLLBACK_COPY_ORIGIN}; see `cfgd backup list {name}` for its snapshots");
     cli_error_ctx_with_hints(
         cfgd_core::errors::CfgdError::Backup(cfgd_core::errors::BackupError::NoRollbackCopy {
             name: name.to_string(),
@@ -570,9 +577,7 @@ pub fn build_backup_rollback_list_doc(entries: &[BackupRollbackEntry], now: &str
 
     if entries.is_empty() {
         doc = doc.status(Role::Info, "Nothing to roll back");
-        doc = doc.hint(
-            "A copy is left beside a source by `cfgd backup restore <name>`, and by any file `cfgd apply` adopts",
-        );
+        doc = doc.hint(ROLLBACK_COPY_ORIGIN);
         return doc.with_data(entries);
     }
 
@@ -723,7 +728,7 @@ pub fn run_backup_rollback(
         Some(started.elapsed()),
     );
     if outcome.is_clean() {
-        printer.hint(success_next_step(Mutation::BackupRolledBack));
+        printer.hint(success_next_step(Mutation::BackupRolledBack { unit: name }));
     }
 
     printer.emit(Doc::new().with_data(BackupRollbackOutput::from(&outcome)));

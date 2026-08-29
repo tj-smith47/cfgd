@@ -231,9 +231,12 @@ pub(in crate::cli) enum Mutation<'a> {
     /// just created, and never `cfgd apply`, which would undo it.
     RolledBack,
     /// `backup rollback` put a unit's pre-restore contents back over its
-    /// source. It moves the machine the same direction `RolledBack` does — away
-    /// from what a restore had just written — so it reads the same divergence.
-    BackupRolledBack,
+    /// source, and what it put back was held only by the sidecar the
+    /// rollback's own safety copy just displaced — `cfgd diff` never reaches
+    /// `spec.backups[].source`, so it reports nothing about the unit, and the
+    /// rollback stays recoverable only until something else displaces that
+    /// sidecar. `unit` is the `spec.backups[]` name to snapshot.
+    BackupRolledBack { unit: &'a str },
 }
 
 /// The next step a mutating `source`, `module`, `profile`, `secret` or
@@ -279,8 +282,11 @@ pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> String {
         Mutation::SecretEncrypted => {
             "Reference it with `cfgd profile update <profile> --secret <file>:<target>`".to_string()
         }
-        Mutation::RolledBack | Mutation::BackupRolledBack => {
+        Mutation::RolledBack => {
             "Run `cfgd diff` to see how the machine now differs from your config".to_string()
+        }
+        Mutation::BackupRolledBack { unit } => {
+            format!("Run `cfgd backup run {unit}` to take a snapshot of what was just put back")
         }
         Mutation::ModuleCreated { name } => {
             format!("Add it to a profile with `cfgd profile update <profile> --module {name}`")

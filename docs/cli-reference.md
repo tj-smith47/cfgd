@@ -1959,10 +1959,12 @@ wrong snapshot. It runs through the same envelope: the unit's lock, the one `pre
 rule, including the safety copy: the contents it displaces are copied aside as their own sidecar
 first — symlinks inside a directory source included — so a rollback is itself reversible and a
 second one returns the source to where it started. A failed safety copy refuses the rollback
-before anything is written. One copy is retained per source: a new displacement prunes the older stamped
-sidecars cfgd itself wrote for that path, and nothing else in the directory. With no name it
-lists what it could put back and changes nothing; a unit with no copy beside its source is exit
-`6` with a `cfgd backup restore <name>` hint. See
+before anything is written. The primary `<source>.cfgd-backup` sidecar (the first displacement,
+never pruned) plus at most one stamped copy (the newest displacement) both survive; a new
+displacement prunes only the older stamped sidecars cfgd itself wrote for that path, and nothing
+else in the directory. With no name it lists what it could put back and changes nothing; a unit
+with no copy beside its source is exit `6`, pointed at `cfgd backup list <name>` for its snapshots
+rather than at the restore that would create one. See
 [Rolling back a restore](backups.md#rolling-back-a-restore).
 
 A unit that is already running elsewhere (the daemon's timer, another `cfgd apply`) is refused
