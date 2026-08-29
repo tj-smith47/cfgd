@@ -226,6 +226,14 @@ pub struct DeclaredProvision {
 /// cfgd's own scaffolding is journalled, never managed.
 pub(super) const MANAGER_RESOURCE_TYPE: &str = "manager";
 
+/// The `resource_type` every surface cfgd authors on its OWN behalf is
+/// recorded under — the generated env file, the rc source line, the
+/// live-session publish. Named beside its sibling above because two crates
+/// match on it: the apply that resolves an env row's per-item drift, and
+/// `cfgd status`'s Managed Resources table, which reads it to give those rows
+/// the `cfgd:` owner the plan and apply trees head them with.
+pub const ENV_RESOURCE_TYPE: &str = "env";
+
 fn refresh_id(manager: &str) -> String {
     format!("refresh:{manager}")
 }
@@ -723,10 +731,18 @@ impl Owner {
         }
     }
 
-    /// The `kind:name` string — the ONE constructor of it. Plain text; styling
-    /// belongs to the renderer, never to a caller.
+    /// This owner as the renderer's own tri-colour token — the ONE composition
+    /// of one, so a heading, a table cell and a serialized token cannot come
+    /// out as three spellings of the same owner.
+    pub fn label(&self) -> crate::output::OwnerLabel {
+        crate::output::OwnerLabel::new(self.kind.as_str(), self.name.as_str())
+    }
+
+    /// The `kind:name` string — the ONE constructor of it, and the uncoloured
+    /// half of [`Owner::label`]. Plain text; styling belongs to the renderer,
+    /// never to a caller.
     pub fn token(&self) -> String {
-        format!("{}:{}", self.kind.as_str(), self.name)
+        self.label().plain()
     }
 
     /// The ONE owner comparator: `Profile`(0) `Cfgd`(1) `Module`(2)

@@ -606,8 +606,7 @@ vocabulary the plan and apply trees head their groups with and `cfgd diff`
 reports drift under: `profile:<name>` for a resource the profile declared,
 `module:<name>` for one a module declared, and `cfgd:env` / `cfgd:session` for
 what cfgd manages on its own behalf (the generated env file and the rc source
-line; the live-session publish). A run that resolves no profile has no name to
-state, and its profile-declared rows read the bare kind word `profile`.
+line; the live-session publish).
 
 The rows are ordered by owner the way a plan or apply tree orders its groups:
 the profile first, then cfgd's own groups in the order they run, then the

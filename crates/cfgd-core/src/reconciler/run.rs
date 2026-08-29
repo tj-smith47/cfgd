@@ -933,7 +933,7 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
     for (phase, groups) in in_scope_tree(plan, filter, PhaseCoverage::Rendered) {
         let phase_section = printer.section_phase(&phase.name.section_label());
         for (group, actions) in groups {
-            let label = OwnerLabel::new(group.owner.kind.as_str(), &group.owner.name);
+            let label = group.owner.label();
             let owner_section = phase_section.section_owner(&label);
             owner_section.live_column(width);
             for action in actions {
@@ -1022,7 +1022,7 @@ impl PseudoPhase<'_> {
     /// cannot buffer to find it.
     #[must_use = "the group closes when the SectionGuard is dropped; bind it"]
     pub fn owner(&self, owner: &Owner, width: usize) -> SectionGuard<'_> {
-        let label = OwnerLabel::new(owner.kind.as_str(), &owner.name);
+        let label = owner.label();
         let group = match &self.section {
             Some(section) => section.section_owner(&label),
             None => self.printer.section_owner(&label),
