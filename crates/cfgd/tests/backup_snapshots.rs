@@ -22,7 +22,8 @@
 //!     nothing has been displaced.
 //!   - `backup/rollback_no_copy.{txt,json}` — `cfgd backup rollback docs` on a
 //!     unit with no copy beside its source: the typed `no_rollback_copy` error
-//!     and its `cfgd backup restore` hint, in both channels.
+//!     and its read-only-surface hint (`cfgd backup list <name>`, never the
+//!     destructive restore), in both channels.
 //!   - apply integration (no goldens; behavioural assertions): a schedule-less
 //!     backup runs during `cfgd apply` even when the file/package/module plan
 //!     is empty, a `--dry-run` apply runs no backups, a scheduled backup is
@@ -777,8 +778,15 @@ fn backup_rollback_without_a_copy_is_a_typed_refusal() {
     assert!(
         meta.hints
             .iter()
-            .any(|h| h.contains("cfgd backup restore docs")),
-        "the remedy names the verb that leaves a copy: {meta:?}"
+            .any(|h| h.contains("cfgd backup restore <name>") && !h.contains("restore docs")),
+        "the hint states how a copy comes to exist without instructing the destructive write \
+         that would create one: {meta:?}"
+    );
+    assert!(
+        meta.hints
+            .iter()
+            .any(|h| h.contains("cfgd backup list docs")),
+        "the hint points at the read-only surface that shows this unit's snapshots: {meta:?}"
     );
     assert_eq!(
         std::fs::read_to_string(&source).unwrap(),

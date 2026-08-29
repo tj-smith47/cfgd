@@ -16211,7 +16211,10 @@ fn every_composed_next_step_names_a_command() {
         (Mutation::SecretEncrypted, &["cfgd secret encrypt"]),
         (Mutation::SecretEdited, &["cfgd secret edit"]),
         (Mutation::RolledBack, &["cfgd rollback"]),
-        (Mutation::BackupRolledBack, &["cfgd backup rollback"]),
+        (
+            Mutation::BackupRolledBack { unit: "notes" },
+            &["cfgd backup rollback"],
+        ),
     ];
     let source = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
@@ -29965,6 +29968,16 @@ fn every_owner_label_of_a_held_owner_comes_from_owner_label() {
         compositions(split).len(),
         1,
         "the join no longer reaches a three-line split"
+    );
+
+    // A receiver-chain break: `self` sits alone on the line after the call,
+    // and `.kind` lands two lines below it — a join that only reaches n+1
+    // would miss this shape even though it caught `split` above.
+    let chain_break = "        crate::output::OwnerLabel::new(\n            self\n                .kind.as_str(),\n            self.name.as_str(),\n        )\n";
+    assert_eq!(
+        compositions(chain_break).len(),
+        1,
+        "the join no longer reaches a receiver-chain break two lines below the call"
     );
 
     let mut checked: Vec<String> = Vec::new();
