@@ -29008,7 +29008,7 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
         for line in script.update.iter().chain(std::iter::once(&script.install)) {
             assert!(
                 !line.starts_with("sudo"),
-                "`module export` composes a script for a root container build:                  {family} emitted `{line}`"
+                "`module export` composes a script for a root container build: {family} emitted `{line}`"
             );
         }
     }

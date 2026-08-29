@@ -183,16 +183,20 @@ begin_test "BK18: rollback --yes puts the sidecar copy back over the source"
 RB_COPY=$(cat "$BK_SRC.cfgd-backup")
 RB_DISPLACED=$(cat "$BK_SRC")
 SNAP_COUNT_BEFORE=$(ls "$SNAP_DIR" | wc -l)
+# Both cells assert a swap, so equal fixture values would let a rollback that
+# moved nothing pass either one.
 run $BC backup rollback notes --yes
-if assert_ok && [ "$(cat "$BK_SRC")" = "$RB_COPY" ] \
+if assert_ok && [ "$RB_COPY" != "$RB_DISPLACED" ] \
+    && [ "$(cat "$BK_SRC")" = "$RB_COPY" ] \
     && [ "$(ls "$SNAP_DIR" | wc -l)" -eq "$SNAP_COUNT_BEFORE" ]; then
     pass_test "BK18"
-else fail_test "BK18" "content=$(cat "$BK_SRC"), expected=$RB_COPY"; fi
+else fail_test "BK18" "content=$(cat "$BK_SRC"), expected=$RB_COPY, displaced=$RB_DISPLACED"; fi
 
 begin_test "BK19: a second rollback undoes the first"
 run $BC backup rollback notes --yes
-if assert_ok && [ "$(cat "$BK_SRC")" = "$RB_DISPLACED" ]; then
+if assert_ok && [ "$RB_COPY" != "$RB_DISPLACED" ] \
+    && [ "$(cat "$BK_SRC")" = "$RB_DISPLACED" ]; then
     pass_test "BK19"
-else fail_test "BK19" "content=$(cat "$BK_SRC"), expected=$RB_DISPLACED"; fi
+else fail_test "BK19" "content=$(cat "$BK_SRC"), expected=$RB_DISPLACED, copy=$RB_COPY"; fi
 
 print_summary "Backup"
