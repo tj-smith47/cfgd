@@ -623,18 +623,25 @@ Managed Resources
 ```
 
 The default module report is a summary: one count per declared surface, then
-what the scan found. `Scripts` is the total, broken down one indented row per
-hook in the order the hooks run, so a module's `preApply` work is
-distinguishable from its `postApply` work without opening the module:
+what the scan found. `Status` and `Scope` lead the block: `Scope` names what
+the run that last touched this module was scoped to, in the same tri-colour
+`kind:name` token the apply tree and the Managed Resources Owner column use,
+and is absent when that run applied a whole profile. `Shell` is the total of
+the module's declared aliases and env vars, broken down one indented row per
+half; `Scripts` is the total, broken down one indented row per hook in the
+order the hooks run, so a module's `preApply` work is distinguishable from its
+`postApply` work without opening the module:
 
 ```
 Status: nvim
   Status        Drifted
+  Scope         module:nvim
   Last Applied  3h ago
   Packages      27
   Files         6
-  Env           3
-  Aliases       3
+  Shell         6
+    Aliases     3
+    Env         3
   Scripts       9
     preApply    3
     postApply   6
@@ -678,6 +685,7 @@ row for the thing it was found on:
 ```
 Status: nvim
   Status        Drifted
+  Scope         module:nvim
   Last Applied  3h ago
 
 Installed Packages
@@ -689,20 +697,22 @@ Deployed Files
   ⚠ /home/tj/.config/nvim/stylua.toml — content differs
   ✗ /home/tj/.gitconfig               — missing
 
-Env
-  ✓ EDITOR
-  ✓ PAGER
-
-Aliases
-  ✓ gs
+Shell
+  Aliases
+    ✓ gs
+  Env
+    ✓ EDITOR
+    ✓ PAGER
 
 Scripts
   ✓ preApply: set -euo pipefail …
   ✓ postApply: nvim --headless '+Lazy! sync' +qa
 ```
 
-Packages, files, env and aliases list alphabetically; scripts stay in
-execution order, because that order is the fact. `--show-values` renders the
+Packages, files, aliases and env vars list alphabetically; scripts stay in
+execution order, because that order is the fact. Aliases precede env vars
+wherever the pair is named — the counts, these inventories, `cfgd module
+show`'s sections and `-o json`'s field order alike. `--show-values` renders the
 same inventories with each declared value (`EDITOR="nvim"`, quoted the way the
 generated env file writes it) and each script's whole body instead of its
 condensed first line, and implies `-o wide`.

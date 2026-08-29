@@ -541,7 +541,7 @@ fn review_entry(section: &SectionGuard<'_>, role: Option<Role>, prefix: &str, bo
 
 /// Print the module-review summary shown before the user confirms an
 /// `add` or `upgrade`: commit + integrity, dependencies, packages, files,
-/// environment, aliases, then post-apply script warnings. Split out so the
+/// aliases, environment, then post-apply script warnings. Split out so the
 /// side-effect-free output shape is testable against a captured Printer buffer
 /// without running the full cmd_module_add_remote orchestration.
 pub(super) fn print_module_review_summary(
@@ -611,13 +611,8 @@ pub(super) fn print_module_review_summary(
     // Env values and alias commands reach the user's login shell on every new
     // shell, so they belong on the same review surface as a post-apply script.
     // Rendered in full: a truncated value is exactly where a payload hides.
-    if !module.spec.env.is_empty() {
-        let env_sec = mod_sec.section("Environment");
-        for ev in &module.spec.env {
-            review_entry(&env_sec, None, "", &format!("{}={}", ev.name, ev.value));
-        }
-    }
-
+    // Aliases lead the pair, the order every surface naming both renders them
+    // in.
     if !module.spec.aliases.is_empty() {
         let alias_sec = mod_sec.section("Aliases");
         for alias in &module.spec.aliases {
@@ -627,6 +622,13 @@ pub(super) fn print_module_review_summary(
                 "",
                 &format!("{}={}", alias.name, alias.command),
             );
+        }
+    }
+
+    if !module.spec.env.is_empty() {
+        let env_sec = mod_sec.section("Environment");
+        for ev in &module.spec.env {
+            review_entry(&env_sec, None, "", &format!("{}={}", ev.name, ev.value));
         }
     }
 

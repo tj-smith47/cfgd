@@ -12,11 +12,11 @@ Deployed Files
   ⚠ /home/user/.zshrc                — content differs
 
 Shell
+  Aliases
+    ✓ gs
   Env
     ✓ EDITOR
     ✓ PAGER
-  Aliases
-    ✓ gs
 
 Scripts
   ✓ preApply: set -euo pipefail …

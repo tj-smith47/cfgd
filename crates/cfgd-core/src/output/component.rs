@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::Role;
+use super::{OwnerLabel, Role};
 
 /// A node in a Doc's component tree. Streaming output does not produce these
 /// (it pushes directly to the renderer); only `Doc` and `SectionBuilder` do.
@@ -181,6 +181,19 @@ pub struct KvPair {
     /// payload field (`docsUrl`), never through the display row.
     #[serde(skip)]
     pub link: Option<String>,
+    /// The owner tokens this row's VALUE is made of, painted by the renderer
+    /// through [`OwnerLabel`]'s three slots rather than the value's own single
+    /// coat — so a `kind:name` in a kv value reads exactly as the apply tree's
+    /// group heading and the Managed Resources Owner column render it.
+    ///
+    /// Renderer-owned for the same reason `value_role` is: the renderer folds
+    /// every value through [`crate::output::cursor_safe`], which would eat a
+    /// caller's own SGR, so the token can only be painted after the fold.
+    ///
+    /// Never serialized — `value` carries the plain `kind:name` list, which is
+    /// what a `-o json` reader and every colourless path already see.
+    #[serde(skip)]
+    pub owners: Vec<OwnerLabel>,
 }
 
 impl KvPair {
@@ -192,6 +205,7 @@ impl KvPair {
             value_role: None,
             nested: false,
             link: None,
+            owners: Vec::new(),
         }
     }
 
@@ -239,7 +253,32 @@ impl KvPair {
             ..Self::new(k, v)
         }
     }
+
+    /// A pair whose value is one or more owner tokens (`Scope  module:nvim`),
+    /// each painted through [`OwnerLabel`]'s three slots by the renderer.
+    ///
+    /// Several owners join with `, `, the same separator the recorded scope of
+    /// a multi-module run is stored with, so the row reads as one list.
+    pub fn owner_valued(
+        k: impl Into<String>,
+        owners: impl IntoIterator<Item = OwnerLabel>,
+    ) -> Self {
+        let owners: Vec<OwnerLabel> = owners.into_iter().collect();
+        let value = owners
+            .iter()
+            .map(OwnerLabel::plain)
+            .collect::<Vec<_>>()
+            .join(OWNER_VALUE_SEPARATOR);
+        Self {
+            owners,
+            ..Self::new(k, value)
+        }
+    }
 }
+
+/// What joins several owner tokens inside one kv value, in the plain form and
+/// in the painted one alike.
+pub(crate) const OWNER_VALUE_SEPARATOR: &str = ", ";
 
 /// The `Config` and `Profile` header rows — the ONE builder for the two facts
 /// every surface reporting ON a machine's configuration opens with.

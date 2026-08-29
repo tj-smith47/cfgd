@@ -22,13 +22,13 @@ Files
   git@example.com:org/dotfiles.git//tmux.conf (git)
     ~/.tmux.conf
 
-Env
-  EDITOR    ***vim
-  GH_TOKEN  ***lue
-
 Aliases
   gs  git status
   ll  ls -la
+
+Env
+  EDITOR    ***vim
+  GH_TOKEN  ***lue
 
 Scripts
   ◉ preApply: mkdir -p ~/.config/dev-tools

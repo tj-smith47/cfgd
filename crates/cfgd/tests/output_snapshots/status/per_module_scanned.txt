@@ -4,8 +4,8 @@ Status: dev-tools
   Packages      2
   Files         12
   Shell         3
-    Env         2
     Aliases     1
+    Env         2
   Scripts       3
     preApply    1
     postApply   2

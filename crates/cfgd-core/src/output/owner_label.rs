@@ -10,7 +10,7 @@ use super::{Role, Theme};
 
 /// A `<kind>:<name>` owner token. `plain` is the uncoloured form every
 /// structured, quiet and colour-disabled path renders.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct OwnerLabel {
     kind: String,
     name: String,
