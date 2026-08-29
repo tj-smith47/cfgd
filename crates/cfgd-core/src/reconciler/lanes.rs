@@ -77,7 +77,8 @@ use crate::providers::{ActionNote, NoteSink, PackageAction, PackageStateStore, P
 
 use super::apply::ActionOutcome;
 use super::format::{
-    action_display_subject_within, format_action_description, parse_resource_from_description,
+    action_display_head, action_display_subject_within, format_action_description,
+    parse_resource_from_description,
 };
 use super::live_tree::{Held, PhaseTree, Wait};
 use super::packages::{ModuleInstallContext, PackageExec, action_manager};
@@ -292,8 +293,8 @@ struct Slot<'p> {
 /// family LANE for any other reason depends on nothing the occupant produces;
 /// it is next in line for the lane the occupant is in: `queued behind <row>`
 /// (`brew-cask install firefox` behind `brew install neovim`). Reading the
-/// mechanism instead had `brew install gum — queued behind brew-tap install
-/// charmbracelet/tap` deny the one dependency the tap exists to satisfy.
+/// mechanism instead had `brew install gum — queued behind brew-tap install`
+/// deny the one dependency the tap exists to satisfy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Hold<'a> {
     /// A DAG edge or tier barrier the row has not cleared, named by the row
@@ -589,6 +590,18 @@ fn node_subject(action: &Action, budget: Option<usize>) -> Option<String> {
     }
 }
 
+/// What a wait line calls the row in its way.
+///
+/// A blocker with an operand list is named by its HEAD
+/// ([`action_display_head`]): the row it points at is on the same screen with
+/// every operand spelled out, so a reason repeating them puts one install's
+/// package list on two rows. Every other shape's subject is already its own
+/// head.
+fn blocker_subject(action: &Action, budget: Option<usize>) -> String {
+    action_display_head(action)
+        .unwrap_or_else(|| action_display_subject_within(action, budget).to_string())
+}
+
 /// Every wait reason a phase holding `actions` can put on a row, worded as
 /// the dispatcher would word it — and no other. A reason names a DAG node
 /// some other action of the phase depends on (`waiting on <node>`,
@@ -617,8 +630,7 @@ pub(super) fn phase_wait_reasons(actions: &[&Action], budget: Option<usize>) -> 
                 .enumerate()
                 .any(|(other_at, other)| other_at != at && action_lane(other) == Some(lane))
         {
-            let subject = action_display_subject_within(action, budget).to_string();
-            reasons.push(wait_reason(Hold::Lane(&subject)));
+            reasons.push(wait_reason(Hold::Lane(&blocker_subject(action, budget))));
         }
     }
     reasons
@@ -641,13 +653,13 @@ fn lane_occupant<'s, 'p>(slots: &'s [Slot<'p>], lane: &str) -> Option<&'s Slot<'
 
 /// The wait reason for a row held by its family lane: [`Hold::Source`] when
 /// the occupant is the family's source registration, [`Hold::Lane`]
-/// otherwise. Named by the occupant's display subject for the same reason
-/// [`node_subject`] is; the bare lane name is the fallback when no row
-/// occupies it.
+/// otherwise. Named by [`blocker_subject`] for the same reason
+/// [`node_subject`] narrows a prerequisite; the bare lane name is the
+/// fallback when no row occupies it.
 fn lane_hold_reason(slots: &[Slot<'_>], lane: &str, budget: Option<usize>) -> String {
     match lane_occupant(slots, lane) {
         Some(occupant) => {
-            let name = action_display_subject_within(occupant.action, budget).to_string();
+            let name = blocker_subject(occupant.action, budget);
             if occupant.registers_sources {
                 wait_reason(Hold::Source(&name))
             } else {
@@ -1648,8 +1660,8 @@ mod tests {
         assert_eq!(
             reasons,
             vec![
-                "queued behind brew install gum".to_string(),
-                "queued behind brew-tap install charmbracelet/tap".to_string(),
+                "queued behind brew install".to_string(),
+                "queued behind brew-tap install".to_string(),
             ]
         );
     }
@@ -1835,8 +1847,8 @@ mod tests {
 
     /// A row held by its family LANE is not waiting for the occupant to
     /// produce anything; it is queued for the lane the occupant is in. Read
-    /// with one verb, `brew install neovim — waiting on brew-tap install
-    /// acme/tools` claimed a dependency no edge declared. Each hold kind is
+    /// with one verb, `brew install neovim — waiting on brew-tap install`
+    /// claimed a dependency no edge declared. Each hold kind is
     /// bound without a wildcard, so a new one is worded before this compiles.
     #[test]
     fn every_hold_kind_carries_its_own_wording() {
@@ -1876,7 +1888,7 @@ mod tests {
         let tap = install("brew-tap", "charmbracelet/tap");
         let expected = (
             "module:nvim".to_string(),
-            "brew install gum — waiting on brew-tap install charmbracelet/tap".to_string(),
+            "brew install gum — waiting on brew-tap install".to_string(),
         );
 
         let mut slots = vec![
@@ -1911,7 +1923,7 @@ mod tests {
         let turn = held(&unrelated, &groups, &HashMap::new(), &busy(&["brew"]));
         assert_eq!(
             lines(&turn),
-            vec!["brew-cask install firefox — queued behind brew install neovim"],
+            vec!["brew-cask install firefox — queued behind brew install"],
             "a lane turn behind unrelated work is not a dependency"
         );
     }
@@ -2158,7 +2170,7 @@ mod tests {
         assert!(
             rows(&held).contains(&(
                 "module:nvim".to_string(),
-                "brew install neovim — waiting on brew-tap install acme/tools".to_string()
+                "brew install neovim — waiting on brew-tap install".to_string()
             )),
             "a source-held install names the tap holding its family's lane: {:?}",
             rows(&held)
@@ -2193,7 +2205,7 @@ mod tests {
         assert!(
             rows(&held).contains(&(
                 "profile:work".to_string(),
-                "brew-tap install acme/tools — queued behind brew install neovim".to_string()
+                "brew-tap install acme/tools — queued behind brew install".to_string()
             )),
             "the tier filter does not hide a barrier-crossing tap: {:?}",
             rows(&held)
@@ -2238,7 +2250,7 @@ mod tests {
             rows(&held),
             vec![(
                 "module:nvim".to_string(),
-                "apt install git — queued behind apt install tmux".to_string()
+                "apt install git — queued behind apt install".to_string()
             )]
         );
     }
@@ -2261,7 +2273,7 @@ mod tests {
 
         assert_eq!(
             lines(&held),
-            vec!["brew-cask install firefox — queued behind brew install neovim"]
+            vec!["brew-cask install firefox — queued behind brew install"]
         );
     }
 
@@ -2295,9 +2307,9 @@ mod tests {
         assert_eq!(
             lines(&held),
             vec![
-                "brew-tap install homebrew/cask-fonts — queued behind brew install neovim",
-                "brew-cask install firefox — queued behind brew install neovim",
-                "apt install git — queued behind apt install tmux",
+                "brew-tap install homebrew/cask-fonts — queued behind brew install",
+                "brew-cask install firefox — queued behind brew install",
+                "apt install git — queued behind apt install",
             ]
         );
     }
@@ -2595,7 +2607,7 @@ mod tests {
 
         assert_eq!(
             lines(&held(&slots, &groups, &deps, &busy(&["apt"]))),
-            vec!["apt install git — queued behind apt install tmux"]
+            vec!["apt install git — queued behind apt install"]
         );
 
         slots[0].state = SlotState::Done;

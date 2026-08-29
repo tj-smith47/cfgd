@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 use indicatif::{ProgressBar as IndProgressBar, ProgressStyle};
 
+use super::renderer::status::GLYPH_PREFIX_WIDTH;
 use super::renderer::{
     LiveBarGuard, Renderer, StatusFields, Writer, finalize_subject, indent_prefix, wrap,
 };
@@ -91,8 +92,8 @@ impl<'p> LiveRow<'p> {
         let padded =
             self.renderer
                 .padded_for_column(self.sink.as_ref(), self.depth, fields, column);
-        let (line, tails) = match &padded {
-            Some(subject) => self.renderer.compose_status(&StatusFields {
+        let (line, trailer, tails) = match &padded {
+            Some(subject) => self.renderer.compose_status_split(&StatusFields {
                 role: fields.role,
                 subject,
                 detail: fields.detail,
@@ -101,23 +102,37 @@ impl<'p> LiveRow<'p> {
                 subject_style: fields.subject_style.clone(),
                 detail_style: fields.detail_style.clone(),
             }),
-            None => self.renderer.compose_status(fields),
+            None => self.renderer.compose_status_split(fields),
         };
-        // The row is repainted in place, so its own line cannot reach a second
-        // row and is clamped — at the COMPLETE-line budget the alignment
-        // ceiling padded it to, not at the narrower wrapped-body width. The
-        // continuation lines below it are separate rows of the same repaint
-        // and are clamped at their own indent.
-        let width = wrap::line_width(self.sink.as_ref(), self.depth);
-        let indent = indent_prefix(self.depth + 1);
-        let mut message = wrap::clamp_at_token(&line, width);
+        // A subject names every package and every file its action touches, so
+        // a repaint lays the line out exactly as the permanent line does —
+        // wrapped under its own hang, the duration anchored at the group's
+        // column — rather than cutting the row a reader is watching. indicatif
+        // supplies this row's indent through the bar's `{prefix}`, so the
+        // widths and the trailer column are measured from the margin and every
+        // row after the first carries the indent itself.
+        let indent = indent_prefix(self.depth);
+        let cols = |depth: usize| {
+            self.sink
+                .wrap_columns()
+                .map(|cols| wrap::line_budget(cols, depth))
+        };
+        let trailer_column = (column > 0).then_some(GLYPH_PREFIX_WIDTH + column);
+        let mut message = wrap::wrap_body_with_trailer(
+            &line,
+            "",
+            cols(self.depth),
+            trailer.as_deref(),
+            trailer_column,
+        )
+        .join(&format!("\n{indent}"));
+        let tail_indent = indent_prefix(self.depth + 1);
         for tail in &tails {
-            message.push('\n');
-            message.push_str(&indent);
-            message.push_str(&wrap::clamp_at_token(
-                tail,
-                wrap::line_width(self.sink.as_ref(), self.depth + 1),
-            ));
+            for physical in wrap::wrap_body(tail, "", cols(self.depth + 1)) {
+                message.push('\n');
+                message.push_str(&tail_indent);
+                message.push_str(&physical);
+            }
         }
         self.bar.disable_steady_tick();
         self.bar.set_style(plain_style());
@@ -132,6 +147,20 @@ impl<'p> LiveRow<'p> {
     /// outlives it and settles the line itself.
     pub(crate) fn window(&self, subject: impl Into<String>) -> OutputWindow<'p> {
         let subject = super::spinner::compose_in_flight_subject(&self.renderer.theme, subject);
+        // A running row names every package and every file its action touches,
+        // so a label wider than the line is laid out as rows of its own rather
+        // than cut: indicatif rewinds the rows a message DECLARES, and it is a
+        // hard wrap it cannot see that strands one. The continuation rows
+        // carry the indent themselves — the bar's `{prefix}` reaches only the
+        // first — exactly as the window's own tail lines below them do.
+        let subject = wrap::wrap_body(
+            &subject,
+            "",
+            self.sink
+                .wrap_columns()
+                .map(|_| wrap::available_width(self.sink.as_ref(), self.depth)),
+        )
+        .join(&format!("\n{}", indent_prefix(self.depth)));
         if !self.bar.is_hidden() {
             self.bar.set_style(super::spinner::spinner_style(
                 &self.renderer,

@@ -1570,11 +1570,13 @@ mod tests {
 
     /// On a terminal too narrow for the padded subject AND the wait reason
     /// beside it, the report claims no column (the live twin of the buffered
-    /// path's retreat) and the row that still overflows is cut after a whole
-    /// token. Both hold kinds, because each words the reason differently and
-    /// the cut lands in different words.
+    /// path's retreat) and the row that still overflows WRAPS under its own
+    /// hang — a repaint lays a row out exactly as the permanent line does, so
+    /// nothing a reader is watching is cut away. Both hold kinds, because
+    /// each words the reason differently and the break lands in different
+    /// words.
     #[test]
-    fn a_wait_row_on_a_narrow_terminal_retreats_its_column_and_is_cut_at_a_token() {
+    fn a_wait_row_on_a_narrow_terminal_retreats_its_column_and_wraps_its_reason() {
         for reason in [
             "queued behind provision brew via homebrew-installer",
             "waiting on provision brew via homebrew-installer",
@@ -1599,32 +1601,77 @@ mod tests {
                 pending_owners: vec![managers.token()],
             });
             let held = screen.contents();
-            let row = held
-                .lines()
-                .find(|line| line.contains("brew install gum"))
-                .unwrap_or_else(|| panic!("the wait row is on screen: {held}"))
-                .trim()
-                .to_string();
+            let lines: Vec<&str> = held.lines().collect();
+            let at = lines
+                .iter()
+                .position(|line| line.contains("brew install gum"))
+                .unwrap_or_else(|| panic!("the wait row is on screen: {held}"));
             assert!(
-                row.contains("brew install gum — "),
-                "the column retreated rather than pad the reason off the line: {row:?}"
+                lines[at].contains("brew install gum — "),
+                "the column retreated rather than pad the reason off the line: {:?}",
+                lines[at]
             );
-            let kept = row
-                .strip_suffix('…')
-                .unwrap_or_else(|| panic!("a 44-column terminal cuts this row: {row:?}"));
-            let full = format!("○ brew install gum — {reason}");
             assert!(
-                full.starts_with(kept),
-                "the cut keeps a prefix of the row: {row:?}"
+                !held.contains('…'),
+                "a wait row wraps rather than losing the reason it was given: {held}"
             );
-            let next = full[kept.len()..].chars().next();
+            // Every physical row the wrap took, read back as the one line it
+            // lays out: a break falls on a space, so the rows rejoin on one.
+            let painted = lines[at..]
+                .iter()
+                .map(|line| line.trim())
+                .take_while(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
             assert!(
-                matches!(next, Some(' ' | ',' | '/')),
-                "the cut lands after a whole token, never inside one: {row:?}"
+                painted.starts_with(&format!("○ brew install gum — {reason}")),
+                "the wrapped row names the whole reason: {painted:?}"
             );
             drop(tree);
             drop(section);
         }
+    }
+
+    /// A RUNNING row names every package it is installing, on a terminal no
+    /// single physical row could hold them on. The row a reader watches is
+    /// the one the recording shows, so a label cut there generalizes what
+    /// cfgd is about to install exactly as a cut plan row would.
+    #[test]
+    fn a_running_row_names_every_operand_at_eighty_columns() {
+        let packages = [
+            "neovim",
+            "fd-find",
+            "ripgrep",
+            "zoxide",
+            "lazygit",
+            "stylua",
+            "wl-clipboard",
+            "xclip",
+        ];
+        let (printer, screen) = Printer::for_test_live_terminal(24, 80);
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let action = Action::Package(PackageAction::Install {
+            manager: "apt".to_string(),
+            packages: packages.iter().map(|p| (*p).to_string()).collect(),
+            origin: "local".to_string(),
+        });
+        let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30);
+        let running = tree.dispatched(&managers, &action);
+        let shown = screen.contents();
+        for package in packages {
+            assert!(
+                shown.contains(package),
+                "the running row names {package}: {shown}"
+            );
+        }
+        assert!(
+            !shown.contains('…'),
+            "a running row wraps rather than cutting its operand list: {shown}"
+        );
+        running.finish();
+        drop(tree);
+        drop(section);
     }
 
     #[test]

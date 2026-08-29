@@ -152,10 +152,9 @@ pub(crate) fn compose_status(theme: &Theme, f: &StatusFields<'_>) -> (String, Ve
 
 /// The styled ` (12.1s)` suffix [`compose_status`] appends when `f.duration`
 /// is `Some` — the ONE formatting of it, so the full single-string
-/// composition (read by [`affordable_column`] and `live_row.rs`'s
-/// single-line live-paint clamp, which never wraps) and the split
-/// composition below (read by the wrapped multi-line commit path) can never
-/// render different bytes for the same duration.
+/// composition (read by [`affordable_column`]) and the split composition
+/// below (read by every wrapped multi-line path, the live repaint included)
+/// can never render different bytes for the same duration.
 ///
 /// Every duration slot on screen composes here — an action row's suffix, a
 /// spinner's settled line, the run rollup's total — so the floor below is the
@@ -481,9 +480,14 @@ impl Renderer {
         });
     }
 
-    /// [`compose_status`] against this renderer's theme.
-    pub(crate) fn compose_status(&self, f: &StatusFields<'_>) -> (String, Vec<String>) {
-        compose_status(&self.theme, f)
+    /// [`compose_status_split`] against this renderer's theme — the form
+    /// `live_row.rs` reaches, so a repainted row and the permanent line that
+    /// replaces it lay their duration out through one composition.
+    pub(crate) fn compose_status_split(
+        &self,
+        f: &StatusFields<'_>,
+    ) -> (String, Option<String>, Vec<String>) {
+        compose_status_split(&self.theme, f)
     }
 
     /// Emit a Warn-styled diagnostic line that is shown regardless of verbosity

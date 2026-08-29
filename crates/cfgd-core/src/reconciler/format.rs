@@ -255,8 +255,9 @@ pub fn condense_action_desc_for_display(action: &Action, desc: &str) -> String {
 }
 
 /// Whether `action`'s subject is built over an operand LIST — the shapes
-/// whose display subject folds the home directory while their wire string
-/// keeps the absolute path.
+/// whose display subject, not the raw description, is the row's authority:
+/// the one that folds the home directory in a deploy's targets while the wire
+/// string keeps the absolute path a script can `cat`.
 fn carries_operand_list(action: &Action) -> bool {
     matches!(
         action,
@@ -267,6 +268,38 @@ fn carries_operand_list(action: &Action) -> bool {
                 ..
             })
     )
+}
+
+/// What a row is CALLED on a line that names it as a blocker: its head, with
+/// the operand list left off.
+///
+/// A wait reason fills the BLOCKED row's detail slot, and the row it names is
+/// already on screen with every one of its operands spelled out. Restating
+/// them makes a neighbour's reason a second copy of that list — an eleven-name
+/// `queued behind apt install …` beside the eleven-name row it points at — so
+/// a blocker is named by the head a reader matches against the row they can
+/// see. `None` for a subject carrying no operand list, which is its own head
+/// already.
+pub(super) fn action_display_head(action: &Action) -> Option<String> {
+    match action {
+        Action::Package(PackageAction::Install { manager, .. }) => {
+            Some(format!("{manager} install"))
+        }
+        Action::Package(PackageAction::Uninstall { manager, .. }) => {
+            Some(format!("{manager} uninstall"))
+        }
+        Action::Module(ModuleAction {
+            kind: ModuleActionKind::InstallPackages { resolved },
+            ..
+        }) => resolved
+            .first()
+            .map(|pkg| format!("{} install", pkg.manager)),
+        Action::Module(ModuleAction {
+            kind: ModuleActionKind::DeployFiles { .. },
+            ..
+        }) => Some("deploy".to_string()),
+        _ => None,
+    }
 }
 
 /// An action's display subject, split at the marker the tree paints in its own
@@ -915,7 +948,7 @@ mod tests {
             unless: None,
             min_version: None,
         };
-        let names: Vec<String> = (0..12).map(|i| format!("operand-number-{i}")).collect();
+        let names: Vec<String> = (0..12).map(|i| format!("operand-{i:02}")).collect();
         let kinds = [
             ModuleActionKind::InstallPackages {
                 resolved: names
