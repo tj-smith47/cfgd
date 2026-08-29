@@ -1398,6 +1398,11 @@ pub fn normalize_for_snapshot(captured: &str, paths: &[(&std::path::Path, &str)]
     // lives under the home directory on Windows, so the fold rewrote the very
     // prefix the substitution was looking for and three goldens diverged there
     // alone.
+    //
+    // Both spellings land on the same label, so a golden cannot say which one
+    // a slot rendered: that claim belongs to
+    // `no_report_slot_spells_the_home_directory_absolutely`, which reads the
+    // display slots unnormalized.
     let mut subs: Vec<(String, &str)> = Vec::with_capacity(paths.len() * 2);
     for (path, label) in paths {
         let posix_path = to_posix_string(path);

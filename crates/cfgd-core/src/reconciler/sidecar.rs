@@ -112,8 +112,16 @@ pub fn backup_file(target: &Path) -> Result<SidecarOutcome> {
         // — and a link it drops is one the overlay that puts the tree back can
         // never replace, leaving the target as neither generation.
         let backup_path = reserve_backup_path(target, None)?;
-        crate::copy_dir_recursive_preserving_symlinks(target, &backup_path)
-            .map_err(|e| failed(target, format!("{e}")))?;
+        // The reservation hands back the PRIMARY name whenever it is free, and
+        // that name is the promise "this is what predated cfgd": it is never
+        // pruned, `rollback_copy` selects it, and `profile update` and module
+        // removal restore from it. A tree the copy abandoned partway would wear
+        // that name while holding less than the original, so the refusal takes
+        // it back down — best-effort, the copy's own error being what matters.
+        crate::copy_dir_recursive_preserving_symlinks(target, &backup_path).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&backup_path);
+            failed(target, format!("{e}"))
+        })?;
         prune_stamped_sidecars(target, &backup_path);
         return Ok(SidecarOutcome::new(backup_path, false));
     }
@@ -350,6 +358,27 @@ mod tests {
         // the action row that displaced the file.
         assert!(!written.reused, "a fresh copy is not a reused one");
         assert_eq!(written.detail(), format!("backed up to {}", backup.posix()),);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_directory_sidecar_leaves_nothing_wearing_the_primary_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("tree");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("a.txt"), "kept").unwrap();
+        // A socket is copyable by neither arm of the tree copy: opening one
+        // with `open(2)` fails, so the copy refuses partway through a tree it
+        // has already begun writing — the shape a Windows host without the
+        // symlink privilege takes on the first junction it meets.
+        std::os::unix::net::UnixListener::bind(target.join("sock")).unwrap();
+
+        super::backup_file(&target).expect_err("a tree the copy cannot finish is not a backup");
+
+        assert!(
+            !tmp.path().join("tree.cfgd-backup").exists(),
+            "a refused sidecar must leave nothing wearing the name of the complete original"
+        );
     }
 
     #[test]
