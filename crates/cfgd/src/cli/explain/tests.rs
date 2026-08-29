@@ -820,26 +820,6 @@ fn explain_points_every_kind_at_its_docs_page() {
     }
 }
 
-/// Every raw heading text in a doc file's body, in document order. Skips
-/// fenced code blocks, so a `#` inside a shell comment or a YAML key is
-/// never read as a heading.
-fn raw_headings(body: &str) -> Vec<String> {
-    let mut in_fence = false;
-    body.lines()
-        .filter_map(|line| {
-            if line.trim_start().starts_with("```") {
-                in_fence = !in_fence;
-                return None;
-            }
-            if in_fence {
-                return None;
-            }
-            line.strip_prefix('#')
-                .map(|h| h.trim_start_matches('#').trim().to_string())
-        })
-        .collect()
-}
-
 /// Every dotted path `resolve_field_path` can walk to in a field tree —
 /// children first, then a union's own variant children, exactly as
 /// `resolve_field_path` traverses — so the population this test drives
@@ -900,7 +880,7 @@ fn every_explain_docs_pointer_names_a_real_heading() {
                 let body = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| {
                     panic!("{schema_name} points at {rel}, which cannot be read: {e}")
                 });
-                raw_headings(&body)
+                doc_headings(&body).map(str::to_string).collect()
             })
             .as_slice()
     }
@@ -946,8 +926,16 @@ fn every_explain_docs_pointer_names_a_real_heading() {
     // words) in a doc file this walk visited must be reached by some field's
     // own pointer. A heading annotating a variant in prose
     // (`spec.theme (object form)`) carries a space and is not itself an
-    // addressable path, so it is exempt.
+    // addressable path, so it is exempt. A file no schema's `doc_body`
+    // embeds (`ConfigSource`'s `docs/sources.md`, the CRD `Module`'s
+    // `docs/operator.md`) is reached only by a kind-level pointer, never a
+    // field one, so no field pointer could EVER cover a `spec.*` heading
+    // there — the walk has nothing to hold that heading against and is
+    // exempt, not merely unable to find coverage today.
     for (rel, headings) in &headings_by_file {
+        if doc_body(rel).is_none() {
+            continue;
+        }
         let empty = std::collections::BTreeSet::new();
         let reached = reached_by_file.get(rel).unwrap_or(&empty);
         for heading in headings {

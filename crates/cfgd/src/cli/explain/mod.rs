@@ -69,17 +69,19 @@ impl ResourceSchema {
 /// back to the kind's own pointer.
 fn field_heading_anchor(schema: &ResourceSchema, field_path: &[&str]) -> Option<String> {
     let (rel, _) = schema.docs.split_once('#')?;
-    let body = doc_body(&schema.name)?;
+    let body = doc_body(rel)?;
     let wanted = github_anchor(&format!("spec.{}", field_path.join(".")));
     heading_anchors(body)
         .any(|a| a == wanted)
         .then(|| format!("{rel}#{wanted}"))
 }
 
-/// The compiled-in body of a kind's own `docs/spec/` page, keyed by the
-/// schema's display name — the only kinds a field heading can be found for;
-/// `ConfigSource` and the CRD `Module` (whose pointers name a different
-/// page) always fall back to their own kind-level pointer.
+/// The compiled-in body of a `docs/spec/` page, keyed by the SAME relative
+/// path `schema.docs` itself names (before its `#anchor`) — so a field
+/// heading is looked up in the exact file its kind's own pointer names,
+/// never a display-name lookup that could silently name a different one. A
+/// kind whose pointer names a page this table does not embed (`ConfigSource`,
+/// the CRD `Module` status page) falls back to its own kind-level pointer.
 ///
 /// Embedded from a crate-local fixture copy, not the workspace-root
 /// `docs/spec/` a reader clicks through to: `cargo package` builds this
@@ -89,34 +91,46 @@ fn field_heading_anchor(schema: &ResourceSchema, field_path: &[&str]) -> Option<
 /// `explain_docs_ground_truth.rs::embedded_doc_bodies_match_workspace_docs`,
 /// the same shape `cfgd-core`'s `skill_model` examples already use for the
 /// same reason.
-fn doc_body(schema_name: &str) -> Option<&'static str> {
-    match schema_name {
-        "Module" => Some(include_str!("../../../tests/fixtures/docs-spec/module.md")),
-        "Profile" => Some(include_str!("../../../tests/fixtures/docs-spec/profile.md")),
-        "Config" => Some(include_str!("../../../tests/fixtures/docs-spec/config.md")),
-        "MachineConfig" => Some(include_str!(
+fn doc_body(rel: &str) -> Option<&'static str> {
+    match rel {
+        // docs-pointer-ok: a match key equal to schema.docs's own path, not a rendered pointer.
+        "docs/spec/module.md" => Some(include_str!("../../../tests/fixtures/docs-spec/module.md")),
+        // docs-pointer-ok: match key, see the arm above.
+        "docs/spec/profile.md" => {
+            Some(include_str!("../../../tests/fixtures/docs-spec/profile.md"))
+        }
+        // docs-pointer-ok: match key, see the arm above.
+        "docs/spec/config.md" => Some(include_str!("../../../tests/fixtures/docs-spec/config.md")),
+        // docs-pointer-ok: match key, see the arm above.
+        "docs/spec/machineconfig.md" => Some(include_str!(
             "../../../tests/fixtures/docs-spec/machineconfig.md"
         )),
-        "ConfigPolicy" => Some(include_str!(
+        // docs-pointer-ok: match key, see the arm above.
+        "docs/spec/configpolicy.md" => Some(include_str!(
             "../../../tests/fixtures/docs-spec/configpolicy.md"
         )),
-        "ClusterConfigPolicy" => Some(include_str!(
+        // docs-pointer-ok: match key, see the arm above.
+        "docs/spec/clusterconfigpolicy.md" => Some(include_str!(
             "../../../tests/fixtures/docs-spec/clusterconfigpolicy.md"
         )),
-        "DriftAlert" => Some(include_str!(
+        // docs-pointer-ok: match key, see the arm above.
+        "docs/spec/driftalert.md" => Some(include_str!(
             "../../../tests/fixtures/docs-spec/driftalert.md"
         )),
-        "TeamConfig" => Some(include_str!(
+        // docs-pointer-ok: match key, see the arm above.
+        "docs/spec/teamconfig.md" => Some(include_str!(
             "../../../tests/fixtures/docs-spec/teamconfig.md"
         )),
         _ => None,
     }
 }
 
-/// Every heading's anchor in a doc page, in document order. Skips fenced
+/// Every raw heading text in a doc page, in document order. Skips fenced
 /// code blocks, so a `#` inside a shell comment or a YAML key is never read
-/// as a heading.
-fn heading_anchors(body: &str) -> impl Iterator<Item = String> + '_ {
+/// as a heading. The one heading walk: `heading_anchors` below and the
+/// ground-truth pin in `tests.rs` both read it rather than re-implementing
+/// the fence-skipping scan.
+fn doc_headings(body: &str) -> impl Iterator<Item = &str> + '_ {
     let mut in_fence = false;
     body.lines().filter_map(move |line| {
         if line.trim_start().starts_with("```") {
@@ -127,8 +141,13 @@ fn heading_anchors(body: &str) -> impl Iterator<Item = String> + '_ {
             return None;
         }
         line.strip_prefix('#')
-            .map(|h| github_anchor(h.trim_start_matches('#').trim()))
+            .map(|h| h.trim_start_matches('#').trim())
     })
+}
+
+/// Every heading's anchor in a doc page, in document order.
+fn heading_anchors(body: &str) -> impl Iterator<Item = String> + '_ {
+    doc_headings(body).map(github_anchor)
 }
 
 /// GitHub's own markdown heading slugification: lowercase, drop every
@@ -136,12 +155,14 @@ fn heading_anchors(body: &str) -> impl Iterator<Item = String> + '_ {
 /// to hyphens. `spec.env` and `spec.env[]` collide on the same anchor
 /// (`specenv`) because the dot and the brackets are both dropped, which is
 /// what lets a field's own dotted path double as its heading's anchor with
-/// no bracket bookkeeping at the call site.
+/// no bracket bookkeeping at the call site. "Letter" and "digit" are Unicode
+/// classes, matching GitHub's own algorithm, though every heading `explain`
+/// resolves today is ASCII.
 fn github_anchor(heading: &str) -> String {
     heading
         .to_lowercase()
         .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '-')
+        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
         .map(|c| if c == ' ' { '-' } else { c })
         .collect()
 }
