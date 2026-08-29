@@ -950,8 +950,9 @@ mod condense_script_label_tests {
     /// (`chars().take(`, `wrap::clamp(`, `clamp_line(`, `truncate_str(`)
     /// outside the cutters' own definitions, hatched with
     /// `// plain-clamp-ok: <why>` where the text is FOREIGN (a captured
-    /// child's line) or the width is a table column's. `elided_list` cuts
-    /// between whole operands and states `+N more`, so it uses none of them.
+    /// child's line) or the width is a table column's. An operand list is
+    /// never cut at all — a subject names every operand and wraps — so it
+    /// reaches none of them.
     fn on_boundary_text(body: &str, kept: &str) -> bool {
         body.starts_with(kept)
             && (kept.ends_with([' ', ',', '/']) || body[kept.len()..].starts_with([' ', ',', '/']))

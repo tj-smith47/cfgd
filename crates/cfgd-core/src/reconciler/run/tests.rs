@@ -1994,6 +1994,18 @@ fn row_prefix_width(line: &str) -> usize {
     line.len() - line.trim_start().len() + 2
 }
 
+/// Whether a rendered line OPENS a row: only a head carries the bullet or the
+/// role glyph, and only a head can land its trailing content in the report's
+/// column. A wrapped subject's continuation rows hang under the first word of
+/// the row they belong to and carry their detail inline, exactly as an
+/// unwrapped row too wide for the column does.
+fn is_row_head(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("- ")
+        || (trimmed.chars().next().is_some_and(|c| !c.is_ascii())
+            && trimmed.chars().nth(1) == Some(' '))
+}
+
 /// The width of a rendered row's subject alone — the head before ` — `, net
 /// of its prefix and of the padding a claim added.
 fn row_subject_width(line: &str) -> usize {
@@ -2203,19 +2215,18 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
     // detail to its own end.
     let dashes: Vec<(usize, String)> = shown
         .lines()
-        .filter(|l| l.contains(" — "))
+        .filter(|l| l.contains(" — ") && is_row_head(l))
         .map(|l| {
             let at = crate::output::measure_width(l.split_once(" — ").map_or("", |(head, _)| head));
             (at, l.to_string())
         })
         .collect();
     assert!(
-        dashes.len() >= 2,
-        "at least two detail-bearing rows rendered:\n{shown}"
+        !dashes.is_empty(),
+        "a detail-bearing row head rendered:\n{shown}"
     );
-    // The claim is the clamped width; a row whose subject is past it — the
-    // two-path deploy at the floor, the script label — glues its trailer
-    // inline, and every other row lands on the one column.
+    // The claim is the width the fitting subjects settled; a row whose subject
+    // is past it wraps, and carries its detail on its own last physical row.
     let column = width;
     for (at, line) in &dashes {
         if row_subject_width(line) > column {
@@ -2227,14 +2238,6 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
             "every em-dash of a row within the claim lands at one column:\n{shown}\n{line}"
         );
     }
-    assert!(
-        dashes
-            .iter()
-            .filter(|(_, l)| row_subject_width(l) <= column)
-            .count()
-            >= 2,
-        "at least two rows share the claimed column:\n{shown}"
-    );
     // The widest row IS the column; every narrower row is padded out to it.
     let padded = dashes
         .iter()
@@ -2244,33 +2247,49 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
         padded >= 1,
         "a narrower row is padded to the column, not glued to its own end:\n{shown}"
     );
-
-    // The subject FILLS the room the budget grants: at 128 columns the apt row
-    // names more than the floor's two packages, never more than the budget,
-    // and at `None` it names the floor alone.
-    let filled = shown
-        .lines()
-        .find(|l| l.contains("apt install"))
-        .unwrap_or_else(|| panic!("the apt row is on screen:\n{shown}"));
+    // The six-file deploy names every target and so wraps: its detail is on
+    // the LAST physical row of the row it belongs to, never stranded above a
+    // continuation carrying more of the subject.
+    let lines: Vec<&str> = shown.lines().collect();
+    let deploy_detail = lines
+        .iter()
+        .position(|l| l.contains("2 already deployed"))
+        .unwrap_or_else(|| panic!("the deploy row states what it left alone:\n{shown}"));
     assert!(
-        filled.contains("xclip"),
-        "the apt row fills to the budget rather than the floor: {filled:?}"
+        !is_row_head(lines[deploy_detail]),
+        "the deploy subject names six targets and wraps:\n{shown}"
     );
+    assert!(
+        lines
+            .get(deploy_detail + 1)
+            .is_none_or(|next| next.trim().is_empty() || is_row_head(next)),
+        "a wrapped row's detail closes it, on its own last physical row:\n{shown}"
+    );
+
+    // The subject NAMES every package, at this width and at no width at all:
+    // the eleven apt names are on screen across however many physical rows
+    // the wrap took, and the budget reaches none of them.
     let apt = plan.phases[1]
         .actions()
         .next()
         .expect("the packages phase holds the apt install");
-    let apt_subject = super::action_display_subject_within(apt, budget).to_string();
+    for named in ["unzip", "ripgrep", "xclip", "wl-clipboard", "gcc"] {
+        assert!(
+            shown.contains(named),
+            "the apt row names every package it installs, missing {named}:\n{shown}"
+        );
+        for read in [budget, None] {
+            assert!(
+                super::action_display_subject_within(apt, read)
+                    .to_string()
+                    .contains(named),
+                "no budget cuts an operand list: {named} missing at {read:?}"
+            );
+        }
+    }
     assert!(
-        crate::output::measure_width(&apt_subject)
-            <= budget.expect("an emulated screen has a width"),
-        "a filled subject never exceeds the budget: {apt_subject:?}"
-    );
-    assert!(
-        !super::action_display_subject_within(apt, None)
-            .to_string()
-            .contains("xclip"),
-        "a capture with no width names the floor alone"
+        !shown.contains(" more"),
+        "no row generalizes what it is about to install:\n{shown}"
     );
 
     // Home-folded on screen, absolute on the wire.
@@ -2288,41 +2307,44 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
     );
 }
 
-/// The report's column is claimed — and its subjects bounded — at EVERY
-/// width, including the demo's own 125, over every subject shape that can
-/// exceed the budget it is cut within.
+/// The report's column is claimed at EVERY width, including the demo's own
+/// 125, and every operand of every row reaches the screen.
 ///
 /// The 128-column pin above passed with one column of slack while the hero
-/// recorded at 125 columns had no column at all: the `deploy` floor and the
-/// script label are not bounded by the budget, so `report_align_width`
-/// answered 70 (then 77 with the script row) and the claim's `column +
-/// trailing <= line` test failed by two. Walked over widths, the invariant
-/// `report_align_width <= budget` holds by clamping, the claim is never 0,
-/// and every row within it shares one x. At 125 the rows also fill at least
-/// what they filled before the wait framing was reserved (four apt names,
-/// six brew names), since the budget widens by what this report's own
-/// allowance leaves rather than reserving the widest framing for every report.
+/// recorded at 125 columns had no column at all: a subject past the budget
+/// used to widen the claim, and the claim's `column + trailing <= line` test
+/// then failed by two. Priced over the rows whose subject occupies ONE
+/// physical row, the claim is never 0 and every row within it shares one x,
+/// while the rows that wrap — the eleven-package apt install, the nine-
+/// package brew install, the two-path deploy — name every operand they hold
+/// and land their trailing content on their own last physical row.
 #[test]
 fn the_reports_column_is_claimed_and_its_subjects_bounded_at_every_width() {
     let home = PathBuf::from("/home/tj");
     let _home = crate::with_test_home_guard(&home);
     let plan = hero_plan(&home);
-    let apt = plan.phases[1]
-        .actions()
-        .next()
-        .expect("the packages phase holds the apt install");
-    let brew = plan.phases[1]
-        .actions()
-        .nth(1)
-        .expect("the packages phase holds the brew install");
-    let names = |subject: &str| {
-        subject
-            .split_once(" install ")
-            .map_or("", |(_, list)| list)
-            .split(", ")
-            .filter(|s| !s.starts_with('+'))
-            .count()
-    };
+    let operands = [
+        "unzip",
+        "ripgrep",
+        "xclip",
+        "wl-clipboard",
+        "fd-find",
+        "jq",
+        "tmux",
+        "curl",
+        "git",
+        "make",
+        "gcc",
+        "neovim",
+        "fd",
+        "zoxide",
+        "node",
+        "pipx",
+        "go",
+        "gum",
+        "lazygit",
+        "stylua",
+    ];
     for cols in [80u16, 100, 120, 125, 128, 160, 200] {
         let (printer, screen) = Printer::for_test_live_terminal(80, cols);
         let floor = printer
@@ -2337,7 +2359,7 @@ fn the_reports_column_is_claimed_and_its_subjects_bounded_at_every_width() {
         let width = report_align_width(&plan, None, budget);
         assert!(
             width <= b,
-            "{cols} cols: the claim is clamped to the budget ({width} > {b})"
+            "{cols} cols: the claim is priced over subjects within the budget ({width} > {b})"
         );
         let trailing = report_trailing_allowance(&plan, None, budget);
         let line = printer
@@ -2358,53 +2380,38 @@ fn the_reports_column_is_claimed_and_its_subjects_bounded_at_every_width() {
                  ({width} + {reserved} > {line})"
             );
         }
-        // From the hero's own width up, every subject the budget CAN bound
-        // is within it — the script label included — and the two-path deploy
-        // floors are the only rows past it, gluing rather than withdrawing
-        // the column. Narrower, every fixed subject floors past a budget of
-        // twenty-odd columns, which is what the clamp is for.
-        if cols >= 125 {
-            let over: Vec<String> = plan
-                .phases
-                .iter()
-                .flat_map(|p| p.actions())
-                .map(|a| super::action_display_subject_within(a, budget).to_string())
-                .filter(|s| crate::output::measure_width(s) > b)
-                .collect();
-            assert!(
-                over.iter().all(|s| s.starts_with("deploy ")),
-                "{cols} cols: only a deploy at its floor may exceed the budget {b}: {over:?}"
-            );
-        }
-        if cols == 125 {
-            let apt_named = names(&super::action_display_subject_within(apt, budget).to_string());
-            let brew_named = names(&super::action_display_subject_within(brew, budget).to_string());
-            assert!(
-                apt_named >= 4 && brew_named >= 6,
-                "125 cols: the rows fill at least what they filled before the framing was \
-                 reserved (apt {apt_named} of 4, brew {brew_named} of 6)"
-            );
-        }
+        // A subject past the budget is one that wraps, and the claim is
+        // priced over the rows that do not — so no operand list can widen it.
+        let over: Vec<String> = plan
+            .phases
+            .iter()
+            .flat_map(|p| p.actions())
+            .map(|a| super::action_display_subject_within(a, budget).to_string())
+            .filter(|s| crate::output::measure_width(s) > b)
+            .collect();
+        assert!(
+            over.iter().all(|s| crate::output::measure_width(s) > width),
+            "{cols} cols: a wrapping subject never sets the column {width}: {over:?}"
+        );
 
         render_plan_tree(&plan, None, &printer);
         drop(printer);
         let shown = screen.contents();
         let within: Vec<(usize, String)> = shown
             .lines()
-            .filter(|l| l.contains(" — "))
+            .filter(|l| l.contains(" — ") && is_row_head(l))
             .filter(|l| row_subject_width(l) <= column)
             .map(|l| {
                 let at = crate::output::measure_width(l.split_once(" — ").map_or("", |(h, _)| h));
                 (at, l.to_string())
             })
             .collect();
-        // The env write is always within the claim; the two-path deploy at
-        // its floor (70 columns) joins it from 128 columns up, and glues its
-        // detail inline below that.
-        let expected = if cols >= 128 { 2 } else { 1 };
+        // The env write is always within the claim; every row naming an
+        // operand list wraps at these widths and closes on its own last
+        // physical row instead.
         assert!(
-            within.len() >= expected,
-            "{cols} cols: at least {expected} rows render within the claim:\n{shown}"
+            !within.is_empty(),
+            "{cols} cols: a row renders within the claim:\n{shown}"
         );
         for (at, line) in &within {
             assert_eq!(
@@ -2416,6 +2423,18 @@ fn the_reports_column_is_claimed_and_its_subjects_bounded_at_every_width() {
         assert!(
             !shown.contains("/home/tj/"),
             "{cols} cols: every path folds home:\n{shown}"
+        );
+        // Every operand of every row is on screen, however many physical rows
+        // the wrap took, and no row says `+N more` instead of naming one.
+        for named in operands {
+            assert!(
+                shown.contains(named),
+                "{cols} cols: every operand is named, missing {named}:\n{shown}"
+            );
+        }
+        assert!(
+            !shown.contains(" more"),
+            "{cols} cols: no row generalizes its operand list:\n{shown}"
         );
     }
 }

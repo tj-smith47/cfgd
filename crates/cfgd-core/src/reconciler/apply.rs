@@ -105,18 +105,13 @@ fn env_write_summary(action: &Action) -> Option<String> {
 ///
 /// A subset is stated against the DECLARED set, so "one file changed" and
 /// "nothing changed" (no action at all) can never render alike. A full deploy
-/// carries no count at all: a subject short enough names every target, and a
-/// longer one's `+N more` marker ([`SUBJECT_LIST_KEEP`]) already gives the
-/// total with the names before it, so `deploy a, b, +4 more — 6 files` stated
-/// six twice.
+/// carries no count at all: the subject names every target it writes, so
+/// `deploy a, b, c, d, e, f — 6 files` stated six twice.
 ///
 /// The COMPLEMENT, never a ratio: the detail names only what the subject
-/// cannot. `deploy a, b, +4 more — 6 of 12 files` restated the six the marker
-/// already gave, and beside a `+N more` a second number over the same set
-/// invites pairing the wrong two. What the subject cannot say is how many
-/// declared entries were already in place, so that is the number.
-///
-/// [`SUBJECT_LIST_KEEP`]: super::format::SUBJECT_LIST_KEEP
+/// cannot. A second number over a set the subject already spells out invites
+/// pairing the wrong two. What the subject cannot say is how many declared
+/// entries were already in place, so that is the number.
 fn deploy_files_summary(action: &Action) -> Option<String> {
     let Action::Module(ModuleAction {
         kind:
@@ -146,18 +141,14 @@ fn deploy_files_summary(action: &Action) -> Option<String> {
 /// [`ActionRun`]; `None` is a preview, which has no answer yet.
 ///
 /// No plain count on a full install: a package subject names every entry it
-/// installs, or gives the total through its `+N more` marker
-/// ([`elided_list`]), so a trailing `— 6 packages` could only ever restate
-/// the row. And the shortfall is the COMPLEMENT, never a ratio, for the reason
-/// the deploy arm states: `brew install neovim, fd, +7 more — 7 of 9
-/// packages` put two different sevens on one row, and the available reading
-/// was that the unnamed seven landed and `neovim` and `fd` did not — the
-/// opposite of the truth. The shortfall on this arm is never a failure (a
-/// failed install fails the action; `installed_now` drops exactly what an
-/// earlier phase already put on the machine), so the un-said number is what
-/// was already there.
-///
-/// [`elided_list`]: super::format::elided_list
+/// installs, so a trailing `— 6 packages` could only ever restate the row.
+/// And the shortfall is the COMPLEMENT, never a ratio, for the reason the
+/// deploy arm states: `— 7 of 9 packages` puts two numbers over one set on
+/// one row, and the available reading was that the two the reader could not
+/// pair were the ones that landed. The shortfall on this arm is never a
+/// failure (a failed install fails the action; `installed_now` drops exactly
+/// what an earlier phase already put on the machine), so the un-said number
+/// is what was already there.
 ///
 /// [`action_display_subject`]: super::format::action_display_subject
 fn installed_packages_summary(

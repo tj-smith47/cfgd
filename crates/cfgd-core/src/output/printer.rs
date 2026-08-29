@@ -620,9 +620,11 @@ impl Printer {
     }
 
     /// The columns an action row's SUBJECT may occupy on this printer's
-    /// terminal before its operand list is cut, or `None` for a sink that
-    /// never wraps (a capture, a redirected stream), where the list is cut at
-    /// the floor alone.
+    /// terminal, or `None` for a sink that never wraps (a capture, a
+    /// redirected stream). A subject past it is not cut — an operand list
+    /// names every operand and WRAPS — but it is a row the report's
+    /// alignment column is no longer measured over, its trailing content
+    /// landing on its last physical row instead.
     ///
     /// Half of what the complete-line budget at [`ACTION_ROW_DEPTH`] leaves
     /// after the glyph and the wait framing

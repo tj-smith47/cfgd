@@ -1108,15 +1108,15 @@ pub fn align_width_of<'s>(labels: impl Iterator<Item = &'s str>) -> usize {
 /// Ignoring the claim on the bullet put a preview's em-dashes in two places
 /// and neither at the apply's.
 ///
-/// `budget` is the report's subject budget ([`report_subject_budget`]), the
-/// same one every row of the report renders its subject within, so the column
-/// is measured over the strings the rows will actually carry — and CLAMPED to
-/// it. Two subject shapes can exceed the budget they were cut within: an
-/// operand list at `elided_list`'s floor (two long paths under `deploy`) and
-/// a script label at `SCRIPT_LABEL_MIN_CHARS`. Measured unclamped, one such
-/// row made the claim fail and withdrew the column from every row under it;
-/// clamped, that row alone glues its trailer inline, which is what a row past
-/// the column does anyway.
+/// Measured over each subject's FIRST physical row, which is the whole
+/// subject exactly when the subject fits the report's budget
+/// ([`report_subject_budget`]). A subject naming more operands than the line
+/// holds WRAPS, and a wrapped row carries its detail and its duration on its
+/// LAST physical row — anchored at whatever column the rest of the report
+/// settled — so it needs no column of its own and is left out of the
+/// measurement. Included, one eleven-package install would set the column at
+/// the budget and push every sibling's em-dash to the far edge, or fail the
+/// claim outright and withdraw the column from the whole report.
 ///
 /// [`Printer::subject_budget`]: crate::output::Printer::subject_budget
 pub fn report_align_width(
@@ -1129,8 +1129,9 @@ pub fn report_align_width(
         .flat_map(|(_, groups)| groups.iter())
         .flat_map(|(_, actions)| actions.iter())
         .map(|action| action_display_subject_within(action, budget).to_string())
+        .filter(|subject| budget.is_none_or(|b| measure_width(subject) <= b))
         .collect();
-    align_width_of(items.iter().map(String::as_str)).min(budget.unwrap_or(usize::MAX))
+    align_width_of(items.iter().map(String::as_str))
 }
 
 /// The subject budget THIS report's rows are cut within: the printer's floor
@@ -1138,10 +1139,10 @@ pub fn report_align_width(
 /// for every report alike), widened to what the line leaves after the glyph
 /// and this report's OWN `report_trailing_allowance` — a plan whose only
 /// wait reasons name short provision rows has no use for a reservation sized
-/// for `queued behind <a subject at the budget>`, and the reservation cost the
-/// hero's `apt install` row three of its eleven names beside seventy blank
-/// columns. Re-priced once at the wider budget, since a reason names a
-/// subject cut within it, and kept only if the claim still fits; the floor
+/// for `queued behind <a subject at the budget>`, and the reservation left
+/// seventy blank columns beside the hero's `apt install` row. Re-priced once
+/// at the wider budget, since what a reason may print beside a column is
+/// judged against it, and kept only if the claim still fits; the floor
 /// otherwise. `None` for a sink that never wraps, like the floor.
 ///
 /// Idempotent under its own claim: inside a run that already holds it,
@@ -1184,6 +1185,11 @@ pub fn report_subject_budget(
 /// action, the reservation for a reason naming a two-path deploy row withdrew
 /// the column from every report whose widest subject passed half the line.
 ///
+/// Priced over what can sit BESIDE a column, so a trailing wider than the
+/// subject budget is left out for the reason a wrapping subject is left out
+/// of [`report_align_width`]: its own row wraps and glues, and pricing it
+/// would withdraw the column from every row that does fit.
+///
 /// [`Printer::report_column_beside`]: crate::output::Printer::report_column_beside
 /// [`widest_produced_detail`]: super::widest_produced_detail
 pub fn report_trailing_allowance(
@@ -1199,15 +1205,18 @@ pub fn report_trailing_allowance(
                 .iter()
                 .flat_map(|(_, actions)| actions.iter().copied())
                 .collect();
+            let beside = |width: usize| budget.is_none_or(|b| width <= b);
             let held = super::lanes::phase_wait_reasons(&actions, budget)
                 .iter()
                 .map(|reason| measure_width(reason))
+                .filter(|width| beside(*width))
                 .max()
                 .unwrap_or(0);
             let produced = actions
                 .iter()
                 .filter_map(|action| super::widest_produced_detail(action))
                 .map(|d| measure_width(&d))
+                .filter(|width| beside(*width))
                 .max()
                 .unwrap_or(0);
             separator + held.max(produced)

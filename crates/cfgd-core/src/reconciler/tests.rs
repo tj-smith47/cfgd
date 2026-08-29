@@ -7439,7 +7439,7 @@ fn format_plan_items_script_action_preserves_raw_multiline_body() {
 }
 
 #[test]
-fn format_module_action_item_deploy_truncates_many_files() {
+fn format_module_action_item_deploy_names_every_file() {
     let files: Vec<crate::modules::ResolvedFile> = (0..5)
         .map(|i| crate::modules::ResolvedFile {
             source: PathBuf::from(format!("/src/{i}")),
@@ -7468,7 +7468,7 @@ fn format_module_action_item_deploy_truncates_many_files() {
     assert_eq!(
         super::action_produced_detail(&Action::Module(action), None, 0, &[]),
         None,
-        "the subject's `+3 more` gives the total; a detail would state it twice"
+        "the subject names every target, so a detail would state the total twice"
     );
 }
 
@@ -11027,22 +11027,25 @@ fn every_manager_node_states_what_it_produced() {
 
 /// A produced detail never restates a total the subject already gives.
 ///
-/// `elided_list` cuts a subject at `SUBJECT_LIST_KEEP` and appends `+N more`,
-/// so the names it kept plus the marker ARE the operand total; a detail that
-/// then says `6 files` states one number twice on one row
-/// (`deploy …/init.lua, …/lazy-lock.json, +4 more — 6 files`). Every arm of
-/// `action_produced_detail` is rendered here over `SUBJECT_LIST_KEEP + 3`
-/// operands, twice: with the executor's re-read saying everything landed, and
-/// with it two short. A detail carrying the operand total fails on either
-/// pass — a SHORTFALL states the complement (`2 already installed`), never a
-/// ratio over the total the marker already gives, because `brew install
-/// neovim, fd, +7 more — 7 of 9 packages` put two different sevens on one row.
+/// A subject names every operand it acts on, so the names ARE the total; a
+/// detail that then says `6 files` states one number twice on one row
+/// (`deploy a, b, c, d, e, f — 6 files`). Every COMPLEMENT arm of
+/// `action_produced_detail` is rendered here over five operands, twice: with
+/// the executor's re-read saying everything landed, and with it two short. A
+/// detail carrying the operand total fails on either pass — a SHORTFALL
+/// states the complement (`2 already installed`), never a ratio over a total
+/// the row already spells out, because `— 7 of 9 packages` puts two numbers
+/// over one set on one row.
+///
+/// The provision arm is deliberately not a complement arm: its shortfall is
+/// a failure to deliver rather than a set already in place, so `1 of 2
+/// managers` is exactly what it has to say. The env write names no operands
+/// at all.
 #[test]
 fn no_produced_detail_restates_a_total_the_subject_already_gives() {
-    use super::format::SUBJECT_LIST_KEEP;
     use super::types::ManagerAction;
 
-    let total = SUBJECT_LIST_KEEP + 3;
+    let total = 5;
     let names: Vec<String> = (0..total).map(|i| format!("op{i}")).collect();
     let file = |target: &str| ResolvedFile {
         source: std::path::PathBuf::from("src"),
@@ -11098,27 +11101,39 @@ fn no_produced_detail_restates_a_total_the_subject_already_gives() {
             aliases: 0,
         }),
     ];
-    let mut elided = 0;
+    let mut walked = 0;
     let total_word = regex::Regex::new(&format!(r"\b{total}\b")).unwrap();
     for action in &actions {
-        let subject = super::format::action_display_subject(action).to_string();
-        if !subject.contains(" more") {
+        let complement = matches!(
+            action,
+            Action::Module(ModuleAction {
+                kind: ModuleActionKind::DeployFiles { .. }
+                    | ModuleActionKind::InstallPackages { .. },
+                ..
+            }) | Action::Package(PackageAction::Install { .. })
+        );
+        if !complement {
             continue;
         }
-        elided += 1;
+        let subject = super::format::action_display_subject(action).to_string();
+        assert!(
+            names.iter().all(|name| subject.contains(name.as_str())),
+            "the subject names every operand, which is what makes the total its own: {subject}"
+        );
+        walked += 1;
         for landed in [total, total - 2] {
             let detail = super::action_produced_detail(action, Some(landed), 0, &[]);
             assert!(
                 detail.as_deref().is_none_or(|d| !total_word.is_match(d)),
-                "the subject's `+N more` already gives {total}; the detail says it again \
+                "the subject already names all {total}; the detail says it again \
                  (landed {landed}): `{subject} — {}`",
                 detail.unwrap_or_default()
             );
         }
     }
-    assert!(
-        elided > 0,
-        "no subject elided at {total} operands, so the walk proved nothing"
+    assert_eq!(
+        walked, 3,
+        "every complement arm of `action_produced_detail` is walked"
     );
 }
 
@@ -15276,7 +15291,7 @@ fn format_module_action_item_local_has_no_origin_suffix() {
 }
 
 #[test]
-fn format_module_action_item_deploy_many_files_truncates() {
+fn format_module_action_item_deploy_many_files_names_them_all() {
     let files: Vec<ResolvedFile> = (0..5)
         .map(|i| ResolvedFile {
             source: PathBuf::from(format!("/cache/mod/f{i}")),
@@ -15303,9 +15318,9 @@ fn format_module_action_item_deploy_many_files_truncates() {
     let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(
-        items[0].starts_with("deploy /home/user/.f0, /home/user/.f1")
+        (0..5).all(|i| items[0].contains(&format!("/home/user/.f{i}")))
             && !items[0].contains("files"),
-        "two targets, and the count left to the detail, got: {}",
+        "every target named, and the count left to the detail, got: {}",
         items[0]
     );
     let details: Vec<Option<String>> = phase
@@ -15315,7 +15330,7 @@ fn format_module_action_item_deploy_many_files_truncates() {
     assert_eq!(
         details,
         vec![None],
-        "a full deploy's `+3 more` already gives its total; no detail restates it"
+        "a full deploy names every target; no detail restates the total"
     );
 }
 
