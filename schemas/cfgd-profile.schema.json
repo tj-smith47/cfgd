@@ -439,6 +439,21 @@
       },
       "type": "object"
     },
+    "PackageListSpec": {
+      "additionalProperties": false,
+      "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same\nlist under a `packages` key.",
+      "properties": {
+        "packages": {
+          "default": [],
+          "description": "Package names.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "PackagesSpec": {
       "additionalProperties": false,
       "description": "`spec.packages`: packages to install, grouped by package manager.\n\nEvery manager field accepts either a bare list of names or (for the\nmanagers with options of their own) a mapping:\n\n```yaml\npackages:\n  brew:\n    formulae: [ripgrep, fzf]\n    casks: [alacritty]\n  apt: [curl, git]\n  cargo: [ripgrep]\n```",
@@ -453,18 +468,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -490,7 +494,7 @@
             }
           ],
           "default": null,
-          "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping."
+          "description": "APT packages (Debian/Ubuntu)."
         },
         "brew": {
           "anyOf": [
@@ -509,7 +513,7 @@
             }
           ],
           "default": null,
-          "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a\n`BrewSpec` mapping."
+          "description": "Homebrew packages (macOS/Linux)."
         },
         "cargo": {
           "anyOf": [
@@ -528,7 +532,7 @@
             }
           ],
           "default": null,
-          "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping."
+          "description": "Cargo packages (`cargo install`)."
         },
         "chocolatey": {
           "anyOf": [
@@ -540,18 +544,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -578,18 +571,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -615,7 +597,7 @@
             }
           ],
           "default": null,
-          "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping."
+          "description": "Flatpak packages (Linux)."
         },
         "go": {
           "anyOf": [
@@ -627,18 +609,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -657,18 +628,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -694,7 +654,7 @@
             }
           ],
           "default": null,
-          "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping."
+          "description": "npm global packages."
         },
         "pacman": {
           "anyOf": [
@@ -706,18 +666,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -736,18 +685,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -766,18 +704,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -796,18 +723,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -833,7 +749,7 @@
             }
           ],
           "default": null,
-          "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping."
+          "description": "Snap packages (Linux)."
         },
         "winget": {
           "anyOf": [
@@ -845,18 +761,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -875,18 +780,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -905,18 +799,7 @@
               "type": "array"
             },
             {
-              "additionalProperties": false,
-              "description": "A `packages` map, the same list under a key.",
-              "properties": {
-                "packages": {
-                  "description": "Package names.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
+              "$ref": "#/definitions/PackageListSpec"
             },
             {
               "type": "null"
@@ -1103,6 +986,76 @@
       },
       "type": "object"
     },
+    "ScriptCommand": {
+      "description": "The mapping form of a script entry: a command with a timeout, shell,\nguard condition or working directory.",
+      "properties": {
+        "continueOnError": {
+          "description": "Treat a non-zero exit as success and continue reconciliation instead\nof failing the run. Default: `false`.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "creates": {
+          "description": "Skip the script if this path already exists. A leading `~` expands to\nthe home directory; a relative path resolves against the script's\nworking directory. Existence follows symlinks.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idleTimeout": {
+          "description": "Kill the script if it produces no stdout/stderr output for this duration.\nPrevents scripts from silently hanging on unresponsive resources.\nFormat: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interactive": {
+          "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr,\nno spinner, no output capture, no idle timeout) so it can prompt the\nuser — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when\nstdin is not a terminal (CI, piped input, or any daemon-run phase) the\nscript is skipped with a warning rather than hanging on instant EOF.",
+          "type": "boolean"
+        },
+        "onlyIf": {
+          "description": "Run the script only if this command exits zero. A non-zero exit skips\nthe script (the condition for running was not met). Evaluated with the\nsame shell, working directory, and environment as the body.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run": {
+          "description": "The command or script body to run.",
+          "type": "string"
+        },
+        "shell": {
+          "$ref": "#/definitions/ScriptShell",
+          "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts."
+        },
+        "timeout": {
+          "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`).\nUnset means no timeout.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unless": {
+          "description": "Run the script only if this command exits NON-zero. A zero exit\n(success) skips the script (the guarded state already holds).\nEvaluated with the same shell, working directory, and environment as\nthe body.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workdir": {
+          "description": "Working directory for the script. By default every lifecycle script\nruns in the user's home directory — never the config source tree — so\na relative write can't pollute the user's GitOps repo. Set `workdir`\nto override: a leading `~` expands to home and `$VAR`/`${VAR}` expand\nagainst the script environment (which always carries `$CFGD_MODULE_DIR`\nand `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,\n`workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "type": "object"
+    },
     "ScriptEntry": {
       "anyOf": [
         {
@@ -1110,73 +1063,8 @@
           "type": "string"
         },
         {
-          "properties": {
-            "continueOnError": {
-              "description": "Treat a non-zero exit as success and continue reconciliation instead\nof failing the run. Default: `false`.",
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
-            "creates": {
-              "description": "Skip the script if this path already exists. A leading `~` expands to\nthe home directory; a relative path resolves against the script's\nworking directory. Existence follows symlinks.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "idleTimeout": {
-              "description": "Kill the script if it produces no stdout/stderr output for this duration.\nPrevents scripts from silently hanging on unresponsive resources.\nFormat: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "interactive": {
-              "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr,\nno spinner, no output capture, no idle timeout) so it can prompt the\nuser — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when\nstdin is not a terminal (CI, piped input, or any daemon-run phase) the\nscript is skipped with a warning rather than hanging on instant EOF.",
-              "type": "boolean"
-            },
-            "onlyIf": {
-              "description": "Run the script only if this command exits zero. A non-zero exit skips\nthe script (the condition for running was not met). Evaluated with the\nsame shell, working directory, and environment as the body.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "run": {
-              "description": "The command or script body to run.",
-              "type": "string"
-            },
-            "shell": {
-              "$ref": "#/definitions/ScriptShell",
-              "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts."
-            },
-            "timeout": {
-              "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`).\nUnset means no timeout.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "unless": {
-              "description": "Run the script only if this command exits NON-zero. A zero exit\n(success) skips the script (the guarded state already holds).\nEvaluated with the same shell, working directory, and environment as\nthe body.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "workdir": {
-              "description": "Working directory for the script. By default every lifecycle script\nruns in the user's home directory — never the config source tree — so\na relative write can't pollute the user's GitOps repo. Set `workdir`\nto override: a leading `~` expands to home and `$VAR`/`${VAR}` expand\nagainst the script environment (which always carries `$CFGD_MODULE_DIR`\nand `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,\n`workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "run"
-          ],
-          "type": "object"
+          "$ref": "#/definitions/ScriptCommand",
+          "description": "The mapping form, carrying the body and its knobs."
         }
       ],
       "description": "A lifecycle script entry: either a bare command string, or a mapping for\none that needs a timeout, shell, or guard condition.\n\n```yaml\npreApply: \"echo starting\"\n# or\npostApply:\n  run: brew update\n  timeout: 2m\n  onlyIf: command -v brew\n```"
