@@ -4760,7 +4760,7 @@ mod tests {
         store
             .upsert_module_file(
                 "test-mod",
-                real_file.to_str().unwrap(),
+                &cfgd_core::to_posix_fs_key(&real_file),
                 "hash-exists",
                 "copy",
                 apply_id,
