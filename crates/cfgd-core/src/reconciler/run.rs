@@ -821,7 +821,7 @@ impl<'a> ApplyRun<'a> {
 }
 
 /// One owner group's in-scope actions, in group order. Each renders under the
-/// subject [`action_display_subject`] derives from it alone, so no positional
+/// subject [`crate::reconciler::action_display_subject`] derives from it alone, so no positional
 /// pairing back into a per-group line vector is needed.
 pub type ScopedGroup<'p> = (&'p OwnerGroup, Vec<&'p Action>);
 
@@ -1041,7 +1041,7 @@ impl PseudoPhase<'_> {
 /// the daemon's scheduled fire) printed `Backup` / `Phase: Backups` /
 /// `backup:notes` down three indents: the same word three times and an extra
 /// level for nothing, while `backup restore` beside it put the identical owner
-/// group one level shallower and lost nothing. [`ApplyRun::render_backups`]
+/// group one level shallower and lost nothing. `ApplyRun::render_backups`
 /// chooses this whenever the run carries no [`Plan`]; a run whose other phases
 /// were merely FILTERED (`--phase files`) keeps its label, because there the
 /// label states the filter.
@@ -1136,7 +1136,7 @@ pub fn report_align_width(
 /// The subject budget THIS report's rows are cut within: the printer's floor
 /// ([`Printer::subject_budget_floor`], which reserves the widest wait framing
 /// for every report alike), widened to what the line leaves after the glyph
-/// and this report's OWN [`report_trailing_allowance`] — a plan whose only
+/// and this report's OWN `report_trailing_allowance` — a plan whose only
 /// wait reasons name short provision rows has no use for a reservation sized
 /// for `queued behind <a subject at the budget>`, and the reservation cost the
 /// hero's `apt install` row three of its eleven names beside seventy blank
@@ -1217,7 +1217,7 @@ pub fn report_trailing_allowance(
 }
 
 /// What a run's actions came to, as ONE line: `13 actions succeeded`, or
-/// `12 actions succeeded, 1 skipped` — every clause [`outcome_clauses`]
+/// `12 actions succeeded, 1 skipped` — every clause `outcome_clauses`
 /// produced, joined. So no closing line can claim a skipped action as a
 /// success, and silent about outcomes that did not occur: a clean run's line
 /// does not name skips it has none of. No path panics, so the function is safe

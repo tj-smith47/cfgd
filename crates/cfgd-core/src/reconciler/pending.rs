@@ -906,7 +906,7 @@ pub fn title_cased_tier(tier: &str) -> String {
 /// the run header, `cfgd decide` and `cfgd status`.
 ///
 /// Three surfaces a single take shows back to back said `Run \`cfgd decide
-/// accept/reject\` to answer` and `Use \`cfgd decide accept <resource>\` … to
+/// accept/reject\` to answer` and `Use \`cfgd decide accept \<resource\>\` … to
 /// resolve` — two verbs and two nouns for one operation on one object.
 pub const MSG_ANSWER_DECISIONS: &str =
     "Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer";

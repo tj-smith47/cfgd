@@ -105,11 +105,11 @@ impl RestoreOutcome {
 /// `backup run` and `backup restore` are the two mutating verbs of one command,
 /// and the restore used to settle as a bare title plus a single status line —
 /// no owner, no verdict — so the same operator reading the same command's two
-/// halves had to learn two layouts. Returns the [`RunTally`] the caller closes
+/// halves had to learn two layouts. Returns the [`crate::reconciler::RunTally`] the caller closes
 /// with, so the verdict counts the line that was actually printed.
 ///
-/// The role and the detail slot are [`super::outcome_role`]'s and
-/// [`super::outcome_detail`]'s — the same two [`super::report_backup_record`]
+/// The role and the detail slot are `outcome_role`'s and `outcome_detail`'s —
+/// the same two [`super::report_backup_record`]
 /// settles a backup through, because the two outcomes are the same three: a
 /// clean restore is Ok, a restore whose overlay landed but whose hooks failed
 /// is Warn (the data is back, something still needs attention), and a restore

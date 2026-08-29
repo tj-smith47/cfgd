@@ -297,8 +297,8 @@ pub fn rollback_backup(unit: &BackupUnit<'_>, printer: &Printer) -> Result<Rollb
 /// completed restore: an owner section headed `backup:<name>`, one status row,
 /// and the [`crate::reconciler::RunTally`] the caller closes with.
 ///
-/// The role and the detail slot are [`super::outcome_role`]'s and
-/// [`super::outcome_detail`]'s — the three verbs of one command settle through
+/// The role and the detail slot are `outcome_role`'s and `outcome_detail`'s —
+/// the three verbs of one command settle through
 /// one pair, so a fourth outcome cannot be worded twice.
 pub fn report_rollback(
     printer: &Printer,

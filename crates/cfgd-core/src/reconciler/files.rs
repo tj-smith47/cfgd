@@ -190,7 +190,7 @@ impl<'a> super::Reconciler<'a> {
 /// What a recorded-hash refresh moved. `rows` is the `managed_resources`
 /// writes, `files` the link-deployed files whose bytes actually changed
 /// behind those rows — counted entry by entry against the per-file
-/// breakdown each row keeps ([`moved_file_count`]), never the row's whole
+/// breakdown each row keeps (`moved_file_count`), never the row's whole
 /// coverage: a module's row is ONE aggregate over every file its entries
 /// deploy, so an aggregate that moved by a byte says nothing about how many
 /// files did. `None` when some moved row had no breakdown recorded yet (a
