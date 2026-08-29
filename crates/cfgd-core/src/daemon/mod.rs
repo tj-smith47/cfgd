@@ -461,8 +461,13 @@ pub(super) struct DaemonState {
     // Seeded once at startup from what `run_daemon` was invoked with; a SIGHUP
     // reload re-reads the same file under the same profile.
     config_path: Option<String>,
-    profile: Option<String>,
+    pub(super) profile: Option<String>,
     pub(super) modules: Vec<crate::output::HeaderModule>,
+    // The sources that same resolution drew a layer from — the `Sources` header
+    // row's own derivation, held beside the modules it was composed with so an
+    // unattended run states both halves of the configuration it ran under
+    // without composing a second time.
+    pub(super) composed_sources: Vec<crate::reconciler::ComposedSource>,
     update_available: Option<String>,
     // The stale-skill signature ("user:N,project:M") last surfaced via the
     // notifier, so the consolidated skill-stale notice fires at most once per
@@ -497,6 +502,7 @@ impl DaemonState {
             config_path: None,
             profile: None,
             modules: Vec::new(),
+            composed_sources: Vec::new(),
             update_available: None,
             skills_stale_notified: None,
             module_last_reconcile: HashMap::new(),

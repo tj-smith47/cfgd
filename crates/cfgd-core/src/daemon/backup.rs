@@ -563,6 +563,19 @@ pub(super) fn resolve_backup_tasks(
     })
 }
 
+/// What the loop's last profile-wide reconcile resolved to, snapshotted out of
+/// the daemon's state so an unattended run reports under the same configuration
+/// a hand-run one does without composing a second time.
+///
+/// Every field is empty until the first profile-wide tick completes, which is
+/// what [`Default`] stands for.
+#[derive(Default)]
+pub(super) struct ResolvedConfiguration {
+    pub(super) profile: Option<String>,
+    pub(super) sources: Vec<crate::reconciler::ComposedSource>,
+    pub(super) modules: Vec<crate::output::HeaderModule>,
+}
+
 /// Run every due scheduled backup as ONE run: a `Backup` header, the `Backups`
 /// pseudo-phase with a `backup:<name>` group per unit, and a rollup.
 ///
@@ -587,6 +600,7 @@ pub(super) fn run_scheduled_backups(
     config_path: &Path,
     config_dir: &Path,
     state_dir: &Path,
+    resolved: &ResolvedConfiguration,
     printer: &Printer,
     abort: &crate::AbortFlag,
 ) {
@@ -622,12 +636,27 @@ pub(super) fn run_scheduled_backups(
         .map(|(profile, _)| profile.as_str())
         .filter(|first| due.iter().all(|(profile, _)| profile == first));
 
+    // The loop's own resolution, never a second one: the reconcile tick records
+    // what the active profile composed to. A due set naming a different profile
+    // — or one no tick has resolved yet — states neither half, exactly as a
+    // heterogeneous set states no profile.
+    let under_resolved_profile =
+        single_profile.is_some() && single_profile == resolved.profile.as_deref();
+    let (sources, modules): (
+        &[crate::reconciler::ComposedSource],
+        &[crate::output::HeaderModule],
+    ) = if under_resolved_profile {
+        (&resolved.sources, &resolved.modules)
+    } else {
+        (&[], &[])
+    };
+
     let ctx = crate::reconciler::RunContext {
         title: crate::reconciler::RunTitle::Backup,
         config_path: Some(config_path),
         profile: single_profile,
-        sources: &[],
-        modules: &[],
+        sources,
+        modules,
         trigger: Some(SCHEDULE_TRIGGER),
         subject: None,
         unit_source: None,

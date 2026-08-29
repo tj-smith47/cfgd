@@ -64,6 +64,7 @@ $ cfgd backup run
 Backup
   Config   /home/me/.config/cfgd/cfgd.yaml
   Profile  workstation
+  Modules  notes, shell
   Actions  4 planned
 
 backup:notes-db
@@ -429,6 +430,7 @@ $ cfgd backup run notes-db
 Backup: notes-db
   Config   /home/me/.config/cfgd/cfgd.yaml
   Profile  workstation
+  Modules  notes, shell
   Source   /home/me/.local/share/notes/notes.db
   Actions  3 planned
 
@@ -467,6 +469,7 @@ $ cfgd daemon
 Backup
   Config   /home/me/.config/cfgd/cfgd.yaml
   Profile  workstation
+  Modules  notes, shell
   Trigger  schedule
   Actions  3 planned
 
@@ -543,6 +546,7 @@ $ cfgd backup restore notes-db --yes
 Restore: notes-db
   Config   /home/me/.config/cfgd/cfgd.yaml
   Profile  workstation
+  Modules  notes, shell
   Source   /home/me/.local/share/notes/notes.db
   Actions  1 planned
 
@@ -681,6 +685,7 @@ $ cfgd backup rollback notes-db --yes
 Rollback: notes-db
   Config   /home/me/.config/cfgd/cfgd.yaml
   Profile  workstation
+  Modules  notes, shell
   Source   /home/me/.local/share/notes/notes.db
   Actions  1 planned
 

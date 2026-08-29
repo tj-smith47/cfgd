@@ -100,7 +100,7 @@ pub fn cmd_plan(
     // manager once rather than once per surface.
     let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
 
-    let module_names: Vec<String> = resolved_modules.iter().map(|m| m.name.clone()).collect();
+    let header_modules = cfgd_core::output::HeaderModule::of_resolved(&resolved_modules);
     // recorded-scope-ok: a plan writes no `applies` row, so it has no scope
     // column to fill
     let reconciler = Reconciler::new(&registry, state)
@@ -251,7 +251,7 @@ pub fn cmd_plan(
             config_path: Some(&cli.config),
             profile: profile_label.as_deref(),
             sources: &composed_sources,
-            modules: &module_names,
+            modules: &header_modules,
             trigger: None,
             subject: None,
             unit_source: None,

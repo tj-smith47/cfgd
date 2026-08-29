@@ -336,7 +336,7 @@ pub fn run_apply(
         })?
     };
 
-    let module_names: Vec<String> = resolved_modules.iter().map(|m| m.name.clone()).collect();
+    let header_modules = cfgd_core::output::HeaderModule::of_resolved(&resolved_modules);
 
     // A resource awaiting (or declined by) a source decision is not this run's
     // to touch, in any mode: the confirm prompt, `--yes` and `--dry-run` all
@@ -475,7 +475,7 @@ pub fn run_apply(
         config_path: Some(cli.config.as_path()),
         profile: profile_label.as_deref(),
         sources: &composed_sources,
-        modules: &module_names,
+        modules: &header_modules,
         trigger: None,
         subject: None,
         unit_source: None,

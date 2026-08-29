@@ -24223,7 +24223,16 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
         warnings: vec![],
     };
 
-    let module_names = vec!["nvim".to_string(), "wsl-tools".to_string()];
+    let module_names = vec![
+        crate::output::HeaderModule {
+            name: "nvim".to_string(),
+            platform_skip_reason: None,
+        },
+        crate::output::HeaderModule {
+            name: "wsl-tools".to_string(),
+            platform_skip_reason: None,
+        },
+    ];
     let (printer, cap) = crate::output::Printer::for_test_doc();
     let mut exec = ReconcilerExecutor {
         reconciler: &reconciler,
@@ -24285,7 +24294,10 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
         )],
         warnings: vec![],
     };
-    let only_names = vec!["wsl-tools".to_string()];
+    let only_names = vec![crate::output::HeaderModule {
+        name: "wsl-tools".to_string(),
+        platform_skip_reason: None,
+    }];
     let (printer, cap) = crate::output::Printer::for_test_doc();
     let mut exec = ReconcilerExecutor {
         reconciler: &reconciler,
