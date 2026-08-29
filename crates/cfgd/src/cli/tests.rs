@@ -29932,32 +29932,52 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
 /// A caller holding no `Owner` — a kind parsed back out of a rendered token, a
 /// `backup` group whose kind is a literal — passes the two words itself and is
 /// not what this walks: the needle is the `.kind` field access.
+///
+/// The exception is `Owner::label`'s own body, found by its signature rather
+/// than by its file, so a second composition added elsewhere in
+/// `reconciler/types.rs` is still caught.
 #[test]
 fn every_owner_label_of_a_held_owner_comes_from_owner_label() {
+    /// The composition sites in one file: rustfmt splits a long call over its
+    /// arguments, so the `.kind` may sit up to two lines below the
+    /// constructor. `Some(line)` is an offender, `None` the exempt body.
+    fn compositions(body: &str) -> Vec<(usize, String, bool)> {
+        let lines: Vec<&str> = body.lines().collect();
+        let mut hits = Vec::new();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || !line.contains("OwnerLabel::new(") {
+                continue;
+            }
+            let call = lines[n..(n + 3).min(lines.len())].concat();
+            if !call.contains(".kind") {
+                continue;
+            }
+            let exempt = (n.saturating_sub(3)..=n).any(|p| lines[p].contains("fn label(&self)"));
+            hits.push((n + 1, code.to_string(), exempt));
+        }
+        hits
+    }
+
+    // The composition split three ways, which a two-line join would miss.
+    let split = "        crate::output::OwnerLabel::new(\n            self.kind.as_str(),\n            self.name.as_str(),\n        )\n";
+    assert_eq!(
+        compositions(split).len(),
+        1,
+        "the join no longer reaches a three-line split"
+    );
+
     let mut checked: Vec<String> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
     for (path, body) in cli_production_sources()
         .into_iter()
         .chain(core_production_sources())
     {
-        let lines: Vec<&str> = body.lines().collect();
-        for (n, line) in lines.iter().enumerate() {
-            let code = line.trim_start();
-            if code.starts_with("//") || !line.contains("OwnerLabel::new(") {
-                continue;
+        for (n, code, exempt) in compositions(&body) {
+            checked.push(format!("{}:{n}", cfgd_core::to_posix_string(&path)));
+            if !exempt {
+                offenders.push(format!("{}:{n}: {code}", path.display()));
             }
-            // rustfmt splits a long call over its arguments, so the first
-            // argument may sit on the line below the constructor.
-            let call = format!("{line}{}", lines.get(n + 1).unwrap_or(&""));
-            if !call.contains(".kind") {
-                continue;
-            }
-            checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
-            // `Owner::label` IS the composition every other site comes here for.
-            if path.ends_with("reconciler/types.rs") {
-                continue;
-            }
-            offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
         }
     }
     assert!(
