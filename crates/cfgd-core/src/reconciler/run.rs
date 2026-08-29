@@ -1111,9 +1111,9 @@ pub fn align_width_of<'s>(labels: impl Iterator<Item = &'s str>) -> usize {
 /// Measured over each subject's FIRST physical row, which is the whole
 /// subject exactly when the subject fits the report's budget
 /// ([`report_subject_budget`]). A subject naming more operands than the line
-/// holds WRAPS, and a wrapped row carries its detail and its duration on its
-/// LAST physical row — anchored at whatever column the rest of the report
-/// settled — so it needs no column of its own and is left out of the
+/// holds WRAPS, and a wrapped row carries its detail on its LAST physical row
+/// and anchors its duration at whatever column the rest of the report
+/// settled, so it needs no column of its own and is left out of the
 /// measurement. Included, one eleven-package install would set the column at
 /// the budget and push every sibling's em-dash to the far edge, or fail the
 /// claim outright and withdraw the column from the whole report.

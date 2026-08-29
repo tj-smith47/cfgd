@@ -623,8 +623,8 @@ impl Printer {
     /// terminal, or `None` for a sink that never wraps (a capture, a
     /// redirected stream). A subject past it is not cut — an operand list
     /// names every operand and WRAPS — but it is a row the report's
-    /// alignment column is no longer measured over, its trailing content
-    /// landing on its last physical row instead.
+    /// alignment column is no longer measured over: its detail lands on its
+    /// last physical row, and only its duration is anchored at the column.
     ///
     /// Half of what the complete-line budget at [`ACTION_ROW_DEPTH`] leaves
     /// after the glyph and the wait framing

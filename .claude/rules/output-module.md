@@ -73,7 +73,7 @@ Eight conventions, each with a walk-the-population pin that fails on the next me
 
 ## Rendering rules every action row obeys
 
-Five conventions about the SHAPE of a settled row, each with a walk-the-population pin (in `crates/cfgd-core/src/` unless noted). A row is painted by one of three surfaces (`Printer::action_status`, `SectionGuard::action_status`, `LiveRow::set_action_status`) and settled by two trees (`render_plan_tree`, `Reconciler::settle_action` → `emit_action_line`), so every rule here is enforced at the ONE seam all five read, never at a call site.
+Seven conventions about the SHAPE of a settled row, each with a walk-the-population pin (in `crates/cfgd-core/src/` unless noted). A row is painted by one of three surfaces (`Printer::action_status`, `SectionGuard::action_status`, `LiveRow::set_action_status`) and settled by two trees (`render_plan_tree`, `Reconciler::settle_action` → `emit_action_line`), so every rule here is enforced at the ONE seam all five read, never at a call site.
 
 | Rule | Shape | Pin |
 |---|---|---|

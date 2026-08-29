@@ -2001,9 +2001,37 @@ fn row_prefix_width(line: &str) -> usize {
 /// unwrapped row too wide for the column does.
 fn is_row_head(line: &str) -> bool {
     let trimmed = line.trim_start();
-    trimmed.starts_with("- ")
-        || (trimmed.chars().next().is_some_and(|c| !c.is_ascii())
-            && trimmed.chars().nth(1) == Some(' '))
+    if trimmed.starts_with("- ") {
+        return true;
+    }
+    // The real openers, off the theme these renders are drawn with: judged on
+    // "non-ASCII then a space", a continuation row breaking straight before
+    // its ` — <detail>` passed as a head and was asked to pad a column it can
+    // never reach.
+    let theme = crate::output::Theme::default();
+    [
+        &theme.icon_ok,
+        &theme.icon_warn,
+        &theme.icon_fail,
+        &theme.icon_pending,
+        &theme.icon_running,
+        &theme.icon_skipped,
+        &theme.icon_info,
+    ]
+    .into_iter()
+    .any(|icon| {
+        trimmed
+            .strip_prefix(icon.as_str())
+            .is_some_and(|rest| rest.starts_with(' '))
+    })
+}
+
+/// Whether `text` names `token` as a whole word rather than inside a longer
+/// one: `fd` is a substring of `fd-find` and `git` of `lazygit`, so a
+/// substring test would pass over a row that dropped the shorter name.
+fn names_operand(text: &str, token: &str) -> bool {
+    text.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '.')
+        .any(|word| word == token)
 }
 
 /// The width of a rendered row's subject alone — the head before ` — `, net
@@ -2013,12 +2041,12 @@ fn row_subject_width(line: &str) -> usize {
     crate::output::measure_width(head.trim_end()).saturating_sub(row_prefix_width(line))
 }
 
-/// The hero's own plan shape: three provision rows with the brew edges, an
-/// env write, two package rows that fill to the budget, a six-file deploy
-/// under `~/.config/nvim` (whose two-path floor exceeds any budget under 70),
-/// a three-file deploy (joined in full, the `len <= keep + 1` arm) and a
-/// `postApply` script at 77 columns — every subject shape that can exceed the
-/// budget it is cut within.
+/// The hero's own plan shape: three provision rows with the brew edges, two
+/// env writes, two package rows past the budget, a six-file deploy
+/// under `~/.config/nvim`, a three-file deploy and a `postApply` script at 77
+/// columns — every subject shape that can exceed the budget it wraps within,
+/// plus a second short env write so the alignment claim is measured over more
+/// than one row.
 fn hero_plan(home: &std::path::Path) -> Plan {
     let home = home.to_path_buf();
     let provision = |manager: &str, via: &str| {
@@ -2083,6 +2111,15 @@ fn hero_plan(home: &std::path::Path) -> Plan {
         vars: 3,
         aliases: 3,
     });
+    // A second short detail-bearing row: every operand-bearing subject wraps
+    // at these widths, so one row alone would make "every head within the
+    // claim lands at one x" true by construction.
+    let write_fish = Action::Env(super::super::types::EnvAction::WriteEnvFile {
+        path: home.join(".cfgd.env.fish"),
+        content: String::new(),
+        vars: 3,
+        aliases: 3,
+    });
     plan_of(vec![
         phase(
             PhaseName::Prerequisites,
@@ -2094,6 +2131,7 @@ fn hero_plan(home: &std::path::Path) -> Plan {
                 provision("npm", "brew"),
                 provision("pipx", "brew"),
                 write_env,
+                write_fish,
             ],
         ),
         phase(
@@ -2150,7 +2188,7 @@ fn hero_plan(home: &std::path::Path) -> Plan {
 /// the allowance reserved for `queued behind deploy <two paths>` — a sentence
 /// no code path emits — and the retreat refused the whole report a column,
 /// which every capture answering `wrap_columns() == None` was blind to. The
-/// counterpart of `a_wait_row_on_a_narrow_terminal_retreats_its_column_and_is_cut_at_a_token`,
+/// counterpart of `a_wait_row_on_a_narrow_terminal_retreats_its_column_and_wraps_its_reason`,
 /// which pins only the retreat.
 #[test]
 fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
@@ -2222,8 +2260,8 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
         })
         .collect();
     assert!(
-        !dashes.is_empty(),
-        "a detail-bearing row head rendered:\n{shown}"
+        dashes.len() >= 2,
+        "at least two detail-bearing rows rendered:\n{shown}"
     );
     // The claim is the width the fitting subjects settled; a row whose subject
     // is past it wraps, and carries its detail on its own last physical row.
@@ -2238,6 +2276,14 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
             "every em-dash of a row within the claim lands at one column:\n{shown}\n{line}"
         );
     }
+    assert!(
+        dashes
+            .iter()
+            .filter(|(_, l)| row_subject_width(l) <= column)
+            .count()
+            >= 2,
+        "at least two rows share the claimed column:\n{shown}"
+    );
     // The widest row IS the column; every narrower row is padded out to it.
     let padded = dashes
         .iter()
@@ -2275,14 +2321,15 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
         .expect("the packages phase holds the apt install");
     for named in ["unzip", "ripgrep", "xclip", "wl-clipboard", "gcc"] {
         assert!(
-            shown.contains(named),
+            names_operand(&shown, named),
             "the apt row names every package it installs, missing {named}:\n{shown}"
         );
         for read in [budget, None] {
             assert!(
-                super::action_display_subject_within(apt, read)
-                    .to_string()
-                    .contains(named),
+                names_operand(
+                    &super::action_display_subject_within(apt, read).to_string(),
+                    named
+                ),
                 "no budget cuts an operand list: {named} missing at {read:?}"
             );
         }
@@ -2406,12 +2453,12 @@ fn the_reports_column_is_claimed_and_its_subjects_bounded_at_every_width() {
                 (at, l.to_string())
             })
             .collect();
-        // The env write is always within the claim; every row naming an
+        // The two env writes are always within the claim; every row naming an
         // operand list wraps at these widths and closes on its own last
         // physical row instead.
         assert!(
-            !within.is_empty(),
-            "{cols} cols: a row renders within the claim:\n{shown}"
+            within.len() >= 2,
+            "{cols} cols: at least two rows render within the claim:\n{shown}"
         );
         for (at, line) in &within {
             assert_eq!(
@@ -2428,7 +2475,7 @@ fn the_reports_column_is_claimed_and_its_subjects_bounded_at_every_width() {
         // the wrap took, and no row says `+N more` instead of naming one.
         for named in operands {
             assert!(
-                shown.contains(named),
+                names_operand(&shown, named),
                 "{cols} cols: every operand is named, missing {named}:\n{shown}"
             );
         }
