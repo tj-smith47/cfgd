@@ -643,7 +643,7 @@ const SCAN_STALENESS_SECS: i64 = cfgd_core::daemon::DEFAULT_RECONCILE_SECS as i6
 /// Build the fleet-wide `cfgd status` Doc. Caller supplies the precomputed
 /// payload, the four header facts every surface reporting on a resolved
 /// configuration states ([`cfgd_core::output::ConfigHeader`], whose `profile`
-/// the caller has already put through [`derivable_profile`]) and the declared
+/// the caller has already put through `derivable_profile`) and the declared
 /// source catalog, which carries the columns the status payload does not
 /// (priority, origin, signing demand).
 pub fn build_fleet_status_doc(

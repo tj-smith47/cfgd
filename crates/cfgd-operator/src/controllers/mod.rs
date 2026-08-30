@@ -304,7 +304,7 @@ impl ArtifactFactsReader {
     }
 
     /// A reader that answers `facts` for every reference.
-    #[cfg(test)]
+    #[cfg(any(test, doc))]
     #[must_use]
     pub fn fixed(facts: ArtifactFacts) -> Self {
         Self(Arc::new(move |_| facts.clone()))

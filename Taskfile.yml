@@ -7,6 +7,10 @@ vars:
     sh: echo "${REGISTRY:-registry.jarvispro.io}"
   TARGET_MAXSIZE:
     sh: echo "${CFGD_TARGET_MAXSIZE:-20GB}"
+  # The one spelling of the rustdoc gate's deny-warnings flag; every `doc`
+  # invocation (this Taskfile, ci.yml) reads this var rather than a second
+  # copy of the string.
+  RUSTDOC_DENY_WARNINGS: "-D warnings"
 
 env:
   REGISTRY: '{{.REGISTRY}}'
@@ -102,6 +106,14 @@ tasks:
     deps: [_check:tmp-headroom]
     cmds:
       - cargo clippy --workspace --all-targets -- -D warnings
+
+  doc:
+    desc: Build rustdoc for the workspace, denying every rustdoc lint (broken intra-doc links, bare URLs, unclosed HTML tags, ...)
+    deps: [_check:tmp-headroom]
+    env:
+      RUSTDOCFLAGS: '{{.RUSTDOC_DENY_WARNINGS}}'
+    cmds:
+      - cargo doc --workspace --no-deps --document-private-items
 
   test:
     desc: Run all tests. Pass `-- <args>` to forward to cargo test.
@@ -515,6 +527,7 @@ tasks:
     cmds:
       - task: fmt:check
       - task: clippy
+      - task: doc
       - task: schema:check
       - task: gen:crds:check
       - task: version-files:check

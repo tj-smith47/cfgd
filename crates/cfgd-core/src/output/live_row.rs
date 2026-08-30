@@ -22,7 +22,7 @@
 //!   message that carried the indent itself would push the glyph two columns
 //!   right of where the committed line puts it — the row would jump sideways at
 //!   the moment it settled.
-//! - The settled text is composed through [`super::renderer::Renderer::compose_status`]
+//! - The settled text is composed through [`super::renderer::status::compose_status`]
 //!   against the same live column the section will pad to, so the row and the
 //!   permanent line that replaces it are the same bytes.
 use std::marker::PhantomData;
