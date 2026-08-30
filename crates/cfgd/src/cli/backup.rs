@@ -1099,6 +1099,58 @@ mod tests {
         );
     }
 
+    /// The closing hint is a DISPLAY slot like the rows above it, so a path
+    /// under home folds to `~/` there too — a restore that printed
+    /// `restore ~/notes.md …` and then `backed up to /home/tj/notes.md.cfgd-backup`
+    /// one line below spelled `$HOME` two ways in one report. `-o json` keeps
+    /// the absolute path on both verbs.
+    #[test]
+    fn no_closing_hint_spells_the_home_directory_absolutely() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(home.path());
+        let home_posix = cfgd_core::to_posix_string(home.path());
+        let target = format!("{home_posix}/notes.txt");
+        let copy = format!("{target}.cfgd-backup");
+        let sidecar = || {
+            Some(cfgd_core::reconciler::SidecarOutcome {
+                path: std::path::PathBuf::from(&copy),
+                reused: false,
+            })
+        };
+
+        let mut restore = outcome(None, true);
+        restore.restored_to = target.clone();
+        restore.safety_copy = sidecar();
+        let (restore_human, _) = rendered(&restore);
+        let restore_payload = serde_json::to_string(&BackupRestoreOutput::from(&restore)).unwrap();
+
+        let mut rollback = rollback_outcome(None, true);
+        rollback.copy = copy.clone();
+        rollback.restored_to = target.clone();
+        rollback.safety_copy = sidecar();
+        let (rollback_human, _) = rendered_rollback(&rollback);
+        let rollback_payload =
+            serde_json::to_string(&BackupRollbackOutput::from(&rollback)).unwrap();
+
+        for (verb, human, payload) in [
+            ("restore", restore_human, restore_payload),
+            ("rollback", rollback_human, rollback_payload),
+        ] {
+            assert!(
+                human.contains("Previous contents backed up to ~/notes.txt.cfgd-backup"),
+                "{verb}'s closing hint folds the home directory:\n{human}"
+            );
+            assert!(
+                !human.contains(&home_posix),
+                "{verb} spells a path under home absolutely somewhere its rows fold it:\n{human}"
+            );
+            assert!(
+                payload.contains(&home_posix),
+                "{verb}'s `-o json` payload keeps the absolute path:\n{payload}"
+            );
+        }
+    }
+
     /// Where the displaced contents went is the one thing an operator who
     /// regrets a rollback needs, and the sidecar's own outcome words it.
     #[test]

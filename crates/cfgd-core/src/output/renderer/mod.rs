@@ -1121,6 +1121,14 @@ impl Renderer {
 
     /// Hint: arrow glyph + dim text. Shown at Normal+ (NOT Quiet). The
     /// canonical "next step" surface.
+    ///
+    /// The ONE seam every hint reaches — `Printer::hint`, `SectionGuard::hint`
+    /// and the `Component::Hint` a `Doc` / `SectionBuilder` carries all render
+    /// here — so a path under home folds to `~/` for the whole class at once,
+    /// and a composer cannot ship a hint that spells `$HOME` differently from
+    /// the rows above it. Folded HERE rather than at the composers because a
+    /// `Doc` with no `with_data` serializes its `Component::Hint` text into the
+    /// Doc-derived payload, which keeps the absolute path a script can `cat`.
     pub fn render_hint(&self, w: &dyn Writer, depth: usize, text: &str) {
         if self.verbosity == Verbosity::Quiet {
             return;
@@ -1129,7 +1137,8 @@ impl Renderer {
             .theme
             .muted
             .apply_to(format!("{} ", self.theme.icon_arrow));
-        let body = format!("{}{}", arrow, self.theme.muted.apply_to(cursor_safe(text)));
+        let text = crate::fold_home_in_text(text);
+        let body = format!("{}{}", arrow, self.theme.muted.apply_to(cursor_safe(&text)));
         self.emit_with(w, |e| {
             e.flush_section_headers();
             e.open_top_group(TopGroup::Hint);
@@ -1572,6 +1581,26 @@ mod tests {
         let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("→"), "got: {s:?}");
         assert!(s.contains("run cfgd apply"));
+    }
+
+    /// Every hint reaches `render_hint`, so the home fold sits there rather
+    /// than in each composer: a hint naming a path under home reads `~/` even
+    /// when the composer interpolated an absolute one.
+    #[test]
+    fn a_hint_naming_a_path_under_home_folds_it() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::with_test_home_guard(home.path());
+        let (r, sink, buf) = capture();
+        r.render_hint(
+            &sink,
+            0,
+            &format!(
+                "chmod u+w {}/.config/cfgd",
+                crate::to_posix_string(home.path())
+            ),
+        );
+        let s = crate::test_helpers::captured_text(&buf);
+        assert!(s.contains("chmod u+w ~/.config/cfgd"), "got: {s:?}");
     }
 
     #[test]

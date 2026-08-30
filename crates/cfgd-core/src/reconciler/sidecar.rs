@@ -60,13 +60,21 @@ impl SidecarOutcome {
     }
 
     /// The words an action row carries about this copy.
+    ///
+    /// A DISPLAY slot, so the path folds to its `~/` spelling: the row above it
+    /// (`restore ~/notes.md from …`) and the closing hint beside it are one
+    /// report, and one report spells `$HOME` one way. The `-o json` payload
+    /// reads `self.path` directly, so nothing structured moves.
     pub fn detail(&self) -> String {
         let verb = if self.reused {
             "already backed up at"
         } else {
             "backed up to"
         };
-        format!("{verb} {}", self.path.posix())
+        format!(
+            "{verb} {}",
+            crate::fold_home_in_text(&self.path.posix().to_string())
+        )
     }
 }
 
