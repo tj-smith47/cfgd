@@ -3452,6 +3452,16 @@ mod local_source_fixture {
                 .load_source_cached(&spec, &test_printer())
                 .expect_err("the read path re-verifies the cached checkout");
             assert!(err.to_string().contains("not signed"), "got: {err}");
+            assert!(
+                mgr.get("anchored").is_none(),
+                "a refused cached read composes nothing — including the entry the \
+                 undemanding load above left in the map"
+            );
+            assert!(
+                cache_dir.join("anchored").exists(),
+                "…but the accepted checkout stays on disk, or the one command that \
+                 could replace its head is the one that head locks out"
+            );
         });
     }
 
