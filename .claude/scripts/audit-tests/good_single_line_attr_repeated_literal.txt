@@ -1,0 +1,17 @@
+# EXPECTED: NOT flagged — the same 30+ char string literal appears 3 times,
+# each inside a SINGLE-LINE attribute (opens and closes on one physical line)
+# with nothing trailing its closing bracket. Without `seen_open`,
+# `strip_attr_lines`'s split-point walk breaks on the attribute's very first
+# character: `d` starts at 0 for a `was == 0` line, and a bare `d <= 0` check
+# cannot tell "never opened" from "just closed", so it fired before the
+# opening `[` was ever counted. That recovered almost the whole attribute —
+# quotes and all — as a fake trailing declaration, leaking its literal into
+# the DRY corpus 3 times instead of the 0 a fully-stripped attribute owes it.
+#[error("failed to parse the configuration file header block")]
+VariantA,
+
+#[error("failed to parse the configuration file header block")]
+VariantB,
+
+#[error("failed to parse the configuration file header block")]
+VariantC,
