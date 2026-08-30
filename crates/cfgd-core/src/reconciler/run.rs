@@ -90,8 +90,10 @@ pub struct RunContext<'a> {
     pub title: RunTitle,
     pub config_path: Option<&'a std::path::Path>,
     pub profile: Option<&'a str>,
-    /// The sources this run's composition drew from, in the order they were
-    /// layered. Empty for a run that composed none, which renders no row.
+    /// The `spec.sources[]` subscriptions the config declares
+    /// ([`ComposedSource::from_declared`]), in declaration order; present
+    /// whether or not this machine has synced. Empty for a config that
+    /// declares none, which renders no row.
     pub sources: &'a [ComposedSource],
     /// What the run's profile resolves to, through the ONE derivation every
     /// surface reporting on a resolved profile reads
@@ -117,8 +119,9 @@ pub struct RunContext<'a> {
     pub unit_source: Option<&'a str>,
 }
 
-/// One source a run's composition drew from, as the header names it and as the
-/// `-o json` plan payload carries it.
+/// One `spec.sources[]` subscription the config declares, as the header names
+/// it and as the `-o json` plan payload carries it. Derived by
+/// [`ComposedSource::from_declared`], never off the layers a run composed.
 ///
 /// The profile travels beside the name rather than baked into it because the
 /// two are separate facts about the subscription — the source is WHO delivered

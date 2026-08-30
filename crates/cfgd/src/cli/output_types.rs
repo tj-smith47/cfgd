@@ -349,12 +349,14 @@ pub struct PlanOutput {
     pub context: String,
     pub phases: Vec<PlanPhaseOutput>,
     pub total_actions: usize,
-    /// The sources this plan's composition drew a layer from, in layering
-    /// order — the structured counterpart of the header's `Sources` row.
-    /// Without it a consumer reading a plan carrying `<- team` provenance on
-    /// its actions has no way to learn what `team` is or which of its profiles
-    /// this machine subscribed to. Empty (and omitted from the wire) for a run
-    /// that composed none, so every existing payload stays byte-exact.
+    /// The `spec.sources[]` subscriptions the config declares
+    /// ([`cfgd_core::reconciler::ComposedSource::from_declared`]), in
+    /// declaration order — the structured counterpart of the header's
+    /// `Sources` row, present whether or not this machine has synced. Without
+    /// it a consumer reading a plan carrying `<- team` provenance on its
+    /// actions has no way to learn what `team` is or which of its profiles
+    /// this machine subscribed to. Empty (and omitted from the wire) for a
+    /// config that declares none, so every existing payload stays byte-exact.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<cfgd_core::reconciler::ComposedSource>,
     #[serde(skip_serializing_if = "Vec::is_empty")]

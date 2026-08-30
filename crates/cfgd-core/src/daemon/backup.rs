@@ -563,12 +563,13 @@ pub(super) fn resolve_backup_tasks(
     })
 }
 
-/// What the loop's last profile-wide reconcile resolved to, snapshotted out of
-/// the daemon's state so an unattended run reports under the same configuration
-/// a hand-run one does without composing a second time.
+/// The configuration an unattended run reports under, snapshotted out of the
+/// daemon's state so it names what a hand-run does without composing a second
+/// time.
 ///
-/// Every field is empty until the first profile-wide tick completes, which is
-/// what [`Default`] stands for.
+/// `sources` is the config's own declaration, seeded at startup; `profile` and
+/// `modules` are what the last profile-wide reconcile tick resolved and stay
+/// empty until one completes, which is what [`Default`] stands for.
 #[derive(Default)]
 pub(super) struct ResolvedConfiguration {
     pub(super) profile: Option<String>,
@@ -638,29 +639,27 @@ pub(super) fn run_scheduled_backups(
 
     // The loop's own resolution, never a second one: the reconcile tick records
     // what the active profile composed to. A due set naming a different profile
-    // — or one no tick has resolved yet — states neither half, exactly as a
-    // heterogeneous set states no profile.
+    // — or one no tick has resolved yet — names no module set, exactly as a
+    // heterogeneous set names no profile.
     let under_resolved_profile =
         single_profile.is_some() && single_profile == resolved.profile.as_deref();
-    let (sources, modules): (
-        &[crate::reconciler::ComposedSource],
-        &[crate::output::HeaderModule],
-    ) = if under_resolved_profile {
-        (&resolved.sources, &resolved.modules)
+    // The subscriptions are the CONFIG's, seeded at startup and re-stated by
+    // every tick, so they describe this fire whichever profile it is about.
+    // Only the module set is the resolution's, and a due set the last tick did
+    // not resolve — a different profile, or none resolved yet — has none this
+    // fire may report.
+    let modules: &[crate::output::HeaderModule] = if under_resolved_profile {
+        &resolved.modules
     } else {
-        (&[], &[])
+        &[]
     };
-
-    // no-sources-row-ok: a due set the last tick did not resolve — a different
-    // profile, or none resolved yet — leaves this reader holding no
-    // composition for the profile it is naming.
-    // no-modules-row-ok: same arm, same reason: the loop's own resolution is
-    // the only one this fire may report, and it is about another profile.
+    // no-modules-row-ok: the loop's own resolution is the only module set this
+    // fire may report, and on that arm it is about another profile.
     let ctx = crate::reconciler::RunContext {
         title: crate::reconciler::RunTitle::Backup,
         config_path: Some(config_path),
         profile: single_profile,
-        sources,
+        sources: &resolved.sources,
         modules,
         trigger: Some(SCHEDULE_TRIGGER),
         subject: None,

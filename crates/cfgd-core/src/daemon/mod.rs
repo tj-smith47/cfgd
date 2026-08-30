@@ -463,10 +463,11 @@ pub(super) struct DaemonState {
     config_path: Option<String>,
     pub(super) profile: Option<String>,
     pub(super) modules: Vec<crate::output::HeaderModule>,
-    // The sources that same resolution drew a layer from — the `Sources` header
-    // row's own derivation, held beside the modules it was composed with so an
-    // unattended run states both halves of the configuration it ran under
-    // without composing a second time.
+    // The `spec.sources[]` subscriptions the config declares
+    // (`ComposedSource::from_declared`), in declaration order — seeded at
+    // startup and re-stated by every reconcile tick, so an unattended run names
+    // where its configuration comes from whether or not this machine has synced
+    // and whichever profile the last tick resolved.
     pub(super) composed_sources: Vec<crate::reconciler::ComposedSource>,
     update_available: Option<String>,
     // The stale-skill signature ("user:N,project:M") last surfaced via the
@@ -1078,6 +1079,11 @@ pub(super) async fn run_daemon_with(
         for s in st.sources.iter_mut().filter(|s| s.name == LOCAL_LAYER) {
             s.last_commit = setup.local_head_commit.clone();
         }
+        // Declared, not composed: a scheduled run that fires before the first
+        // reconcile tick — or under a profile no tick resolved — still names
+        // what the config subscribes to.
+        st.composed_sources =
+            crate::reconciler::ComposedSource::from_declared(&setup.cfg.spec.sources);
         st.sources.extend(setup.initial_source_status.clone());
     }
 

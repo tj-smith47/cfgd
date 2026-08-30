@@ -2889,22 +2889,47 @@ mod tests {
             );
         }
 
-        // Resolves no profile, so it composes from no source and names the one
-        // module it just wrote — read through the same reader, which fails on
-        // a block out of the ruled order or out of the key column.
+        // The runs that resolve NO profile: not in the equality class, since
+        // each names its own module set, but the config each of them read
+        // declares the same subscriptions — where a run's configuration comes
+        // from is a fact about the config, not about a profile having
+        // resolved. Read through the same reader, which fails on a block out
+        // of the ruled order or out of the key column.
+        let sources_row = status
+            .iter()
+            .find(|row| row.starts_with("Sources "))
+            .expect("the fixture declares a source")
+            .clone();
+        let config_row = format!("Config {}", cfgd_core::to_posix_string(&cli.config));
         let created = render(&|p| {
             crate::cli::module::cmd_module_create(&cli, p, &header_module_create_args()).unwrap();
         });
-        assert_eq!(
-            created,
-            vec![
-                format!("Config {}", cfgd_core::to_posix_string(&cli.config)),
-                "Modules scratch".to_string(),
-            ],
-            "`module create --apply` names its config and the module it created, and \
-             neither of the two rows between — it composes from no source and \
-             resolves no profile: {created:?}"
-        );
+        let diff_isolate =
+            render(&|p| crate::cli::diff::cmd_diff(&cli, p, Some("editor"), false).unwrap());
+        let apply_isolate = render(&|p| {
+            let mut args = header_apply_args();
+            args.module = vec!["editor".to_string()];
+            crate::cli::apply::run_apply(&cli, p, &args).unwrap();
+        });
+        for (surface, rows, module) in [
+            ("module create --apply", &created, "scratch"),
+            ("diff --module", &diff_isolate, "editor"),
+            // The apply's own plan expands `editor`'s `depends`, so it names
+            // the set it will really act on rather than the name it was given.
+            ("apply --module", &apply_isolate, "core, editor"),
+        ] {
+            assert_eq!(
+                rows,
+                &vec![
+                    config_row.clone(),
+                    sources_row.clone(),
+                    format!("Modules {module}"),
+                ],
+                "`cfgd {surface}` names its config, the subscriptions that config \
+                 declares and the module it is about, and no `Profile` row — it \
+                 resolves none: {rows:?}"
+            );
+        }
 
         drop(env);
     }

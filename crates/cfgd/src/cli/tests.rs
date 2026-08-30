@@ -24344,9 +24344,25 @@ fn a_stale_signature_header_reading_is_a_starting_point_not_a_refusal() {
 /// `Fail`) and left a CI run reading `sources` alone told the whole run
 /// succeeded.
 #[test]
+#[serial_test::serial]
 fn a_config_resolution_failure_the_fetch_cannot_repair_still_refuses_the_sync() {
-    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
-                  profile: default\n";
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let remote = cfgd_core::test_helpers::BareGitRepo::builder()
+        .commit(
+            "team source",
+            &[(
+                "cfgd-source.yaml",
+                "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: team\nspec:\n  provides:\n    profiles: []\n",
+            )],
+        )
+        .build();
+    let config = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+         profile: default\n  sources:\n    - name: team\n      origin:\n        type: Git\n        url: {}\n        branch: {}\n",
+        remote.url(),
+        remote.head_branch(),
+    );
+    let config = config.as_str();
     let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\n\
                    spec:\n  modules:\n    - nonexistent-module\n";
 
@@ -24371,6 +24387,12 @@ fn a_config_resolution_failure_the_fetch_cannot_repair_still_refuses_the_sync() 
     assert!(
         !human.contains("✓ Synced"),
         "a run that cannot resolve its configuration withholds the success verdict: {human}"
+    );
+    assert!(
+        human.contains("Sources") && human.contains("team"),
+        "and the header still names the subscriptions the config declares — the \
+         fetch below is about those very sources, so the row is most load-bearing \
+         exactly where the resolution failed: {human}"
     );
 
     let hj = CliTestHarness::builder()
@@ -30689,7 +30711,31 @@ fn binding_is_empty(lines: &[&str], n: usize, name: &str, empty: &[&str]) -> boo
             l.split_once('=')
                 .is_some_and(|(_, init)| empty.contains(&init.trim().trim_end_matches(';').trim()))
         })
+        || conditional_binding_can_be_empty(window, &head, empty)
         || tuple_binding_can_be_empty(window, name)
+}
+
+/// Whether `name` is bound by an `if`/`else` one of whose arms is empty —
+/// `let modules: &[HeaderModule] = if … { … } else { &[] };`.
+///
+/// The single-binding twin of [`tuple_binding_can_be_empty`], and needed for
+/// exactly the same reason: read as the initializer alone, the whole binding
+/// is `if …`, which is in no spelling of empty, so a slot one arm hands
+/// nothing is invisible while the walk's sentinel still claims to have read
+/// the run.
+fn conditional_binding_can_be_empty(window: &[&str], head: &str, empty: &[&str]) -> bool {
+    window
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.trim_start().starts_with(head))
+        .any(|(i, l)| {
+            l.split_once('=')
+                .is_some_and(|(_, init)| init.trim().starts_with("if "))
+                && window[i..]
+                    .iter()
+                    .take_while(|l| !l.trim_start().starts_with("};"))
+                    .any(|l| empty.contains(&l.trim().trim_end_matches(',')))
+        })
 }
 
 /// Whether `name` comes out of a TUPLE destructure with an arm that binds it
@@ -30745,6 +30791,7 @@ fn an_empty_header_slot_is_caught_however_it_is_spelled() {
         "let none: Vec<HeaderModule> = Vec::new();|let x = RunContext {|    modules: &none,",
         "let modules = vec![];|let x = RunContext {|    modules,",
         "let (sources, modules): (&[A], &[B]) = if ok {|(&a, &b)|} else {|(&[], &[])|};|let x = RunContext {|    modules,",
+        "let modules: &[HeaderModule] = if ok {|&resolved.modules|} else {|&[]|};|let x = RunContext {|    modules,",
     ];
     for case in empty {
         let lines: Vec<&str> = case.split('|').collect();
@@ -30758,6 +30805,7 @@ fn an_empty_header_slot_is_caught_however_it_is_spelled() {
         "let x = RunContext {|    modules: &header_modules,",
         "let modules = HeaderModule::of_resolved(&resolved);|let x = RunContext {|    modules,",
         "let (sources, modules) = (&declared, &resolved);|let x = RunContext {|    modules,",
+        "let modules: &[HeaderModule] = if ok {|&a.modules|} else {|&b.modules|};|let x = RunContext {|    modules,",
     ];
     for case in filled {
         let lines: Vec<&str> = case.split('|').collect();
@@ -30793,6 +30841,11 @@ fn an_empty_header_slot_is_caught_however_it_is_spelled() {
 /// daemon's scheduled fire still did for both. A run with genuinely nothing to
 /// name in a slot carries `// no-sources-row-ok: <why>` or
 /// `// no-modules-row-ok: <why>`.
+///
+/// A run under NO profile is judged on `sources` alone: the subscriptions a
+/// config declares do not depend on a profile having resolved, so an isolate
+/// holding a config names them exactly as the whole-config run beside it does,
+/// while the module set it is scoped to is its own business.
 #[test]
 fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
     let mut checked: Vec<String> = Vec::new();
@@ -30823,13 +30876,19 @@ fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
                 continue;
             };
             checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
-            if profile == "profile: None," {
-                continue;
-            }
-            for (key, value, marker) in [
-                ("sources", sources, "// no-sources-row-ok:"),
-                ("modules", modules, "// no-modules-row-ok:"),
-            ] {
+            // `Sources` is a fact about the CONFIG, not about the profile: a
+            // `--module` isolate resolves no profile and still holds the
+            // config whose `spec.sources[]` say where its configuration came
+            // from. Only `Modules` is exempted when nothing resolved.
+            let judged: &[(&str, &&str, &str)] = if profile == "profile: None," {
+                &[("sources", &sources, "// no-sources-row-ok:")]
+            } else {
+                &[
+                    ("sources", &sources, "// no-sources-row-ok:"),
+                    ("modules", &modules, "// no-modules-row-ok:"),
+                ]
+            };
+            for &(key, value, marker) in judged {
                 if !names_nothing(&lines, n, key, value) || hatched(&lines, n, marker) {
                     continue;
                 }

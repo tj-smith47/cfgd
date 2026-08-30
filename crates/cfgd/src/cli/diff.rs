@@ -85,15 +85,19 @@ pub fn cmd_diff(
 
     if let Some(mod_name) = module_filter {
         printer.heading_title(&TitleLabel::new("Diff", mod_name));
-        // The scoped run's header, the same two rows `apply --module` opens
-        // on: a title that owns no rows would put its blank line straight
-        // under the heading, which no other titled run does.
-        // An isolate composes nothing and resolves no profile, so it names
-        // the one module it is about and neither of the two rows between.
+        // The scoped run's header, the same rows `apply --module` opens on: a
+        // title that owns no rows would put its blank line straight under the
+        // heading, which no other titled run does.
+        // The isolate resolves no profile, so it names the one module it is
+        // about and no `Profile` row — but the config it read still declares
+        // its subscriptions, and those are a fact about where this run's
+        // configuration comes from whether or not a profile resolved.
+        let declared =
+            cfgd_core::reconciler::ComposedSource::from_declared(&ctx.config()?.spec.sources);
         printer.kv_rows(cfgd_core::output::config_header_rows(
             &cfgd_core::output::ConfigHeader {
                 config_path: Some(&cli.config),
-                sources: &[],
+                sources: &declared,
                 profile: None,
                 modules: &[cfgd_core::output::HeaderModule {
                     name: mod_name.to_string(),

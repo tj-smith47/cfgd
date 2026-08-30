@@ -129,6 +129,11 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
     // otherwise be told the whole run succeeded over a configuration that
     // cannot resolve at all.
     let mut config_resolution_error = None;
+    // The `Sources` row names what the config SUBSCRIBES to, which a refused
+    // resolution does not change — and this run is the fetch those very
+    // subscriptions are about, so the row is most load-bearing exactly where
+    // the composition failed.
+    let declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
     let (header_sources, header_modules) = match &desired {
         Ok(desired) => (
             desired.sources.as_slice(),
@@ -156,7 +161,7 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                     .detail(&detail);
                 config_resolution_error = Some(detail);
             }
-            (&[][..], Vec::new())
+            (declared.as_slice(), Vec::new())
         }
     };
     printer.kv_rows(cfgd_core::output::config_header_rows(
