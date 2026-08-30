@@ -648,7 +648,7 @@ Status: nvim
     postApply   6
 
 Drift
-  ⚠ module:nvim:files /home/tj/.config/nvim/stylua.toml — content differs
+  ⚠ module:nvim:files ~/.config/nvim/stylua.toml — content differs
   ⚠ module:nvim:packages ripgrep                        — version mismatch
 ```
 
@@ -694,9 +694,9 @@ Installed Packages
   ⚠ ripgrep — not installed (brew)
 
 Deployed Files
-  ✓ /home/tj/.config/nvim/init.lua
-  ⚠ /home/tj/.config/nvim/stylua.toml — content differs
-  ✗ /home/tj/.gitconfig               — missing
+  ✓ ~/.config/nvim/init.lua
+  ⚠ ~/.config/nvim/stylua.toml — content differs
+  ✗ ~/.gitconfig               — missing
 
 Shell
   Aliases

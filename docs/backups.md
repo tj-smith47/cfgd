@@ -62,7 +62,7 @@ snapshot itself, so the rollup's counts are the lines on screen.
 ```console
 $ cfgd backup run
 Backup
-  Config   /home/me/.config/cfgd/cfgd.yaml
+  Config   ~/.config/cfgd/cfgd.yaml
   Profile  workstation
   Modules  notes, shell
   Actions  4 planned
@@ -428,10 +428,10 @@ same unit is firing is refused rather than interleaved:
 ```console
 $ cfgd backup run notes-db
 Backup: notes-db
-  Config   /home/me/.config/cfgd/cfgd.yaml
+  Config   ~/.config/cfgd/cfgd.yaml
   Profile  workstation
   Modules  notes, shell
-  Source   /home/me/.local/share/notes/notes.db
+  Source   ~/.local/share/notes/notes.db
   Actions  3 planned
 
 backup:notes-db
@@ -467,7 +467,7 @@ $ cfgd daemon
 → Press Ctrl+C to stop
 
 Backup
-  Config   /home/me/.config/cfgd/cfgd.yaml
+  Config   ~/.config/cfgd/cfgd.yaml
   Profile  workstation
   Modules  notes, shell
   Trigger  schedule
@@ -536,7 +536,7 @@ overwrite:
 
 ```
 ? Restore 'notes-db' from snapshot notes.db.20260813T061322Z into
-  /home/me/.local/share/notes/notes.db? (y/N)
+  ~/.local/share/notes/notes.db? (y/N)
 ```
 
 `--yes` answers it up front, which is the form that fits in a script:
@@ -544,10 +544,10 @@ overwrite:
 ```console
 $ cfgd backup restore notes-db --yes
 Restore: notes-db
-  Config   /home/me/.config/cfgd/cfgd.yaml
+  Config   ~/.config/cfgd/cfgd.yaml
   Profile  workstation
   Modules  notes, shell
-  Source   /home/me/.local/share/notes/notes.db
+  Source   ~/.local/share/notes/notes.db
   Actions  1 planned
 
 ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
@@ -558,8 +558,8 @@ Restore: notes-db
 ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check" (0.1s)
 
 backup:notes-db
-  ✓ restore /home/me/.local/share/notes/notes.db from notes.db.20260813T061333Z — 8.0 KB
-  → Previous contents backed up to /home/me/.local/share/notes/notes.db.cfgd-backup; put them back with `cfgd backup rollback notes-db`
+  ✓ restore ~/.local/share/notes/notes.db from notes.db.20260813T061333Z — 8.0 KB
+  → Previous contents backed up to ~/.local/share/notes/notes.db.cfgd-backup; put them back with `cfgd backup rollback notes-db`
 
 ✓ Restore complete — 1 action succeeded (0.3s wall)
 ```
@@ -683,15 +683,15 @@ which is how a restore of the wrong snapshot is undone:
 ```console
 $ cfgd backup rollback notes-db --yes
 Rollback: notes-db
-  Config   /home/me/.config/cfgd/cfgd.yaml
+  Config   ~/.config/cfgd/cfgd.yaml
   Profile  workstation
   Modules  notes, shell
-  Source   /home/me/.local/share/notes/notes.db
+  Source   ~/.local/share/notes/notes.db
   Actions  1 planned
 
 backup:notes-db
-  ✓ rollback /home/me/.local/share/notes/notes.db from notes.db.cfgd-backup — 8.0 KB
-  → Previous contents backed up to /home/me/.local/share/notes/notes.db.cfgd-backup.20260101T120000Z; put them back with `cfgd backup rollback notes-db`
+  ✓ rollback ~/.local/share/notes/notes.db from notes.db.cfgd-backup — 8.0 KB
+  → Previous contents backed up to ~/.local/share/notes/notes.db.cfgd-backup.20260101T120000Z; put them back with `cfgd backup rollback notes-db`
 
 ✓ Rollback complete — 1 action succeeded (0.2s wall)
 
