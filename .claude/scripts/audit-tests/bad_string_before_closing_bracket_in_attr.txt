@@ -1,0 +1,19 @@
+# EXPECTED: caught — the same 30+ char string literal appears 3 times,
+# each trailing a multi-line attribute's closing bracket on its own physical
+# line, but that line ALSO carries a string literal BEFORE the real closing
+# bracket (`feature = "flag with a ] bracket in it", other)] pub const ...`).
+# Before `code_only` padded a stripped literal to its original length instead
+# of deleting it, deleting the preceding string shifted every later index in
+# `code` left of where it sits in the raw `line`; the split point found by
+# walking the shortened `code` no longer named the true offset of the closing
+# `)]` in `line`, and the tail sliced from that wrong offset dropped the
+# trailing declaration outright instead of recovering it, so none of the 3
+# occurrences ever reached the DRY gate and it reported clean.
+#[cfg(
+    feature = "flag with a ] bracket in it", other)] pub const NOTE_A: &str = "this literal must survive the split point recovery";
+
+#[cfg(
+    feature = "flag with a ] bracket in it", other)] pub const NOTE_B: &str = "this literal must survive the split point recovery";
+
+#[cfg(
+    feature = "flag with a ] bracket in it", other)] pub const NOTE_C: &str = "this literal must survive the split point recovery";
