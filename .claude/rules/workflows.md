@@ -147,8 +147,8 @@ single-source-of-truth wiring.
   invocation that must recompile under its own feature set either way (the
   doc leg's `--all-features` pulls in `test-helpers`, which `cargo clippy
   --workspace --all-targets` above it does not build, so the two legs do not
-  even share a build cache). `--all-features` is load-bearing, not decoration: `cfgd-core` is
-  the only crate in the workspace with a non-default feature (`test-helpers`),
+  even share a build cache). `--all-features` is load-bearing, not decoration:
+  `cfgd-core` is the only crate in the workspace with a non-default feature (`test-helpers`),
   and without it the gate never compiles `test_helpers.rs` or the
   `EnvHostProbeOverride` seam at all, so a broken link inside either one
   passes clean locally and in CI alike. Denying warnings turns every rustdoc
