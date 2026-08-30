@@ -83,17 +83,22 @@ pub fn git_cmd_local() -> std::process::Command {
 /// Refuse a revision operand that git would read as an OPTION, naming the value.
 ///
 /// The documented guard for this is `--end-of-options`, and it is the one guard
-/// `git reset` and `git checkout` did not honour before git 2.46: both REFUSE
-/// the whole invocation when it appears (`fatal: option '--end-of-options' must
-/// come before non-option arguments`; `fatal: git checkout: --detach does not
-/// take a path argument '--end-of-options'`). Ubuntu 24.04 LTS ships git 2.43,
-/// so on the commonest Linux host every such invocation failed before it ran —
-/// which cost the source cache its verify-then-publish rollback, the one thing
-/// standing between a refused fetch and a discarded checkout. A revision argv
-/// therefore carries a TRAILING `--` (which separates a revision from a
-/// pathspec on every git) and this refusal, which is all `--end-of-options` was
-/// carrying for it. `clone`, `fetch` and `ls-remote` accept the option on every
-/// supported git and keep it.
+/// `git reset` and `git checkout` did not honour on the gits still in the field:
+/// both REFUSE the whole invocation when it appears (`fatal: option
+/// '--end-of-options' must come before non-option arguments`; `fatal: git
+/// checkout: --detach does not take a path argument '--end-of-options'`).
+/// Probed: refused by 2.34.1, 2.39.5 and 2.43.0 (upstream and the
+/// `1:2.43.0-1ubuntu7.3` Ubuntu 24.04 LTS ships alike), accepted from 2.43.7 on
+/// — the fix landed in the 2.43.x maintenance line, and no release note names
+/// it. So on the commonest Linux host every such invocation failed before it
+/// ran, which cost the source cache its verify-then-publish rollback, the one
+/// thing standing between a refused fetch and a discarded checkout. A revision
+/// argv therefore carries a TRAILING `--` (which separates a revision from a
+/// pathspec on every git) and this refusal. The refusal is narrower than the
+/// option it replaces — `--end-of-options` would have PERMITTED a ref literally
+/// named `-foo`, which no git will mint through `tag` or `branch` — and that is
+/// the whole of the difference. `clone`, `fetch` and `ls-remote` accept the
+/// option on every probed git and keep it.
 pub fn refuse_option_like_revision(revision: &str) -> std::result::Result<(), String> {
     if revision.starts_with('-') {
         return Err(format!(
@@ -391,14 +396,20 @@ mod tests {
     use serial_test::serial;
     use std::fs;
 
-    /// `git reset` and `git checkout` did not honour `--end-of-options` before
-    /// git 2.46: both REFUSE the whole invocation when it appears. Ubuntu 24.04
-    /// LTS ships git 2.43, so on the commonest Linux host every such argv failed
-    /// before it ran — which is how a refused source fetch lost its
-    /// verify-then-publish rollback (`reset_checkout_to`) and every `pinVersion`
-    /// lost its detached checkout. `clone`, `fetch` and `ls-remote` accept the
-    /// option on every supported git and keep it; the two revision verbs carry a
-    /// trailing `--` and `refuse_option_like_revision` instead.
+    /// A `git reset` / `git checkout` argv ends its revision with a trailing
+    /// `--`.
+    ///
+    /// The two verbs did not honour `--end-of-options` on the gits still in the
+    /// field: refused by 2.34.1, 2.39.5 and 2.43.0 (the git Ubuntu 24.04 LTS
+    /// ships), accepted only from 2.43.7 on. On the commonest Linux host every
+    /// such argv failed before it ran — which is how a refused source fetch lost
+    /// its verify-then-publish rollback (`reset_checkout_to`) and every
+    /// `pinVersion` lost its detached checkout. `clone`, `fetch` and `ls-remote`
+    /// accept the option on every probed git and keep it.
+    ///
+    /// Pinned as the INVARIANT rather than the retired spelling: an argv naming
+    /// either verb must carry a `--` element, so a revision written without one
+    /// trips the walk whether or not it reaches for the option that failed.
     #[test]
     fn no_revision_verb_argv_spells_end_of_options() {
         let mut offenders = Vec::new();
@@ -407,41 +418,84 @@ mod tests {
             let Ok(body) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            // Prose says the word on purpose — the rule is documented where it
+            // Prose says the words on purpose — the rule is documented where it
             // is enforced, and a comment spawns no process.
             let code = body
                 .lines()
                 .filter(|l| !l.trim_start().starts_with("//"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let mut rest = code.as_str();
-            while let Some(at) = rest.find("\"--end-of-options\"") {
+            for (argv, verb) in revision_verb_argvs(&code) {
                 seen += 1;
-                let before = &rest[..at];
-                // The verb sits in the same STATEMENT as the option, which
-                // opens after the nearest preceding `;` or brace.
-                let argv = before
-                    .rfind([';', '{', '}'])
-                    .map_or(before, |o| &before[o..]);
-                for verb in ["\"reset\"", "\"checkout\""] {
-                    if argv.contains(verb) {
-                        offenders.push(format!("{}: git {verb} argv", path.display()));
-                    }
+                if !argv.contains("\"--\"") {
+                    offenders.push(format!(
+                        "{}: git {verb} argv carries no `\"--\"` element",
+                        path.display()
+                    ));
                 }
-                rest = &rest[at + 1..];
+                if argv.contains("\"--end-of-options\"") {
+                    offenders.push(format!(
+                        "{}: git {verb} argv names --end-of-options",
+                        path.display()
+                    ));
+                }
             }
         }
         assert!(
             seen > 0,
-            "no --end-of-options argv found: the walk stopped seeing its population"
+            "no reset/checkout argv found: the walk stopped seeing its population"
         );
         assert!(
             offenders.is_empty(),
-            "git reset/checkout refuse --end-of-options before git 2.46 \
-             (Ubuntu 24.04 LTS ships 2.43); pass the revision with a trailing \
-             `--` and refuse_option_like_revision instead:\n{}",
+            "a git reset/checkout revision argv ends its revision with a trailing \
+             `--`, and never names --end-of-options, which those verbs refuse on \
+             git 2.43.0 and older (accepted only from 2.43.7; Ubuntu 24.04 LTS \
+             ships 2.43.0). Guard an attacker-influenced revision with \
+             refuse_option_like_revision instead:\n{}",
             offenders.join("\n")
         );
+    }
+
+    /// The guard refuses exactly a revision git would read as an option.
+    #[test]
+    fn refuse_option_like_revision_refuses_only_an_option_shaped_revision() {
+        for ok in ["HEAD", "v1.2.3", "4e0c5e63", "feature/-dash", "main"] {
+            assert!(
+                refuse_option_like_revision(ok).is_ok(),
+                "{ok} is a revision"
+            );
+        }
+        let refused = refuse_option_like_revision("--upload-pack=touch /tmp/pwn")
+            .expect_err("an option-shaped revision is refused");
+        assert!(
+            refused.contains("--upload-pack=touch /tmp/pwn"),
+            "the refusal names the value it refused: {refused}"
+        );
+    }
+
+    /// Every `reset` / `checkout` argv ARRAY in `code`, with the verb it names.
+    ///
+    /// A verb literal outside a bracketed list is a word, not an argv — an enum
+    /// arm rendering the stage name of a libgit2 pull spells `"checkout"` and
+    /// runs nothing. The array is bounded by its own statement so a distant `[`
+    /// cannot be read as the argv's opening.
+    fn revision_verb_argvs(code: &str) -> Vec<(&str, &str)> {
+        let mut out = Vec::new();
+        for verb in ["\"reset\"", "\"checkout\""] {
+            let mut rest = code;
+            while let Some(at) = rest.find(verb) {
+                let before = &rest[..at];
+                let stmt_start = before.rfind([';', '{', '}']).map_or(0, |o| o + 1);
+                if let Some(open) = before[stmt_start..].rfind('[') {
+                    let from = stmt_start + open;
+                    if let Some(close) = rest[from..].find(']') {
+                        out.push((&rest[from..from + close], verb));
+                    }
+                }
+                rest = &rest[at + verb.len()..];
+            }
+        }
+        out
     }
 
     /// Every `.rs` file under every crate's `src/`.
@@ -681,7 +735,7 @@ mod tests {
             "init",
         ]);
         git(&["clone", up, wk]);
-        git(&["-C", wk, "checkout", "--detach", "HEAD"]);
+        git(&["-C", wk, "checkout", "--detach", "HEAD", "--"]);
         assert_eq!(
             detect_default_branch(&work).as_deref(),
             Some("trunk"),
