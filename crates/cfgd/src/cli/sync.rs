@@ -29,21 +29,29 @@ pub fn sync_refused(payload: &SyncOutput) -> bool {
 /// very run repairs.
 ///
 /// The header composes the configuration as the command FOUND it, offline from
-/// the source cache — so every failure it can raise off a CACHED checkout is a
-/// reading of bytes the `Sources` section below is about to replace. The fetch
-/// leg discards and re-clones a checkout that records no origin or the wrong
-/// one, and fast-forwards the rest, so a commit whose signature the
-/// subscription now refuses, a manifest that will not parse, a manifest
-/// offering nothing and a profile the cache does not hold are all starting
-/// points rather than verdicts: reported as refusals they would fail the very
-/// run that fixes them.
+/// the source cache, so a failure it raises off a CACHED checkout is a reading
+/// of bytes the `Sources` section below is about to replace. The fetch leg
+/// discards and re-clones a checkout that records no origin or the wrong one,
+/// and fast-forwards the rest, so a commit whose signature the subscription now
+/// refuses, a manifest that will not parse and a manifest offering nothing are
+/// starting points rather than verdicts: reported as refusals they would fail
+/// the very run that fixes them.
+///
+/// What makes that arm safe is that the loop RE-JUDGES each of the three:
+/// `load_source` runs the identical parse and signature check on the fetched
+/// tree, so a fault the fetch does not clear comes back as a failed
+/// `source:<name>` row and the run still exits nonzero. A kind nothing in the
+/// loop re-judges must stay a refusal however cache-sourced it looks, or a
+/// permanent fault exits 0 behind a `Role::Info` line that `-o json` swallows.
 ///
 /// The other kinds are not the cache's to fix. A source the config does not
 /// declare, an invalid source name, a cache directory that cannot be created,
 /// and a fetch or pin failure the section below reports on its own row all keep
-/// the nonzero exit they had before the header stopped propagating with `?` —
-/// as does everything outside `SourceError` (an unknown module, a source whose
-/// constraints `ConstraintMode::Enforce` refuses).
+/// the nonzero exit they had before the header stopped propagating with `?`, as
+/// does everything outside `SourceError` (a source whose constraints
+/// `ConstraintMode::Enforce` refuses; a `ModuleError` for a module body a stale
+/// cache does not hold, which the fetch WOULD deliver but nothing in the loop
+/// re-resolves, so it is the same ceiling the subscription-profile arm states).
 ///
 /// Judged on the error's own KIND, and matched with no wildcard so a new
 /// `SourceError` variant is classified before this compiles. A message match
@@ -59,9 +67,17 @@ pub(super) fn resolution_failure_the_fetch_rejudges(e: &anyhow::Error) -> bool {
     match source {
         SourceError::SignatureVerificationFailed { .. }
         | SourceError::InvalidManifest { .. }
-        | SourceError::EmptyProvides { .. }
-        | SourceError::ProfileNotFound { .. } => true,
-        SourceError::NotFound { .. }
+        | SourceError::EmptyProvides { .. } => true,
+        // `ProfileNotFound` is cache-sourced and still refuses: nothing in the
+        // `Sources` loop re-resolves `subscription.profile` after the fetch, so
+        // a permanent typo would exit 0 behind a `Role::Info` line that
+        // `-o json` swallows. The reachable miss is
+        // `ConfigError::ProfileNotFound` (raised by
+        // `SourceManager::compose`), which the let-else above already refuses;
+        // this variant only becomes live if `load_source_profile` is wired up,
+        // and it must not change the answer when it is.
+        SourceError::ProfileNotFound { .. }
+        | SourceError::NotFound { .. }
         | SourceError::FetchFailed { .. }
         | SourceError::PinRefNotFound { .. }
         | SourceError::CacheError { .. }

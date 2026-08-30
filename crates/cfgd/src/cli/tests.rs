@@ -24301,6 +24301,20 @@ fn a_stale_signature_header_reading_is_a_starting_point_not_a_refusal() {
         !super::sync::resolution_failure_the_fetch_rejudges(&other),
         "nothing the fetch does makes an unknown module resolve"
     );
+
+    // Cache-sourced is not enough: nothing in the `Sources` loop re-resolves
+    // `subscription.profile` after the fetch, so a permanent typo classified
+    // repairable would exit 0 behind a line `-o json` swallows.
+    let profile: anyhow::Error =
+        cfgd_core::errors::CfgdError::Source(cfgd_core::errors::SourceError::ProfileNotFound {
+            name: "jarvispro".to_string(),
+            profile: "teem".to_string(),
+        })
+        .into();
+    assert!(
+        !super::sync::resolution_failure_the_fetch_rejudges(&profile),
+        "a subscription profile nothing re-resolves stays a refusal"
+    );
 }
 
 /// A configuration failure no fetch can repair keeps its nonzero exit, and says
