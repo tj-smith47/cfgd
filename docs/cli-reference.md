@@ -868,6 +868,10 @@ Files
 ⚠ Drift detected — 1 file (packages, shell clean)
 ```
 
+An isolated run still reads `cfgd.yaml`: the `Sources` row names what the config
+subscribes to whether or not a profile resolved, so a missing or unparsable config
+refuses the run exactly as it does for `apply --module`.
+
 The Shell surface checks the declared `spec.env` vars and `spec.aliases` against the managed env
 files cfgd owns (`~/.cfgd.env` and its platform siblings) and the rc source lines that load
 them. It never reads a live shell session: a var or alias exported only by hand, outside those
