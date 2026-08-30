@@ -7,17 +7,24 @@ use cfgd_core::output::{Doc, KvPair, Printer};
 
 /// Build the `cfgd profile show` Doc from a resolved profile. Pure; consumes
 /// nothing — the caller serializes `{name, resolved}` as the structured payload.
-pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str, config_path: &Path) -> Doc {
-    // header-row-ok: the heading names the profile, the `Layers` section below
-    // names every source it composed from, and the blocks under that ARE the
-    // module inventory — so this header states the config file alone.
+pub fn build_profile_show_doc(
+    resolved: &ResolvedProfile,
+    name: &str,
+    config_path: &Path,
+    sources: &[cfgd_core::reconciler::ComposedSource],
+) -> Doc {
+    // header-row-ok: the heading names the profile and the blocks below ARE the
+    // module inventory, so this header states the config file and what it
+    // subscribes to. The `Layers` section is not that fact: it lists only the
+    // sources that CONTRIBUTED a layer, so on a machine that has never synced
+    // it names none while `spec.sources[]` names two.
     let mut doc =
         Doc::new()
             .heading_title("Profile", name)
             .kv_rows(cfgd_core::output::config_header_rows(
                 &cfgd_core::output::ConfigHeader {
                     config_path: Some(config_path),
-                    sources: &[],
+                    sources,
                     profile: None,
                     modules: &[],
                 },
@@ -179,10 +186,12 @@ fn package_display_rows(pkgs: &PackagesSpec) -> Vec<(String, String)> {
 }
 
 pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
+    let declared;
     let (profile_name, resolved) = match name {
         Some(n) => {
             let mut cfg = config::load_config(&cli.config)?;
             drain_config_deprecations(printer, &mut cfg);
+            declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
             let dir = profiles_dir(cli);
             // resolve_profile already returns a typed ProfileNotFound (→ exit 6);
             // wrap the missing case with a `not_found` CliErrorMeta so structured
@@ -216,7 +225,8 @@ pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> any
             (n.to_string(), resolved)
         }
         None => {
-            let (_cfg, active, resolved) = helpers::load_config_and_profile(cli, printer)?;
+            let (cfg, active, resolved) = helpers::load_config_and_profile(cli, printer)?;
+            declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
             (active, resolved)
         }
     };
@@ -225,6 +235,7 @@ pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> any
         &resolved,
         &profile_name,
         &cli.config,
+        &declared,
     ));
     Ok(())
 }
