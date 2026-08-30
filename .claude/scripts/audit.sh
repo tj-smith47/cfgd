@@ -271,6 +271,36 @@ drop_trait_impl_lines() {
     '
 }
 
+# --- Drop the lines of a multi-line attribute (`#[...]`) ---
+# A wrapped `#[serde(\n    deserialize_with = "…"\n)]` used to survive the DRY
+# string-literal gate: the old filter dropped only a line that itself OPENED
+# with `#[`, so a continuation line's value read as ordinary code and one
+# attribute's literal counted once per call site instead of zero times.
+# Bracket depth is counted through `code_only`, so a value holding `[` or `]`
+# cannot desynchronise the tracker, mirroring `drop_trait_impl_lines` above.
+strip_attr_lines() {
+    awk "$AWK_LIB"'
+    BEGIN { depth = 0; in_attr = 0 }
+    {
+        line = $0
+        sub(/^[^:]*:[0-9]+:/, "", line)
+        code = code_only(line)
+        if (!in_attr && code ~ /^[[:space:]]*#\[/) {
+            in_attr = 1
+            depth = 0
+        }
+        if (!in_attr) { print; next }
+        opens = gsub(/[(\[]/, "&", code)
+        was = depth
+        depth += opens - gsub(/[)\]]/, "&", code)
+        if (depth <= 0 && (was > 0 || opens > 0)) {
+            in_attr = 0
+            depth = 0
+        }
+    }
+    '
+}
+
 # --- Extract test blocks from a file (the inverse of strip) ---
 # The test-hygiene gates (sleep-ok, raw-capture-ok, path-guard-ok) anchor to
 # TEST code only — a raw sleep or a raw capture-buffer read is a production
@@ -646,22 +676,48 @@ build_production_corpus() {
             */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
         esac
         strip_test_blocks_from_file "$rsfile" >> "$PRODUCTION_CORPUS"
-    done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null)
+    done < <(audit_scan_files)
 }
 build_production_corpus
 production_construction_sites() {
     grep -E "::${1}[[:space:]]*[{(]" "$PRODUCTION_CORPUS" \
         | grep -v '#\[error' | grep -v 'enum ' || true
 }
-for errors_file in $(find "${SRC_ROOTS[@]}" -path '*/errors*' -name '*.rs' 2>/dev/null); do
+# `-path '*/errors*'` finds the real enum files by convention; a fixture is one
+# named file handed in directly with no such path, so CFGD_AUDIT_PATH widens
+# the search to every fixture — every gate sharing that override runs against
+# whichever fixture the driver is proving right now, this one included. The
+# CONTENT filter (every real errors file derives `thiserror::Error`) is what
+# keeps that widening from also treating an unrelated fixture as an enum
+# definition: a `match` arm written `Ok(output) => …` opens a line the same
+# way an indented variant declaration does, and a fixture proving some OTHER
+# gate's wording (`good_child_process_wording.txt`) reported `Ok`/`Err` as
+# variants nothing constructs until this filter told the two apart.
+errors_file_candidates() {
+    local candidates
+    if [[ -n "${CFGD_AUDIT_PATH:-}" ]]; then
+        candidates=$(find "$CFGD_AUDIT_PATH" -type f 2>/dev/null)
+    else
+        candidates=$(find "${SRC_ROOTS[@]}" -path '*/errors*' -name '*.rs' 2>/dev/null)
+    fi
+    [[ -z "$candidates" ]] && return 0
+    grep -lF 'thiserror::Error' $candidates 2>/dev/null || true
+}
+for errors_file in $(errors_file_candidates); do
+    # Extraction runs over the test-stripped view, same as every other gate:
+    # an enum's own `#[cfg(test)] mod tests` may hold a table pairing a
+    # variant NAME with `Some(...)` (a load-bearing-label verdict, not a
+    # constructor), and `Some` — uppercase first letter, lowercase rest,
+    # followed by `(` — parses as a candidate variant on the raw file.
+    errors_stripped=$(strip_test_blocks_from_file "$errors_file")
     # Extract PascalCase variant names (excluding #[from] variants which are
     # auto-constructed). Digits are part of a variant name — `Sha256Mismatch`
     # matched neither regex below, so a digit-bearing variant could never be
     # reported dead however unreachable it became.
-    variants=$(grep -oP '^\s+([A-Z][a-zA-Z0-9]+)\s*[\{(]' "$errors_file" \
-        | sed 's/[[:space:]]*//g; s/[{(]$//' | sort -u || true)
+    variants=$(echo "$errors_stripped" | grep -oP ':[0-9]+:\s+([A-Z][a-zA-Z0-9]+)\s*[\{(]' \
+        | sed -E 's/^[^:]*:[0-9]+://' | sed 's/[[:space:]]*//g; s/[{(]$//' | sort -u || true)
     # Get list of #[from] variants — #[from] appears on the same line as the variant
-    from_variants=$(grep '#\[from\]' "$errors_file" \
+    from_variants=$(echo "$errors_stripped" | grep '#\[from\]' \
         | grep -oP '([A-Z][a-zA-Z0-9]+)\s*\(' | sed 's/\s*($//' || true)
     for variant in $variants; do
         # Skip #[from] variants — they're constructed via the ? operator
@@ -690,15 +746,17 @@ log_section "DRY — Repeated String Literals"
 # each other per output-module.md) — its repeated #[must_use]/role strings are
 # by-design, not copy-paste.
 # Attribute strings (#[schemars(with=...)], #[must_use=...], #[error(...)], …)
-# are Rust-mandated literals that cannot be replaced by a const, so skip them.
+# are Rust-mandated literals that cannot be replaced by a const, so skip them —
+# `strip_attr_lines` drops a wrapped attribute's continuation lines too, not
+# just the line that opens it.
 dupes=$(while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
         */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
-        | grep -vE ':[0-9]+:[[:space:]]*#\[' \
+        | strip_attr_lines \
         | grep -oh '"[^"]\{30,\}"' || true
-done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
+done < <(audit_scan_files) \
     | sort | uniq -c | sort -rn \
     | awk '$1 > 2 {print}' \
     | grep -v -E 'and_then.*unwrap_or|\.status\.conditions\[\?\(@\.type|width=device-width|spec\.[a-z]+\[.{1,5}\]\.[a-z]+ must not be empty|apple\.com/DTDs/PropertyList|Kubernetes CRD|Mode: profile|cannot determine state directory|skipping (env var|alias) with unsafe name|detect_brew_system_method' \
@@ -726,11 +784,12 @@ log_section "DRY — Duplicated Function Definitions"
 # type in the workspace defines both, and excusing only half of the pair makes
 # the gate fire on the idiom it forced.
 # ALLOWED_FN_PAIRS excuses one *specific* definition rather than a bare name, so
-# the name keeps its budget: `is_clean` is deliberately shared by the two backup
-# outcome types (BackupRunRecord, RestoreOutcome) which answer the exit-code
-# question under one name, but dropping only the second site means a THIRD
-# definition still trips the gate. Adding a name to the awk list below instead
-# would blind the check to that name forever.
+# the name keeps its budget: `is_clean` is deliberately shared by four backup
+# outcome types — BackupRunReport, RestoreOutcome and RollbackOutcome are
+# listed below, and BackupRunRecord keeps the budget — which answer the
+# exit-code question under one name, but dropping only some of the sites
+# means the next one still trips the gate. Adding a name to the awk list below
+# instead would blind the check to that name forever.
 # `Owner`'s constructors are named after the kind they mint, which is the whole
 # point of the closed vocabulary — the collisions are with unrelated
 # constructors on other types (`PatchBindings::profile`, `BackupJob::source`).
@@ -747,6 +806,7 @@ log_section "DRY — Duplicated Function Definitions"
 ALLOWED_FN_PAIRS=(
     "is_clean crates/cfgd-core/src/backup/restore.rs"
     "is_clean crates/cfgd-core/src/backup/mod.rs"
+    "is_clean crates/cfgd-core/src/backup/rollback.rs"
     "profile crates/cfgd-core/src/reconciler/types.rs"
     "module crates/cfgd-core/src/reconciler/types.rs"
     "source crates/cfgd-core/src/reconciler/types.rs"
@@ -770,6 +830,10 @@ ALLOWED_FN_PAIRS=(
     "of crates/cfgd-core/src/reconciler/env_engine.rs"
     "of crates/cfgd-core/src/modules/surfaces.rs"
     "of crates/cfgd/src/cli/status.rs"
+    # `LevelWidths::of` is not the owner-derivation convention above — it
+    # measures the widest name/type/flag column over a slice of sibling
+    # fields, not a single source. `Tier::of` still keeps the budget.
+    "of crates/cfgd/src/cli/explain/mod.rs"
     "role crates/cfgd/src/cli/status.rs"
     "with_config_dir crates/cfgd-core/src/reconciler/mod.rs"
     "report crates/cfgd-core/src/reconciler/sidecar.rs"
@@ -847,6 +911,27 @@ ALLOWED_FN_PAIRS=(
     # and maps `cfg!` flags onto a 4-variant enum its tests drive per platform.
     "detect crates/cfgd-core/src/reconciler/env_engine.rs"
     "current crates/cfgd-core/src/reconciler/env_engine.rs"
+    # `RegistryValues::value` reads one Windows registry value by name;
+    # `FoldedPath::value` keeps the budget as the env engine's own PATH
+    # renderer, which takes a dialect's quoting rather than a name.
+    "value crates/cfgd/src/system/windows_registry.rs"
+    # `pack::resolve_platform` parses an explicit `--platform` override or
+    # falls back to the host's (os, arch) pair for an image manifest;
+    # `push::resolve_platform` keeps the budget as the simpler `Option<&str>`
+    # default applied to the annotation string `current_platform` composes.
+    "resolve_platform crates/cfgd-core/src/oci/pack.rs"
+    # `SkillInstallResult::installed` constructs a skill-install report row;
+    # `ActionRun::installed` keeps the budget as the reconciler's own builder
+    # step recording a package count the executor re-read off the machine.
+    "installed crates/cfgd/src/cli/skill/mod.rs"
+    # `ResourceSchema::docs_url` is a delegate — it CALLS `config::docs_url`,
+    # which keeps the budget as the one URL derivation both this and
+    # `field_docs_url` read.
+    "docs_url crates/cfgd/src/cli/explain/mod.rs"
+    # `RateLimiter::check` admits or rejects a peer's request; `ArtifactVerifier
+    # ::check` keeps the budget as the cosign signature verdict for a
+    # reference, an unrelated question sharing only the verb.
+    "check crates/cfgd-operator/src/gateway/rate_limit.rs"
 )
 allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
