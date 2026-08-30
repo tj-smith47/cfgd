@@ -37,10 +37,19 @@ log_section() { printf "\n--- %s ---\n" "$1"; }
 AWK_LIB='
 BEGIN { RAW_HASHES = -1; IN_STR = 0 }
 function hashes_str(n,   s) { s = ""; while (n-- > 0) s = s "#"; return s }
-# The code half of one line, with every literal and comment removed, plus the
-# comment half in LAST_COMMENT. Raw-string state carries across calls, so a
-# caller must invoke this exactly ONCE per line and feed the lines of a file in
-# order — twice on one line double-advances the state machine.
+# `n` bytes of a placeholder that is never real Rust syntax (no caller matches
+# `\001` in a bracket count or a token regex), standing in for stripped literal
+# content so `code_only`s output stays the same LENGTH as its input. Every
+# deletion site below pads with this instead of dropping bytes, so an index
+# found by scanning `code` still names the same offset in the raw line — the
+# property `strip_attr_lines` relies on to recover a declaration trailing an
+# attributes closing bracket on the same physical line.
+function placeholder(n,   s) { s = ""; while (n-- > 0) s = s "\001"; return s }
+# The code half of one line, with every literal and comment replaced by
+# `placeholder()` (never deleted — see above) and the comment half in
+# LAST_COMMENT. Raw-string state carries across calls, so a caller must invoke
+# this exactly ONCE per line and feed the lines of a file in order — twice on
+# one line double-advances the state machine.
 function code_only(line,   q, out, i, j, n, c, h, closer, p) {
     LAST_COMMENT = ""
     # Fast path: nothing on this line can open a literal or a comment.
@@ -62,20 +71,25 @@ function code_only(line,   q, out, i, j, n, c, h, closer, p) {
                 i++
                 if (c == "\"") { IN_STR = 0; break }
             }
-            if (IN_STR) return out
+            if (IN_STR) return out placeholder(n - length(out))
+            out = out placeholder(i - 1 - length(out))
             continue
         }
         if (RAW_HASHES >= 0) {
             closer = "\"" hashes_str(RAW_HASHES)
             p = index(substr(line, i), closer)
-            if (p == 0) return out
+            if (p == 0) return out placeholder(n - length(out))
             i += p - 1 + length(closer)
             RAW_HASHES = -1
+            out = out placeholder(i - 1 - length(out))
             continue
         }
         c = substr(line, i, 1)
         if (c == "/") {
-            if (substr(line, i + 1, 1) == "/") { LAST_COMMENT = substr(line, i); return out }
+            if (substr(line, i + 1, 1) == "/") {
+                LAST_COMMENT = substr(line, i)
+                return out placeholder(n - i + 1)
+            }
             out = out c
             i++
             continue
@@ -86,7 +100,8 @@ function code_only(line,   q, out, i, j, n, c, h, closer, p) {
                 j = i + RAW_OPEN_LEN
                 closer = "\"" hashes_str(h)
                 p = index(substr(line, j), closer)
-                if (p == 0) { RAW_HASHES = h; return out }
+                if (p == 0) { RAW_HASHES = h; return out placeholder(n - i + 1) }
+                out = out placeholder(j + p - 1 + length(closer) - i)
                 i = j + p - 1 + length(closer)
                 continue
             }
@@ -97,8 +112,16 @@ function code_only(line,   q, out, i, j, n, c, h, closer, p) {
         if (c == q) {
             # A char literal is two or three characters inside the quotes;
             # anything else opening with a quote is a lifetime, which is code.
-            if (substr(line, i + 1, 1) == "\\" && substr(line, i + 3, 1) == q) { i += 4; continue }
-            if (substr(line, i + 2, 1) == q) { i += 3; continue }
+            if (substr(line, i + 1, 1) == "\\" && substr(line, i + 3, 1) == q) {
+                out = out placeholder(4)
+                i += 4
+                continue
+            }
+            if (substr(line, i + 2, 1) == q) {
+                out = out placeholder(3)
+                i += 3
+                continue
+            }
             out = out q
             i++
             continue
@@ -111,7 +134,8 @@ function code_only(line,   q, out, i, j, n, c, h, closer, p) {
                 if (c == "\"") break
                 j++
             }
-            if (j > n) { IN_STR = 1; return out }
+            if (j > n) { IN_STR = 1; return out placeholder(n - i + 1) }
+            out = out placeholder(j - i + 1)
             i = j + 1
             continue
         }
@@ -298,22 +322,27 @@ strip_attr_lines() {
         if (depth <= 0 && (was > 0 || opens > 0)) {
             in_attr = 0
             depth = 0
-            # A declaration trailing the closing bracket on this same line
-            # survives only when the line held no string/char/comment for
-            # code_only to remove — only then does an index into `code` still
-            # name the same character in `line`.
-            if (code == line) {
-                d = was
-                for (i = 1; i <= length(code); i++) {
-                    c1 = substr(code, i, 1)
-                    if (c1 == "(" || c1 == "[") d++
-                    else if (c1 == ")" || c1 == "]") d--
-                    if (d <= 0) break
-                }
-                tail = substr(line, i + 1)
-                if (tail ~ /[^[:space:]]/) {
-                    print substr($0, 1, length($0) - length(line)) tail
-                }
+            # A declaration trailing the closing bracket on this same line: the
+            # split point found by walking `code` names the same offset in
+            # `line` because `code_only` pads every stripped literal to its
+            # original length instead of deleting it, so `code` and `line`
+            # never drift apart in length even when the line carries a string.
+            # `seen_open` gates the break on depth having gone positive at
+            # least once (carried in via `was`, or opened on this line) —
+            # without it a fully single-line attribute (`was == 0`) broke on
+            # its first, non-bracket character, since `d` starts at 0 and
+            # `d <= 0` alone cannot tell "never opened" from "just closed".
+            d = was
+            seen_open = (was > 0)
+            for (i = 1; i <= length(code); i++) {
+                c1 = substr(code, i, 1)
+                if (c1 == "(" || c1 == "[") { d++; seen_open = 1 }
+                else if (c1 == ")" || c1 == "]") d--
+                if (seen_open && d <= 0) break
+            }
+            tail = substr(line, i + 1)
+            if (tail ~ /[^[:space:]]/) {
+                print substr($0, 1, length($0) - length(line)) tail
             }
         }
     }
