@@ -3465,6 +3465,56 @@ mod local_source_fixture {
         });
     }
 
+    /// The pin-not-found fallback un-composes a refused head like every other
+    /// read of a cached checkout.
+    ///
+    /// It is the one refusal that returns straight out of `load_source`, past
+    /// the verify-then-publish block that would otherwise settle the map, so a
+    /// rule held at the ordinary cached read alone would miss exactly here.
+    #[test]
+    #[serial]
+    fn a_kept_checkout_whose_head_the_pin_fallback_refuses_is_un_composed() {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "pinned", None, &[]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = build_spec(
+                "pinned",
+                &crate::test_helpers::file_url(&bare),
+                &detect_branch(&bare),
+            );
+
+            // Seeded by a load nobody demanded a signature from, so the entry
+            // really is in the map when the demanding load below refuses.
+            mgr.load_source(&spec, &test_printer())
+                .expect("an unsigned head is fine while nothing demands one");
+            assert!(
+                mgr.get("pinned").is_some(),
+                "the fixture must compose first"
+            );
+
+            let mut demanding = spec.clone();
+            demanding.subscription.require_signed_commits = true;
+            demanding.sync.pin_version = Some("v-no-such-tag".to_string());
+            demanding.sync.required = false;
+
+            let err = mgr
+                .load_source(&demanding, &test_printer())
+                .expect_err("the kept checkout is still judged against the demand");
+            assert!(err.to_string().contains("not signed"), "got: {err}");
+            assert!(
+                mgr.get("pinned").is_none(),
+                "the fallback that keeps a checkout must not keep it COMPOSED once \
+                 the subscription's demand refuses its head"
+            );
+            assert!(
+                cache_dir.join("pinned").exists(),
+                "…and the checkout stays on disk for `cfgd sync` to repair"
+            );
+        });
+    }
+
     #[test]
     #[serial]
     fn load_source_serializes_on_a_lock_file_in_the_cache_dir() {
