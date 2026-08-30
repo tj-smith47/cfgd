@@ -342,8 +342,9 @@ impl SourceManager {
     /// source with a broken manifest or failed signature is a hard error, and
     /// that refusal un-composes the source: nothing a subscription's demand
     /// refuses stays in the map [`SourceManager::get`] answers from, the same
-    /// rule the fetch path holds through `restore_accepted_checkout`. The
-    /// checkout itself stays on disk for `cfgd sync` to repair.
+    /// rule the fetch path holds when it rolls a refused fetch back to the
+    /// accepted commit. The checkout itself stays on disk for `cfgd sync` to
+    /// repair.
     pub fn load_source_cached(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
         validate_source_name(&spec.name)?;
 

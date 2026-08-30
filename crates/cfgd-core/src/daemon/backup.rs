@@ -567,9 +567,10 @@ pub(super) fn resolve_backup_tasks(
 /// daemon's state so it names what a hand-run does without composing a second
 /// time.
 ///
-/// `sources` is the config's own declaration, seeded at startup; `profile` and
-/// `modules` are what the last profile-wide reconcile tick resolved and stay
-/// empty until one completes, which is what [`Default`] stands for.
+/// `sources` is the config's own declaration, seeded at startup and refreshed
+/// by every tick that read a config; `profile` and `modules` are what the last
+/// profile-wide reconcile tick resolved and stay empty until one completes,
+/// which is what [`Default`] stands for.
 #[derive(Default)]
 pub(super) struct ResolvedConfiguration {
     pub(super) profile: Option<String>,
