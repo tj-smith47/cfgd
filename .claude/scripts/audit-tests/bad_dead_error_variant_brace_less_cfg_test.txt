@@ -1,0 +1,20 @@
+# EXPECTED: caught — Orphan is never constructed anywhere in this file. A
+# brace-less `#[cfg(test)] use std::fmt;` sits above the enum; before the
+# stripper's brace-less-item fix, `in_test` never turned back off on that
+# statement and the whole enum below it — braces included — was swallowed
+# into the same test span, so no variant of this file was ever extracted and
+# the dead Orphan variant went unreported.
+#[cfg(test)]
+use std::fmt;
+
+#[derive(Debug, thiserror::Error)]
+pub enum FixtureError {
+    #[error("used: {0}")]
+    Used(String),
+    #[error("orphan: {0}")]
+    Orphan(String),
+}
+
+fn make_error() -> FixtureError {
+    FixtureError::Used("ok".to_string())
+}
