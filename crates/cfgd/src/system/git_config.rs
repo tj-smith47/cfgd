@@ -288,8 +288,15 @@ mod tests {
         // Create an empty file so git treats it as a valid config.
         std::fs::write(&config_file, "").unwrap();
 
+        // An env value handed to git is a cross-OS string boundary, so the
+        // path is folded like every other one cfgd hands over.
         // SAFETY: serialised by ENV_MUTEX; no other thread accesses this var.
-        unsafe { std::env::set_var("GIT_CONFIG_GLOBAL", &config_file) };
+        unsafe {
+            std::env::set_var(
+                "GIT_CONFIG_GLOBAL",
+                cfgd_core::to_posix_string(&config_file),
+            )
+        };
         f(&config_file);
         // SAFETY: same rationale.
         unsafe { std::env::remove_var("GIT_CONFIG_GLOBAL") };
