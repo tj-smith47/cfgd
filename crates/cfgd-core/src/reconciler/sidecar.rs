@@ -334,6 +334,13 @@ mod tests {
     #[test]
     fn backup_file_copies_to_cfgd_backup_suffix_and_leaves_the_original() {
         let tmp = tempfile::tempdir().unwrap();
+        // `SidecarOutcome::detail` is a display slot and folds the home
+        // directory, and on Windows the temp dir lives UNDER the profile — so
+        // the pin holds the home somewhere the target is not beneath, or it
+        // would read its expectation back through the very fold it is not
+        // about.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let _home = crate::with_test_home_guard(elsewhere.path());
         let original = tmp.path().join("myfile.txt");
         std::fs::write(&original, "original content").unwrap();
 

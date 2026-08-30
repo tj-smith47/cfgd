@@ -24161,19 +24161,23 @@ fn a_source_refused_for_an_unsigned_head_syncs_once_a_signed_commit_lands() {
     let allowed = scratch.path().join("allowed_signers");
     std::fs::write(&allowed, format!("t@cfgd.test {pubkey}")).unwrap();
     let gitconfig = scratch.path().join("gitconfig");
+    // Posix, not native: a backslash is an ESCAPE inside a gitconfig value, so
+    // a Windows path written natively makes git refuse the whole file with
+    // `bad config line`. git reads `/` on every host.
     std::fs::write(
         &gitconfig,
         format!(
             "[user]\n\tname = t\n\temail = t@cfgd.test\n\tsigningkey = {}\n\
              [gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tallowedSignersFile = {}\n",
-            key.with_extension("pub").display(),
-            allowed.display()
+            cfgd_core::to_posix_string(key.with_extension("pub")),
+            cfgd_core::to_posix_string(&allowed)
         ),
     )
     .unwrap();
 
     let _allow_local = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
-    let _cfg_global = EnvVarGuard::set("GIT_CONFIG_GLOBAL", &gitconfig.display().to_string());
+    let _cfg_global =
+        EnvVarGuard::set("GIT_CONFIG_GLOBAL", &cfgd_core::to_posix_string(&gitconfig));
     let _cfg_system = EnvVarGuard::set("GIT_CONFIG_NOSYSTEM", "1");
 
     // The upstream a team subscribes to, at an unsigned first commit.
@@ -24432,7 +24436,8 @@ fn a_cached_manifest_the_fetch_replaces_is_a_starting_point_not_a_refusal() {
     let gitconfig = scratch.path().join("gitconfig");
     std::fs::write(&gitconfig, "[user]\n\tname = t\n\temail = t@cfgd.test\n").unwrap();
     let _allow_local = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
-    let _cfg_global = EnvVarGuard::set("GIT_CONFIG_GLOBAL", &gitconfig.display().to_string());
+    let _cfg_global =
+        EnvVarGuard::set("GIT_CONFIG_GLOBAL", &cfgd_core::to_posix_string(&gitconfig));
     let _cfg_system = EnvVarGuard::set("GIT_CONFIG_NOSYSTEM", "1");
 
     let git = |dir: &Path, args: &[&str]| {
