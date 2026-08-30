@@ -143,8 +143,11 @@ single-source-of-truth wiring.
   the flag spelled once as the Taskfile's `RUSTDOC_DENY_WARNINGS` var), right
   after `task clippy` and ahead of the schema/CRD/chart drift guards: it needs
   the same Rust toolchain checkout as clippy and nothing else, so a second job
-  would only add a redundant checkout+toolchain setup for one `cargo`
-  invocation. `--all-features` is load-bearing, not decoration: `cfgd-core` is
+  would only add a redundant checkout+toolchain setup for a `cargo`
+  invocation that must recompile under its own feature set either way (the
+  doc leg's `--all-features` pulls in `test-helpers`, which `cargo clippy
+  --workspace --all-targets` above it does not build, so the two legs do not
+  even share a build cache). `--all-features` is load-bearing, not decoration: `cfgd-core` is
   the only crate in the workspace with a non-default feature (`test-helpers`),
   and without it the gate never compiles `test_helpers.rs` or the
   `EnvHostProbeOverride` seam at all, so a broken link inside either one

@@ -83,10 +83,11 @@ tasks:
   # --- Quality ---
 
   check:
-    desc: Run all quality checks (fmt:check, clippy, test, audit)
+    desc: Run all quality checks (fmt:check, clippy, doc, test, audit)
     cmds:
       - task: fmt:check
       - task: clippy
+      - task: doc
       - task: test
       - task: audit
 
@@ -430,10 +431,11 @@ tasks:
       - task: fmt
 
   lint:
-    desc: Local pre-commit check (tidy, clippy, audit, build, snapshot dry-run)
+    desc: Local pre-commit check (tidy, clippy, doc, audit, build, snapshot dry-run)
     cmds:
       - task: tidy
       - task: clippy
+      - task: doc
       - task: audit
       - task: build
       - task: snapshot
