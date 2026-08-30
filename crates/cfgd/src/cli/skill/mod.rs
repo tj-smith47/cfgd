@@ -268,8 +268,14 @@ fn results_section(heading: String, results: &[SkillInstallResult]) -> Doc {
     Doc::new().section(heading, |mut sec| {
         for r in results {
             let role = if r.warn { Role::Warn } else { r.status.role() };
+            // The stored/`-o json` path stays as recorded; the row folds it
+            // like every other display slot naming a path.
             let subject = match &r.path {
-                Some(path) => format!("{}: {path}", r.provider),
+                Some(path) => format!(
+                    "{}: {}",
+                    r.provider,
+                    cfgd_core::fold_home_in_text(&cfgd_core::to_posix_string(path))
+                ),
                 None => r.provider.clone(),
             };
             sec = sec.status_with(role, subject, |f| match &r.reason {
@@ -432,7 +438,7 @@ pub fn cmd_skill_list(printer: &Printer, global: bool) -> anyhow::Result<()> {
                     "{}/{}: {} ({})",
                     s.provider,
                     s.kind.as_str(),
-                    s.path.display(),
+                    cfgd_core::fold_home_in_text(&cfgd_core::to_posix_string(&s.path)),
                     version
                 );
                 let role = if s.stale { Role::Warn } else { Role::Ok };

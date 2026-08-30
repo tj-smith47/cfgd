@@ -37,7 +37,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
         && !printer
             .prompt_confirm(&format!(
                 "Workflow already exists at {} — overwrite?",
-                workflow_path.posix()
+                cfgd_core::fold_home_in_text(&workflow_path.posix().to_string())
             ))
             .unwrap_or(false)
     {

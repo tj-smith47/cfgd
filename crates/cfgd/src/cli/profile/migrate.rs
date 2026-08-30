@@ -228,7 +228,15 @@ pub(crate) fn run_profile_migrate(
     if move_count > 0 && !yes {
         for item in &plan {
             if let PlanItem::Move { from, to, .. } = item {
-                printer.status_simple(Role::Pending, format!("{} → {}", from.posix(), to.posix()));
+                printer.status_simple(
+                    Role::Pending,
+                    format!(
+                        "{} {} {}",
+                        cfgd_core::fold_home_in_text(&from.posix().to_string()),
+                        printer.arrow(),
+                        cfgd_core::fold_home_in_text(&to.posix().to_string())
+                    ),
+                );
             }
         }
         if !printer.prompt_confirm(&format!(
