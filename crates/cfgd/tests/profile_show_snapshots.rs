@@ -157,6 +157,7 @@ fn profile_show_happy_human() {
         &resolved,
         "workstation",
         Path::new("/etc/cfgd/cfgd.yaml"),
+        &[],
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "profile_show/happy.txt");
@@ -170,6 +171,7 @@ fn profile_show_happy_json() {
         &resolved,
         "workstation",
         Path::new("/etc/cfgd/cfgd.yaml"),
+        &[],
     ));
     drop(printer);
     let expected = serde_json::json!({
@@ -192,6 +194,7 @@ fn profile_show_empty_human() {
         &resolved,
         "default",
         Path::new("/etc/cfgd/cfgd.yaml"),
+        &[],
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "profile_show/empty.txt");

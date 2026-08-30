@@ -24392,8 +24392,19 @@ fn a_config_resolution_failure_the_fetch_cannot_repair_still_refuses_the_sync() 
         !human.contains("✓ Synced"),
         "a run that cannot resolve its configuration withholds the success verdict: {human}"
     );
+    // The `Sources` word alone is no evidence: the fetch section below is
+    // headed with it and names `team` inside, so a substring pin passes over a
+    // header that dropped the row. Judged as the kv ROW it is — the key
+    // followed by its value, the shape `rendered_header_rows` reads — above
+    // the section that merely repeats the noun.
+    let header_row = human
+        .lines()
+        .position(|l| l.split_whitespace().collect::<Vec<_>>() == ["Sources", "team"]);
+    let section = human
+        .lines()
+        .position(|l| l.trim() == super::source::list::SOURCES_SECTION);
     assert!(
-        human.contains("Sources") && human.contains("team"),
+        header_row.is_some_and(|row| section.is_none_or(|sec| row < sec)),
         "and the header still names the subscriptions the config declares — the \
          fetch below is about those very sources, so the row is most load-bearing \
          exactly where the resolution failed: {human}"
@@ -30851,8 +30862,21 @@ fn an_empty_header_slot_is_caught_however_it_is_spelled() {
 /// config declares do not depend on a profile having resolved, so an isolate
 /// holding a config names them exactly as the whole-config run beside it does,
 /// while the module set it is scoped to is its own business.
+///
+/// Judged over every SHAPE that fills those slots, not only the one the rule
+/// was first written over: two of the three isolates this rule was extended
+/// for reach the header another way — `cfgd diff --module` builds a
+/// [`cfgd_core::output::ConfigHeader`] directly and `cfgd init` passes through
+/// `ApplyPlanOpts` (whose own `RunContext` spells `sources: opts.sources` and
+/// so reads as filled) — so a new isolate handing either an empty slice would
+/// have shipped unjudged. A literal that holds NO config at all is exempt,
+/// spelled as it already is: `config_path: None`.
 #[test]
 fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
+    // Every literal shape that fills the header's slots. `ApplyPlanOpts`
+    // carries no `modules` of its own — the plan it builds names them — so it
+    // is judged on `sources` alone.
+    const SHAPES: [&str; 3] = ["RunContext {", "ConfigHeader {", "ApplyPlanOpts {"];
     let mut checked: Vec<String> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
     for (path, body) in cli_production_sources()
@@ -30861,13 +30885,13 @@ fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
     {
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
-            if !line.contains("RunContext {") {
+            if !SHAPES.iter().any(|shape| line.contains(shape)) {
                 continue;
             }
-            // The literal's own slots, which every `RunContext` spells within a
-            // few lines of its opening brace — in the `key: value` form or in
-            // field-init shorthand, which names a binding and so is never the
-            // empty slice this rule is about.
+            // The literal's own slots, which every one of these shapes spells
+            // within a few lines of its opening brace — in the `key: value`
+            // form or in field-init shorthand, which names a binding and so is
+            // never the empty slice this rule is about.
             let slot = |key: &str| {
                 lines[n..]
                     .iter()
@@ -30875,25 +30899,28 @@ fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
                     .map(|l| l.trim_start())
                     .find(|l| l.starts_with(&format!("{key}:")) || *l == format!("{key},"))
             };
-            let (Some(profile), Some(sources), Some(modules)) =
-                (slot("profile"), slot("sources"), slot("modules"))
-            else {
+            let (Some(profile), Some(sources)) = (slot("profile"), slot("sources")) else {
                 continue;
             };
+            // A literal holding no config has no subscriptions to name: a
+            // profile just scaffolded is described by the command that wrote
+            // it, not by a configuration it is not yet part of.
+            if slot("config_path") == Some("config_path: None,") {
+                continue;
+            }
             checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
             // `Sources` is a fact about the CONFIG, not about the profile: a
             // `--module` isolate resolves no profile and still holds the
             // config whose `spec.sources[]` say where its configuration came
             // from. Only `Modules` is exempted when nothing resolved.
-            let judged: &[(&str, &&str, &str)] = if profile == "profile: None," {
-                &[("sources", &sources, "// no-sources-row-ok:")]
-            } else {
-                &[
-                    ("sources", &sources, "// no-sources-row-ok:"),
-                    ("modules", &modules, "// no-modules-row-ok:"),
-                ]
-            };
-            for &(key, value, marker) in judged {
+            let mut judged: Vec<(&str, &str, &str)> =
+                vec![("sources", sources, "// no-sources-row-ok:")];
+            if profile != "profile: None,"
+                && let Some(modules) = slot("modules")
+            {
+                judged.push(("modules", modules, "// no-modules-row-ok:"));
+            }
+            for (key, value, marker) in judged {
                 if !names_nothing(&lines, n, key, value) || hatched(&lines, n, marker) {
                     continue;
                 }
@@ -30901,16 +30928,19 @@ fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
             }
         }
     }
-    // The four runs the rule was written over, so a gather that stopped
-    // reaching either crate cannot pass by finding nothing at all.
+    // One member of each shape, so a gather that stopped reaching either crate
+    // — or a shape dropped from the list — cannot pass by finding nothing at
+    // all.
     assert!(
         checked
             .iter()
             .filter(|c| c.contains("cli/backup.rs"))
             .count()
             == 3
-            && checked.iter().any(|c| c.contains("daemon/backup.rs")),
-        "the walk no longer reaches every backup run — it checked {checked:?}"
+            && checked.iter().any(|c| c.contains("daemon/backup.rs"))
+            && checked.iter().any(|c| c.contains("cli/diff.rs"))
+            && checked.iter().any(|c| c.contains("cli/init/cmd_init.rs")),
+        "the walk no longer reaches every header-filling shape — it checked {checked:?}"
     );
     assert!(
         offenders.is_empty(),
