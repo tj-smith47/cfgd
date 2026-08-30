@@ -365,6 +365,7 @@ Reached via `cfgd_core::test_helpers::*`, gated behind the `test-helpers` Cargo 
 - `ConcurrencyWitness` + `MockPackageManager::with_concurrency_witness(w)` — proof that two lanes really overlapped, so a concurrency test asserts a peak, never a wall-clock bound.
 - `ProbePath::containing(&[names])` — a `PATH` of one temp dir holding exactly the named executables (Unix-only). Assert the negative under an empty `PATH` and the positive here, one binary at a time.
 - `CosignTestShim::install()` / `::builder()...install()` — the fake-cosign shim (argv logging, keygen mode, exit code, canned stderr), restoring the prior seam on drop.
+- `StateStore::source_conflict_count()` (`state/sources.rs`, `cfg(feature = "test-helpers")`) — the count of persisted conflict rows, for pins that a composition ran once. Nothing reads the table in production, so the count is the only way a test can tell one composition from two.
 - `freeze_last_scan_at(&StateStore, timestamp)` — pins the recorded scan stamp and then REFUSES every later write, so a `cfgd`-crate test can drive the refused-write branch. The refusal lives in the database FILE, the consumer opening its own store.
 
 ## Upgrade
