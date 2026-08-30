@@ -41,6 +41,16 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
     // exactly what this verb is the right place to hear.
     let ctx = RunContext::new(cli, printer).fetching_sources();
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    // The starting point is a header FACT, never a gate on the run. This
+    // resolution reads the source cache offline, and a cached checkout can be
+    // unusable in exactly the way `cfgd sync` exists to repair — a refused
+    // signature after the subscription tightened its demand, a manifest whose
+    // fix has already been pushed. Propagated, that refusal aborted the run
+    // before its `Sources` section opened, so the one command that could
+    // replace the offending commit was the one that commit locked out, and the
+    // source stayed refused however many signed commits landed upstream. The
+    // reason is reported and the header names what it still can; the fetch
+    // below is what re-judges it.
     let desired = resolve_desired_state(
         &ctx,
         cfg,
@@ -50,13 +60,28 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         printer,
         false,
         composition::ConstraintMode::Report,
-    )?;
+    );
+    let (header_sources, header_modules) = match &desired {
+        Ok(desired) => (
+            desired.sources.as_slice(),
+            cfgd_core::output::HeaderModule::of_resolved(&desired.modules),
+        ),
+        Err(e) => {
+            printer
+                .status(
+                    Role::Warn,
+                    "Could not resolve the configuration as it stands",
+                )
+                .detail(cfgd_core::output::collapse_to_subject_line(e));
+            (&[][..], Vec::new())
+        }
+    };
     printer.kv_rows(cfgd_core::output::config_header_rows(
         &cfgd_core::output::ConfigHeader {
             config_path: Some(&cli.config),
-            sources: &desired.sources,
+            sources: header_sources,
             profile: Some(profile_name),
-            modules: &cfgd_core::output::HeaderModule::of_resolved(&desired.modules),
+            modules: &header_modules,
         },
     ));
 

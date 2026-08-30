@@ -46,6 +46,36 @@ pub(crate) async fn handle_sync(
                                 error = %e,
                                 "sync: signature verification failed after pull"
                             );
+                            // The pull already moved the checkout, and the
+                            // reconcile that follows reads whatever is on disk
+                            // — so returning here without putting the accepted
+                            // commit back would compose the very commit this
+                            // arm just refused, and keep composing it on every
+                            // later tick.
+                            let repo = repo_path.to_path_buf();
+                            let accepted = movement.from.clone();
+                            // spawn-blocking-ok: closure resolves no home paths (git op on an explicit repo path)
+                            let rolled_back = tokio::task::spawn_blocking(move || {
+                                crate::sources::reset_checkout_to(&repo, &accepted)
+                            })
+                            .await;
+                            match rolled_back {
+                                Ok(Ok(())) => tracing::warn!(
+                                    source = %source_name,
+                                    commit = %crate::short_commit(&movement.from),
+                                    "sync: rolled the checkout back to the last accepted commit"
+                                ),
+                                Ok(Err(msg)) => tracing::error!(
+                                    source = %source_name,
+                                    error = %msg,
+                                    "sync: could not roll the checkout back off the refused commit"
+                                ),
+                                Err(e) => tracing::error!(
+                                    source = %source_name,
+                                    error = %e,
+                                    "sync: rollback task panicked"
+                                ),
+                            }
                             // Don't treat this as "changes" — the content is untrusted
                             return false;
                         }

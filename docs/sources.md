@@ -943,6 +943,8 @@ cfgd source update acme --no-require-signed-commits    # stop demanding one
 
 `cfgd source add` sets it **before** the clone, so an unsigned HEAD refuses the subscription outright. `cfgd source update` sets it **after** the fetch: the demand describes every future fetch rather than the one that recorded it, so the next `cfgd sync` is where an unsigned HEAD is refused. Omitting both halves of the pair leaves the stored value alone.
 
+A refusal is recoverable, and it costs the cache nothing. Verification judges the commit that was just fetched, so pushing a signed commit upstream and running `cfgd sync` again is the whole recovery: the new HEAD is fetched, its signature is accepted, and the source composes. A refused fetch leaves the checkout on the last commit that was accepted (a first clone that is refused leaves no checkout at all), so a source that has been refused never composes from the unsigned commit and never has to be removed and re-added to get past one.
+
 `spec.security.allowUnsigned` still bypasses both. Set it only where signatures are unavailable.
 
 Every new capability requested by a source update requires interactive confirmation. The daemon never auto-applies permission-expanding changes.

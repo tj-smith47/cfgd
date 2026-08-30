@@ -17596,6 +17596,10 @@ mod handle_sync_signature_paths {
                 .unwrap();
         }
 
+        // The commit the last accepted pull left checked out.
+        let accepted = crate::sources::SourceManager::head_commit(&work_dir)
+            .expect("the work repo has a HEAD to fall back to");
+
         let state = Arc::new(Mutex::new(DaemonState::new()));
         // require_signed_commits=true, allow_unsigned=false
         let changed = handle_sync(&work_dir, true, false, "local", &state, true, false).await;
@@ -17603,6 +17607,20 @@ mod handle_sync_signature_paths {
         assert!(
             !changed,
             "unsigned-commit pull with require_signed must return false"
+        );
+        // The pull moved the checkout before anything could judge what it
+        // landed on, so refusing it has to put the accepted commit back: the
+        // reconcile that follows reads whatever is on disk, and a tick that
+        // returned `false` over a checkout still sitting on the refused commit
+        // would compose it on this tick and on every later one.
+        assert_eq!(
+            crate::sources::SourceManager::head_commit(&work_dir).as_deref(),
+            Some(accepted.as_str()),
+            "a refused signature rolls the checkout back to the last accepted commit"
+        );
+        assert!(
+            !work_dir.join("NEWFILE").exists(),
+            "and the refused commit's content goes with it"
         );
         // Even though the verification failed, last_sync should NOT be
         // updated because the early return short-circuits before the

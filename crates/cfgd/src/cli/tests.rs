@@ -24102,6 +24102,162 @@ spec:
     h.assert_output_contains("Sync failed");
 }
 
+/// A source refused for an unsigned HEAD recovers on the next sync once a
+/// signed commit lands upstream.
+///
+/// `cfgd sync` composes the configuration as it FOUND it before it fetches, to
+/// fill its header, and that resolution reads the source cache offline and
+/// verifies the cached head. Propagated, the refusal aborted the run before its
+/// `Sources` section opened — so the one command that could replace the
+/// offending commit was the command that commit locked out, and the
+/// subscription stayed refused however many signed commits were pushed.
+///
+/// Drives the five real steps: subscribe, tighten the demand, sync (refused),
+/// push a signed commit, sync (accepted). SSH signing, so the fixture needs
+/// only `ssh-keygen` and a git config of its own.
+#[test]
+#[serial_test::serial]
+fn a_source_refused_for_an_unsigned_head_syncs_once_a_signed_commit_lands() {
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    let scratch = tempfile::tempdir().unwrap();
+    let git = |dir: &Path, args: &[&str]| {
+        let out = cfgd_core::git_cmd_local()
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+
+    // A signing key and a git config that both signs with it and trusts it, so
+    // every git child of this test — the upstream commit and the `%G?` read
+    // inside the cached clone alike — speaks the same signing policy.
+    let key = scratch.path().join("id");
+    let keygen = std::process::Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-N", "", "-q", "-f"])
+        .arg(&key)
+        .output();
+    match keygen {
+        Ok(out) if out.status.success() => {}
+        // Nothing below can be judged without a key to sign with. On the Linux
+        // host this suite is gated on that is a broken rig and has to be loud; a
+        // host shipping no ssh-keygen at all proves nothing either way, so it
+        // stands down rather than reporting a signature failure it never tested.
+        _ => {
+            assert_ne!(
+                std::env::consts::OS,
+                "linux",
+                "ssh-keygen is required to mint the signature this test judges"
+            );
+            return;
+        }
+    }
+    let pubkey = std::fs::read_to_string(scratch.path().join("id.pub")).unwrap();
+    let allowed = scratch.path().join("allowed_signers");
+    std::fs::write(&allowed, format!("t@cfgd.test {pubkey}")).unwrap();
+    let gitconfig = scratch.path().join("gitconfig");
+    std::fs::write(
+        &gitconfig,
+        format!(
+            "[user]\n\tname = t\n\temail = t@cfgd.test\n\tsigningkey = {}\n\
+             [gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tallowedSignersFile = {}\n",
+            key.with_extension("pub").display(),
+            allowed.display()
+        ),
+    )
+    .unwrap();
+
+    let _allow_local = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _cfg_global = EnvVarGuard::set("GIT_CONFIG_GLOBAL", &gitconfig.display().to_string());
+    let _cfg_system = EnvVarGuard::set("GIT_CONFIG_NOSYSTEM", "1");
+
+    // The upstream a team subscribes to, at an unsigned first commit.
+    let upstream = scratch.path().join("team-config");
+    std::fs::create_dir_all(upstream.join("profiles")).unwrap();
+    std::fs::write(
+        upstream.join("cfgd-source.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: jarvispro\n  \
+         version: 1.0.0\nspec:\n  provides:\n    profiles:\n      - team\n",
+    )
+    .unwrap();
+    std::fs::write(
+        upstream.join("profiles").join("team.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  modules: []\n",
+    )
+    .unwrap();
+    git(&upstream, &["init", "-q", "-b", "master"]);
+    git(&upstream, &["add", "-A"]);
+    git(&upstream, &["commit", "-qm", "initial", "--no-gpg-sign"]);
+
+    let url = cfgd_core::to_file_url(&upstream);
+    let config = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+         profile: default\n  sources:\n    - name: jarvispro\n      origin:\n        \
+         type: Git\n        url: {url}\n        branch: master\n      subscription:\n        \
+         profile: team\n        priority: 500\n        requireSignedCommits: true\n"
+    );
+    let h = CliTestHarness::builder().config(&config).build();
+
+    // The state a tightened subscription leaves behind: a checkout accepted
+    // before the demand existed, sitting on a commit that no longer passes.
+    let cache = h.cache_dir.path().join("sources");
+    std::fs::create_dir_all(&cache).unwrap();
+    git(
+        scratch.path(),
+        &[
+            "clone",
+            "-q",
+            "--branch",
+            "master",
+            &url,
+            &cache.join("jarvispro").display().to_string(),
+        ],
+    );
+    let checkout = cache.join("jarvispro");
+    let stale = cfgd_core::sources::SourceManager::head_commit(&checkout).unwrap();
+
+    super::sync::run_sync(&h.cli(), h.printer()).unwrap();
+    let refused = h.output();
+    assert!(
+        refused.contains("source:jarvispro"),
+        "the refusal must not abort the run before the section that re-fetches: {refused}"
+    );
+    assert!(
+        refused.contains("not signed"),
+        "and the unsigned head is still refused: {refused}"
+    );
+    assert_eq!(
+        cfgd_core::sources::SourceManager::head_commit(&checkout).as_deref(),
+        Some(stale.as_str()),
+        "a refused sync leaves the cache where it found it"
+    );
+
+    // Upstream signs its HEAD.
+    git(
+        &upstream,
+        &["commit", "-qm", "sign HEAD", "--allow-empty", "-S"],
+    );
+    let signed = cfgd_core::sources::SourceManager::head_commit(&upstream).unwrap();
+    assert_ne!(signed, stale, "the fixture must offer a new commit");
+
+    super::sync::run_sync(&h.cli(), h.printer()).unwrap();
+    let accepted = h.output();
+    assert_eq!(
+        cfgd_core::sources::SourceManager::head_commit(&checkout).as_deref(),
+        Some(signed.as_str()),
+        "the signed commit is fetched and accepted: {accepted}"
+    );
+    assert!(
+        accepted.contains("✓ Synced"),
+        "and the run closes on its success verdict: {accepted}"
+    );
+}
+
 // -----------------------------------------------------------------------
 // Coverage: Command dispatch match arms via execute()
 // -----------------------------------------------------------------------

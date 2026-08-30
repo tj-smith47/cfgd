@@ -97,7 +97,7 @@ fn log_multi_row_human() {
     .unwrap();
     drop(printer);
 
-    let normalized = normalize_timestamps(&cap.human());
+    let normalized = normalize_ages(&normalize_timestamps(&cap.human()));
     let stripped = strip_ansi(&normalized);
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "log/multi_row.txt", &stripped);
 }
@@ -239,6 +239,47 @@ fn log_show_output_happy_json() {
 // ─────────────────────────────────────────────────────
 // snapshot helpers
 // ─────────────────────────────────────────────────────
+
+/// Replace the digits of an `Age` cell's magnitude with `X`.
+///
+/// The rows are recorded a moment before the render, so the cell reads `0s` on
+/// a fast host and `1s` on a loaded one, and the golden went red on the timing
+/// of the run rather than on anything the renderer did. This golden is about
+/// the header row, the column order and the status words, none of which the
+/// clock touches. Width-preserving, like every other snapshot normalizer, so
+/// the table's own alignment still pins; the unit letter survives, so a run
+/// slow enough to cross into minutes still fails.
+fn normalize_ages(raw: &str) -> String {
+    raw.lines()
+        .map(|line| {
+            let mut fields = line.split_whitespace();
+            match (fields.next(), fields.next()) {
+                (Some(id), Some(age))
+                    if id.chars().all(|c| c.is_ascii_digit()) && is_age_magnitude(age) =>
+                {
+                    let masked: String = age
+                        .chars()
+                        .map(|c| if c.is_ascii_digit() { 'X' } else { c })
+                        .collect();
+                    line.replacen(age, &masked, 1)
+                }
+                _ => line.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + if raw.ends_with('\n') { "\n" } else { "" }
+}
+
+/// Match a `humanize_age_magnitude_cell` reading: digits then one unit letter.
+fn is_age_magnitude(field: &str) -> bool {
+    let Some(unit) = field.chars().last() else {
+        return false;
+    };
+    matches!(unit, 's' | 'm' | 'h' | 'd')
+        && field.len() > 1
+        && field[..field.len() - 1].chars().all(|c| c.is_ascii_digit())
+}
 
 /// Replace ISO-8601 timestamps (e.g. `2026-05-17T14:23:01Z` —
 /// `cfgd_core::utc_now_iso8601()` shape) with a stable placeholder so the

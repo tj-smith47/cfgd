@@ -574,29 +574,60 @@ impl SourceManager {
             None => None,
         };
 
+        // Verify-then-publish. The fetch below moves the working checkout onto
+        // the fetched head before anything can judge it — half the demand
+        // (`constraints.requireSignedCommits`) lives in the manifest inside
+        // that tree, so it cannot be read until the tree is there — which means
+        // the commit that WAS accepted has to be read first and put back when
+        // the new one is refused. Left published, a single refused fetch
+        // strands the cache on the very commit it rejected, and every later
+        // read of that source fails on it forever: the read path verifies the
+        // cached head too, and `cfgd sync` composes from the cache before it
+        // fetches, so the one command that could replace the commit is the one
+        // the commit locks out.
+        let accepted_head = Self::head_commit(&source_dir);
+
+        let published = self.publish_fetched_source(spec, &source_dir, pinned_ref, printer);
+        if published.is_err() {
+            self.restore_accepted_checkout(
+                &spec.name,
+                &source_dir,
+                accepted_head.as_deref(),
+                printer,
+            );
+        }
+        published
+    }
+
+    /// Fetch (or clone) the subscribed ref, judge what arrived, and publish it
+    /// into the in-memory source map. Every `Err` leaves the checkout for
+    /// [`Self::restore_accepted_checkout`] to put back — this function never
+    /// decides what a refusal costs.
+    fn publish_fetched_source(
+        &mut self,
+        spec: &SourceSpec,
+        source_dir: &Path,
+        pinned_ref: Option<ResolvedRef>,
+        printer: &Printer,
+    ) -> Result<()> {
         match (&pinned_ref, source_dir.exists()) {
             (Some(resolved), true) => {
-                self.checkout_pinned_ref(spec, &source_dir, resolved, printer)?
+                self.checkout_pinned_ref(spec, source_dir, resolved, printer)?
             }
             (Some(resolved), false) => {
-                self.clone_pinned_source(spec, &source_dir, resolved, printer)?
+                self.clone_pinned_source(spec, source_dir, resolved, printer)?
             }
-            (None, true) => self.fetch_source(spec, &source_dir, printer)?,
-            (None, false) => self.clone_source(spec, &source_dir, printer)?,
+            (None, true) => self.fetch_source(spec, source_dir, printer)?,
+            (None, false) => self.clone_source(spec, source_dir, printer)?,
         }
 
-        let manifest = self.parse_manifest(&spec.name, &source_dir)?;
+        let manifest = self.parse_manifest(&spec.name, source_dir)?;
 
         // Signature verification: if the source requires signed commits, verify HEAD
-        self.verify_commit_signature(
-            spec,
-            &source_dir,
-            &manifest.spec.policy.constraints,
-            printer,
-        )?;
+        self.verify_commit_signature(spec, source_dir, &manifest.spec.policy.constraints, printer)?;
 
-        let last_commit = Self::head_commit(&source_dir);
-        let head_signed = head_signature_accepted(&spec.name, &source_dir);
+        let last_commit = Self::head_commit(source_dir);
+        let head_signed = head_signature_accepted(&spec.name, source_dir);
 
         let resolved_ref = pinned_ref.as_ref().and_then(|r| match r {
             ResolvedRef::Tag { tag, .. } => Some(tag.clone()),
@@ -607,7 +638,7 @@ impl SourceManager {
             name: spec.name.clone(),
             origin_url: spec.origin.url.clone(),
             origin_branch: spec.origin.branch.clone(),
-            local_path: source_dir,
+            local_path: source_dir.to_path_buf(),
             manifest,
             last_commit,
             last_fetched: Some(crate::utc_now_iso8601()),
@@ -617,6 +648,59 @@ impl SourceManager {
 
         self.sources.insert(spec.name.clone(), cached);
         Ok(())
+    }
+
+    /// Put the cache back where a refused fetch found it: on the last accepted
+    /// commit, or — when this run is the one that created the checkout — gone.
+    ///
+    /// The two arms are what make composing a refused commit unrepresentable:
+    /// after this returns the cache holds a commit some earlier load accepted,
+    /// or it holds nothing at all and the next load clones afresh. A reset that
+    /// itself fails falls through to the removal rather than leaving the
+    /// rejected commit standing. Called under the source-cache lock (from
+    /// [`Self::load_source_guarded`]), which is why the removal is inline
+    /// rather than through [`discard_cached_checkout`], whose own acquire
+    /// would deadlock against the guard already held.
+    fn restore_accepted_checkout(
+        &mut self,
+        name: &str,
+        source_dir: &Path,
+        accepted_head: Option<&str>,
+        printer: &Printer,
+    ) {
+        if let Some(commit) = accepted_head {
+            match reset_checkout_to(source_dir, commit) {
+                Ok(()) => {
+                    // The map still describes that commit, so the entry an
+                    // earlier load left is exactly what the checkout now holds.
+                    printer.status_simple(
+                        Role::Info,
+                        format!(
+                            "Source '{name}': kept the previously accepted commit {}",
+                            crate::short_commit(commit)
+                        ),
+                    );
+                    return;
+                }
+                Err(e) => printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "Source '{name}': could not restore the previously accepted commit ({e}), so the cached checkout was discarded"
+                    ),
+                ),
+            }
+        }
+
+        // Nothing accepted survives here, so nothing may stay composed either.
+        self.sources.remove(name);
+        match std::fs::remove_dir_all(source_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => printer.status_simple(
+                Role::Warn,
+                format!("Source '{name}': could not discard the refused checkout: {e}"),
+            ),
+        }
     }
 
     /// Insert a source from its existing on-disk checkout without re-fetching.
@@ -1433,6 +1517,44 @@ pub fn discard_cached_checkout(cache_dir: &Path, name: &str, printer: &Printer) 
         }
         .into()),
     }
+}
+
+/// Put the checkout at `repo_dir` back on `commit` — branch ref, index and
+/// working tree together.
+///
+/// The rollback half of verify-then-publish, shared by the two paths that move
+/// a checkout before its new HEAD can be judged: `SourceManager`'s fetch (see
+/// its `restore_accepted_checkout`) and the daemon's auto-pull leg.
+/// Neither may leave a refused commit checked out — the composition that runs
+/// next reads whatever is on disk — and neither can verify first, the pull and
+/// the fetch both being what makes the commit readable at all.
+///
+/// `Err` carries the reason as prose for the caller to word: the two callers
+/// owe different things afterwards (a cache may be discarded, an operator's own
+/// repository may not), so this reports and never decides.
+pub fn reset_checkout_to(repo_dir: &Path, commit: &str) -> std::result::Result<(), String> {
+    let output = crate::command_output_with_timeout(
+        crate::git_cmd_local().args([
+            "-C",
+            &repo_dir.display().to_string(), // native-ok: argv for local git invocation on this host
+            "reset",
+            "--hard",
+            "--quiet",
+            "--end-of-options",
+            commit,
+        ]),
+        crate::COMMAND_TIMEOUT,
+    )
+    .map_err(|e| format!("failed to run git: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "git reset failed ({}): {}",
+            crate::exit_status_reason(&output.status),
+            crate::stderr_lossy_trimmed(&output)
+        ));
+    }
+    Ok(())
 }
 
 /// Reject a source name that cannot serve as a cache directory of its own.
