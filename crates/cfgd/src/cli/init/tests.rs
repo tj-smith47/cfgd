@@ -5135,8 +5135,13 @@ mod cmd_init_apply_orchestration {
     /// no inherits / packages / modules). Mirror of the helper inside the
     /// sibling `cmd_init_from_local_bare` module — duplicated locally because
     /// Rust visibility forbids sharing a sibling-private helper across two
-    /// `#[cfg(unix)] mod` blocks without exposing it crate-wide.
-    fn make_bare_config_repo_with_default(tmp_root: &std::path::Path) -> std::path::PathBuf {
+    /// `#[cfg(unix)] mod` blocks without exposing it crate-wide. `extra_spec`
+    /// is appended to `spec:` verbatim, for a caller needing a declared field
+    /// the empty config carries none of.
+    fn make_bare_config_repo_with_default(
+        tmp_root: &std::path::Path,
+        extra_spec: &str,
+    ) -> std::path::PathBuf {
         let bare = tmp_root.join("upstream.git");
         let _bare_repo = git2::Repository::init_bare(&bare).unwrap();
 
@@ -5144,7 +5149,9 @@ mod cmd_init_apply_orchestration {
         let src_repo = git2::Repository::init(&src).unwrap();
         std::fs::write(
             src.join("cfgd.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: cloned-cfg\nspec:\n  profile: default\n",
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: cloned-cfg\nspec:\n  profile: default\n{extra_spec}"
+            ),
         )
         .unwrap();
         std::fs::create_dir_all(src.join("profiles")).unwrap();
@@ -5191,7 +5198,7 @@ mod cmd_init_apply_orchestration {
         // hit the apply_plan zero-action branch.
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
-        let bare = make_bare_config_repo_with_default(tmp.path());
+        let bare = make_bare_config_repo_with_default(tmp.path(), "");
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
         let url = cfgd_core::test_helpers::file_url(&bare);
@@ -5235,6 +5242,64 @@ mod cmd_init_apply_orchestration {
         );
     }
 
+    /// `cfgd init --apply-profile` is the fourth surface that reports on a run
+    /// under a resolved profile, and its header comes from the same builder as
+    /// `status` / `diff` / `sync`. It cannot join the class pin's shared
+    /// fixture: `cmd_init` returns early on a directory that already holds a
+    /// `cfgd.yaml` unless `--from` names a checkout, so the only way to reach
+    /// its apply arm is to clone one. The source it declares is unreachable on
+    /// purpose — the row is read off `spec.sources[]`, never off what a fetch
+    /// put in the cache.
+    #[test]
+    #[serial]
+    fn cmd_init_apply_profile_names_the_sources_its_config_declares() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let bare = make_bare_config_repo_with_default(
+            tmp.path(),
+            "  sources:\n    - name: team\n      origin:\n        type: Git\n        url: https://example.invalid/team.git\n        branch: main\n      subscription:\n        profile: shared\n",
+        );
+        let target = tmp.path().join("dst");
+        let state_dir = tmp.path().join("state");
+        let url = cfgd_core::test_helpers::file_url(&bare);
+
+        let (printer, cap) = Printer::for_test_doc();
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                on_conflict: crate::cli::OnConflict::Ask,
+                path: Some(target.to_str().unwrap()),
+                from: Some(&url),
+                branch: "master",
+                name: None,
+                apply: true,
+                dry_run: true,
+                yes: true,
+                install_daemon: false,
+                theme: None,
+                apply_profile: Some("default"),
+                apply_modules: &[],
+                cache_dir: None,
+                state_dir: None,
+                runtime_dir: None,
+                scope: cfgd_core::Scope::User,
+            };
+            cmd_init_guarded(&printer, &args).expect("--from + --apply-profile should succeed");
+        });
+
+        drop(printer);
+        let out = cfgd_core::output::strip_ansi(&cap.human());
+        let sources_at = out
+            .find("Sources  team (profile shared)")
+            .unwrap_or_else(|| panic!("init's header must name the declared source: {out}"));
+        let profile_at = out
+            .find("Profile  default")
+            .unwrap_or_else(|| panic!("init's header must name the profile: {out}"));
+        assert!(
+            sources_at < profile_at,
+            "the header reads outward in: what composed the config before what it resolved to: {out}"
+        );
+    }
+
     #[test]
     #[serial]
     fn cmd_init_from_url_with_apply_profile_flag_persists_profile_to_cfgd_yaml() {
@@ -5245,7 +5310,7 @@ mod cmd_init_apply_orchestration {
         //   3. run the profile-based apply (dry_run → zero-action exit)
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
-        let bare = make_bare_config_repo_with_default(tmp.path());
+        let bare = make_bare_config_repo_with_default(tmp.path(), "");
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
         let url = cfgd_core::test_helpers::file_url(&bare);
@@ -5606,7 +5671,7 @@ mod cmd_init_apply_orchestration {
         // bail test).
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
-        let bare = make_bare_config_repo_with_default(tmp.path());
+        let bare = make_bare_config_repo_with_default(tmp.path(), "");
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
         let url = cfgd_core::test_helpers::file_url(&bare);

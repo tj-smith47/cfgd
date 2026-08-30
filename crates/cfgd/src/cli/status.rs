@@ -2901,8 +2901,11 @@ mod tests {
                 format!("Config {}", cfgd_core::to_posix_string(&cli.config)),
                 "Modules scratch".to_string(),
             ],
-            "`module create --apply` names its config and the module it created,              and neither of the two rows between — it composes from no source              and resolves no profile: {created:?}"
+            "`module create --apply` names its config and the module it created, and \
+             neither of the two rows between — it composes from no source and \
+             resolves no profile: {created:?}"
         );
+
         drop(env);
     }
 
