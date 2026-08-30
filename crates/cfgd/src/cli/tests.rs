@@ -24221,7 +24221,16 @@ fn a_source_refused_for_an_unsigned_head_syncs_once_a_signed_commit_lands() {
     let checkout = cache.join("jarvispro");
     let stale = cfgd_core::sources::SourceManager::head_commit(&checkout).unwrap();
 
-    super::sync::run_sync(&h.cli(), h.printer()).unwrap();
+    let payload = super::sync::run_sync(&h.cli(), h.printer()).unwrap();
+    assert!(
+        super::sync::sync_refused(&payload),
+        "a source still refused after the fetch exits nonzero"
+    );
+    assert!(
+        payload.config_resolution_error.is_none(),
+        "the stale pre-fetch reading is not itself the refusal: {:?}",
+        payload.config_resolution_error
+    );
     let refused = h.output();
     assert!(
         refused.contains("source:jarvispro"),
@@ -24245,7 +24254,7 @@ fn a_source_refused_for_an_unsigned_head_syncs_once_a_signed_commit_lands() {
     let signed = cfgd_core::sources::SourceManager::head_commit(&upstream).unwrap();
     assert_ne!(signed, stale, "the fixture must offer a new commit");
 
-    super::sync::run_sync(&h.cli(), h.printer()).unwrap();
+    let payload = super::sync::run_sync(&h.cli(), h.printer()).unwrap();
     let accepted = h.output();
     assert_eq!(
         cfgd_core::sources::SourceManager::head_commit(&checkout).as_deref(),
@@ -24255,6 +24264,99 @@ fn a_source_refused_for_an_unsigned_head_syncs_once_a_signed_commit_lands() {
     assert!(
         accepted.contains("✓ Synced"),
         "and the run closes on its success verdict: {accepted}"
+    );
+    assert!(
+        !super::sync::sync_refused(&payload),
+        "the recovery run exits 0: {accepted}"
+    );
+}
+
+/// The header's stale reading is a starting point, not a verdict.
+///
+/// `cfgd sync` composes offline from the source cache to fill its header rows,
+/// and that read verifies the cached head — so a subscription that tightened
+/// its demand after the last fetch refuses on the very commit the fetch below
+/// replaces. Reported as a refusal it would fail the run that repairs it, and
+/// worded as a warning it sits three lines above a green `✓ Synced`.
+#[test]
+fn a_stale_signature_header_reading_is_a_starting_point_not_a_refusal() {
+    let e: anyhow::Error = cfgd_core::errors::CfgdError::Source(
+        cfgd_core::errors::SourceError::SignatureVerificationFailed {
+            name: "jarvispro".to_string(),
+            message: "HEAD commit is not signed".to_string(),
+        },
+    )
+    .into();
+    assert!(
+        super::sync::resolution_failure_the_fetch_rejudges(&e),
+        "a refused cached signature is what the fetch below re-judges"
+    );
+
+    let other: anyhow::Error =
+        cfgd_core::errors::CfgdError::Module(cfgd_core::errors::ModuleError::NotFound {
+            name: "nonexistent-module".to_string(),
+        })
+        .into();
+    assert!(
+        !super::sync::resolution_failure_the_fetch_rejudges(&other),
+        "nothing the fetch does makes an unknown module resolve"
+    );
+}
+
+/// A configuration failure no fetch can repair keeps its nonzero exit, and says
+/// so in both output modes.
+///
+/// The header resolution used to propagate with `?`, so an unresolvable
+/// configuration failed the command outright. Reported instead as a human line,
+/// it went silent under `-o json` (which forces Quiet, swallowing every role but
+/// `Fail`) and left a CI run reading `sources` alone told the whole run
+/// succeeded.
+#[test]
+fn a_config_resolution_failure_the_fetch_cannot_repair_still_refuses_the_sync() {
+    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+                  profile: default\n";
+    let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\n\
+                   spec:\n  modules:\n    - nonexistent-module\n";
+
+    let h = CliTestHarness::builder()
+        .config(config)
+        .profile("default", profile)
+        .build();
+    let payload = super::sync::run_sync(&h.cli(), h.printer()).unwrap();
+    let human = h.output();
+    assert!(
+        payload.config_resolution_error.is_some(),
+        "the failure the human line reports lands in the payload: {human}"
+    );
+    assert!(
+        super::sync::sync_refused(&payload),
+        "and it is what the nonzero exit reports: {human}"
+    );
+    assert!(
+        human.contains("Could not resolve the configuration as it stands"),
+        "the human line names it as a verdict, not a starting point: {human}"
+    );
+    assert!(
+        !human.contains("✓ Synced"),
+        "a run that cannot resolve its configuration withholds the success verdict: {human}"
+    );
+
+    let hj = CliTestHarness::builder()
+        .config(config)
+        .profile("default", profile)
+        .json()
+        .build();
+    let payload = super::sync::run_sync(&hj.cli(), hj.printer()).unwrap();
+    assert!(
+        super::sync::sync_refused(&payload),
+        "same exit under -o json"
+    );
+    let json = hj.json_output();
+    assert!(
+        json["configResolutionError"]
+            .as_str()
+            .is_some_and(|s| s.contains("nonexistent-module")),
+        "and a structured consumer can see it: {json}"
     );
 }
 

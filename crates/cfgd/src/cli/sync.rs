@@ -16,11 +16,36 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
 /// Whether a leg of the run refused, which is what the process exit reports.
 ///
 /// A source the reader declined at the permission prompt is an answered
-/// question, not a refusal: the run did what they said. A source that failed
-/// and a local repository that could not be pulled are the two outcomes
-/// nobody chose.
+/// question, not a refusal: the run did what they said. A source that failed,
+/// a local repository that could not be pulled and a configuration that could
+/// not be resolved at all are the three outcomes nobody chose.
 pub fn sync_refused(payload: &SyncOutput) -> bool {
-    payload.local_pull_error.is_some() || payload.sources.iter().any(|s| s.status.refused())
+    payload.local_pull_error.is_some()
+        || payload.config_resolution_error.is_some()
+        || payload.sources.iter().any(|s| s.status.refused())
+}
+
+/// Whether a header-resolution failure is the stale pre-fetch reading that this
+/// very run repairs.
+///
+/// The header composes the configuration as the command FOUND it, offline from
+/// the source cache, and that read verifies the cached head — so a subscription
+/// that tightened its demand after the last fetch refuses on a commit the fetch
+/// below is about to replace. That one failure is a starting point, not a
+/// verdict: reported as a refusal it would fail the very run that fixes it.
+/// Every other resolution failure (an unknown module, a constraint violation, a
+/// malformed manifest) is one no fetch can answer, and it kept its nonzero exit
+/// before the header stopped propagating with `?`.
+///
+/// Judged on the error's own KIND. A message match would break the moment the
+/// sentence is reworded, and the sentence is display text.
+pub(super) fn resolution_failure_the_fetch_rejudges(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<cfgd_core::errors::CfgdError>(),
+        Some(cfgd_core::errors::CfgdError::Source(
+            cfgd_core::errors::SourceError::SignatureVerificationFailed { .. }
+        ))
+    )
 }
 
 /// Drive the sync and return the payload it settled, so a caller can map a
@@ -61,18 +86,39 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         false,
         composition::ConstraintMode::Report,
     );
+    // The failure the header reports, kept for the payload below so a `-o json`
+    // consumer sees what the human line said: `-o json` forces Quiet, which
+    // swallows every role but `Fail`, and a CI run reading only `sources` would
+    // otherwise be told the whole run succeeded over a configuration that
+    // cannot resolve at all.
+    let mut config_resolution_error = None;
     let (header_sources, header_modules) = match &desired {
         Ok(desired) => (
             desired.sources.as_slice(),
             cfgd_core::output::HeaderModule::of_resolved(&desired.modules),
         ),
         Err(e) => {
-            printer
-                .status(
-                    Role::Warn,
-                    "Could not resolve the configuration as it stands",
-                )
-                .detail(cfgd_core::output::collapse_to_subject_line(e));
+            let detail = cfgd_core::output::collapse_to_subject_line(e);
+            if resolution_failure_the_fetch_rejudges(e) {
+                // A side report, not a verdict: the same sentence opens the run
+                // that then repairs it, and a warning about an unsigned HEAD
+                // three lines above a green `✓ Synced` reads as a contradiction.
+                // The `source:<name>` row below is the only thing that judges.
+                printer
+                    .status(
+                        Role::Info,
+                        "Starting point could not be resolved from the cached checkout",
+                    )
+                    .detail(format!("{detail}; the fetch below judges the new head"));
+            } else {
+                printer
+                    .status(
+                        Role::Warn,
+                        "Could not resolve the configuration as it stands",
+                    )
+                    .detail(&detail);
+                config_resolution_error = Some(detail);
+            }
             (&[][..], Vec::new())
         }
     };
@@ -90,6 +136,7 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
     let mut sync_payload = SyncOutput {
         local_pulled: false,
         local_pull_error: None,
+        config_resolution_error,
         sources: Vec::new(),
     };
 
@@ -399,7 +446,8 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
 ///
 /// The local pull is one of the run's legs, so a pull that refused withholds
 /// the success verdict: `✓ Synced` two lines under `⚠ Pull failed` claimed the
-/// very thing the row above it denied.
+/// very thing the row above it denied. A configuration the header could not
+/// resolve withholds it for the same reason, and is the same nonzero exit.
 fn sync_verdict(payload: &SyncOutput) -> (Role, &'static str, Option<String>) {
     let sources = &payload.sources;
     let total = sources.len();
@@ -416,7 +464,8 @@ fn sync_verdict(payload: &SyncOutput) -> (Role, &'static str, Option<String>) {
         );
     }
     let unpulled = payload.local_pull_error.is_some();
-    if skipped > 0 || unpulled {
+    let unresolved = payload.config_resolution_error.is_some();
+    if skipped > 0 || unpulled || unresolved {
         let mut detail = Vec::new();
         if total > 0 {
             detail.push(if skipped > 0 {
@@ -428,13 +477,18 @@ fn sync_verdict(payload: &SyncOutput) -> (Role, &'static str, Option<String>) {
         if unpulled {
             detail.push("local repo not pulled".to_string());
         }
+        if unresolved {
+            detail.push("configuration not resolved".to_string());
+        }
         return (
-            // no-next-step: the failed pull and each skipped source hinted
-            // their own next step above
+            // no-next-step: the failed pull, the unresolvable configuration and
+            // each skipped source hinted their own next step above
             Role::Warn,
             // A pull nothing verified cannot be reported as one: the word
-            // says what the run came to, not what it set out to do.
-            if unpulled {
+            // says what the run came to, not what it set out to do. A
+            // configuration that will not resolve is the same withholding —
+            // and it is what the nonzero exit reports.
+            if unpulled || unresolved {
                 "Sync incomplete"
             } else {
                 "Synced"
