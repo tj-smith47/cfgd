@@ -380,16 +380,33 @@ impl SourceManager {
             return Ok(());
         }
 
-        let manifest = self.parse_manifest(&spec.name, &source_dir)?;
-
         // A cached source still gets its signature verified — a tampered cache
-        // must not silently feed a read path.
-        self.verify_commit_signature(
-            spec,
-            &source_dir,
-            &manifest.spec.policy.constraints,
-            printer,
-        )?;
+        // must not silently feed a read path. A refusal un-composes whatever an
+        // earlier accepted load of the same name left in the map, the same rule
+        // `restore_accepted_checkout` holds on the fetch path: the checkout
+        // stays on disk for `cfgd sync` to repair, but nothing this
+        // subscription's demand refuses may stay composed. The map is what
+        // `SourceManager::get` answers from, and a caller that reports the
+        // failure and reads on (`cfgd source show`) would otherwise render the
+        // manifest of a head it had just refused.
+        let judged = self
+            .parse_manifest(&spec.name, &source_dir)
+            .and_then(|manifest| {
+                self.verify_commit_signature(
+                    spec,
+                    &source_dir,
+                    &manifest.spec.policy.constraints,
+                    printer,
+                )?;
+                Ok(manifest)
+            });
+        let manifest = match judged {
+            Ok(manifest) => manifest,
+            Err(e) => {
+                self.sources.remove(&spec.name);
+                return Err(e);
+            }
+        };
 
         let last_commit = Self::head_commit(&source_dir);
         let head_signed = head_signature_accepted(&spec.name, &source_dir);
