@@ -155,6 +155,16 @@ pub struct SyncOutput {
     /// what the report said.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_pull_error: Option<String>,
+    /// Why the configuration as this command FOUND it could not be resolved,
+    /// absent when it was. The header resolution reads the source cache
+    /// offline, so the one failure it raises that this very run repairs — a
+    /// cached head refused for its signature — is left out and reported by the
+    /// `sources` row the fetch below settles instead. Every other failure is a
+    /// refusal like a failed pull: the human verdict withholds `Synced` on the
+    /// same fact, and a consumer reading only `sources` would otherwise see
+    /// total success over a configuration that cannot resolve at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_resolution_error: Option<String>,
     pub sources: Vec<SourceSyncOutput>,
 }
 
@@ -1410,6 +1420,7 @@ mod tests {
         let v = SyncOutput {
             local_pulled: true,
             local_pull_error: None,
+            config_resolution_error: None,
             sources: vec![SourceSyncOutput {
                 name: "main".to_string(),
                 status: SourceOutcome::Synced,

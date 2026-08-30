@@ -682,10 +682,13 @@ impl SourceManager {
                     );
                     return;
                 }
+                // The removal below is what actually discards it, and it may
+                // fail too — claimed here in the past tense, one event read as
+                // two contradictory lines.
                 Err(e) => printer.status_simple(
                     Role::Warn,
                     format!(
-                        "Source '{name}': could not restore the previously accepted commit ({e}), so the cached checkout was discarded"
+                        "Source '{name}': could not restore the previously accepted commit ({e})"
                     ),
                 ),
             }
@@ -1529,9 +1532,18 @@ pub fn discard_cached_checkout(cache_dir: &Path, name: &str, printer: &Printer) 
 /// next reads whatever is on disk — and neither can verify first, the pull and
 /// the fetch both being what makes the commit readable at all.
 ///
+/// A HARD reset, so the working tree goes back with the ref: tracked edits
+/// sitting in it are discarded. That costs nothing either caller can protect —
+/// a source cache holds only what cfgd cloned, and on the daemon's arm
+/// `git_pull` has already force-checked-out over the same edits one step
+/// earlier, so by contract neither tree holds work of the operator's. `git
+/// reset --keep` would refuse instead, at the price of leaving the repository
+/// on the very commit this exists to get off.
+///
 /// `Err` carries the reason as prose for the caller to word: the two callers
-/// owe different things afterwards (a cache may be discarded, an operator's own
-/// repository may not), so this reports and never decides.
+/// owe different things afterwards (a refused cache may be discarded outright,
+/// the operator's own repository may only be reported on), so this reports and
+/// never decides.
 pub fn reset_checkout_to(repo_dir: &Path, commit: &str) -> std::result::Result<(), String> {
     let output = crate::command_output_with_timeout(
         crate::git_cmd_local().args([

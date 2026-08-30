@@ -24,6 +24,7 @@ fn happy_output() -> SyncOutput {
     SyncOutput {
         local_pulled: false,
         local_pull_error: None,
+        config_resolution_error: None,
         sources: vec![
             SourceSyncOutput {
                 name: "team-a".to_string(),
