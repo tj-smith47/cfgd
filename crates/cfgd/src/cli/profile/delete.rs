@@ -133,7 +133,7 @@ pub fn cmd_profile_delete(
         Some((dir, true)) => {
             yes || printer.prompt_confirm(&format!(
                 "Profile directory '{}' still contains payload files — remove it too?",
-                dir.posix()
+                cfgd_core::fold_home_in_text(&dir.posix().to_string())
             ))?
         }
         _ => false,

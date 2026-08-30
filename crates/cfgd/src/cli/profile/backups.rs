@@ -97,8 +97,8 @@ pub(crate) fn prompt_restore_backups(
             // but the underlying failure is logged so it's not invisible.
             let confirmed = match printer.prompt_confirm(&format!(
                 "Restore backup {} to {}?",
-                backup_path.posix(),
-                target.posix()
+                cfgd_core::fold_home_in_text(&backup_path.posix().to_string()),
+                cfgd_core::fold_home_in_text(&target.posix().to_string())
             )) {
                 Ok(answer) => answer,
                 Err(e) => {

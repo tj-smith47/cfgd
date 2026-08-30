@@ -558,11 +558,11 @@ fn confirm_restore(
     let into = if target.was_redirected_by_a_link() {
         format!(
             "{} (via {})",
-            target.resolved_display(),
-            target.requested_display()
+            cfgd_core::fold_home_in_text(&target.resolved_display()),
+            cfgd_core::fold_home_in_text(&target.requested_display())
         )
     } else {
-        target.resolved_display()
+        cfgd_core::fold_home_in_text(&target.resolved_display())
     };
     let question = format!(
         "Restore '{}' from snapshot {} into {}?",

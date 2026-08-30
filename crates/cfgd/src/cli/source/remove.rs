@@ -207,7 +207,7 @@ pub(super) fn run_source_remove(
                     Role::Warn,
                     format!(
                         "Modified since cfgd deployed it: {}",
-                        cfgd_core::escape_control_chars(path)
+                        cfgd_core::fold_home_in_text(&cfgd_core::escape_control_chars(path))
                     ),
                 );
             }

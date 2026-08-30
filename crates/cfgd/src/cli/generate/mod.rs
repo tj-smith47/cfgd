@@ -267,7 +267,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
         .map(|g| {
             serde_json::json!({
                 "name": g.name,
-                "path": g.path.display().to_string(),
+                "path": cfgd_core::to_posix_string(&g.path),
             })
         })
         .collect();
@@ -277,7 +277,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
             let sec = printer.section("Generated Files");
             for item in &generated {
                 sec.status(Role::Ok, item.name.clone())
-                    .qualifier(item.path.posix().to_string());
+                    .qualifier(cfgd_core::fold_home_in_text(&item.path.posix().to_string()));
             }
         }
 

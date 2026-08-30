@@ -31091,6 +31091,89 @@ fn no_age_slot_restates_the_dimension_its_key_names() {
     );
 }
 
+/// A CONFIRM prompt is a display slot addressed to whoever ran the command,
+/// so a path it names folds to `~/` like the rows around it: `backup
+/// rollback`'s prompt folded while its sibling `backup restore` spelled the
+/// same directory absolutely, one question above a `restore ~/… from …` row.
+/// The walk takes every `prompt_confirm` in both crates' production sources
+/// and judges the lines that BUILD its question — the call's own argument
+/// expression, and the `let question = …` / `let into = …` statements the
+/// two-step shapes bind first — failing a path-shaped interpolation
+/// (`.posix()`, `.display()`, `resolved_display()` / `requested_display()`)
+/// that does not pass through `fold_home_in_text` on the same line. A helper
+/// binding under any other name is not seen; name the pieces of a prompt
+/// `question` and `into` so the walk can judge them. A path that must stay
+/// native carries `// native-prompt-ok: <why>` on the offending line.
+#[test]
+fn every_path_naming_confirm_prompt_folds_the_home_directory() {
+    let path_idiom = |l: &str| {
+        l.contains(".posix()")
+            || l.contains(".display()")
+            || l.contains("resolved_display()")
+            || l.contains("requested_display()")
+    };
+    // A statement's span, taken from its opening line until parens balance.
+    let statement_span = |lines: &[&str], start: usize| {
+        let mut depth = 0i32;
+        for (i, l) in lines[start..].iter().enumerate() {
+            depth += l.matches(['(', '[', '{']).count() as i32;
+            depth -= l.matches([')', ']', '}']).count() as i32;
+            if depth <= 0 && l.trim_end().ends_with([';', '?', ')']) {
+                return start + i;
+            }
+        }
+        start
+    };
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains("prompt_confirm(") || line.contains("fn prompt_confirm") {
+                continue;
+            }
+            let mut judged: Vec<(usize, usize)> = vec![(n, statement_span(&lines, n))];
+            for binding in ["let question = ", "let question: ", "let into = "] {
+                if let Some(b) = lines[n.saturating_sub(40)..n]
+                    .iter()
+                    .rposition(|l| l.trim_start().starts_with(binding))
+                {
+                    let b = n.saturating_sub(40) + b;
+                    judged.push((b, statement_span(&lines, b)));
+                }
+            }
+            for (lo, hi) in judged {
+                for (i, l) in lines[lo..=hi.min(lines.len() - 1)].iter().enumerate() {
+                    let journal = ["warn!", "info!", "debug!", "error!", "tracing::"];
+                    if path_idiom(l)
+                        && !l.contains("fold_home_in_text")
+                        && !l.contains("// native-prompt-ok:")
+                        && !journal.iter().any(|m| l.contains(m))
+                        && !lines[lo..lo + i]
+                            .iter()
+                            .rev()
+                            .take(4)
+                            .any(|p| journal.iter().any(|m| p.contains(m)))
+                    {
+                        offenders.push(format!("{}:{}: {}", path.display(), lo + i + 1, l.trim()));
+                    }
+                }
+            }
+        }
+    }
+    offenders.sort();
+    offenders.dedup();
+    assert!(
+        offenders.is_empty(),
+        "a confirm prompt naming a path folds the home directory through \
+         `fold_home_in_text` (a deliberately native path takes \
+         `// native-prompt-ok: <why>`):\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// Every DISPLAY slot of a report that names a path under home folds it to
 /// `~/`, the way the action rows do — the header kv rows (the `Config` row
 /// every run header, `status`, `diff`, `sync`, `daemon status` and `profile
