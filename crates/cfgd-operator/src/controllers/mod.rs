@@ -271,8 +271,8 @@ fn write_public_key(pem: &str) -> std::io::Result<tempfile::NamedTempFile> {
 /// directly: a controller test drives `reconcile_module` end to end, and must
 /// reach no registry to do it. Production installs
 /// [`ArtifactFactsReader::from_registry`]; a test installs
-/// [`ArtifactFactsReader::fixed`] and gets the same reconcile with a known
-/// answer.
+/// `ArtifactFactsReader::fixed` (test-only) and gets the same reconcile with
+/// a known answer.
 ///
 /// One reader, not two: both facts come off the same artifact in one visit,
 /// and a second seam would let a test pin a module whose platforms and
@@ -304,7 +304,7 @@ impl ArtifactFactsReader {
     }
 
     /// A reader that answers `facts` for every reference.
-    #[cfg(any(test, doc))]
+    #[cfg(test)]
     #[must_use]
     pub fn fixed(facts: ArtifactFacts) -> Self {
         Self(Arc::new(move |_| facts.clone()))

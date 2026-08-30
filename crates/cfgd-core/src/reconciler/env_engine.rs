@@ -141,9 +141,9 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// A declared host shape for [`EnvHostProbe::detect`] to return verbatim
+/// A declared host shape for `EnvHostProbe::detect` to return verbatim
 /// instead of reading `$SHELL`/PATH/`~`. Field-for-field mirror of
-/// [`EnvHostProbe`] rather than a re-export of it: `EnvHostProbe` stays
+/// `EnvHostProbe` rather than a re-export of it: `EnvHostProbe` stays
 /// `pub(super)` (internal to the reconciler), while this override is the
 /// crate's public test seam.
 #[cfg(any(test, feature = "test-helpers"))]

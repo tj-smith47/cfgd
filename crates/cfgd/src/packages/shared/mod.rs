@@ -205,7 +205,7 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Acti
 /// second person (`you`, `your`), an imperative opening (`Add`, `Run`,
 /// `Restart`, `Set`, `Source`, `Edit`), a purpose clause (`To start`, `To
 /// use`), a service line (`brew services`), or a shell prompt line — none of
-/// which a bare "X has been installed to:\n  \<path\>" carries. A body this
+/// which a bare `"X has been installed to:\n  <path>"` carries. A body this
 /// cannot classify stays a warning: a missed instruction costs the reader a
 /// step they had to take, a missed report costs them a glance.
 fn brew_caveat_asks_the_reader_to_act(body: &str) -> bool {
