@@ -622,9 +622,9 @@ fn resolve_platform(opts: &PackOptions) -> Result<(String, String), OciError> {
             Ok((os.to_string(), arch.to_string()))
         }
         None => {
-            let os = std::env::consts::OS.to_string();
-            let arch = super::rust_arch_to_oci(std::env::consts::ARCH).to_string();
-            Ok((os, arch))
+            let host = super::current_platform();
+            let (os, arch) = super::parse_platform_target(&host)?;
+            Ok((os.to_string(), arch.to_string()))
         }
     }
 }

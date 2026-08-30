@@ -231,6 +231,8 @@ _strip_test_blocks_uncached() {
         if (test_depth <= 0 && opens + closes > 0) {
             in_test = 0
             test_depth = 0
+        } else if (test_depth == 0 && opens + closes == 0 && code ~ /;[[:space:]]*$/) {
+            in_test = 0
         }
         next
     }
@@ -285,7 +287,7 @@ strip_attr_lines() {
         line = $0
         sub(/^[^:]*:[0-9]+:/, "", line)
         code = code_only(line)
-        if (!in_attr && code ~ /^[[:space:]]*#\[/) {
+        if (!in_attr && code ~ /^[[:space:]]*#!?\[/) {
             in_attr = 1
             depth = 0
         }
@@ -296,6 +298,23 @@ strip_attr_lines() {
         if (depth <= 0 && (was > 0 || opens > 0)) {
             in_attr = 0
             depth = 0
+            # A declaration trailing the closing bracket on this same line
+            # survives only when the line held no string/char/comment for
+            # code_only to remove — only then does an index into `code` still
+            # name the same character in `line`.
+            if (code == line) {
+                d = was
+                for (i = 1; i <= length(code); i++) {
+                    c1 = substr(code, i, 1)
+                    if (c1 == "(" || c1 == "[") d++
+                    else if (c1 == ")" || c1 == "]") d--
+                    if (d <= 0) break
+                }
+                tail = substr(line, i + 1)
+                if (tail ~ /[^[:space:]]/) {
+                    print substr($0, 1, length($0) - length(line)) tail
+                }
+            }
         }
     }
     '
@@ -694,14 +713,17 @@ production_construction_sites() {
 # gate's wording (`good_child_process_wording.txt`) reported `Ok`/`Err` as
 # variants nothing constructs until this filter told the two apart.
 errors_file_candidates() {
-    local candidates
+    local -a candidates=()
+    local f
     if [[ -n "${CFGD_AUDIT_PATH:-}" ]]; then
-        candidates=$(find "$CFGD_AUDIT_PATH" -type f 2>/dev/null)
+        while IFS= read -r -d '' f; do candidates+=("$f"); done \
+            < <(find "$CFGD_AUDIT_PATH" -type f -print0 2>/dev/null)
     else
-        candidates=$(find "${SRC_ROOTS[@]}" -path '*/errors*' -name '*.rs' 2>/dev/null)
+        while IFS= read -r -d '' f; do candidates+=("$f"); done \
+            < <(find "${SRC_ROOTS[@]}" -path '*/errors*' -name '*.rs' -print0 2>/dev/null)
     fi
-    [[ -z "$candidates" ]] && return 0
-    grep -lF 'thiserror::Error' $candidates 2>/dev/null || true
+    [[ ${#candidates[@]} -eq 0 ]] && return 0
+    grep -lF 'thiserror::Error' -- "${candidates[@]}" 2>/dev/null || true
 }
 for errors_file in $(errors_file_candidates); do
     # Extraction runs over the test-stripped view, same as every other gate:
@@ -830,9 +852,9 @@ ALLOWED_FN_PAIRS=(
     "of crates/cfgd-core/src/reconciler/env_engine.rs"
     "of crates/cfgd-core/src/modules/surfaces.rs"
     "of crates/cfgd/src/cli/status.rs"
-    # `LevelWidths::of` is not the owner-derivation convention above — it
-    # measures the widest name/type/flag column over a slice of sibling
-    # fields, not a single source. `Tier::of` still keeps the budget.
+    # `LevelWidths::of` IS the `X::of(input) -> Self` convention above, over a
+    # slice of sibling fields rather than a single source; a fourth unrelated
+    # `of`. `Tier::of` still keeps the budget.
     "of crates/cfgd/src/cli/explain/mod.rs"
     "role crates/cfgd/src/cli/status.rs"
     "with_config_dir crates/cfgd-core/src/reconciler/mod.rs"
