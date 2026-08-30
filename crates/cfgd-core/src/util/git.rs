@@ -473,12 +473,15 @@ mod tests {
         );
     }
 
-    /// Every `reset` / `checkout` argv ARRAY in `code`, with the verb it names.
+    /// Every `reset` / `checkout` argv in `code`, with the verb it names — the
+    /// bracketed list form and the `Command` builder chain alike.
     ///
-    /// A verb literal outside a bracketed list is a word, not an argv — an enum
-    /// arm rendering the stage name of a libgit2 pull spells `"checkout"` and
-    /// runs nothing. The array is bounded by its own statement so a distant `[`
-    /// cannot be read as the argv's opening.
+    /// A verb literal that is neither is a word, not an argv — an enum arm
+    /// rendering the stage name of a libgit2 pull spells `"checkout"` and runs
+    /// nothing — so the chain arm is gated on `.arg(` / `.args(`, the only way
+    /// a statement with no list can still hand git a revision. Both forms are
+    /// bounded by their own statement, so a distant `[` cannot be read as the
+    /// argv's opening and a neighbouring chain cannot lend this one its `--`.
     fn revision_verb_argvs(code: &str) -> Vec<(&str, &str)> {
         let mut out = Vec::new();
         for verb in ["\"reset\"", "\"checkout\""] {
@@ -486,16 +489,52 @@ mod tests {
             while let Some(at) = rest.find(verb) {
                 let before = &rest[..at];
                 let stmt_start = before.rfind([';', '{', '}']).map_or(0, |o| o + 1);
-                if let Some(open) = before[stmt_start..].rfind('[') {
-                    let from = stmt_start + open;
-                    if let Some(close) = rest[from..].find(']') {
-                        out.push((&rest[from..from + close], verb));
+                let stmt_end = rest[at..].find(';').map_or(rest.len(), |o| at + o);
+                match before[stmt_start..].rfind('[') {
+                    Some(open) => {
+                        let from = stmt_start + open;
+                        if let Some(close) = rest[from..].find(']') {
+                            out.push((&rest[from..from + close], verb));
+                        }
+                    }
+                    None => {
+                        let stmt = &rest[stmt_start..stmt_end];
+                        if stmt.contains(".arg(") || stmt.contains(".args(") {
+                            out.push((stmt, verb));
+                        }
                     }
                 }
                 rest = &rest[at + verb.len()..];
             }
         }
         out
+    }
+
+    /// The walk judges a builder chain, and still leaves a bare verb WORD alone.
+    ///
+    /// Read for bracketed lists only, a `Command::new("git").arg("reset")…`
+    /// chain was invisible: the very shape a caller reaches for when the argv
+    /// is built conditionally, and the one no reviewer would think to spell as
+    /// an array.
+    #[test]
+    fn the_argv_walk_judges_a_builder_chain_with_no_array() {
+        let chain = revision_verb_argvs(
+            "let mut cmd = git_cmd_local();\ncmd.arg(\"reset\").arg(\"--hard\").arg(rev);",
+        );
+        assert_eq!(chain.len(), 1, "the chain is one argv: {chain:?}");
+        assert!(
+            !chain[0].0.contains("\"--\""),
+            "and it carries no trailing separator, which is what the walk fails on: {chain:?}"
+        );
+        assert_eq!(
+            revision_verb_argvs("cmd.args([\"reset\", \"--hard\", \"--\", rev]);").len(),
+            1,
+            "the bracketed form still reads as one argv"
+        );
+        assert!(
+            revision_verb_argvs("PullStage::Checkout => \"checkout\",").is_empty(),
+            "a verb WORD spawns nothing and is left alone"
+        );
     }
 
     /// Every `.rs` file under every crate's `src/`.
