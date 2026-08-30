@@ -24360,6 +24360,122 @@ fn a_config_resolution_failure_the_fetch_cannot_repair_still_refuses_the_sync() 
     );
 }
 
+/// A cached checkout the fetch below replaces is a starting point, whatever
+/// made it unreadable.
+///
+/// The header composes offline from the source cache, so it reports on bytes
+/// the `Sources` section is about to discard and re-clone — and a cache that is
+/// no checkout at all (an interrupted clone, a manifest a newer binary can no
+/// longer parse) raises `InvalidManifest` rather than the signature refusal that
+/// was noticed first. Judged only on that one kind, the run that HEALED the
+/// cache reported `⚠ Sync incomplete` and exited 1 in both output modes.
+#[test]
+#[serial_test::serial]
+fn a_cached_manifest_the_fetch_replaces_is_a_starting_point_not_a_refusal() {
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    let scratch = tempfile::tempdir().unwrap();
+    let gitconfig = scratch.path().join("gitconfig");
+    std::fs::write(&gitconfig, "[user]\n\tname = t\n\temail = t@cfgd.test\n").unwrap();
+    let _allow_local = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _cfg_global = EnvVarGuard::set("GIT_CONFIG_GLOBAL", &gitconfig.display().to_string());
+    let _cfg_system = EnvVarGuard::set("GIT_CONFIG_NOSYSTEM", "1");
+
+    let git = |dir: &Path, args: &[&str]| {
+        let out = cfgd_core::git_cmd_local()
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+
+    let upstream = scratch.path().join("team-config");
+    std::fs::create_dir_all(upstream.join("profiles")).unwrap();
+    std::fs::write(
+        upstream.join("cfgd-source.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: jarvispro\n  \
+         version: 1.0.0\nspec:\n  provides:\n    profiles:\n      - team\n",
+    )
+    .unwrap();
+    std::fs::write(
+        upstream.join("profiles").join("team.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  modules: []\n",
+    )
+    .unwrap();
+    git(&upstream, &["init", "-q", "-b", "master"]);
+    git(&upstream, &["add", "-A"]);
+    git(&upstream, &["commit", "-qm", "initial", "--no-gpg-sign"]);
+
+    let url = cfgd_core::to_file_url(&upstream);
+    let config = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+         profile: default\n  sources:\n    - name: jarvispro\n      origin:\n        \
+         type: Git\n        url: {url}\n        branch: master\n      subscription:\n        \
+         profile: team\n        priority: 500\n"
+    );
+
+    for as_json in [false, true] {
+        let builder = CliTestHarness::builder().config(&config);
+        let h = if as_json {
+            builder.json().build()
+        } else {
+            builder.build()
+        };
+
+        // The cache the header reads: a directory that is no repository and
+        // whose manifest will not parse. The fetch leg's own self-heal discards
+        // and re-clones exactly this shape.
+        let checkout = h.cache_dir.path().join("sources").join("jarvispro");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::write(
+            checkout.join("cfgd-source.yaml"),
+            "not: a: valid: manifest\n",
+        )
+        .unwrap();
+
+        let payload = super::sync::run_sync(&h.cli(), h.printer()).unwrap();
+        let out = h.output();
+        assert!(
+            payload.config_resolution_error.is_none(),
+            "a reading of bytes this run replaced is not a refusal: {out}"
+        );
+        assert!(
+            !super::sync::sync_refused(&payload),
+            "so the run that healed the cache exits 0: {out}"
+        );
+        assert!(
+            matches!(
+                payload.sources.first().map(|s| &s.status),
+                Some(SourceOutcome::Synced)
+            ),
+            "and the fetch below settled the source: {out}"
+        );
+
+        if as_json {
+            let json = h.json_output();
+            assert!(
+                json.get("configResolutionError").is_none(),
+                "nothing refused, so the payload carries no resolution error: {json}"
+            );
+            assert_eq!(json["sources"][0]["status"], "synced", "{json}");
+        } else {
+            assert!(
+                out.contains("Starting point could not be resolved from the cached checkout"),
+                "the header reports the stale reading as a starting point: {out}"
+            );
+            assert!(
+                out.contains("\u{2713} Synced"),
+                "and the run closes on its success verdict: {out}"
+            );
+        }
+    }
+}
+
 // -----------------------------------------------------------------------
 // Coverage: Command dispatch match arms via execute()
 // -----------------------------------------------------------------------
