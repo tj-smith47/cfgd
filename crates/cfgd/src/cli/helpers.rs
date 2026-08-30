@@ -1175,10 +1175,13 @@ pub(in crate::cli) struct DesiredState {
     /// nothing. `set_system_config_dir` is the caller's to apply: the read paths
     /// that never set it must keep not setting it.
     registry: std::cell::OnceCell<ProviderRegistry>,
-    /// The sources this composition actually drew a layer from, in layering
-    /// order. Read off the composed layers rather than off `cfg.spec.sources`,
-    /// so a subscription that contributed nothing is not announced as though it
-    /// had, and the profile named is the one that really merged.
+    /// The `spec.sources[]` subscriptions the config declares
+    /// ([`cfgd_core::reconciler::ComposedSource::from_declared`]), in
+    /// declaration order; present whether or not this machine has synced. Read
+    /// off the declaration rather than off the composed layers, which compose
+    /// from the source CACHE alone — derived from the layers, the row vanished
+    /// on a machine that had not synced yet and silently answered "has this
+    /// machine run `cfgd sync`" instead of what the config subscribes to.
     pub sources: Vec<cfgd_core::reconciler::ComposedSource>,
     pub source_env: std::collections::HashMap<String, Vec<cfgd_core::config::EnvVar>>,
     pub source_commits: std::collections::HashMap<String, String>,

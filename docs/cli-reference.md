@@ -1025,6 +1025,7 @@ control — there is nothing to pull from one that is not.
 ```
 Sync
   Config   /home/you/.config/cfgd/cfgd.yaml
+  Sources  team
   Profile  work
   Modules  core, editor
 
@@ -1043,7 +1044,9 @@ exit 0.
 ```
 Sync
   Config   /home/you/.config/cfgd/cfgd.yaml
+  Sources  team
   Profile  work
+  Modules  core, editor
 
 Local Repo
   ⚠ Pull failed — find remote: remote 'origin' does not exist
@@ -1063,6 +1066,9 @@ The header's own resolution is a leg like the pull. A configuration that will
 not resolve at all (an unknown module, an invalid source name, a cache directory
 cfgd cannot create) is reported as `⚠ Sync incomplete — configuration not
 resolved`, exits non-zero, and carries `configResolutionError` in `-o json`.
+The `Sources` row survives that refusal: the fetch below is about those very
+subscriptions, so the row a reader needs most is the one a failed resolution
+must not take away. Only `Modules` is missing, nothing having resolved.
 
 The exception is what the header reads off a **cached checkout** and the fetch
 then re-judges: a HEAD whose signature the subscription now refuses, a manifest

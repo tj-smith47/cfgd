@@ -19617,14 +19617,18 @@ mod backup_timers {
         }
     }
 
-    /// A scheduled fire under the profile the reconcile tick resolved reports
-    /// on the same configuration every other run does: the composed sources and
-    /// the resolved modules the tick recorded. A due set that names another
-    /// profile — or several — is a fire under no one resolution, so it names
-    /// neither rather than crediting one profile's configuration to another's
-    /// units.
+    /// A scheduled fire names the subscriptions the config declares whichever
+    /// profile it is about, and only its OWN profile's resolved modules.
+    ///
+    /// The two halves are not one fact: `Sources` is read off `spec.sources[]`
+    /// (seeded at startup, re-stated by every tick), so it describes the
+    /// machine's configuration whether or not the last tick resolved this due
+    /// set's profile — while the module set IS that resolution, and crediting
+    /// one profile's modules to another's units is what the profile gate
+    /// exists to prevent. Withheld together, an unattended run under a second
+    /// profile said nothing at all about where its configuration came from.
     #[test]
-    fn a_scheduled_fire_names_the_tick_resolution_only_for_its_own_profile() {
+    fn a_scheduled_fire_over_another_profile_still_names_the_declared_sources() {
         fn fire(label: &str, due_profile: &str) -> String {
             let tmp = tempfile::TempDir::new().unwrap();
             let home = tmp.path().join(label);
@@ -19677,8 +19681,9 @@ mod backup_timers {
 
         let other = fire("other", "server");
         assert!(
-            !other.contains("team-config"),
-            "a fire under another profile must not name this one\'s sources: {other}"
+            other.contains("Sources") && other.contains("team-config"),
+            "the subscriptions are the config's, so a fire under another profile \
+             still names them: {other}"
         );
         assert!(
             !other.contains("Modules"),

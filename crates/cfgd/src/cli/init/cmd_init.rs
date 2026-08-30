@@ -212,6 +212,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             let mut registry = super::build_registry_with_config(Some(&cfg));
             registry.set_system_config_dir(&target_dir);
             let store = super::open_state_store(args.state_dir, args.scope)?;
+            let module_apply_sources =
+                cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
 
             // Build a minimal resolved profile for the reconciler
             let resolved = config::ResolvedProfile {
@@ -264,9 +266,12 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &resolved_modules,
                 &target_dir,
                 ApplyPlanOpts {
-                    // A module-only apply resolves no profile, so it names
-                    // neither what composed one nor what one resolved to.
-                    sources: &[],
+                    // A module-only apply resolves no profile, so it names no
+                    // `Profile` row — but the config it just read still
+                    // declares its subscriptions, and where a run's
+                    // configuration comes from does not depend on a profile
+                    // having resolved.
+                    sources: &module_apply_sources,
                     dry_run: args.dry_run,
                     yes: args.yes,
                     state_dir: args.state_dir,
