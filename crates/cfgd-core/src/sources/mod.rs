@@ -1186,8 +1186,8 @@ impl SourceManager {
     ///
     /// The (attacker-influenced) target is guarded by
     /// [`crate::refuse_option_like_revision`] and a TRAILING `--`, never by
-    /// `--end-of-options`, which `git checkout` rejects outright before
-    /// git 2.46.
+    /// `--end-of-options`, which `git checkout` rejects outright on git 2.43.0
+    /// and older (accepted only from 2.43.7 on).
     fn git_checkout_detached(
         &self,
         spec: &SourceSpec,
