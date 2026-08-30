@@ -1064,12 +1064,12 @@ not resolve at all (an unknown module, an invalid source name, a cache directory
 cfgd cannot create) is reported as `⚠ Sync incomplete — configuration not
 resolved`, exits non-zero, and carries `configResolutionError` in `-o json`.
 
-The exception is everything the header reads off a **cached checkout**, because
-the fetch below replaces exactly those bytes: a HEAD whose signature the
-subscription now refuses, a manifest that will not parse or offers nothing, a
-profile the cache does not hold. Those are starting points, not verdicts — an
-informational line reports the reading, and the `source:<name>` row settles it,
-so the run that repairs a broken cache exits 0. See
+The exception is what the header reads off a **cached checkout** and the fetch
+then re-judges: a HEAD whose signature the subscription now refuses, a manifest
+that will not parse or offers nothing. Those are starting points, not verdicts:
+an informational line reports the reading, the `source:<name>` row settles it,
+and the run that repairs a broken cache exits 0 (a fault the fetch does not
+clear comes back as a failed source row, so the exit is still non-zero). See
 [Demanding signed commits](sources.md#demanding-signed-commits) for the recovery.
 
 ### `cfgd pull`
