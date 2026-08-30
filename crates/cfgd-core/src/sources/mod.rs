@@ -682,9 +682,9 @@ impl SourceManager {
                     );
                     return;
                 }
-                // The removal below is what actually discards it, and it may
-                // fail too — claimed here in the past tense, one event read as
-                // two contradictory lines.
+                // The removal below is what discards the checkout, and it may
+                // fail too, so claiming the discard HERE in the past tense
+                // would report one event as two contradictory lines.
                 Err(e) => printer.status_simple(
                     Role::Warn,
                     format!(

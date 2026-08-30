@@ -29,23 +29,44 @@ pub fn sync_refused(payload: &SyncOutput) -> bool {
 /// very run repairs.
 ///
 /// The header composes the configuration as the command FOUND it, offline from
-/// the source cache, and that read verifies the cached head — so a subscription
-/// that tightened its demand after the last fetch refuses on a commit the fetch
-/// below is about to replace. That one failure is a starting point, not a
-/// verdict: reported as a refusal it would fail the very run that fixes it.
-/// Every other resolution failure (an unknown module, a constraint violation, a
-/// malformed manifest) is one no fetch can answer, and it kept its nonzero exit
-/// before the header stopped propagating with `?`.
+/// the source cache — so every failure it can raise off a CACHED checkout is a
+/// reading of bytes the `Sources` section below is about to replace. The fetch
+/// leg discards and re-clones a checkout that records no origin or the wrong
+/// one, and fast-forwards the rest, so a commit whose signature the
+/// subscription now refuses, a manifest that will not parse, a manifest
+/// offering nothing and a profile the cache does not hold are all starting
+/// points rather than verdicts: reported as refusals they would fail the very
+/// run that fixes them.
 ///
-/// Judged on the error's own KIND. A message match would break the moment the
-/// sentence is reworded, and the sentence is display text.
+/// The other kinds are not the cache's to fix. A source the config does not
+/// declare, an invalid source name, a cache directory that cannot be created,
+/// and a fetch or pin failure the section below reports on its own row all keep
+/// the nonzero exit they had before the header stopped propagating with `?` —
+/// as does everything outside `SourceError` (an unknown module, a source whose
+/// constraints `ConstraintMode::Enforce` refuses).
+///
+/// Judged on the error's own KIND, and matched with no wildcard so a new
+/// `SourceError` variant is classified before this compiles. A message match
+/// would break the moment a sentence is reworded, and the sentences are display
+/// text.
 pub(super) fn resolution_failure_the_fetch_rejudges(e: &anyhow::Error) -> bool {
-    matches!(
-        e.downcast_ref::<cfgd_core::errors::CfgdError>(),
-        Some(cfgd_core::errors::CfgdError::Source(
-            cfgd_core::errors::SourceError::SignatureVerificationFailed { .. }
-        ))
-    )
+    use cfgd_core::errors::SourceError;
+    let Some(cfgd_core::errors::CfgdError::Source(source)) =
+        e.downcast_ref::<cfgd_core::errors::CfgdError>()
+    else {
+        return false;
+    };
+    match source {
+        SourceError::SignatureVerificationFailed { .. }
+        | SourceError::InvalidManifest { .. }
+        | SourceError::EmptyProvides { .. }
+        | SourceError::ProfileNotFound { .. } => true,
+        SourceError::NotFound { .. }
+        | SourceError::FetchFailed { .. }
+        | SourceError::PinRefNotFound { .. }
+        | SourceError::CacheError { .. }
+        | SourceError::GitError { .. } => false,
+    }
 }
 
 /// Drive the sync and return the payload it settled, so a caller can map a
