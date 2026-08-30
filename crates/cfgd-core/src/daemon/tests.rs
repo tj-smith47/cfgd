@@ -12199,6 +12199,61 @@ spec:
         assert!(st.module_last_reconcile.contains_key("my-module"));
     }
 
+    /// A per-module tick refreshes the subscriptions the status wire carries.
+    ///
+    /// They are the CONFIG's, not the resolution's, so the arm that resolved a
+    /// subset still read the config that names them — and after a SIGHUP that
+    /// rewrites `spec.sources`, a daemon ticking per-module would otherwise
+    /// keep answering `daemon status` with the old ones until the next
+    /// profile-wide tick.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_per_module_tick_refreshes_the_subscriptions_the_config_declares() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: team\n      origin:\n        type: Git\n        url: https://example.invalid/team.git\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "my-module".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+
+        let st = state.lock().await;
+        let named: Vec<&str> = st
+            .composed_sources
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            named,
+            vec!["team"],
+            "the arm that resolved one module still read the config that \
+             declares the subscriptions"
+        );
+        assert!(
+            st.profile.is_none() && st.modules.is_empty(),
+            "…while the resolution's own facts stay the profile-wide tick's to \
+             write: a subset says nothing about the profile"
+        );
+    }
+
     // ----- handle_sync_tick tests -----
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

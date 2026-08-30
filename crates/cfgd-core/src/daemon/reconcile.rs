@@ -668,6 +668,13 @@ fn reconcile_tick(
     let rt = tokio::runtime::Handle::current();
     rt.block_on(async {
         let mut st = state.lock().await;
+        // The subscriptions are the CONFIG's, not the resolution's, so every
+        // tick that read a config refreshes them: a SIGHUP that rewrites
+        // `spec.sources` would otherwise leave the daemon's `Sources` row —
+        // and the scheduled fire's header — naming the old subscriptions until
+        // the next profile-wide tick, the startup seeding covering only the
+        // never-ticked case.
+        st.composed_sources = composed_sources.clone();
         if let Some(name) = module_filter {
             st.module_last_reconcile.insert(name.to_string(), timestamp);
         } else {
@@ -686,7 +693,6 @@ fn reconcile_tick(
             // answer wrongly.
             st.profile = Some(resolved.profile_name().to_string());
             st.modules = header_modules.clone();
-            st.composed_sources = composed_sources.clone();
         }
     });
 
