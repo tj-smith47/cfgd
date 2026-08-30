@@ -2593,6 +2593,106 @@ mod local_source_fixture {
             .to_string()
     }
 
+    /// Add one empty commit on top of `branch` in a bare upstream, so a load
+    /// that follows has something new to fast-forward onto. Returns its oid.
+    fn append_commit_to_bare(bare: &std::path::Path, branch: &str, message: &str) -> String {
+        let repo = git2::Repository::open(bare).unwrap();
+        let refname = format!("refs/heads/{branch}");
+        let parent = repo
+            .find_reference(&refname)
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        let tree = parent.tree().unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        repo.commit(Some(&refname), &sig, &sig, message, &tree, &[&parent])
+            .unwrap()
+            .to_string()
+    }
+
+    /// Verify-then-publish, refusal arm. The fetch moves the working checkout
+    /// before the head it landed on can be judged, so a refusal has to put the
+    /// last accepted commit back. Left published, one refused fetch strands the
+    /// cache on the commit it rejected — and the read path verifies the cached
+    /// head too, so every later `status` / `diff` / `plan` fails on it and
+    /// `cfgd sync`, which composes from the cache before it fetches, can never
+    /// replace it however many signed commits land upstream.
+    #[test]
+    #[serial]
+    fn a_refused_fetch_keeps_the_previously_accepted_checkout() {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "trust-keep", None, &[]);
+            let branch = detect_branch(&bare);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let mut spec = build_spec("trust-keep", &crate::test_helpers::file_url(&bare), &branch);
+
+            // Accepted while neither side demanded a signature.
+            mgr.load_source(&spec, &test_printer()).unwrap();
+            let accepted = head_oid(&cache_dir, "trust-keep");
+
+            // The subscriber starts demanding one, and an unsigned commit
+            // lands upstream — exactly the shape `cfgd source update
+            // --require-signed-commits` leaves behind.
+            spec.subscription.require_signed_commits = true;
+            let refused = append_commit_to_bare(&bare, &branch, "unsigned");
+            assert_ne!(accepted, refused, "the fixture must offer a new commit");
+
+            let err = mgr
+                .load_source(&spec, &test_printer())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("not signed"),
+                "the unsigned head must be refused, got: {err}"
+            );
+            assert_eq!(
+                head_oid(&cache_dir, "trust-keep"),
+                accepted,
+                "a refused fetch leaves the last accepted commit checked out"
+            );
+        });
+    }
+
+    /// The other arm: a FIRST clone refused for its signature has no accepted
+    /// commit to fall back to, so the checkout goes away entirely rather than
+    /// standing as an unsigned cache every read path then trips over.
+    #[test]
+    #[serial]
+    fn a_first_clone_refused_for_its_signature_leaves_no_checkout_behind() {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "trust-fresh", None, &[]);
+            let branch = detect_branch(&bare);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let mut spec = build_spec(
+                "trust-fresh",
+                &crate::test_helpers::file_url(&bare),
+                &branch,
+            );
+            spec.subscription.require_signed_commits = true;
+
+            let err = mgr
+                .load_source(&spec, &test_printer())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("not signed"),
+                "the unsigned head must be refused, got: {err}"
+            );
+            assert!(
+                !cache_dir.join("trust-fresh").exists(),
+                "a refused first clone leaves no checkout for a read path to compose"
+            );
+            assert!(
+                mgr.get("trust-fresh").is_none(),
+                "and nothing composed in memory either"
+            );
+        });
+    }
+
     fn pinned_spec(name: &str, bare: &std::path::Path, pin: &str) -> SourceSpec {
         let url = crate::test_helpers::file_url(bare);
         let branch = detect_branch(bare);
@@ -3317,9 +3417,11 @@ mod local_source_fixture {
                 .expect_err("an unsigned HEAD must fail the subscriber's demand");
             // Pin the premise: were the shared fixture to start declaring
             // constraints, this test would silently prove the manifest path.
+            // Read from the fixture's own working tree, not from the cache — a
+            // refused clone leaves no checkout behind, by design.
             assert!(
-                !mgr.parse_manifest("anchored", &cache_dir.join("anchored"))
-                    .expect("the clone left a parseable manifest")
+                !mgr.parse_manifest("anchored", &tmp.path().join("anchored-src"))
+                    .expect("the fixture wrote a parseable manifest")
                     .spec
                     .policy
                     .constraints
@@ -3335,14 +3437,21 @@ mod local_source_fixture {
                 "a source that failed verification must not be composed"
             );
 
-            // The clone left a populated cache. The read path re-verifies it
-            // against the same subscriber demand rather than trusting the
-            // manifest sitting inside it.
+            // The read path re-verifies a POPULATED cache against the same
+            // subscriber demand rather than trusting the manifest sitting
+            // inside it. The refusal above left no checkout to read, so the
+            // cache is seeded by a load nobody demanded a signature from —
+            // which is also how a subscription that tightens later arrives at
+            // an accepted-but-no-longer-acceptable checkout on a real machine.
+            let mut undemanding = spec.clone();
+            undemanding.subscription.require_signed_commits = false;
+            mgr.load_source(&undemanding, &test_printer())
+                .expect("an unsigned head is fine while nothing demands one");
+
             let err = mgr
                 .load_source_cached(&spec, &test_printer())
                 .expect_err("the read path re-verifies the cached checkout");
             assert!(err.to_string().contains("not signed"), "got: {err}");
-            assert!(mgr.get("anchored").is_none());
         });
     }
 
