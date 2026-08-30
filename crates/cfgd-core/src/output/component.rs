@@ -276,6 +276,24 @@ impl KvPair {
     }
 }
 
+/// The four facts a header block states, declared once for every surface that
+/// states them.
+///
+/// One type rather than a parameter list per caller: a fifth header fact is
+/// then added where the four already live, and no surface can permit a shape
+/// another refuses.
+#[derive(Clone, Copy)]
+pub struct ConfigHeader<'a> {
+    /// The config file everything below was resolved from.
+    pub config_path: Option<&'a std::path::Path>,
+    /// The sources the config subscribes to, in declaration order.
+    pub sources: &'a [crate::reconciler::ComposedSource],
+    /// The resolved profile's name, `None` for a surface with none to name.
+    pub profile: Option<&'a str>,
+    /// The modules that profile puts on this machine, dependency-first.
+    pub modules: &'a [HeaderModule],
+}
+
 /// The header block every surface reporting ON a resolved configuration opens
 /// with: `Config`, `Sources`, `Profile`, `Modules`, in that order.
 ///
@@ -292,12 +310,13 @@ impl KvPair {
 /// gets no `Profile` row; an empty `sources` or `modules` renders no row of its
 /// own. The surface's own rows (`Trigger`, `Source`, `Phases`, `Actions`,
 /// `PID`) follow what this returns.
-pub fn config_header_rows(
-    config_path: Option<&std::path::Path>,
-    sources: &[crate::reconciler::ComposedSource],
-    profile: Option<&str>,
-    modules: &[HeaderModule],
-) -> Vec<KvPair> {
+pub fn config_header_rows(head: &ConfigHeader<'_>) -> Vec<KvPair> {
+    let &ConfigHeader {
+        config_path,
+        sources,
+        profile,
+        modules,
+    } = head;
     let mut rows = Vec::new();
     if let Some(path) = config_path {
         // Folded like every action row under it: a header that spelled

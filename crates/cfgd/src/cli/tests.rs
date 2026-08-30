@@ -29760,10 +29760,10 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     printer.emit(super::status::build_fleet_status_doc(
         &output,
-        &super::status::StatusHeader {
-            config_path: std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
             sources: &[],
-            profile: "default",
+            profile: Some("default"),
             modules: &[],
         },
         &[],
@@ -29895,14 +29895,15 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
         "(\"Profile\", ",
     ];
     // A heading, a section or an owner label legitimately takes the same name
-    // and is not a row — judged on the CALL, exactly as the sibling `Modules`
-    // walk judges it, never on the word.
+    // and is not a row — judged on the CALL the needle itself sits in, never on
+    // the line: a row and a section sharing one line would otherwise wave the
+    // row through.
     const NOT_A_ROW: &[&str] = &[
-        ".section(",
-        ".section_if_nonempty(",
-        ".section_or_collapse(",
-        ".heading(",
-        ".heading_title(",
+        ".section",
+        ".section_if_nonempty",
+        ".section_or_collapse",
+        ".heading",
+        ".heading_title",
         "section_owner",
         "subsection_owner",
         "heading_owner_prefixed",
@@ -29913,21 +29914,33 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
         .into_iter()
         .chain(core_production_sources())
     {
-        // The builder IS the exception: its own two pushes are the rows every
-        // other site is required to come here for.
-        if path.ends_with("output/component.rs") {
-            continue;
-        }
         let lines: Vec<&str> = body.lines().collect();
+        // The builder IS the exception, and it is exempted by NAME: skipping
+        // its whole file would let a second hand-built header row anywhere
+        // else in `output/component.rs` through.
+        let mut current_fn = "";
         for (n, line) in lines.iter().enumerate() {
             let code = line.trim_start();
-            if code.starts_with("//") {
+            if let Some(rest) = code
+                .strip_prefix("pub fn ")
+                .or_else(|| code.strip_prefix("fn "))
+            {
+                current_fn = rest.split(['(', '<']).next().unwrap_or("");
+            }
+            if code.starts_with("//") || current_fn == "config_header_rows" {
                 continue;
             }
-            if NOT_A_ROW.iter().any(|call| code.contains(call)) {
-                continue;
-            }
-            if !NEEDLES.iter().any(|needle| line.contains(needle)) {
+            // A needle is a row unless the call it sits in is one of the
+            // shapes that legitimately names the same word.
+            let is_row = NEEDLES.iter().any(|needle| {
+                line.match_indices(needle).any(|(at, _)| {
+                    let before = &line[..at];
+                    !NOT_A_ROW
+                        .iter()
+                        .any(|call| before.ends_with(call) || before.ends_with(&format!("{call}(")))
+                })
+            });
+            if !is_row {
                 continue;
             }
             checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
@@ -30227,13 +30240,14 @@ fn hatched(lines: &[&str], n: usize, marker: &str) -> bool {
             .any(|p| lines[p].trim_start().starts_with(marker))
 }
 
-/// Whether a `RunContext`'s `modules` slot hands the header nothing.
+/// Whether a `RunContext`'s `sources` or `modules` slot hands the header
+/// nothing.
 ///
 /// Judged on the VALUE rather than on one literal spelling: `&[]`, `&[][..]`
 /// and an empty `Vec` all render no row, and a field-init shorthand names a
 /// binding — which is empty exactly when the same function initialised it
 /// empty, the one place the walk can see it.
-fn names_no_modules(lines: &[&str], n: usize, slot: &str) -> bool {
+fn names_nothing(lines: &[&str], n: usize, key: &str, slot: &str) -> bool {
     const EMPTY: &[&str] = &[
         "&[]",
         "&[][..]",
@@ -30246,11 +30260,11 @@ fn names_no_modules(lines: &[&str], n: usize, slot: &str) -> bool {
         "&Default::default()",
     ];
     let Some(value) = slot
-        .strip_prefix("modules:")
+        .strip_prefix(&format!("{key}:"))
         .map(|v| v.trim().trim_end_matches(','))
     else {
         // Shorthand: the binding is the slot's own name.
-        return binding_is_empty(lines, n, "modules", EMPTY);
+        return binding_is_empty(lines, n, key, EMPTY);
     };
     EMPTY.contains(&value) || binding_is_empty(lines, n, value.trim_start_matches('&'), EMPTY)
 }
@@ -30260,7 +30274,8 @@ fn names_no_modules(lines: &[&str], n: usize, slot: &str) -> bool {
 /// to have read.
 fn binding_is_empty(lines: &[&str], n: usize, name: &str, empty: &[&str]) -> bool {
     let head = format!("let {name}");
-    lines[n.saturating_sub(40)..n]
+    let window = &lines[n.saturating_sub(40)..n];
+    window
         .iter()
         .map(|l| l.trim_start())
         .filter(|l| l.starts_with(&head))
@@ -30268,6 +30283,31 @@ fn binding_is_empty(lines: &[&str], n: usize, name: &str, empty: &[&str]) -> boo
             l.split_once('=')
                 .is_some_and(|(_, init)| empty.contains(&init.trim().trim_end_matches(';').trim()))
         })
+        || tuple_binding_can_be_empty(window, name)
+}
+
+/// Whether `name` comes out of a TUPLE destructure with an arm that binds it
+/// empty — `let (sources, modules) = if … { … } else { (&[], &[]) };`, the
+/// shape both header slots of the daemon's scheduled backup fire are bound in.
+/// Read one arm at a time it is exactly as visible as a direct `let`; read as
+/// a single binding name it is invisible, which is how a run naming a profile
+/// beside two empty slots passed a walk whose sentinel said it had been read.
+fn tuple_binding_can_be_empty(window: &[&str], name: &str) -> bool {
+    window.iter().enumerate().any(|(i, line)| {
+        line.trim_start().starts_with("let (")
+            && window[i..]
+                .iter()
+                .take(4)
+                .copied()
+                .collect::<String>()
+                .split_once(')')
+                .is_some_and(|(pattern, _)| {
+                    pattern
+                        .split(['(', ',', ' '])
+                        .any(|word| word.trim() == name)
+                })
+            && window[i..].iter().take(12).any(|l| l.contains("&[]"))
+    })
 }
 
 /// The hatch is read the same two ways wherever a walk offers one, and neither
@@ -30289,47 +30329,66 @@ fn a_hatch_is_read_on_its_own_line_and_on_the_comment_block_above_it() {
     );
 }
 
-/// An empty `modules` slot is caught in every spelling that renders no row,
-/// not only in the one the backup verbs happened to use.
+/// An empty header slot is caught in every spelling that renders no row, not
+/// only in the one the backup verbs happened to use.
 #[test]
-fn an_empty_modules_slot_is_caught_however_it_is_spelled() {
+fn an_empty_header_slot_is_caught_however_it_is_spelled() {
     let empty = [
         "let x = RunContext {|    modules: &[],",
         "let x = RunContext {|    modules: &[][..],",
         "let none: Vec<HeaderModule> = Vec::new();|let x = RunContext {|    modules: &none,",
         "let modules = vec![];|let x = RunContext {|    modules,",
+        "let (sources, modules): (&[A], &[B]) = if ok {|(&a, &b)|} else {|(&[], &[])|};|let x = RunContext {|    modules,",
     ];
     for case in empty {
         let lines: Vec<&str> = case.split('|').collect();
         let n = lines.len() - 1;
         assert!(
-            names_no_modules(&lines, n, lines[n].trim_start()),
+            names_nothing(&lines, n, "modules", lines[n].trim_start()),
             "not caught: {case}"
         );
     }
     let filled = [
         "let x = RunContext {|    modules: &header_modules,",
         "let modules = HeaderModule::of_resolved(&resolved);|let x = RunContext {|    modules,",
+        "let (sources, modules) = (&declared, &resolved);|let x = RunContext {|    modules,",
     ];
     for case in filled {
         let lines: Vec<&str> = case.split('|').collect();
         let n = lines.len() - 1;
         assert!(
-            !names_no_modules(&lines, n, lines[n].trim_start()),
+            !names_nothing(&lines, n, "modules", lines[n].trim_start()),
             "wrongly caught: {case}"
+        );
+    }
+    // The same reading over the sibling slot, which the walk judges by the
+    // same function and a different key.
+    let sources = [
+        ("let x = RunContext {|    sources: &[],", true),
+        ("let x = RunContext {|    sources: &declared,", false),
+    ];
+    for (case, empty) in sources {
+        let lines: Vec<&str> = case.split('|').collect();
+        let n = lines.len() - 1;
+        assert_eq!(
+            names_nothing(&lines, n, "sources", lines[n].trim_start()),
+            empty,
+            "misread: {case}"
         );
     }
 }
 
-/// A run under a resolved profile names that profile's modules.
+/// A run under a resolved profile names what composed it and what it resolved
+/// to — both slots, never one.
 ///
-/// The row is derived from a resolution, so a `RunContext` naming a profile
-/// while handing the header an empty module slice is a header that states half
-/// the configuration it ran under — which is what every backup verb did, three
-/// of them beside a `Sources` row they filled correctly. A run with genuinely
-/// no profile to resolve carries `// no-modules-row-ok: <why>`.
+/// `Sources` and `Modules` travel together: a `RunContext` naming a profile
+/// while handing the header an empty slice states half the configuration it
+/// ran under, which is what every backup verb did for `modules` and what the
+/// daemon's scheduled fire still did for both. A run with genuinely nothing to
+/// name in a slot carries `// no-sources-row-ok: <why>` or
+/// `// no-modules-row-ok: <why>`.
 #[test]
-fn every_run_under_a_resolved_profile_names_its_modules() {
+fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
     let mut checked: Vec<String> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
     for (path, body) in cli_production_sources()
@@ -30352,17 +30411,24 @@ fn every_run_under_a_resolved_profile_names_its_modules() {
                     .map(|l| l.trim_start())
                     .find(|l| l.starts_with(&format!("{key}:")) || *l == format!("{key},"))
             };
-            let (Some(profile), Some(modules)) = (slot("profile"), slot("modules")) else {
+            let (Some(profile), Some(sources), Some(modules)) =
+                (slot("profile"), slot("sources"), slot("modules"))
+            else {
                 continue;
             };
             checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
-            if profile == "profile: None," || !names_no_modules(&lines, n, modules) {
+            if profile == "profile: None," {
                 continue;
             }
-            if hatched(&lines, n, "// no-modules-row-ok:") {
-                continue;
+            for (key, value, marker) in [
+                ("sources", sources, "// no-sources-row-ok:"),
+                ("modules", modules, "// no-modules-row-ok:"),
+            ] {
+                if !names_nothing(&lines, n, key, value) || hatched(&lines, n, marker) {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {profile} {key}", path.display(), n + 1));
             }
-            offenders.push(format!("{}:{}: {profile}", path.display(), n + 1));
         }
     }
     // The four runs the rule was written over, so a gather that stopped
@@ -30379,9 +30445,10 @@ fn every_run_under_a_resolved_profile_names_its_modules() {
     assert!(
         offenders.is_empty(),
         "a run reporting under a resolved profile names that profile's modules, \
-         through `cfgd_core::output::HeaderModule::of_resolved` over the \
-         resolution the verb already performed (a run with no profile takes a \
-         `// no-modules-row-ok:` marker):\n{}",
+         through `cfgd_core::reconciler::ComposedSource::from_declared` and \
+         `cfgd_core::output::HeaderModule::of_resolved` over the config and the \
+         resolution the verb already holds (a slot with genuinely nothing to \
+         name takes its `// no-<slot>-row-ok:` marker):\n{}",
         offenders.join("\n")
     );
 }
@@ -30537,7 +30604,12 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
     let source = home.path().join("notes");
     let source_posix = source.posix().to_string();
 
-    let rows = cfgd_core::output::config_header_rows(Some(&config_path), &[], Some("base"), &[]);
+    let rows = cfgd_core::output::config_header_rows(&cfgd_core::output::ConfigHeader {
+        config_path: Some(&config_path),
+        sources: &[],
+        profile: Some("base"),
+        modules: &[],
+    });
     let ctx = cfgd_core::reconciler::RunContext {
         title: cfgd_core::reconciler::RunTitle::Restore,
         config_path: Some(&config_path),
@@ -30712,10 +30784,10 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
             "cfgd status",
             super::status::build_fleet_status_doc(
                 &fleet,
-                &super::status::StatusHeader {
-                    config_path: &config_path,
+                &cfgd_core::output::ConfigHeader {
+                    config_path: Some(&config_path),
                     sources: &[],
-                    profile: "base",
+                    profile: Some("base"),
                     modules: &[],
                 },
                 &[],

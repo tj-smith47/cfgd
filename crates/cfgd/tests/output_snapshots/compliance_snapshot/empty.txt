@@ -1,6 +1,7 @@
 Compliance Summary
   Age      2h
   Machine  test-host
+  Sources  team
   Profile  default
   Status   Compliant
 

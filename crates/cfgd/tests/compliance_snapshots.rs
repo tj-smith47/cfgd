@@ -34,7 +34,7 @@ fn fixed_snapshot(checks: Vec<ComplianceCheck>) -> ComplianceSnapshot {
             arch: "x86_64".into(),
         },
         profile: "default".into(),
-        sources: vec!["local".into()],
+        sources: vec!["team".into()],
         checks,
         summary,
     }

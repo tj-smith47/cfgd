@@ -373,10 +373,9 @@ pub fn build_compliance_diff_doc(
 pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str) -> Doc {
     let overall = overall_status(&snapshot.summary);
 
-    // The snapshot's own facts around the one header row it can fill: a
-    // recorded snapshot carries the profile it was taken under and neither the
-    // config path, the sources nor the modules, so the builder emits that row
-    // alone and the rest of the block is this surface's.
+    // The snapshot's own facts around the two header rows it can fill: a
+    // recorded snapshot carries the profile it was taken under and the sources
+    // it was composed from, and neither the config path nor the modules.
     let mut rows = vec![
         // `Age`, not the stored instant: `-o json` carries `timestamp` for a
         // consumer that needs the exact moment, and a person reading the
@@ -387,11 +386,23 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str) ->
         ),
         cfgd_core::output::KvPair::new("Machine", snapshot.machine.hostname.clone()),
     ];
+    // The wire shape is a name list, so a subscribed profile is not on the
+    // record to be named back.
+    let sources: Vec<_> = snapshot
+        .sources
+        .iter()
+        .map(|name| cfgd_core::reconciler::ComposedSource {
+            name: name.clone(),
+            profile: None,
+        })
+        .collect();
     rows.extend(cfgd_core::output::config_header_rows(
-        None,
-        &[],
-        Some(&snapshot.profile),
-        &[],
+        &cfgd_core::output::ConfigHeader {
+            config_path: None,
+            sources: &sources,
+            profile: Some(&snapshot.profile),
+            modules: &[],
+        },
     ));
     rows.push(cfgd_core::output::KvPair::new(
         "Status",

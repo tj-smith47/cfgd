@@ -91,13 +91,15 @@ pub fn cmd_diff(
         // An isolate composes nothing and resolves no profile, so it names
         // the one module it is about and neither of the two rows between.
         printer.kv_rows(cfgd_core::output::config_header_rows(
-            Some(&cli.config),
-            &[],
-            None,
-            &[cfgd_core::output::HeaderModule {
-                name: mod_name.to_string(),
-                platform_skip_reason: None,
-            }],
+            &cfgd_core::output::ConfigHeader {
+                config_path: Some(&cli.config),
+                sources: &[],
+                profile: None,
+                modules: &[cfgd_core::output::HeaderModule {
+                    name: mod_name.to_string(),
+                    platform_skip_reason: None,
+                }],
+            },
         ));
         return cmd_diff_module(&ctx, mod_name, exit_code);
     }
@@ -137,10 +139,12 @@ pub fn cmd_diff(
     // profile RESOLVES to, and a `depends` pulls a module the declared list
     // never mentions into the set the findings below are reported against.
     printer.kv_rows(cfgd_core::output::config_header_rows(
-        Some(&cli.config),
-        &composed_sources,
-        Some(profile_name),
-        &cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(&cli.config),
+            sources: &composed_sources,
+            profile: Some(profile_name),
+            modules: &cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
+        },
     ));
 
     ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;

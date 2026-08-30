@@ -15,10 +15,12 @@ pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str, config_pat
         Doc::new()
             .heading_title("Profile", name)
             .kv_rows(cfgd_core::output::config_header_rows(
-                Some(config_path),
-                &[],
-                None,
-                &[],
+                &cfgd_core::output::ConfigHeader {
+                    config_path: Some(config_path),
+                    sources: &[],
+                    profile: None,
+                    modules: &[],
+                },
             ));
 
     doc = doc.section("Layers", |s| {

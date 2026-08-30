@@ -2033,6 +2033,7 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
         &[],
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: false,
             yes: false,
             state_dir: None,
@@ -2661,6 +2662,7 @@ fn init_apply_copies_an_unmanaged_target_aside_before_writing_it() {
         &[],
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: false,
             yes: true,
             state_dir: Some(dir.path()),
@@ -2724,6 +2726,7 @@ fn init_dry_run_never_copies_anything_aside() {
         &[],
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: true,
             yes: true,
             state_dir: Some(dir.path()),
@@ -2785,6 +2788,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
         &[],
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: false,
             yes: false,
             state_dir: None,
@@ -2859,6 +2863,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
         &[],
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: false,
             yes: false,
             state_dir: None,
@@ -2951,6 +2956,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
         std::slice::from_ref(&module),
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: false,
             yes: true,
             state_dir: Some(&state_dir),
@@ -3023,6 +3029,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
         &[],
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: false,
             yes: false,
             state_dir: None,
@@ -3087,6 +3094,7 @@ fn apply_plan_dry_run_skips_apply() {
         &[],
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: true,
             yes: false,
             state_dir: None,
@@ -5873,6 +5881,7 @@ fn init_apply_settles_the_hash_of_every_link_deployed_row_before_it_returns() {
         &modules,
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: false,
             yes: true,
             state_dir: Some(dir.path()),

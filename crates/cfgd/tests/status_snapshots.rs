@@ -27,7 +27,7 @@ use std::path::Path;
 use cfgd::cli::status::{
     ModuleDeclared, ModuleDrift, ModuleFilePresence, ModuleFileStatus, ModulePackagePresence,
     ModulePackageStatus, ModuleStatus, ModuleStatusEntry, ModuleStatusView, SURFACE_FILES,
-    SURFACE_PACKAGES, StatusHeader, StatusOutput, build_fleet_status_doc, build_module_status_doc,
+    SURFACE_PACKAGES, StatusOutput, build_fleet_status_doc, build_module_status_doc,
     build_module_status_not_found_doc,
 };
 use cfgd_core::config::{EnvVar, ShellAlias};
@@ -490,10 +490,10 @@ fn status_clean_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_fleet_status_doc(
         &output,
-        &StatusHeader {
-            config_path: Path::new("/etc/cfgd/cfgd.yaml"),
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(Path::new("/etc/cfgd/cfgd.yaml")),
             sources: &[],
-            profile: "default",
+            profile: Some("default"),
             modules: &header_modules(&output),
         },
         &[],
@@ -510,10 +510,10 @@ fn status_clean_json() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_fleet_status_doc(
         &output,
-        &StatusHeader {
-            config_path: Path::new("/etc/cfgd/cfgd.yaml"),
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(Path::new("/etc/cfgd/cfgd.yaml")),
             sources: &[],
-            profile: "default",
+            profile: Some("default"),
             modules: &header_modules(&output),
         },
         &[],
@@ -537,10 +537,10 @@ fn status_drift_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_fleet_status_doc(
         &output,
-        &StatusHeader {
-            config_path: Path::new("/etc/cfgd/cfgd.yaml"),
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(Path::new("/etc/cfgd/cfgd.yaml")),
             sources: &[],
-            profile: "default",
+            profile: Some("default"),
             modules: &header_modules(&output),
         },
         &sources,
@@ -558,10 +558,10 @@ fn status_drift_json() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_fleet_status_doc(
         &output,
-        &StatusHeader {
-            config_path: Path::new("/etc/cfgd/cfgd.yaml"),
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(Path::new("/etc/cfgd/cfgd.yaml")),
             sources: &[],
-            profile: "default",
+            profile: Some("default"),
             modules: &header_modules(&output),
         },
         &sources,

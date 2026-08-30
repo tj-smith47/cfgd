@@ -641,42 +641,24 @@ fn scope_row(recorded: &str) -> KvPair {
 const SCAN_STALENESS_SECS: i64 = cfgd_core::daemon::DEFAULT_RECONCILE_SECS as i64;
 
 /// Build the fleet-wide `cfgd status` Doc. Caller supplies the precomputed
-/// payload, the resolved modules the header names
-/// ([`cfgd_core::output::HeaderModule::of_resolved`], the same derivation every
-/// other surface reporting on a resolved profile reads) and the declared source
-/// catalog, which carries the columns the status payload does not (priority,
-/// origin, signing demand).
-/// The four facts `cfgd status` heads its report with: the config it ran
-/// under, the sources it composed from, the profile it resolved, and the
-/// modules that profile puts on this machine.
-pub struct StatusHeader<'a> {
-    /// The config file the run resolved everything from.
-    pub config_path: &'a Path,
-    /// The sources the composition drew from, in composition order.
-    pub sources: &'a [cfgd_core::reconciler::ComposedSource],
-    /// The resolved profile's name.
-    pub profile: &'a str,
-    /// The modules that profile resolves to, dependency-first.
-    pub modules: &'a [cfgd_core::output::HeaderModule],
-}
-
+/// payload, the four header facts every surface reporting on a resolved
+/// configuration states ([`cfgd_core::output::ConfigHeader`], whose `profile`
+/// the caller has already put through [`derivable_profile`]) and the declared
+/// source catalog, which carries the columns the status payload does not
+/// (priority, origin, signing demand).
 pub fn build_fleet_status_doc(
     output: &StatusOutput,
-    head: &StatusHeader<'_>,
+    head: &cfgd_core::output::ConfigHeader<'_>,
     configured_sources: &[SourceListEntry],
     now: &str,
     decision_contents: &super::DecisionContents,
 ) -> Doc {
     // One derivation for the whole document: the header's `Profile` row and
     // the Managed Resources Owner column name the same profile or neither does.
-    let profile = derivable_profile(head.profile);
-    let header = cfgd_core::output::config_header_rows(
-        Some(head.config_path),
-        head.sources,
-        profile,
-        head.modules,
-    );
-    let mut doc = Doc::new().heading("Status").kv_rows(header);
+    let profile = head.profile;
+    let mut doc = Doc::new()
+        .heading("Status")
+        .kv_rows(cfgd_core::output::config_header_rows(head));
 
     // Only the recorded-state dashboard needs a staleness signal: a `--scan`/
     // `--exit-code` run just checked the machine itself, so its Drift section
@@ -1755,10 +1737,10 @@ pub(super) fn cmd_status(
     );
     printer.emit(build_fleet_status_doc(
         &output,
-        &StatusHeader {
-            config_path: &cli.config,
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(&cli.config),
             sources: &composed_sources,
-            profile: profile_name,
+            profile: derivable_profile(profile_name),
             modules: &cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
         },
         &configured_sources,
@@ -2803,11 +2785,16 @@ mod tests {
             rendered_header_rows(&cfgd_core::test_helpers::captured_text(&buf))
         };
 
-        // Every read path composes cache-only, so the subscribed checkout is
-        // fetched once — by the verb whose whole job is fetching — before any
-        // surface is read. A cold cache is a machine that has not synced yet,
-        // which is a different report and not what this pin is about.
-        render(&|p| crate::cli::sync::cmd_sync(&cli, p).unwrap());
+        // Read COLD, before anything has fetched the subscribed checkout: read
+        // paths compose cache-only, so a header derived from the composition
+        // would drop its `Sources` row here and the key would be answering
+        // "has this machine synced yet" rather than what the config declares.
+        let cold = render(&|p| cmd_status(&cli, p, None, false, false, false).unwrap());
+        assert_eq!(
+            cold.len(),
+            4,
+            "a cold cache changes nothing about the header: {cold:?}"
+        );
 
         let status = render(&|p| cmd_status(&cli, p, None, false, false, false).unwrap());
         let diff = render(&|p| crate::cli::diff::cmd_diff(&cli, p, None, false).unwrap());
@@ -2908,9 +2895,13 @@ mod tests {
         let created = render(&|p| {
             crate::cli::module::cmd_module_create(&cli, p, &header_module_create_args()).unwrap();
         });
-        assert!(
-            created.iter().any(|row| row == "Modules scratch"),
-            "`module create --apply` names the module it created: {created:?}"
+        assert_eq!(
+            created,
+            vec![
+                format!("Config {}", cfgd_core::to_posix_string(&cli.config)),
+                "Modules scratch".to_string(),
+            ],
+            "`module create --apply` names its config and the module it created,              and neither of the two rows between — it composes from no source              and resolves no profile: {created:?}"
         );
         drop(env);
     }
@@ -3020,10 +3011,10 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         printer.emit(build_fleet_status_doc(
             &output,
-            &StatusHeader {
-                config_path: std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+            &cfgd_core::output::ConfigHeader {
+                config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
                 sources: &[],
-                profile: "default",
+                profile: Some("default"),
                 modules: &[],
             },
             &[],
@@ -3081,10 +3072,10 @@ mod tests {
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             printer.emit(build_fleet_status_doc(
                 &output,
-                &StatusHeader {
-                    config_path: std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+                &cfgd_core::output::ConfigHeader {
+                    config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
                     sources: &[],
-                    profile: "default",
+                    profile: Some("default"),
                     modules: &[],
                 },
                 &[],
@@ -3171,10 +3162,10 @@ mod tests {
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             printer.emit(build_fleet_status_doc(
                 &output,
-                &StatusHeader {
-                    config_path: std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+                &cfgd_core::output::ConfigHeader {
+                    config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
                     sources: &[],
-                    profile: "default",
+                    profile: Some("default"),
                     modules: &[],
                 },
                 &[],
@@ -3344,10 +3335,10 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         printer.emit(build_fleet_status_doc(
             output,
-            &StatusHeader {
-                config_path: std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+            &cfgd_core::output::ConfigHeader {
+                config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
                 sources: &[],
-                profile: "default",
+                profile: Some("default"),
                 modules: &[],
             },
             &[],

@@ -199,12 +199,13 @@ pub fn build_daemon_status_doc(
             // are the loop's own resolution, carried on the wire; the sources
             // are what this machine's config subscribes to, this reader holding
             // no composition of its own.
-            let mut rows = cfgd_core::output::config_header_rows(
-                s.config_path.as_deref().map(std::path::Path::new),
-                declared_sources,
-                s.profile.as_deref(),
-                &s.modules,
-            );
+            let mut rows =
+                cfgd_core::output::config_header_rows(&cfgd_core::output::ConfigHeader {
+                    config_path: s.config_path.as_deref().map(std::path::Path::new),
+                    sources: declared_sources,
+                    profile: s.profile.as_deref(),
+                    modules: &s.modules,
+                });
             rows.push(KvPair::new("PID", s.pid.to_string()));
             // A measured duration, not a declared one: the intervals below
             // are the operator's own literals and stay verbatim.

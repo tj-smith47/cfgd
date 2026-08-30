@@ -1437,11 +1437,7 @@ pub(in crate::cli) fn resolve_desired_from_composition(
         ..
     } = composition;
 
-    // Taken BEFORE the module isolation below replaces `resolved` with a zeroed
-    // profile: that replacement drops every layer, and the header would then
-    // stop naming the sources a `--module` run still composed its module roots
-    // from.
-    let sources = cfgd_core::reconciler::ComposedSource::from_profile_layers(&resolved.layers);
+    let sources = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
 
     let config_dir = ctx.config_dir();
 

@@ -1012,10 +1012,12 @@ how long.
 
 Pull from all remotes, show changes, prompt for apply.
 
-The header opens on `Config`, `Profile` and `Modules` before the first fetch,
-so every row describes the configuration this run started from and a failed
-pull is still attributed to a named one. The body below reports what the pull
-changed; the plan the closing hint invites reads the new set.
+The header opens on `Config`, `Sources`, `Profile` and `Modules` before the
+first fetch, so every row describes the configuration this run started from and
+a failed pull is still attributed to a named one. `Sources` names what
+`spec.sources[]` declares, whether or not any of them has been fetched yet — a
+cold cache changes nothing about the header. The body below reports what the
+pull changed; the plan the closing hint invites reads the new set.
 
 The `Local Repo` section appears only for a config directory under version
 control — there is nothing to pull from one that is not.

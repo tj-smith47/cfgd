@@ -1738,25 +1738,33 @@ fn phase_coverage_decides_only_whether_the_modules_phase_is_walked() {
 
 // --- composed sources ---
 
-fn layer(source: &str, profile_name: &str) -> crate::config::ProfileLayer {
-    crate::config::ProfileLayer {
-        source: source.to_string(),
-        profile_name: profile_name.to_string(),
-        priority: 0,
-        policy: crate::config::LayerPolicy::Required,
-        spec: crate::config::ProfileSpec::default(),
+fn declared_source(name: &str, profile: Option<&str>) -> crate::config::SourceSpec {
+    crate::config::SourceSpec {
+        name: name.to_string(),
+        origin: crate::config::OriginSpec {
+            origin_type: crate::config::OriginType::Git,
+            url: format!("https://example.test/{name}.git"),
+            branch: "main".to_string(),
+            auth: None,
+            ssh_strict_host_key_checking: Default::default(),
+        },
+        subscription: crate::config::SubscriptionSpec {
+            profile: profile.map(str::to_string),
+            ..Default::default()
+        },
+        sync: Default::default(),
     }
 }
 
+/// A source nobody has fetched contributes no layer, and read paths compose
+/// from the cache alone — so a row derived from the composition would drop it
+/// and the header would answer a question nobody asked it.
 #[test]
-fn composed_sources_skip_the_local_layer_and_dedup_by_source() {
-    let layers = vec![
-        layer(crate::config::LOCAL_LAYER, "work"),
-        layer("team", "team"),
-        layer("team", "team"),
-        layer("infra", ""),
-    ];
-    let sources = ComposedSource::from_profile_layers(&layers);
+fn composed_sources_name_every_declared_subscription() {
+    let sources = ComposedSource::from_declared(&[
+        declared_source("team", Some("team")),
+        declared_source("infra", None),
+    ]);
     assert_eq!(
         sources,
         vec![
@@ -1769,14 +1777,17 @@ fn composed_sources_skip_the_local_layer_and_dedup_by_source() {
                 profile: None,
             },
         ],
-        "the operator's own layer is not a source, and one source is announced once"
+        "the declared subscriptions, whether or not either has ever been fetched"
     );
 }
 
 #[test]
 fn header_names_the_sources_a_run_composed() {
     let plan = plan_of(vec![phase(PhaseName::Files, vec![create("/tmp/one")])]);
-    let sources = ComposedSource::from_profile_layers(&[layer("team", "team"), layer("infra", "")]);
+    let sources = ComposedSource::from_declared(&[
+        declared_source("team", Some("team")),
+        declared_source("infra", None),
+    ]);
     let run = ApplyRun::new(
         RunContext {
             title: RunTitle::Apply,

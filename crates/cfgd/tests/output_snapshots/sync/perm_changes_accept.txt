@@ -1,5 +1,6 @@
 Sync
   Config   <CONFIG_DIR>/cfgd.yaml
+  Sources  perm-team
   Profile  tiny
 
 Sources
