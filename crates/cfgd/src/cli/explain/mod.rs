@@ -154,8 +154,9 @@ fn heading_anchors(body: &str) -> impl Iterator<Item = String> + '_ {
 /// exercises: lowercase, drop every character that is not a letter, digit,
 /// space or hyphen, then fold spaces to hyphens. GitHub also keeps `_`,
 /// which no camelCase field name or `docs/spec/` heading carries, so the
-/// filter is deliberately the narrower one the brief names. `spec.env` and `spec.env[]` collide on the same anchor
-/// (`specenv`) because the dot and the brackets are both dropped, which is
+/// filter is deliberately the narrower one: dropping `_` costs nothing a
+/// resolvable path can spell. `spec.env` and `spec.env[]` collide on the same
+/// anchor (`specenv`) because the dot and the brackets are both dropped, which is
 /// what lets a field's own dotted path double as its heading's anchor with
 /// no bracket bookkeeping at the call site. "Letter" and "digit" are Unicode
 /// classes, matching GitHub's own algorithm, though every heading `explain`
