@@ -205,7 +205,7 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Acti
 /// second person (`you`, `your`), an imperative opening (`Add`, `Run`,
 /// `Restart`, `Set`, `Source`, `Edit`), a purpose clause (`To start`, `To
 /// use`), a service line (`brew services`), or a shell prompt line — none of
-/// which a bare "X has been installed to:\n  <path>" carries. A body this
+/// which a bare "X has been installed to:\n  \<path\>" carries. A body this
 /// cannot classify stays a warning: a missed instruction costs the reader a
 /// step they had to take, a missed report costs them a glance.
 fn brew_caveat_asks_the_reader_to_act(body: &str) -> bool {
@@ -1404,7 +1404,7 @@ pub(super) fn sudo_cmd_with_seam(program: &str) -> Command {
 }
 
 /// The version a manager's own binary reports, for
-/// [`PackageManager::tool_version`]: `cmd` run to completion, its first
+/// [`cfgd_core::providers::PackageManager::tool_version`]: `cmd` run to completion, its first
 /// dotted number taken. `None` on a spawn failure, a non-zero exit or a
 /// banner holding no version, so a row that cannot state the fact states
 /// nothing rather than a guess.

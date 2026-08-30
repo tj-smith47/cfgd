@@ -138,6 +138,16 @@ single-source-of-truth wiring.
   chart resolved an operator tag nobody had pushed. Both guards are
   registry/anodizer questions rather than Rust ones; they sit in the jobs
   that already hold the tools they need (`task`, docker, helm).
+- The `clippy` job also runs `task doc` (`cargo doc --workspace --no-deps
+  --document-private-items` under `RUSTDOCFLAGS="-D warnings"`, the flag
+  spelled once as the Taskfile's `RUSTDOC_DENY_WARNINGS` var), right after
+  `task clippy` and ahead of the schema/CRD/chart drift guards: it needs the
+  same Rust toolchain checkout as clippy and nothing else, so a second job
+  would only add a redundant checkout+toolchain setup for one `cargo`
+  invocation. Denying warnings turns every rustdoc lint (broken intra-doc
+  link, private-item link from a public item, bare URL, unclosed HTML tag,
+  redundant explicit link target) into a build failure; fix the reference,
+  never `#[allow(rustdoc::…)]` and never a `///` demoted to `//`.
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
 - Any job that `uses: ./.github/actions/...` MUST have a checkout step
   before it (the local action file only exists on the runner after

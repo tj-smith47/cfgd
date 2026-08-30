@@ -152,7 +152,7 @@ pub(crate) fn compose_status(theme: &Theme, f: &StatusFields<'_>) -> (String, Ve
 
 /// The styled ` (12.1s)` suffix [`compose_status`] appends when `f.duration`
 /// is `Some` — the ONE formatting of it, so the full single-string
-/// composition (read by [`affordable_column`]) and the split composition
+/// composition (read by [`group_column`]) and the split composition
 /// below (read by every wrapped multi-line path, the live repaint included)
 /// can never render different bytes for the same duration.
 ///

@@ -62,6 +62,9 @@ jobs:
       - name: Clippy
         run: task clippy
 
+      - name: Rustdoc
+        run: task doc
+
       - name: Schema drift guard
         run: task schema:check
 

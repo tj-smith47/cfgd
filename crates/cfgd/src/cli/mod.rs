@@ -101,7 +101,7 @@ const MSG_NOT_A_REPOSITORY: &str = "Nothing to pull — the config directory is 
 
 /// What a reader DOES about a local config repository a pull could not move —
 /// the local-layer twin of
-/// [`source::source_failure_next_step`](crate::cli::source::source_failure_next_step),
+/// [`source::source_failure_next_step`],
 /// which words the same beat per error kind for a subscribed source. The
 /// repository is the reader's own, so the fix is theirs.
 ///
