@@ -80,6 +80,29 @@ pub fn git_cmd_local() -> std::process::Command {
     cmd
 }
 
+/// Refuse a revision operand that git would read as an OPTION, naming the value.
+///
+/// The documented guard for this is `--end-of-options`, and it is the one guard
+/// `git reset` and `git checkout` did not honour before git 2.46: both REFUSE
+/// the whole invocation when it appears (`fatal: option '--end-of-options' must
+/// come before non-option arguments`; `fatal: git checkout: --detach does not
+/// take a path argument '--end-of-options'`). Ubuntu 24.04 LTS ships git 2.43,
+/// so on the commonest Linux host every such invocation failed before it ran —
+/// which cost the source cache its verify-then-publish rollback, the one thing
+/// standing between a refused fetch and a discarded checkout. A revision argv
+/// therefore carries a TRAILING `--` (which separates a revision from a
+/// pathspec on every git) and this refusal, which is all `--end-of-options` was
+/// carrying for it. `clone`, `fetch` and `ls-remote` accept the option on every
+/// supported git and keep it.
+pub fn refuse_option_like_revision(revision: &str) -> std::result::Result<(), String> {
+    if revision.starts_with('-') {
+        return Err(format!(
+            "refusing to run git against revision '{revision}': a revision must not begin with '-'"
+        ));
+    }
+    Ok(())
+}
+
 /// Try a git CLI command via [`git_cmd_safe`], returning `true` on success.
 /// On failure, logs the stderr via `tracing::debug` and returns `false`.
 pub fn try_git_cmd(
@@ -367,6 +390,85 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::fs;
+
+    /// `git reset` and `git checkout` did not honour `--end-of-options` before
+    /// git 2.46: both REFUSE the whole invocation when it appears. Ubuntu 24.04
+    /// LTS ships git 2.43, so on the commonest Linux host every such argv failed
+    /// before it ran — which is how a refused source fetch lost its
+    /// verify-then-publish rollback (`reset_checkout_to`) and every `pinVersion`
+    /// lost its detached checkout. `clone`, `fetch` and `ls-remote` accept the
+    /// option on every supported git and keep it; the two revision verbs carry a
+    /// trailing `--` and `refuse_option_like_revision` instead.
+    #[test]
+    fn no_revision_verb_argv_spells_end_of_options() {
+        let mut offenders = Vec::new();
+        let mut seen = 0usize;
+        for path in workspace_rust_files() {
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            // Prose says the word on purpose — the rule is documented where it
+            // is enforced, and a comment spawns no process.
+            let code = body
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut rest = code.as_str();
+            while let Some(at) = rest.find("\"--end-of-options\"") {
+                seen += 1;
+                let before = &rest[..at];
+                // The verb sits in the same STATEMENT as the option, which
+                // opens after the nearest preceding `;` or brace.
+                let argv = before
+                    .rfind([';', '{', '}'])
+                    .map_or(before, |o| &before[o..]);
+                for verb in ["\"reset\"", "\"checkout\""] {
+                    if argv.contains(verb) {
+                        offenders.push(format!("{}: git {verb} argv", path.display()));
+                    }
+                }
+                rest = &rest[at + 1..];
+            }
+        }
+        assert!(
+            seen > 0,
+            "no --end-of-options argv found: the walk stopped seeing its population"
+        );
+        assert!(
+            offenders.is_empty(),
+            "git reset/checkout refuse --end-of-options before git 2.46 \
+             (Ubuntu 24.04 LTS ships 2.43); pass the revision with a trailing \
+             `--` and refuse_option_like_revision instead:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// Every `.rs` file under every crate's `src/`.
+    fn workspace_rust_files() -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("crates"),
+        ];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        assert!(!out.is_empty(), "found no sources under crates/");
+        out
+    }
 
     /// Saves and restores the `CFGD_COSIGN_BIN` env var so tests stay isolated
     /// even when one panics. Pairs with `serial_test::serial` since env-var

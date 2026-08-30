@@ -24265,6 +24265,24 @@ fn a_source_refused_for_an_unsigned_head_syncs_once_a_signed_commit_lands() {
         accepted.contains("✓ Synced"),
         "and the run closes on its success verdict: {accepted}"
     );
+    // The header composes offline from the checkout the refusal left standing,
+    // so the recovery run opens on the same starting-point line the refused run
+    // did. Lose the rollback and the cache is gone: the header composes from
+    // nothing, prints no line, and the fetch below clones fresh with no old
+    // commit to report a move from.
+    assert!(
+        accepted.contains("Starting point could not be resolved from the cached checkout"),
+        "the recovery run's header reads the checkout the refusal kept: {accepted}"
+    );
+    assert!(
+        accepted.contains(&format!(
+            "commit: {} {} {}",
+            cfgd_core::short_commit(&stale),
+            h.printer().arrow(),
+            cfgd_core::short_commit(&signed)
+        )),
+        "and its fetch reports the move it made: {accepted}"
+    );
     assert!(
         !super::sync::sync_refused(&payload),
         "the recovery run exits 0: {accepted}"

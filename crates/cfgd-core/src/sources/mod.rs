@@ -1183,14 +1183,21 @@ impl SourceManager {
     }
 
     /// Run a detached-HEAD `git checkout <target>` in the source dir.
-    /// `--end-of-options` precedes the (attacker-influenced) target so a tag
-    /// named e.g. `-x` can never be parsed as a checkout flag.
+    ///
+    /// The (attacker-influenced) target is guarded by
+    /// [`crate::refuse_option_like_revision`] and a TRAILING `--`, never by
+    /// `--end-of-options`, which `git checkout` rejects outright before
+    /// git 2.46.
     fn git_checkout_detached(
         &self,
         spec: &SourceSpec,
         source_dir: &Path,
         target: &str,
     ) -> Result<()> {
+        crate::refuse_option_like_revision(target).map_err(|message| SourceError::GitError {
+            name: spec.name.clone(),
+            message,
+        })?;
         let mut checkout = crate::git_cmd_local();
         checkout.args([
             "-C",
@@ -1199,8 +1206,8 @@ impl SourceManager {
             "advice.detachedHead=false",
             "checkout",
             "--detach",
-            "--end-of-options",
             target,
+            "--",
         ]);
         checkout.stdout(std::process::Stdio::piped());
         checkout.stderr(std::process::Stdio::piped());
@@ -1545,6 +1552,7 @@ pub fn discard_cached_checkout(cache_dir: &Path, name: &str, printer: &Printer) 
 /// the operator's own repository may only be reported on), so this reports and
 /// never decides.
 pub fn reset_checkout_to(repo_dir: &Path, commit: &str) -> std::result::Result<(), String> {
+    crate::refuse_option_like_revision(commit)?;
     let output = crate::command_output_with_timeout(
         crate::git_cmd_local().args([
             "-C",
@@ -1552,8 +1560,8 @@ pub fn reset_checkout_to(repo_dir: &Path, commit: &str) -> std::result::Result<(
             "reset",
             "--hard",
             "--quiet",
-            "--end-of-options",
             commit,
+            "--",
         ]),
         crate::COMMAND_TIMEOUT,
     )
