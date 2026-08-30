@@ -102,6 +102,14 @@ Enter
 Wait@10s /cfgd\$$/
 Sleep 4s
 
+# Beat 5b: the restore is itself reversible. The pre-restore safety copy is a
+# sidecar beside the source, and rollback puts it back through the same
+# lock, hooks and confirmation; cat proves the "oops" edit is on disk again.
+Type "cfgd backup rollback notes --yes && cat ~/notes.md"
+Enter
+Wait@10s /cfgd\$$/
+Sleep 4s
+
 # Beat 6: close the loop on the ledger — the unit counts exactly the snapshot
 # it took (the restore's safety copy is a sidecar beside the source, never a
 # snapshot), Status fills now that a run has happened, and Last Run is the

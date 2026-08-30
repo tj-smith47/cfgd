@@ -109,12 +109,11 @@ Wait+Screen@20s /Welcome, TJ Smith!/
 Wait+Screen@20s /Cargo\.toml/
 # The first interactive start raises notifications that cover half the editor.
 # They expire on their own, so this settles the screen rather than showing
-# anything. The span is sized for the LAST of them, which is not a startup
-# toast at all: lazy.nvim's update check fires once startup has finished, lands
-# a couple of seconds after the tree populates and takes several more to
-# animate out. Sized to the startup toasts alone, the settle ended while the
-# update panel still covered the logo and the hero hold caught it mid-dismiss.
-Sleep 12s
+# anything. lazy.nvim's update panel no longer joins them: it fires only when
+# the fixture's lazy-lock trails the plugins it pins, and that lock is
+# refreshed upstream before a take, so the span is sized to the startup
+# toasts alone.
+Sleep 4s
 # The hero frames: LazyVim with the repo tree, no toasts left on top of it.
 # Long enough to read the dashboard, short enough that the loop does not sit on
 # a still image — at 6s the hold read as the recording having stalled.
