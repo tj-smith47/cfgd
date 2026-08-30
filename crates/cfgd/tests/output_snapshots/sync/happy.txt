@@ -1,5 +1,6 @@
 Sync
   Config   <CONFIG_DIR>/cfgd.yaml
+  Sources  team-a, team-b
   Profile  tiny
 
 Sources

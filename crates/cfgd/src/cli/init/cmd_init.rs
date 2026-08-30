@@ -264,6 +264,9 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &resolved_modules,
                 &target_dir,
                 ApplyPlanOpts {
+                    // A module-only apply resolves no profile, so it names
+                    // neither what composed one nor what one resolved to.
+                    sources: &[],
                     dry_run: args.dry_run,
                     yes: args.yes,
                     state_dir: args.state_dir,
@@ -388,6 +391,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 cfgd_core::reconciler::ReconcileContext::Apply,
             )?;
 
+            let declared_sources =
+                cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
             apply_status = apply_plan(
                 &mut plan,
                 reconciler,
@@ -395,6 +400,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &resolved_modules,
                 &target_dir,
                 ApplyPlanOpts {
+                    sources: &declared_sources,
                     dry_run: args.dry_run,
                     yes: args.yes,
                     state_dir: args.state_dir,
@@ -570,6 +576,9 @@ pub(super) struct ApplyPlanOpts<'a> {
     pub state_dir: Option<&'a Path>,
     /// Installation scope for the apply mutex (`--scope system` vs per-user).
     pub scope: cfgd_core::Scope,
+    /// The sources the scaffolded config subscribes to, for the run header's
+    /// `Sources` row.
+    pub sources: &'a [cfgd_core::reconciler::ComposedSource],
     /// The profile this apply reconciles, for the run header's `Profile` row.
     /// `None` on the module-only path, which resolves no profile at all.
     pub profile: Option<&'a str>,
@@ -634,13 +643,11 @@ pub(super) fn apply_plan(
     } else {
         cfgd_core::reconciler::RunTitle::Apply
     };
-    let composed_sources =
-        cfgd_core::reconciler::ComposedSource::from_profile_layers(&resolved.layers);
     let ctx = cfgd_core::reconciler::RunContext {
         title,
         config_path: Some(config_path.as_path()),
         profile: opts.profile,
-        sources: &composed_sources,
+        sources: opts.sources,
         modules: &header_modules,
         trigger: None,
         subject: None,

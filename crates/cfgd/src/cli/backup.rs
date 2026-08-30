@@ -102,8 +102,7 @@ fn restoring_verb_state(
         false,
         composition::ConstraintMode::Enforce,
     )?;
-    let sources =
-        cfgd_core::reconciler::ComposedSource::from_profile_layers(&composition.resolved.layers);
+    let sources = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
     let backups = composition.resolved.merged.backups.clone();
 
     match resolve_desired_from_composition(ctx, cfg, composition, &[], false, printer) {

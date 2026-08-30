@@ -302,17 +302,20 @@ pub fn cmd_profile_create(
     // row above names the file, nothing has been composed, and the modules are
     // the list this command wrote.
     rows.extend(cfgd_core::output::config_header_rows(
-        None,
-        &[],
-        None,
-        &doc.spec
-            .modules
-            .iter()
-            .map(|name| cfgd_core::output::HeaderModule {
-                name: name.clone(),
-                platform_skip_reason: None,
-            })
-            .collect::<Vec<_>>(),
+        &cfgd_core::output::ConfigHeader {
+            config_path: None,
+            sources: &[],
+            profile: None,
+            modules: &doc
+                .spec
+                .modules
+                .iter()
+                .map(|name| cfgd_core::output::HeaderModule {
+                    name: name.clone(),
+                    platform_skip_reason: None,
+                })
+                .collect::<Vec<_>>(),
+        },
     ));
     out = out.kv_rows(rows);
     out = out

@@ -52,10 +52,12 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         composition::ConstraintMode::Report,
     )?;
     printer.kv_rows(cfgd_core::output::config_header_rows(
-        Some(&cli.config),
-        &desired.sources,
-        Some(profile_name),
-        &cfgd_core::output::HeaderModule::of_resolved(&desired.modules),
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(&cli.config),
+            sources: &desired.sources,
+            profile: Some(profile_name),
+            modules: &cfgd_core::output::HeaderModule::of_resolved(&desired.modules),
+        },
     ));
 
     let config_dir = ctx.config_dir().to_path_buf();

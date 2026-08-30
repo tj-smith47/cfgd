@@ -664,7 +664,7 @@ fn reconcile_tick(
     // `module_last_reconcile` so the profile-wide "last reconcile" timestamp
     // continues to reflect the default reconcile cadence.
     let header_modules = crate::output::HeaderModule::of_resolved(&resolved_modules_ref);
-    let composed_sources = crate::reconciler::ComposedSource::from_profile_layers(&resolved.layers);
+    let composed_sources = crate::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
     let rt = tokio::runtime::Handle::current();
     rt.block_on(async {
         let mut st = state.lock().await;

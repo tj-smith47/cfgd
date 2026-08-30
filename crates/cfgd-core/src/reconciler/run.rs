@@ -134,36 +134,16 @@ pub struct ComposedSource {
 }
 
 impl ComposedSource {
-    /// The sources a composed profile actually drew a layer from, in layering
-    /// order, one entry per source however many layers it contributed.
+    /// The subscriptions a config DECLARES, in declaration order — the ONE
+    /// derivation of the header's `Sources` row.
     ///
-    /// Derived from the LAYERS rather than from `spec.sources`, so a
-    /// subscription that contributed nothing is not announced as though it had
-    /// and the profile named is the one that really merged. The ONE derivation:
-    /// the CLI's apply/plan paths and the daemon's reconcile tick both read it,
-    /// and a header that named different sources depending on which surface
-    /// printed it would describe two machines.
-    pub fn from_profile_layers(layers: &[crate::config::ProfileLayer]) -> Vec<Self> {
-        let mut seen = std::collections::HashSet::new();
-        layers
-            .iter()
-            .filter(|layer| layer.source != crate::config::LOCAL_LAYER)
-            .filter(|layer| seen.insert(layer.source.clone()))
-            .map(|layer| Self {
-                name: layer.source.clone(),
-                profile: Some(layer.profile_name.clone()).filter(|p| !p.is_empty()),
-            })
-            .collect()
-    }
-
-    /// The subscriptions a config DECLARES, for a surface that reports on a
-    /// machine without composing one itself.
-    ///
-    /// [`ComposedSource::from_profile_layers`] answers what a composition
-    /// really drew from and is what every composing surface reads; `cfgd
-    /// daemon status` holds no composition of its own — the loop it reports on
-    /// did the composing in another process — so it names what `spec.sources[]`
-    /// subscribes to.
+    /// Read off `spec.sources[]` and never off the composition the run
+    /// performed: read paths compose from the source CACHE alone, so a
+    /// declared source nobody has fetched yet contributes no layer, and a row
+    /// derived from the layers then vanished — the key `Sources` silently
+    /// answering "has this machine run `cfgd sync` yet" instead of what the
+    /// config subscribes to. `cfgd status` said the machine composed from
+    /// nothing while its own `Sources` table fifteen rows below listed two.
     pub fn from_declared(sources: &[crate::config::SourceSpec]) -> Vec<Self> {
         sources
             .iter()
@@ -531,12 +511,13 @@ impl<'a> ApplyRun<'a> {
     /// `ApplyRun::pending_backup_count` for what the engine can enumerate
     /// ahead of the run.
     pub fn header(&self, printer: &Printer) {
-        let mut rows: Vec<KvPair> = crate::output::config_header_rows(
-            self.ctx.config_path,
-            self.ctx.sources,
-            self.ctx.profile,
-            &self.header_modules(),
-        );
+        let mut rows: Vec<KvPair> =
+            crate::output::config_header_rows(&crate::output::ConfigHeader {
+                config_path: self.ctx.config_path,
+                sources: self.ctx.sources,
+                profile: self.ctx.profile,
+                modules: &self.header_modules(),
+            });
         if let Some(trigger) = self.ctx.trigger {
             rows.push(KvPair::new("Trigger", trigger.to_string()));
         }

@@ -651,6 +651,11 @@ pub(super) fn run_scheduled_backups(
         (&[], &[])
     };
 
+    // no-sources-row-ok: a due set the last tick did not resolve — a different
+    // profile, or none resolved yet — leaves this reader holding no
+    // composition for the profile it is naming.
+    // no-modules-row-ok: same arm, same reason: the loop's own resolution is
+    // the only one this fire may report, and it is about another profile.
     let ctx = crate::reconciler::RunContext {
         title: crate::reconciler::RunTitle::Backup,
         config_path: Some(config_path),
