@@ -660,9 +660,8 @@ fn reconcile_tick(
 
     let timestamp = crate::utc_now_iso8601();
 
-    // Update daemon state. For a per-module tick we only touch
-    // `module_last_reconcile` so the profile-wide "last reconcile" timestamp
-    // continues to reflect the default reconcile cadence.
+    // A per-module tick moves only `module_last_reconcile`, so the
+    // profile-wide "last reconcile" stamp keeps reflecting the default cadence.
     let header_modules = crate::output::HeaderModule::of_resolved(&resolved_modules_ref);
     let composed_sources = crate::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
     let rt = tokio::runtime::Handle::current();
@@ -673,7 +672,11 @@ fn reconcile_tick(
         // `spec.sources` would otherwise leave the daemon's `Sources` row —
         // and the scheduled fire's header — naming the old subscriptions until
         // the next profile-wide tick, the startup seeding covering only the
-        // never-ticked case.
+        // never-ticked case. `profile` / `modules` below are RESOLUTION facts
+        // and move only with the resolution that produced them; after a SIGHUP
+        // the row names the new subscriptions beside the last profile-wide
+        // resolution's modules until that resolution is redone, which is the
+        // same staleness `daemon status` states for every other resolved fact.
         st.composed_sources = composed_sources.clone();
         if let Some(name) = module_filter {
             st.module_last_reconcile.insert(name.to_string(), timestamp);

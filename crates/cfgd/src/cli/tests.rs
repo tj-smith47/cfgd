@@ -30885,17 +30885,19 @@ fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
     {
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
-            if !SHAPES.iter().any(|shape| line.contains(shape)) {
+            let Some(shape) = SHAPES.iter().find(|shape| line.contains(*shape)) else {
                 continue;
-            }
+            };
             // The literal's own slots, which every one of these shapes spells
             // within a few lines of its opening brace — in the `key: value`
             // form or in field-init shorthand, which names a binding and so is
             // never the empty slice this rule is about.
+            // Wide enough that a comment block above a slot cannot push the
+            // slot out of the window and drop the literal from the walk.
             let slot = |key: &str| {
                 lines[n..]
                     .iter()
-                    .take(12)
+                    .take(40)
                     .map(|l| l.trim_start())
                     .find(|l| l.starts_with(&format!("{key}:")) || *l == format!("{key},"))
             };
@@ -30908,7 +30910,11 @@ fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
             if slot("config_path") == Some("config_path: None,") {
                 continue;
             }
-            checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
+            checked.push(format!(
+                "{shape} {}:{}",
+                cfgd_core::to_posix_string(&path),
+                n + 1
+            ));
             // `Sources` is a fact about the CONFIG, not about the profile: a
             // `--module` isolate resolves no profile and still holds the
             // config whose `spec.sources[]` say where its configuration came
@@ -30928,15 +30934,18 @@ fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
             }
         }
     }
-    // One member of each shape, so a gather that stopped reaching either crate
-    // — or a shape dropped from the list — cannot pass by finding nothing at
-    // all.
+    // One member of each shape, spelled here rather than read off `SHAPES`,
+    // so a gather that stopped reaching either crate — or a shape dropped
+    // from the list — cannot pass by finding nothing at all.
     assert!(
-        checked
+        ["RunContext {", "ConfigHeader {", "ApplyPlanOpts {"]
             .iter()
-            .filter(|c| c.contains("cli/backup.rs"))
-            .count()
-            == 3
+            .all(|shape| checked.iter().any(|c| c.starts_with(shape)))
+            && checked
+                .iter()
+                .filter(|c| c.contains("cli/backup.rs"))
+                .count()
+                == 3
             && checked.iter().any(|c| c.contains("daemon/backup.rs"))
             && checked.iter().any(|c| c.contains("cli/diff.rs"))
             && checked.iter().any(|c| c.contains("cli/init/cmd_init.rs")),
