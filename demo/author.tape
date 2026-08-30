@@ -75,13 +75,14 @@ Enter
 Wait@60s /cfgd\$$/
 Sleep 4s
 
-# Beat 2b: the root kind, so the Docs row (a link on a terminal that opens
-# one, the release-pinned URL everywhere else) lands on screen. A kind, not a
-# field path — the row is a kind's; and not `--recursive`, whose 144 rows
-# would scroll the Docs row off before the hold.
+# Beat 2b: the same field, recursively, so every shape under `brew` and the
+# field's own Docs row (a link on a terminal that opens one, the release-
+# pinned URL everywhere else) land on one screen. A field path rather than the
+# root kind: the row is anchored at the `spec.packages.brew` heading of the
+# spec page, and `brew`'s subtree is short enough to hold.
 Type "clear"
 Enter
-Type "cfgd explain Config"
+Type "cfgd explain profile.spec.packages.brew --recursive"
 Enter
 Wait@60s /cfgd\$$/
 Sleep 5s
