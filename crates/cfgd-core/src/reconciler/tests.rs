@@ -27067,9 +27067,14 @@ fn a_missing_source_deploys_nothing_and_claims_no_change() {
 /// The sidecar copy of an adopted file belongs to the action that overwrites
 /// it, not to planning: it runs inside the Files phase, so the run reports it
 /// while it happens and a plan that is never applied leaves the disk alone.
+///
+/// The tmp dir stands in as home, so the row is read the way an operator reads
+/// it: the subject folds `$HOME` and the sidecar detail beside it has to fold
+/// the same directory the same way, or one row spells one path two ways.
 #[test]
 fn a_reserved_target_is_copied_aside_by_the_file_action_that_replaces_it() {
     let tmp = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
     let source = tmp.path().join("src.conf");
     let target = tmp.path().join("live.conf");
     std::fs::write(&source, "from the module\n").unwrap();
@@ -27123,8 +27128,12 @@ fn a_reserved_target_is_copied_aside_by_the_file_action_that_replaces_it() {
         .find(|l| l.contains("live.conf") && l.contains("backed up to"))
         .unwrap_or_else(|| panic!("the copy is reported on the row that made it, got: {out}"));
     assert!(
-        row.contains("live.conf.cfgd-backup"),
-        "the row names where the copy landed, got: {row}"
+        row.contains("backed up to ~/live.conf.cfgd-backup"),
+        "the row names where the copy landed, folded the way its own subject is, got: {row}"
+    );
+    assert!(
+        !row.contains(&crate::to_posix_string(tmp.path())),
+        "the detail spells the home directory absolutely beside a subject that folds it, got: {row}"
     );
     assert!(
         !out.contains("Backed up to"),
