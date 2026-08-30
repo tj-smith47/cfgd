@@ -803,7 +803,7 @@ Before removing the source's records, cfgd hashes each deployed file it manages 
 ```sh
 $ cfgd source remove acme-corp --remove-all
 Remove source:acme-corp
-⚠ Modified since cfgd deployed it: /home/tj/.config/nvim/init.lua
+⚠ Modified since cfgd deployed it: ~/.config/nvim/init.lua
 ? Forget 1 hand-modified file anyway? (y/N)
 ```
 

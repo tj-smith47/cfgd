@@ -17,10 +17,10 @@ reusable in every interactive coding session. See
 ```console
 $ cfgd skill install module
 Installing skill Module (project scope)
-  ✓ claude-code: /home/user/repo/.claude/skills/cfgd-module/SKILL.md
+  ✓ claude-code: ~/repo/.claude/skills/cfgd-module/SKILL.md
   — gemini  — not detected
   — copilot — not detected
-  ✓ codex: /home/user/repo/AGENTS.md
+  ✓ codex: ~/repo/AGENTS.md
   — cursor  — not detected
 ```
 
@@ -78,8 +78,8 @@ created):
 ```console
 $ cfgd skill install module --provider claude-code --provider cursor
 Installing skill Module (project scope)
-  ✓ claude-code: /home/user/repo/.claude/skills/cfgd-module/SKILL.md
-  ✓ cursor: /home/user/repo/.cursor/rules/cfgd-module.mdc
+  ✓ claude-code: ~/repo/.claude/skills/cfgd-module/SKILL.md
+  ✓ cursor: ~/repo/.cursor/rules/cfgd-module.mdc
 ```
 
 Multi-provider install is continue-on-error: every provider is attempted, each
@@ -92,8 +92,8 @@ are left in place; each file is written atomically and is independently valid.
 ```console
 $ cfgd skill list
 Installed skills (project scope)
-  ✓ claude-code/Module: /home/user/repo/.claude/skills/cfgd-module/SKILL.md (0.9.0)
-  ✓ codex/Module: /home/user/repo/AGENTS.md (0.9.0)
+  ✓ claude-code/Module: ~/repo/.claude/skills/cfgd-module/SKILL.md (0.9.0)
+  ✓ codex/Module: ~/repo/AGENTS.md (0.9.0)
 ```
 
 A skill rendered by an older cfgd is flagged stale (it carries a version stamp):
@@ -110,8 +110,8 @@ Installed skills (user scope)
 $ cfgd skill remove module
 Remove the Module skill from 2 providers? [y/N] y
 Removing skill Module (project scope)
-  ✓ claude-code: /home/user/repo/.claude/skills/cfgd-module/SKILL.md
-  ✓ codex: /home/user/repo/AGENTS.md
+  ✓ claude-code: ~/repo/.claude/skills/cfgd-module/SKILL.md
+  ✓ codex: ~/repo/AGENTS.md
   — gemini  — not installed
   — copilot — not installed
   — cursor  — not installed
@@ -130,8 +130,8 @@ byte untouched.
 ```console
 $ cfgd skill update --all
 Updating skill all (project scope)
-  ✓ claude-code: /home/user/repo/.claude/skills/cfgd-module/SKILL.md
-  ✓ codex: /home/user/repo/AGENTS.md
+  ✓ claude-code: ~/repo/.claude/skills/cfgd-module/SKILL.md
+  ✓ codex: ~/repo/AGENTS.md
 ```
 
 `update` only touches skills that are already installed; it never installs a new
@@ -149,7 +149,7 @@ $ cfgd skill install module -o json
   "kind": "Module",
   "results": [
     {
-      "path": "/home/user/repo/.claude/skills/cfgd-module/SKILL.md",
+      "path": "~/repo/.claude/skills/cfgd-module/SKILL.md",
       "provider": "claude-code",
       "status": "installed"
     },
@@ -164,7 +164,7 @@ $ cfgd skill install module -o json
       "status": "skipped"
     },
     {
-      "path": "/home/user/repo/AGENTS.md",
+      "path": "~/repo/AGENTS.md",
       "provider": "codex",
       "status": "installed"
     },
