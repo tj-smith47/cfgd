@@ -373,18 +373,31 @@ pub fn build_compliance_diff_doc(
 pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str) -> Doc {
     let overall = overall_status(&snapshot.summary);
 
-    let mut doc = Doc::new().heading("Compliance Summary").kv_block([
+    // The snapshot's own facts around the one header row it can fill: a
+    // recorded snapshot carries the profile it was taken under and neither the
+    // config path, the sources nor the modules, so the builder emits that row
+    // alone and the rest of the block is this surface's.
+    let mut rows = vec![
         // `Age`, not the stored instant: `-o json` carries `timestamp` for a
         // consumer that needs the exact moment, and a person reading the
         // summary is asking how fresh it is.
-        (
+        cfgd_core::output::KvPair::new(
             "Age",
             cfgd_core::humanize_age_magnitude_cell(Some(&snapshot.timestamp), now),
         ),
-        ("Machine", snapshot.machine.hostname.clone()),
-        ("Profile", snapshot.profile.clone()),
-        ("Status", overall.to_string()),
-    ]);
+        cfgd_core::output::KvPair::new("Machine", snapshot.machine.hostname.clone()),
+    ];
+    rows.extend(cfgd_core::output::config_header_rows(
+        None,
+        &[],
+        Some(&snapshot.profile),
+        &[],
+    ));
+    rows.push(cfgd_core::output::KvPair::new(
+        "Status",
+        overall.to_string(),
+    ));
+    let mut doc = Doc::new().heading("Compliance Summary").kv_rows(rows);
 
     doc = doc.kv_block([
         ("Compliant", snapshot.summary.compliant.to_string()),

@@ -257,6 +257,7 @@ is consumer-local and carries no origin.
 $ cfgd plan
 Plan
   Config   /home/you/.config/cfgd/cfgd.yaml
+  Sources  team
   Profile  work
   Modules  dev-tools, localmod
   Phases   Prerequisites, Packages, Post-Scripts

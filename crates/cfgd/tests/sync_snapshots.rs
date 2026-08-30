@@ -397,10 +397,13 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
     let (status_printer, status_cap) = Printer::for_test_doc();
     status_printer.emit(cfgd::cli::status::build_fleet_status_doc(
         &output,
-        &[],
+        &cfgd::cli::status::StatusHeader {
+            config_path: Path::new("/tmp/cfgd.yaml"),
+            sources: &[],
+            profile: "default",
+            modules: &[],
+        },
         &declared,
-        Path::new("/tmp/cfgd.yaml"),
-        "default",
         "2026-05-14T10:05:00Z",
         &Default::default(),
     ));

@@ -41,7 +41,6 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
     // exactly what this verb is the right place to hear.
     let ctx = RunContext::new(cli, printer).fetching_sources();
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
-    let mut rows = cfgd_core::output::config_profile_rows(Some(&cli.config), Some(profile_name));
     let desired = resolve_desired_state(
         &ctx,
         cfg,
@@ -52,10 +51,12 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         false,
         composition::ConstraintMode::Report,
     )?;
-    rows.extend(cfgd_core::output::modules_header_row_for(
+    printer.kv_rows(cfgd_core::output::config_header_rows(
+        Some(&cli.config),
+        &desired.sources,
+        Some(profile_name),
         &cfgd_core::output::HeaderModule::of_resolved(&desired.modules),
     ));
-    printer.kv_rows(rows);
 
     let config_dir = ctx.config_dir().to_path_buf();
 

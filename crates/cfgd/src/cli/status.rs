@@ -608,6 +608,8 @@ pub(super) fn recorded_scope_row(recorded: &str) -> Option<(&'static str, &str)>
     Some(if value.starts_with(&owner_prefix) {
         ("Scope", value)
     } else {
+        // header-row-ok: what the RECORDED run was scoped to, not the profile
+        // this report is running under
         ("Profile", value)
     })
 }
@@ -644,20 +646,36 @@ const SCAN_STALENESS_SECS: i64 = cfgd_core::daemon::DEFAULT_RECONCILE_SECS as i6
 /// other surface reporting on a resolved profile reads) and the declared source
 /// catalog, which carries the columns the status payload does not (priority,
 /// origin, signing demand).
+/// The four facts `cfgd status` heads its report with: the config it ran
+/// under, the sources it composed from, the profile it resolved, and the
+/// modules that profile puts on this machine.
+pub struct StatusHeader<'a> {
+    /// The config file the run resolved everything from.
+    pub config_path: &'a Path,
+    /// The sources the composition drew from, in composition order.
+    pub sources: &'a [cfgd_core::reconciler::ComposedSource],
+    /// The resolved profile's name.
+    pub profile: &'a str,
+    /// The modules that profile resolves to, dependency-first.
+    pub modules: &'a [cfgd_core::output::HeaderModule],
+}
+
 pub fn build_fleet_status_doc(
     output: &StatusOutput,
-    header_modules: &[cfgd_core::output::HeaderModule],
+    head: &StatusHeader<'_>,
     configured_sources: &[SourceListEntry],
-    config_path: &Path,
-    profile_name: &str,
     now: &str,
     decision_contents: &super::DecisionContents,
 ) -> Doc {
     // One derivation for the whole document: the header's `Profile` row and
     // the Managed Resources Owner column name the same profile or neither does.
-    let profile = derivable_profile(profile_name);
-    let mut header = cfgd_core::output::config_profile_rows(Some(config_path), profile);
-    header.extend(cfgd_core::output::modules_header_row_for(header_modules));
+    let profile = derivable_profile(head.profile);
+    let header = cfgd_core::output::config_header_rows(
+        Some(head.config_path),
+        head.sources,
+        profile,
+        head.modules,
+    );
     let mut doc = Doc::new().heading("Status").kv_rows(header);
 
     // Only the recorded-state dashboard needs a staleness signal: a `--scan`/
@@ -1514,6 +1532,7 @@ pub(super) fn cmd_status(
     // the `&mut self` the accessor needs — and `Some` exactly when `do_scan`,
     // so the scan below can bind it instead of re-testing the flag.
     let registry = do_scan.then(|| desired.take_registry(cfg));
+    let composed_sources = desired.sources;
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
     // The ownership record the machine will honour, read by the decision rows
@@ -1736,10 +1755,13 @@ pub(super) fn cmd_status(
     );
     printer.emit(build_fleet_status_doc(
         &output,
-        &cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
+        &StatusHeader {
+            config_path: &cli.config,
+            sources: &composed_sources,
+            profile: profile_name,
+            modules: &cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
+        },
         &configured_sources,
-        &cli.config,
-        profile_name,
         &cfgd_core::utc_now_iso8601(),
         &decision_contents,
     ));
@@ -2512,14 +2534,43 @@ mod tests {
     /// A config dir whose profile resolves to something its DECLARED list does
     /// not say: one module pulled in by a `depends`, and one gated off this
     /// host. It also declares a `spec.backups[]` unit, so the surfaces that
-    /// report under this profile include the backup verbs.
-    /// Returns `(config_dir, state_dir, config_path)`.
-    fn setup_env_with_resolved_modules()
-    -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+    /// report under this profile include the backup verbs, and subscribes to
+    /// one config source, so every header naming what this machine composed
+    /// from has a source to name.
+    fn setup_env_with_resolved_modules() -> ResolvedModulesEnv {
+        let allow_local =
+            cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
         let config_dir = tempfile::tempdir().unwrap();
         let state_dir = tempfile::tempdir().unwrap();
         let config_path = config_dir.path().join("cfgd.yaml");
-        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        // A profile the source PUBLISHES and this machine subscribes to,
+        // declaring nothing of its own: the layer is what the `Sources` row
+        // names, and a layer that changed the resolved module set would make
+        // this fixture unable to say which surface disagreed about which fact.
+        let remote = cfgd_core::test_helpers::BareGitRepo::builder()
+            .commit(
+                "team source",
+                &[
+                    (
+                        "cfgd-source.yaml",
+                        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: team\nspec:\n  provides:\n    profiles:\n      - shared\n",
+                    ),
+                    (
+                        "profiles/shared.yaml",
+                        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: shared\nspec: {}\n",
+                    ),
+                ],
+            )
+            .build();
+        std::fs::write(
+            &config_path,
+            format!(
+                "{CONFIG_YAML}  sources:\n    - name: team\n      origin:\n        type: Git\n        url: {}\n        branch: {}\n      subscription:\n        profile: shared\n",
+                remote.url(),
+                remote.head_branch(),
+            ),
+        )
+        .unwrap();
         let profiles_dir = config_dir.path().join("profiles");
         std::fs::create_dir_all(&profiles_dir).unwrap();
         let backup_source = config_dir.path().join("data").join("notes.txt");
@@ -2552,33 +2603,81 @@ mod tests {
             "off-host",
             &format!("  platforms:\n    - {elsewhere}\n  packages: []\n"),
         );
-        (config_dir, state_dir, config_path)
+        ResolvedModulesEnv {
+            config_path,
+            _config_dir: config_dir,
+            state_dir,
+            _remote: remote,
+            _allow_local: allow_local,
+        }
     }
 
-    /// The rendered `Modules` row's words, ASSERTING as it reads that the row
-    /// sits in the same key column as the `Profile` row above it. A surface
-    /// that emits the row outside its header block renders it at a different
-    /// indent — which is what `sync` did, printing it at column 0 beside a
-    /// `Profile` two spaces in — and no comparison of the words alone can see
-    /// that. The interior run collapses: the key column is padded to the
-    /// widest key of each surface's own row set, a layout fact rather than a
-    /// disagreement about what the profile resolved to.
-    fn rendered_modules_row(out: &str) -> String {
-        let indent_of = |key: &str| {
-            out.lines()
-                .find(|l| l.trim_start().starts_with(key))
-                .map(|l| l.len() - l.trim_start().len())
-                .unwrap_or_else(|| panic!("no {key} row rendered: {out}"))
+    /// What [`setup_env_with_resolved_modules`] hands back. A struct rather
+    /// than a tuple because the source's bare repository and the local-origin
+    /// allowance have to outlive the surfaces being driven, and a `_`-prefixed
+    /// tuple slot at a call site is one rename away from being dropped early.
+    struct ResolvedModulesEnv {
+        config_path: std::path::PathBuf,
+        _config_dir: tempfile::TempDir,
+        state_dir: tempfile::TempDir,
+        _remote: cfgd_core::test_helpers::BareGitRepo,
+        _allow_local: cfgd_core::test_helpers::EnvVarGuard,
+    }
+
+    /// The header block's rows in the ONE ruled order, ASSERTING as it reads
+    /// that each sits where the reader is scanning: in the order `Config`,
+    /// `Sources`, `Profile`, `Modules`, and all in one key column.
+    ///
+    /// A surface that emits a row outside its header block renders it at a
+    /// different indent — which is what `sync` did with `Modules`, printing it
+    /// at column 0 beside a `Profile` two spaces in — and no comparison of the
+    /// words alone can see that. A surface that orders the block its own way
+    /// is invisible to a per-row comparison for the same reason. The interior
+    /// run of each row collapses: the key column is padded to the widest key
+    /// of each surface's own row set, a layout fact rather than a
+    /// disagreement about what the machine is configured from.
+    ///
+    /// A row a surface legitimately has no fact for is absent, not empty, so
+    /// the returned rows are only the ones it rendered.
+    fn rendered_header_rows(out: &str) -> Vec<String> {
+        const KEYS: [&str; 4] = ["Config", "Sources", "Profile", "Modules"];
+        // A `Sources` SECTION heading and a `Config` block heading wear the
+        // same word with no value beside them, so a row is recognised by the
+        // key being followed by its value.
+        let row_of = |key: &str| {
+            out.lines().enumerate().find(|(_, l)| {
+                let code = l.trim_start();
+                code.strip_prefix(key)
+                    .is_some_and(|rest| rest.starts_with(' ') && !rest.trim().is_empty())
+            })
         };
-        assert_eq!(
-            indent_of("Modules"),
-            indent_of("Profile"),
-            "the `Modules` row left the header's key column:\n{out}"
-        );
-        out.lines()
-            .find(|l| l.trim_start().starts_with("Modules"))
-            .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
-            .unwrap_or_else(|| panic!("no Modules row rendered: {out}"))
+        let found: Vec<(usize, usize, String)> = KEYS
+            .iter()
+            .filter_map(|key| row_of(key))
+            .map(|(n, line)| {
+                (
+                    n,
+                    line.len() - line.trim_start().len(),
+                    line.split_whitespace().collect::<Vec<_>>().join(" "),
+                )
+            })
+            .collect();
+        assert!(!found.is_empty(), "no header row rendered at all:\n{out}");
+        for pair in found.windows(2) {
+            assert!(
+                pair[0].0 < pair[1].0,
+                "the header block reads {:?} before {:?}, and the ruled order is \
+                 Config, Sources, Profile, Modules:\n{out}",
+                pair[1].2,
+                pair[0].2
+            );
+            assert_eq!(
+                pair[0].1, pair[1].1,
+                "{:?} left the header's key column:\n{out}",
+                pair[1].2
+            );
+        }
+        found.into_iter().map(|(_, _, row)| row).collect()
     }
 
     /// The dashboard opens on the same `Modules` row `cfgd diff` does — two
@@ -2593,12 +2692,13 @@ mod tests {
     /// this host, so a surface passing no skips would list it as an ordinary
     /// member.
     #[test]
+    #[serial_test::serial]
     fn status_header_names_the_profiles_modules_like_the_apply_header() {
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-        let (config_dir, state_dir, config_path) = setup_env_with_resolved_modules();
-        let mut cli = test_cli_for(config_path, state_dir.path());
-        cli.cache_dir = Some(state_dir.path().to_path_buf());
+        let env = setup_env_with_resolved_modules();
+        let mut cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
+        cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let (printer, buf) = test_printers();
         cmd_status(&cli, &printer, None, false, false, false).unwrap();
@@ -2618,13 +2718,16 @@ mod tests {
             expected.to_string()
         };
         assert_eq!(
-            rendered_modules_row(&dashboard),
-            rendered_modules_row(&diff),
+            rendered_header_rows(&dashboard),
+            rendered_header_rows(&diff),
             "two surfaces reporting on one profile must name its modules \
              identically:\n{dashboard}\n---\n{diff}"
         );
-        assert_eq!(rendered_modules_row(&dashboard), expected);
-        drop(config_dir);
+        assert!(
+            rendered_header_rows(&dashboard).contains(&expected),
+            "the dashboard names the resolved set and its gate:\n{dashboard}"
+        );
+        drop(env);
     }
 
     /// The gated module reaches `-o json` carrying the reason the human
@@ -2634,12 +2737,13 @@ mod tests {
     /// ordinary entry reading `not applied`, and a consumer could not tell it
     /// apart from one that simply has not been applied yet.
     #[test]
+    #[serial_test::serial]
     fn status_json_carries_the_skip_reason_its_modules_row_prints() {
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-        let (config_dir, state_dir, config_path) = setup_env_with_resolved_modules();
-        let mut cli = test_cli_for(config_path, state_dir.path());
-        cli.cache_dir = Some(state_dir.path().to_path_buf());
+        let env = setup_env_with_resolved_modules();
+        let mut cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
+        cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let (printer, buf) = test_printers_json();
         cmd_status(&cli, &printer, None, false, false, false).unwrap();
@@ -2665,34 +2769,59 @@ mod tests {
             None,
             "a module that applies here carries no skip reason"
         );
-        drop(config_dir);
+        drop(env);
     }
 
-    /// Every surface reporting on a resolved profile names one identical set
-    /// of modules.
+    /// Every surface reporting on a resolved configuration opens on one
+    /// identical header block, in the one ruled order.
     ///
-    /// The class, not the pair: `status`, `diff`, `sync` and `daemon status`
-    /// each reach their own resolution, and three of them once named the
-    /// profile's DECLARED list — so a profile of one module that `depends` on
-    /// another read `editor` on three surfaces and `core, editor` on two.
+    /// The class, not the pair: `status`, `diff`, `sync`, `daemon status`, the
+    /// two plan-running verbs and the three backup verbs each reach their own
+    /// resolution, and three of them once named the profile's DECLARED list —
+    /// so a profile of one module that `depends` on another read `editor` on
+    /// three surfaces and `core, editor` on two. `Sources` was further gone
+    /// still: a run header was the only surface in the CLI that named the
+    /// sources at all, and it named them UNDER the profile they had composed.
+    ///
+    /// A verb that resolves no profile of its own has nothing to agree about
+    /// and is not in the equality class, but the ruled ORDER binds it like
+    /// every other surface — so `module create --apply` is read through the
+    /// same reader, which asserts it.
     #[test]
-    fn every_surface_reporting_a_resolved_profile_names_the_same_modules() {
+    #[serial_test::serial]
+    fn every_surface_reporting_a_resolved_profile_names_the_same_header() {
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-        let (config_dir, state_dir, config_path) = setup_env_with_resolved_modules();
-        let mut cli = test_cli_for(config_path, state_dir.path());
-        cli.cache_dir = Some(state_dir.path().to_path_buf());
+        let env = setup_env_with_resolved_modules();
+        let mut cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
+        cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let render = |run: &dyn Fn(&Printer)| {
             let (printer, buf) = test_printers();
             run(&printer);
             drop(printer);
-            rendered_modules_row(&cfgd_core::test_helpers::captured_text(&buf))
+            rendered_header_rows(&cfgd_core::test_helpers::captured_text(&buf))
         };
+
+        // Every read path composes cache-only, so the subscribed checkout is
+        // fetched once — by the verb whose whole job is fetching — before any
+        // surface is read. A cold cache is a machine that has not synced yet,
+        // which is a different report and not what this pin is about.
+        render(&|p| crate::cli::sync::cmd_sync(&cli, p).unwrap());
 
         let status = render(&|p| cmd_status(&cli, p, None, false, false, false).unwrap());
         let diff = render(&|p| crate::cli::diff::cmd_diff(&cli, p, None, false).unwrap());
         let sync = render(&|p| crate::cli::sync::cmd_sync(&cli, p).unwrap());
+        // The two verbs that build a `Plan`: their header reads its module
+        // gating off the plan's own `Skip` actions rather than off the
+        // resolution, which is the one branch that can disagree with the five
+        // surfaces above without any of them being wrong about the machine.
+        let plan = render(&|p| {
+            crate::cli::plan::cmd_plan(&cli, p, &header_plan_args()).unwrap();
+        });
+        let apply = render(&|p| {
+            crate::cli::apply::run_apply(&cli, p, &header_apply_args()).unwrap();
+        });
         // `spec.backups[]` is profile-declared, so a backup run reports under a
         // resolved profile exactly as an apply does.
         let backup = render(&|p| {
@@ -2718,11 +2847,14 @@ mod tests {
             crate::cli::backup::run_backup_rollback(&cli, p, "docs", true).unwrap();
         });
 
-        // The daemon's reader is another process, so it renders what the
-        // reconcile tick put on the wire: the same derivation, carried.
+        // The daemon's reader is another process: it renders the modules the
+        // reconcile tick put on the wire and the sources its own config
+        // declares, holding no composition of its own.
         let (probe, _) = test_printers();
         let ctx = crate::cli::RunContext::new(&cli, &probe);
-        let (cfg, _, local_resolved) = ctx.config_and_profile().unwrap();
+        let (cfg, profile_name, local_resolved) = ctx.config_and_profile().unwrap();
+        let declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
+        let profile_name = profile_name.to_string();
         let desired = crate::cli::helpers::resolve_desired_state(
             &ctx,
             cfg,
@@ -2737,31 +2869,104 @@ mod tests {
         let mut response = crate::cli::daemon::placeholder_status();
         response.running = true;
         response.config_path = Some(cli.config.display().to_string());
-        response.profile = Some("base".to_string());
+        response.profile = Some(profile_name);
         response.modules = cfgd_core::output::HeaderModule::of_resolved(&desired.modules);
         let daemon = render(&|p| {
             p.emit(crate::cli::daemon::build_daemon_status_doc(
                 Some(&response),
+                &declared,
                 &[],
                 "2026-05-12T14:30:25Z",
             ))
         });
 
-        for (surface, row) in [
+        assert_eq!(
+            status.len(),
+            4,
+            "the fixture declares a source, a profile and its modules, so every \
+             row of the block is fillable: {status:?}"
+        );
+        for (surface, rows) in [
             ("diff", &diff),
             ("sync", &sync),
+            ("plan", &plan),
+            ("apply", &apply),
             ("daemon status", &daemon),
             ("backup run", &backup),
             ("backup restore", &restore),
             ("backup rollback", &rollback),
         ] {
             assert_eq!(
-                &status, row,
-                "`cfgd {surface}` names the profile's modules differently from \
-                 `cfgd status`"
+                &status, rows,
+                "`cfgd {surface}` opens on a different header block from `cfgd status`"
             );
         }
-        drop(config_dir);
+
+        // Resolves no profile, so it composes from no source and names the one
+        // module it just wrote — read through the same reader, which fails on
+        // a block out of the ruled order or out of the key column.
+        let created = render(&|p| {
+            crate::cli::module::cmd_module_create(&cli, p, &header_module_create_args()).unwrap();
+        });
+        assert!(
+            created.iter().any(|row| row == "Modules scratch"),
+            "`module create --apply` names the module it created: {created:?}"
+        );
+        drop(env);
+    }
+
+    /// An unfiltered `cfgd plan`, for the header pin above.
+    fn header_plan_args() -> crate::cli::PlanArgs {
+        crate::cli::PlanArgs {
+            from: None,
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: vec![],
+            with_profile: false,
+            skip_scripts: false,
+            context: "apply".to_string(),
+        }
+    }
+
+    /// A preview `cfgd apply`: the same header over the same plan, without the
+    /// pin having to converge a machine to read it.
+    fn header_apply_args() -> crate::cli::ApplyArgs {
+        crate::cli::ApplyArgs {
+            on_conflict: crate::cli::OnConflict::Ask,
+            from: None,
+            dry_run: true,
+            phase: None,
+            yes: true,
+            skip: vec![],
+            only: vec![],
+            module: vec![],
+            with_profile: false,
+            skip_scripts: false,
+            context: "apply".to_string(),
+            shell: None,
+        }
+    }
+
+    /// A module with nothing in it, applied: the header is the whole of what
+    /// the pin reads.
+    fn header_module_create_args() -> crate::cli::ModuleCreateArgs {
+        crate::cli::ModuleCreateArgs {
+            name: "scratch".to_string(),
+            // Answered, because an unanswered one is a prompt and this pin has
+            // no terminal to answer it on.
+            description: Some("a module with nothing in it".to_string()),
+            depends: vec![],
+            packages: vec![],
+            files: vec![],
+            private: false,
+            env: vec![],
+            aliases: vec![],
+            post_apply: vec![],
+            sets: vec![],
+            apply: true,
+            yes: true,
+        }
     }
 
     /// The module health line's units agree with their own counts: a module
@@ -2815,10 +3020,13 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         printer.emit(build_fleet_status_doc(
             &output,
+            &StatusHeader {
+                config_path: std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+                sources: &[],
+                profile: "default",
+                modules: &[],
+            },
             &[],
-            &[],
-            std::path::Path::new("/etc/cfgd/cfgd.yaml"),
-            "default",
             "2026-05-12T14:30:25Z",
             &Default::default(),
         ));
@@ -2873,10 +3081,13 @@ mod tests {
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             printer.emit(build_fleet_status_doc(
                 &output,
+                &StatusHeader {
+                    config_path: std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+                    sources: &[],
+                    profile: "default",
+                    modules: &[],
+                },
                 &[],
-                &[],
-                std::path::Path::new("/etc/cfgd/cfgd.yaml"),
-                "default",
                 // Pinned, never the wall clock: the age is a rendered value.
                 "2026-05-14T10:05:00Z",
                 &Default::default(),
@@ -2960,10 +3171,13 @@ mod tests {
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             printer.emit(build_fleet_status_doc(
                 &output,
+                &StatusHeader {
+                    config_path: std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+                    sources: &[],
+                    profile: "default",
+                    modules: &[],
+                },
                 &[],
-                &[],
-                std::path::Path::new("/etc/cfgd/cfgd.yaml"),
-                "default",
                 "2026-05-14T10:05:00Z",
                 &Default::default(),
             ));
@@ -3130,10 +3344,13 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         printer.emit(build_fleet_status_doc(
             output,
+            &StatusHeader {
+                config_path: std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+                sources: &[],
+                profile: "default",
+                modules: &[],
+            },
             &[],
-            &[],
-            std::path::Path::new("/etc/cfgd/cfgd.yaml"),
-            "default",
             "2026-05-14T10:05:00Z",
             &Default::default(),
         ));

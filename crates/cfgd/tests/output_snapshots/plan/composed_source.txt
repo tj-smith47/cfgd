@@ -3,8 +3,8 @@
 
 Plan
   Config   <CONFIG_DIR>/cfgd.yaml
-  Profile  default
   Sources  acme (profile default)
+  Profile  default
   Phases   Prerequisites
 
 Phase: Prerequisites

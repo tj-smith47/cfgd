@@ -285,8 +285,8 @@ subscription decision and a later inspection describe the source identically:
 ```
 Manifest
   Name         acme-corp
-  Version      1.0.0
   Description  Team-wide baseline
+  Version      1.0.0
 
 Profiles
   profile:default
@@ -411,6 +411,7 @@ Only **Accepted** puts the item on your machine. `cfgd plan`, `cfgd apply` and t
 $ cfgd plan
 Plan
   Config   /home/you/.config/cfgd/cfgd.yaml
+  Sources  acme-corp
   Profile  default
   Phases   Prerequisites, Packages
 

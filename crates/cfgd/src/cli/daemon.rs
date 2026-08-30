@@ -105,26 +105,37 @@ pub fn cmd_daemon_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     // the config and the state store hold everything else the shared `Sources`
     // table shows. A machine with no readable config still renders the table —
     // the daemon's own rows, with the config-side columns reading `-`.
-    let catalog = configured_source_catalog(cli);
+    let (catalog, declared_sources) = configured_source_catalog(cli);
     printer.emit(build_daemon_status_doc(
         status.as_ref(),
+        &declared_sources,
         &catalog,
         &cfgd_core::utc_now_iso8601(),
     ));
     Ok(())
 }
 
-/// The `spec.sources[]` rows this machine declares, for the columns the daemon
-/// does not report. Empty when the config or the state store cannot be read:
+/// The `spec.sources[]` this machine declares, twice over: the table rows
+/// carrying the columns the daemon does not report, and the subscriptions the
+/// header names. Both empty when the config or the state store cannot be read:
 /// the daemon's status is still worth printing without them.
-fn configured_source_catalog(cli: &Cli) -> Vec<SourceListEntry> {
+fn configured_source_catalog(
+    cli: &Cli,
+) -> (
+    Vec<SourceListEntry>,
+    Vec<cfgd_core::reconciler::ComposedSource>,
+) {
     let Ok(cfg) = config::load_config(&cli.config) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
+    let declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
     let Ok(state) = open_state_store(cli.state_dir.as_deref(), cli.scope()) else {
-        return Vec::new();
+        return (Vec::new(), declared);
     };
-    super::source::list::configured_source_entries(&cfg, &state)
+    (
+        super::source::list::configured_source_entries(&cfg, &state),
+        declared,
+    )
 }
 
 pub(super) fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
@@ -160,6 +171,7 @@ pub(super) fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
 /// rather than disappearing from a dashboard that is reporting on it.
 pub fn build_daemon_status_doc(
     status: Option<&cfgd_core::daemon::DaemonStatusResponse>,
+    declared_sources: &[cfgd_core::reconciler::ComposedSource],
     catalog: &[SourceListEntry],
     now: &str,
 ) -> Doc {
@@ -181,16 +193,18 @@ pub fn build_daemon_status_doc(
                     ),
                 );
             }
-            // The config and profile the loop is reconciling under, through
-            // the one builder `cfgd status` and every run header read.
-            let mut rows = cfgd_core::output::config_profile_rows(
+            // The config, the sources, the profile and what that profile
+            // resolves to — through the one builder `cfgd status` and every run
+            // header read, ahead of the facts about the process. The modules
+            // are the loop's own resolution, carried on the wire; the sources
+            // are what this machine's config subscribes to, this reader holding
+            // no composition of its own.
+            let mut rows = cfgd_core::output::config_header_rows(
                 s.config_path.as_deref().map(std::path::Path::new),
+                declared_sources,
                 s.profile.as_deref(),
+                &s.modules,
             );
-            // What that profile resolves to, as the loop resolved it at
-            // startup — under the profile, ahead of the facts about the
-            // process, exactly where every other header names them.
-            rows.extend(cfgd_core::output::modules_header_row_for(&s.modules));
             rows.push(KvPair::new("PID", s.pid.to_string()));
             // A measured duration, not a declared one: the intervals below
             // are the operator's own literals and stay verbatim.
@@ -683,7 +697,7 @@ mod tests {
     #[test]
     fn build_daemon_status_doc_none_contains_not_running() {
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(None, &[], DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(None, &[], &[], DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -695,7 +709,7 @@ mod tests {
     #[test]
     fn build_daemon_status_doc_none_json_payload() {
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(None, &[], DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(None, &[], &[], DAEMON_STATUS_NOW);
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["running"], false);
@@ -706,7 +720,7 @@ mod tests {
     fn build_daemon_status_doc_some_contains_pid() {
         let status = make_status(true);
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), &[], DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -719,7 +733,7 @@ mod tests {
     fn build_daemon_status_doc_some_json_payload() {
         let status = make_status(true);
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), &[], DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW);
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["running"], true);
@@ -735,6 +749,7 @@ mod tests {
         let (printer, cap) = Printer::for_test_doc();
         printer.emit(build_daemon_status_doc(
             Some(&status),
+            &[],
             &[],
             DAEMON_STATUS_NOW,
         ));
@@ -756,6 +771,7 @@ mod tests {
         printer.emit(build_daemon_status_doc(
             Some(&status),
             &[],
+            &[],
             DAEMON_STATUS_NOW,
         ));
         let human = cap.human();
@@ -770,7 +786,7 @@ mod tests {
         let mut status = make_status(true);
         status.update_available = Some("v1.2.3".to_string());
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), &[], DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -1124,7 +1140,7 @@ mod tests {
             },
         ];
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), &[], DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         assert!(human.contains("infra"), "infra source must appear: {human}");
@@ -1155,6 +1171,7 @@ mod tests {
         let (printer, cap) = Printer::for_test_doc();
         printer.emit(build_daemon_status_doc(
             Some(&status),
+            &[],
             &[],
             DAEMON_STATUS_NOW,
         ));
@@ -1192,6 +1209,7 @@ mod tests {
         let (printer, cap) = Printer::for_test_doc();
         printer.emit(build_daemon_status_doc(
             Some(&status),
+            &[],
             std::slice::from_ref(&declared),
             DAEMON_STATUS_NOW,
         ));
@@ -1234,6 +1252,7 @@ mod tests {
         printer.emit(build_daemon_status_doc(
             Some(&status),
             &[],
+            &[],
             DAEMON_STATUS_NOW,
         ));
         let human = cap.human();
@@ -1270,7 +1289,7 @@ mod tests {
         let mut status = make_status(true);
         status.last_reconcile = Some("2026-05-14T10:00:00Z".into());
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), &[], DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         let age = cfgd_core::humanize_age_since("2026-05-14T10:00:00Z", DAEMON_STATUS_NOW)
@@ -1295,6 +1314,7 @@ mod tests {
         let (printer, cap) = Printer::for_test_doc();
         printer.emit(build_daemon_status_doc(
             Some(&status),
+            &[],
             &[],
             DAEMON_STATUS_NOW,
         ));

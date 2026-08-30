@@ -8,8 +8,8 @@ Show source:full-pkg-source
 
 Manifest
   Name         full-pkg-source
-  Version      1.0.0
   Description  All package manager types
+  Version      1.0.0
 
 Policy
   Require Signed Commits  no

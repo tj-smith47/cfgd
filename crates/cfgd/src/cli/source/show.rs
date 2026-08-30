@@ -185,12 +185,15 @@ pub fn source_manifest_doc_sections(
     profiles_dir: Option<&Path>,
 ) -> Doc {
     let mut doc = doc.section("Manifest", |s| {
+        // Name, then what the source SAYS it is, then which revision of it —
+        // the order every surface naming a description beside a version reads
+        // (`module pull`'s block, `module registry search`'s table).
         let mut rows = vec![KvPair::new("Name", &manifest.metadata.name)];
-        if let Some(ref version) = manifest.metadata.version {
-            rows.push(KvPair::new("Version", version));
-        }
         if let Some(ref desc) = manifest.metadata.description {
             rows.push(KvPair::new("Description", desc));
+        }
+        if let Some(ref version) = manifest.metadata.version {
+            rows.push(KvPair::new("Version", version));
         }
         s.kv_rows(rows)
     });
