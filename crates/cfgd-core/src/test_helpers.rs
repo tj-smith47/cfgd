@@ -1977,7 +1977,7 @@ thread_local! {
 /// exclusive guard) composing with a spawn inside it is normal, and a thread
 /// that already holds the exclusive side must not queue behind itself. A nested
 /// acquisition, and any acquisition on a thread already holding the exclusive
-/// guard, is therefore a no-op. See [`PATH_ENV_LOCK`].
+/// guard, is therefore a no-op. See `PATH_ENV_LOCK`.
 pub fn path_env_read_guard() -> SpawnEnvGuard {
     if SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get)
         || SPAWN_GUARD_DEPTH.with(std::cell::Cell::get) > 0
@@ -1994,7 +1994,7 @@ pub fn path_env_read_guard() -> SpawnEnvGuard {
 /// about to spawn helper threads: a helper carries neither of this lock's
 /// thread-locals — they are per-thread, and a freshly spawned thread starts
 /// with both at their default — so a helper's own [`path_env_read_guard`]
-/// genuinely blocks on [`PATH_ENV_LOCK`] rather than short-circuiting as a
+/// genuinely blocks on `PATH_ENV_LOCK` rather than short-circuiting as a
 /// re-entrant no-op, and never unblocks if the exclusive holder is the same
 /// thread that is now waiting on the helper. Check this BEFORE spawning, so
 /// that precondition fails fast instead of hanging.
@@ -2028,7 +2028,7 @@ impl Drop for SpawnEnvGuard {
 /// [`CwdGuard`] with a [`PathShimGuard`], or nesting either, is a natural
 /// thing for a test to do and must not queue the gate against itself. The
 /// inner acquisitions are no-ops and the gate is released
-/// when the outermost guard drops. See [`PATH_ENV_LOCK`] for the cross-thread
+/// when the outermost guard drops. See `PATH_ENV_LOCK` for the cross-thread
 /// limit.
 ///
 /// The one order that cannot be made re-entrant is shared-then-exclusive: a
@@ -2746,7 +2746,7 @@ struct CosignEnvSnapshot {
 }
 
 impl CosignTestShim {
-    /// Builder entry point. Chain `with_*` methods then call [`install`].
+    /// Builder entry point. Chain `with_*` methods then call [`CosignTestShimBuilder::install`].
     pub fn builder() -> CosignTestShimBuilder {
         CosignTestShimBuilder::default()
     }
