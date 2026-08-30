@@ -143,7 +143,10 @@ Type "sed -i '/^opt.number = true/a opt.relativenumber = true -- count from the 
 Enter
 Wait@10s /cfgd\$$/
 Sleep 1s
-Type "git diff"
+# The hunk header is filtered out and the pattern is spelled `@{2}`: FiraCode Nerd
+# Font Mono shapes an adjacent literal `@@` into a garbled glyph under VHS's headless
+# chromium (reproduced with a bare `echo '@@'`), in typed and output text alike.
+Type "git diff | grep -vE '^@{2}'"
 Enter
 Wait@10s /cfgd\$$/
 Sleep 5s
