@@ -339,7 +339,11 @@ impl SourceManager {
 
     /// Load a single source from its on-disk cache without fetching. A
     /// never-synced source (no cache dir) is warned about and skipped; a cached
-    /// source with a broken manifest or failed signature is a hard error.
+    /// source with a broken manifest or failed signature is a hard error, and
+    /// that refusal un-composes the source: nothing a subscription's demand
+    /// refuses stays in the map [`SourceManager::get`] answers from, the same
+    /// rule the fetch path holds through `restore_accepted_checkout`. The
+    /// checkout itself stays on disk for `cfgd sync` to repair.
     pub fn load_source_cached(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
         validate_source_name(&spec.name)?;
 
@@ -381,32 +385,8 @@ impl SourceManager {
         }
 
         // A cached source still gets its signature verified — a tampered cache
-        // must not silently feed a read path. A refusal un-composes whatever an
-        // earlier accepted load of the same name left in the map, the same rule
-        // `restore_accepted_checkout` holds on the fetch path: the checkout
-        // stays on disk for `cfgd sync` to repair, but nothing this
-        // subscription's demand refuses may stay composed. The map is what
-        // `SourceManager::get` answers from, and a caller that reports the
-        // failure and reads on (`cfgd source show`) would otherwise render the
-        // manifest of a head it had just refused.
-        let judged = self
-            .parse_manifest(&spec.name, &source_dir)
-            .and_then(|manifest| {
-                self.verify_commit_signature(
-                    spec,
-                    &source_dir,
-                    &manifest.spec.policy.constraints,
-                    printer,
-                )?;
-                Ok(manifest)
-            });
-        let manifest = match judged {
-            Ok(manifest) => manifest,
-            Err(e) => {
-                self.sources.remove(&spec.name);
-                return Err(e);
-            }
-        };
+        // must not silently feed a read path.
+        let manifest = self.judge_cached_head(spec, &source_dir, printer)?;
 
         let last_commit = Self::head_commit(&source_dir);
         let head_signed = head_signature_accepted(&spec.name, &source_dir);
@@ -723,20 +703,56 @@ impl SourceManager {
         }
     }
 
+    /// Parse and signature-verify a cached checkout, answering its manifest.
+    ///
+    /// A refusal UN-COMPOSES the source: `self.sources` loses whatever an
+    /// earlier accepted load of the same name left there, the same rule
+    /// `restore_accepted_checkout` holds on the fetch path. Nothing a
+    /// subscription's demand refuses may stay composed — the map is what
+    /// [`SourceManager::get`] answers from, and a caller that reports the
+    /// failure and reads on (`cfgd source show`) would otherwise render the
+    /// manifest of a head it had just refused. The checkout itself stays on
+    /// disk, `cfgd sync` being the one command that can repair it.
+    ///
+    /// Both read-path refusals settle here, so neither can hold the rule
+    /// differently: the ordinary cached load, and the pin-not-found fallback
+    /// that returns straight out of `load_source` past the verify-then-publish
+    /// block below it.
+    fn judge_cached_head(
+        &mut self,
+        spec: &SourceSpec,
+        source_dir: &Path,
+        printer: &Printer,
+    ) -> Result<ConfigSourceDocument> {
+        self.parse_manifest(&spec.name, source_dir)
+            .and_then(|manifest| {
+                self.verify_commit_signature(
+                    spec,
+                    source_dir,
+                    &manifest.spec.policy.constraints,
+                    printer,
+                )?;
+                Ok(manifest)
+            })
+            .inspect_err(|_| {
+                self.sources.remove(&spec.name);
+            })
+    }
+
     /// Insert a source from its existing on-disk checkout without re-fetching.
     /// Used when a `pinVersion` no longer resolves but a prior successful load
-    /// left a usable checkout: parse + signature-verify the cached manifest and
-    /// keep it composed at the previously-resolved ref. A corrupt manifest or
-    /// failed signature still surfaces as an error — only the pin-not-found case
-    /// routes here.
+    /// left a usable checkout: judge the cached head through
+    /// [`Self::judge_cached_head`] and keep it composed at the
+    /// previously-resolved ref. A corrupt manifest or failed signature still
+    /// surfaces as an error, un-composing the source with it — only the
+    /// pin-not-found case routes here.
     fn load_from_existing_cache(
         &mut self,
         spec: &SourceSpec,
         source_dir: &Path,
         printer: &Printer,
     ) -> Result<()> {
-        let manifest = self.parse_manifest(&spec.name, source_dir)?;
-        self.verify_commit_signature(spec, source_dir, &manifest.spec.policy.constraints, printer)?;
+        let manifest = self.judge_cached_head(spec, source_dir, printer)?;
 
         let last_commit = Self::head_commit(source_dir);
         let head_signed = head_signature_accepted(&spec.name, source_dir);
