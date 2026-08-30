@@ -7,9 +7,8 @@ vars:
     sh: echo "${REGISTRY:-registry.jarvispro.io}"
   TARGET_MAXSIZE:
     sh: echo "${CFGD_TARGET_MAXSIZE:-20GB}"
-  # The one spelling of the rustdoc gate's deny-warnings flag; every `doc`
-  # invocation (this Taskfile, ci.yml) reads this var rather than a second
-  # copy of the string.
+  # The one spelling of the rustdoc gate's deny-warnings flag. ci.yml gets it
+  # by invoking `task doc` rather than repeating the string.
   RUSTDOC_DENY_WARNINGS: "-D warnings"
 
 env:
@@ -113,7 +112,7 @@ tasks:
     env:
       RUSTDOCFLAGS: '{{.RUSTDOC_DENY_WARNINGS}}'
     cmds:
-      - cargo doc --workspace --no-deps --document-private-items
+      - cargo doc --workspace --no-deps --document-private-items --all-features
 
   test:
     desc: Run all tests. Pass `-- <args>` to forward to cargo test.
