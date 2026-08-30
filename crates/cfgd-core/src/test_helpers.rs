@@ -1,6 +1,10 @@
 //! Reusable test mocks, builders and RAII pins for the process-global state a
 //! test cannot otherwise reach.
 //!
+//! Compiled under `#[cfg(any(test, feature = "test-helpers"))]` (`lib.rs`),
+//! so this module is part of every `cargo doc --all-features` render even
+//! though only a consumer enabling `test-helpers` sees it outside a test build.
+//!
 //! # Which exclusion a TTL guard needs
 //!
 //! Every memo ceiling here is one process-global atomic and a test binary is
