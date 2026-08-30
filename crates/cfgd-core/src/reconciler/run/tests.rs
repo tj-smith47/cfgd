@@ -1798,11 +1798,11 @@ fn header_names_the_sources_a_run_composed() {
         out.contains("Sources  team (profile team), infra"),
         "sources row missing: {out:?}"
     );
-    let profile_at = out.find("Profile").expect("profile row");
     let sources_at = out.find("Sources").expect("sources row");
+    let profile_at = out.find("Profile").expect("profile row");
     assert!(
-        profile_at < sources_at,
-        "the sources row states what layered ON the profile, so it follows it: {out:?}"
+        sources_at < profile_at,
+        "the header reads outward-in: where the config came from, then what it resolved to: {out:?}"
     );
 }
 

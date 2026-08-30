@@ -187,6 +187,7 @@ fn daemon_status_running_human() {
     let status = sample_status_basic();
     printer.emit(build_daemon_status_doc(
         Some(&status),
+        &[],
         &declared_sources(),
         DAEMON_STATUS_NOW,
     ));
@@ -200,6 +201,7 @@ fn daemon_status_running_json() {
     let status = sample_status_basic();
     printer.emit(build_daemon_status_doc(
         Some(&status),
+        &[],
         &declared_sources(),
         DAEMON_STATUS_NOW,
     ));
@@ -217,6 +219,7 @@ fn daemon_status_running_no_timestamps_human() {
     printer.emit(build_daemon_status_doc(
         Some(&status),
         &[],
+        &[],
         DAEMON_STATUS_NOW,
     ));
     drop(printer);
@@ -232,6 +235,7 @@ fn daemon_status_running_with_update_human() {
     let status = sample_status_with_update();
     printer.emit(build_daemon_status_doc(
         Some(&status),
+        &[],
         &declared_sources(),
         DAEMON_STATUS_NOW,
     ));

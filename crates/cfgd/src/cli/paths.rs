@@ -290,6 +290,7 @@ pub fn build_paths_doc(output: &PathsOutput) -> Doc {
         s.kv_block([
             ("Directory", or_unavailable(&cache.dir)),
             ("Source", cache.source.label().to_string()),
+            // header-row-ok: the sources CACHE directory, not the sources a run composed
             ("Sources", or_unavailable(&cache.sources)),
             // modules-row-ok: the cache DIRECTORY modules are fetched into, not a resolved profile's module list
             ("Modules", or_unavailable(&cache.modules)),

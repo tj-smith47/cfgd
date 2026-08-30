@@ -298,9 +298,21 @@ pub fn cmd_profile_create(
             doc.spec.inherits.join(", "),
         ));
     }
-    rows.extend(cfgd_core::output::modules_header_row(
-        &doc.spec.modules,
+    // header-row-ok: a profile just scaffolded, not one resolved — the verdict
+    // row above names the file, nothing has been composed, and the modules are
+    // the list this command wrote.
+    rows.extend(cfgd_core::output::config_header_rows(
+        None,
         &[],
+        None,
+        &doc.spec
+            .modules
+            .iter()
+            .map(|name| cfgd_core::output::HeaderModule {
+                name: name.clone(),
+                platform_skip_reason: None,
+            })
+            .collect::<Vec<_>>(),
     ));
     out = out.kv_rows(rows);
     out = out

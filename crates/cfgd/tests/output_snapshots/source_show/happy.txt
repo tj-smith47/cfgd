@@ -27,8 +27,8 @@ Modules
 
 Manifest
   Name         team-config
-  Version      3.1.0
   Description  Team-wide baseline
+  Version      3.1.0
 
 Policy
   Require Signed Commits  yes (bypassed: security.allowUnsigned)

@@ -276,23 +276,27 @@ impl KvPair {
     }
 }
 
-/// The `Config` and `Profile` header rows — the ONE builder for the two facts
-/// every surface reporting ON a machine's configuration opens with.
+/// The header block every surface reporting ON a resolved configuration opens
+/// with: `Config`, `Sources`, `Profile`, `Modules`, in that order.
 ///
-/// Three surfaces state them (`cfgd apply`'s run header, `cfgd status`,
-/// `cfgd daemon status`) and a fourth states the config half alone
-/// (`cfgd profile show`, whose heading already names the profile). Built in
-/// one place so the key spellings, their order and the path's POSIX fold
-/// cannot drift between them: `daemon status` named neither, which left the
-/// one always-on surface unable to say which config file the loop it reports
-/// on is actually running.
+/// The ONE builder, so no surface can order the four differently or drop one.
+/// `Sources` was the run header's own push and nothing else emitted it, so a
+/// `cfgd status` named the config and the profile while the apply two commands
+/// later also named who that profile had been composed FROM — one machine, two
+/// headers, only one of which said where its configuration came from. The
+/// order is causal: the config file names the sources, the sources deliver the
+/// profile, the profile resolves to the modules.
 ///
-/// `profile` is already resolved by the caller — a surface with no profile to
-/// name (a `--module` isolate, a recorded run that named none) passes `None`
-/// and gets one row.
-pub fn config_profile_rows(
+/// Every input is what the CALLER resolved. A surface with no profile to name
+/// (a `--module` isolate, a heading that already names it) passes `None` and
+/// gets no `Profile` row; an empty `sources` or `modules` renders no row of its
+/// own. The surface's own rows (`Trigger`, `Source`, `Phases`, `Actions`,
+/// `PID`) follow what this returns.
+pub fn config_header_rows(
     config_path: Option<&std::path::Path>,
+    sources: &[crate::reconciler::ComposedSource],
     profile: Option<&str>,
+    modules: &[HeaderModule],
 ) -> Vec<KvPair> {
     let mut rows = Vec::new();
     if let Some(path) = config_path {
@@ -304,9 +308,22 @@ pub fn config_profile_rows(
             crate::fold_home_in_text(&crate::PathDisplayExt::display_posix(&path)),
         ));
     }
+    if !sources.is_empty() {
+        // A plain value rather than an annotation: the subscribed profile is
+        // part of what the row states, not an aside about it.
+        rows.push(KvPair::new(
+            "Sources",
+            sources
+                .iter()
+                .map(crate::reconciler::ComposedSource::display)
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
     if let Some(profile) = profile {
         rows.push(KvPair::new("Profile", profile));
     }
+    rows.extend(modules_header_row_for(modules));
     rows
 }
 

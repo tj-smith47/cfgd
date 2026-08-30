@@ -156,9 +156,27 @@ impl ComposedSource {
             .collect()
     }
 
+    /// The subscriptions a config DECLARES, for a surface that reports on a
+    /// machine without composing one itself.
+    ///
+    /// [`ComposedSource::from_profile_layers`] answers what a composition
+    /// really drew from and is what every composing surface reads; `cfgd
+    /// daemon status` holds no composition of its own — the loop it reports on
+    /// did the composing in another process — so it names what `spec.sources[]`
+    /// subscribes to.
+    pub fn from_declared(sources: &[crate::config::SourceSpec]) -> Vec<Self> {
+        sources
+            .iter()
+            .map(|spec| Self {
+                name: spec.name.clone(),
+                profile: spec.subscription.profile.clone(),
+            })
+            .collect()
+    }
+
     /// The header's rendering: `team (profile team)`, or the bare name when the
     /// subscription named no profile.
-    fn display(&self) -> String {
+    pub(crate) fn display(&self) -> String {
         match &self.profile {
             Some(profile) => format!("{} (profile {profile})", self.name),
             None => self.name.clone(),
@@ -448,6 +466,47 @@ impl<'a> ApplyRun<'a> {
         self
     }
 
+    /// What the `Modules` row names, with this run's gating resolved.
+    ///
+    /// A plan carries its own `Skip` actions, built from the very
+    /// `platform_skip_reason` a [`crate::output::HeaderModule`] holds, so a
+    /// planned run reads the gate off the plan; a plan-less run has no actions
+    /// to read it off and reads the resolution directly.
+    fn header_modules(&self) -> Vec<crate::output::HeaderModule> {
+        let Some(plan) = self.plan else {
+            return self.ctx.modules.to_vec();
+        };
+        let skips = platform_skips(Some(plan));
+        let reason = |name: &str| {
+            skips
+                .iter()
+                .find(|(skipped, _)| *skipped == name)
+                .map(|(_, why)| (*why).to_string())
+        };
+        let mut listed: Vec<crate::output::HeaderModule> = self
+            .ctx
+            .modules
+            .iter()
+            .map(|module| crate::output::HeaderModule {
+                name: module.name.clone(),
+                platform_skip_reason: reason(&module.name),
+            })
+            .collect();
+        // A gate the plan names for a module the resolution did not hand this
+        // header still reaches the annotation, which is where the reader is
+        // told why a name is missing.
+        listed.extend(
+            skips
+                .iter()
+                .filter(|(name, _)| !self.ctx.modules.iter().any(|m| m.name == *name))
+                .map(|(name, why)| crate::output::HeaderModule {
+                    name: (*name).to_string(),
+                    platform_skip_reason: Some((*why).to_string()),
+                }),
+        );
+        listed
+    }
+
     /// Title + context rows, then the plan's warnings via `printer.alert`, at
     /// the section's depth.
     ///
@@ -472,39 +531,12 @@ impl<'a> ApplyRun<'a> {
     /// `ApplyRun::pending_backup_count` for what the engine can enumerate
     /// ahead of the run.
     pub fn header(&self, printer: &Printer) {
-        let mut rows: Vec<KvPair> =
-            crate::output::config_profile_rows(self.ctx.config_path, self.ctx.profile);
-        // Directly under `Profile`, because the sources are what that profile
-        // was composed FROM. A plain value rather than an annotation: the
-        // subscribed profile is part of what the row states, not an aside about
-        // it.
-        if !self.ctx.sources.is_empty() {
-            rows.push(KvPair::new(
-                "Sources",
-                self.ctx
-                    .sources
-                    .iter()
-                    .map(ComposedSource::display)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            ));
-        }
-        // A plan carries its own `Skip` actions, built from the very
-        // `platform_skip_reason` a `HeaderModule` holds, so a planned run reads
-        // the gate off the plan; a plan-less run has no actions to read it off
-        // and reads the resolution directly.
-        rows.extend(match self.plan {
-            Some(_) => crate::output::modules_header_row(
-                &self
-                    .ctx
-                    .modules
-                    .iter()
-                    .map(|module| module.name.clone())
-                    .collect::<Vec<_>>(),
-                &platform_skips(self.plan),
-            ),
-            None => crate::output::modules_header_row_for(self.ctx.modules),
-        });
+        let mut rows: Vec<KvPair> = crate::output::config_header_rows(
+            self.ctx.config_path,
+            self.ctx.sources,
+            self.ctx.profile,
+            &self.header_modules(),
+        );
         if let Some(trigger) = self.ctx.trigger {
             rows.push(KvPair::new("Trigger", trigger.to_string()));
         }

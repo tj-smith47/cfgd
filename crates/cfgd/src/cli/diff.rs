@@ -88,19 +88,23 @@ pub fn cmd_diff(
         // The scoped run's header, the same two rows `apply --module` opens
         // on: a title that owns no rows would put its blank line straight
         // under the heading, which no other titled run does.
-        let mut rows = cfgd_core::output::config_profile_rows(Some(&cli.config), None);
-        rows.extend(cfgd_core::output::modules_header_row(
-            &[mod_name.to_string()],
+        // An isolate composes nothing and resolves no profile, so it names
+        // the one module it is about and neither of the two rows between.
+        printer.kv_rows(cfgd_core::output::config_header_rows(
+            Some(&cli.config),
             &[],
+            None,
+            &[cfgd_core::output::HeaderModule {
+                name: mod_name.to_string(),
+                platform_skip_reason: None,
+            }],
         ));
-        printer.kv_rows(rows);
         return cmd_diff_module(&ctx, mod_name, exit_code);
     }
 
     printer.heading("Diff");
 
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
-    let mut rows = cfgd_core::output::config_profile_rows(Some(&cli.config), Some(profile_name));
     // Drift is reported under the same owner that would be named in the plan
     // that fixes it, so the two surfaces read as one coordinate system.
     let profile_owner = Owner::profile(profile_name.to_string());
@@ -125,16 +129,19 @@ pub fn cmd_diff(
     // secret backend and default file strategy, neither of which any check
     // below reads.
     let registry = desired.take_registry(cfg);
+    let composed_sources = desired.sources;
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
 
     // Emitted after the resolve, not before it: the header names what the
     // profile RESOLVES to, and a `depends` pulls a module the declared list
     // never mentions into the set the findings below are reported against.
-    rows.extend(cfgd_core::output::modules_header_row_for(
+    printer.kv_rows(cfgd_core::output::config_header_rows(
+        Some(&cli.config),
+        &composed_sources,
+        Some(profile_name),
         &cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
     ));
-    printer.kv_rows(rows);
 
     ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
 

@@ -19472,6 +19472,7 @@ fn render_daemon_status_human_running_with_sources_and_update() {
     printer.emit(super::daemon::build_daemon_status_doc(
         Some(&status),
         &[],
+        &[],
         DAEMON_STATUS_NOW,
     ));
     drop(printer);
@@ -19521,6 +19522,7 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
     printer.emit(super::daemon::build_daemon_status_doc(
         Some(&status),
         &[],
+        &[],
         DAEMON_STATUS_NOW,
     ));
     drop(printer);
@@ -19547,6 +19549,7 @@ fn render_daemon_status_json_emits_some_status_shape() {
     printer.emit(super::daemon::build_daemon_status_doc(
         Some(&status),
         &[],
+        &[],
         DAEMON_STATUS_NOW,
     ));
     drop(printer);
@@ -19562,6 +19565,7 @@ fn render_daemon_status_json_emits_placeholder_when_none() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     printer.emit(super::daemon::build_daemon_status_doc(
         None,
+        &[],
         &[],
         DAEMON_STATUS_NOW,
     ));
@@ -29756,10 +29760,13 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     printer.emit(super::status::build_fleet_status_doc(
         &output,
+        &super::status::StatusHeader {
+            config_path: std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+            sources: &[],
+            profile: "default",
+            modules: &[],
+        },
         &[],
-        &[],
-        std::path::Path::new("/etc/cfgd/cfgd.yaml"),
-        "default",
         "2026-05-12T14:30:25Z",
         &Default::default(),
     ));
@@ -29852,31 +29859,53 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
     );
 }
 
-/// Every surface naming the config and profile a run acted under builds those
-/// rows through the one builder.
+/// Every surface naming the config, the sources and the profile a run acted
+/// under builds those rows through the one builder.
 ///
 /// `cfgd daemon status` — the dashboard for the one loop that runs unattended,
 /// and so the one whose reader is least likely to know which config it was
 /// started against — printed `PID`, `Uptime`, intervals and a drift count and
 /// named neither. Meanwhile `cfgd status`, `cfgd sync`, `cfgd diff` and every
 /// run header each hand-built the same two rows four different ways, one of
-/// them rendering the path with the host separator.
+/// them rendering the path with the host separator. `Sources` was worse still:
+/// the run header pushed it itself, so it was the ONE surface saying who the
+/// profile had been composed from.
 ///
 /// The population is every production `.rs` in both crates. A line building a
-/// `Config` or `Profile` key/value row belongs to
-/// [`cfgd_core::output::config_profile_rows`]; the builder's own body is the
-/// one exception, and a row naming a DIFFERENT profile — the one a source
-/// subscribes to, a field of the row above it — carries a
-/// `// header-row-ok: <why>` marker.
+/// `Config`, `Sources` or `Profile` key/value row belongs to
+/// [`cfgd_core::output::config_header_rows`]; the builder's own body is the
+/// one exception, and a row naming a DIFFERENT fact — the profile a source
+/// subscribes to, the sources CACHE directory — carries a
+/// `// header-row-ok: <why>` marker. The `Modules` row of the same block is
+/// walked by its own sibling pin, which owns the `// modules-row-ok:` hatch.
 #[test]
 fn every_config_and_profile_header_row_comes_from_the_one_builder() {
     const NEEDLES: &[&str] = &[
         "kv(\"Config\"",
+        "kv(\"Sources\"",
         "kv(\"Profile\"",
         "KvPair::new(\"Config\"",
+        "KvPair::new(\"Sources\"",
         "KvPair::new(\"Profile\"",
         "(\"Config\".to_string()",
+        "(\"Sources\".to_string()",
         "(\"Profile\".to_string()",
+        "(\"Config\", ",
+        "(\"Sources\", ",
+        "(\"Profile\", ",
+    ];
+    // A heading, a section or an owner label legitimately takes the same name
+    // and is not a row — judged on the CALL, exactly as the sibling `Modules`
+    // walk judges it, never on the word.
+    const NOT_A_ROW: &[&str] = &[
+        ".section(",
+        ".section_if_nonempty(",
+        ".section_or_collapse(",
+        ".heading(",
+        ".heading_title(",
+        "section_owner",
+        "subsection_owner",
+        "heading_owner_prefixed",
     ];
     let mut checked: Vec<String> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
@@ -29893,6 +29922,9 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
         for (n, line) in lines.iter().enumerate() {
             let code = line.trim_start();
             if code.starts_with("//") {
+                continue;
+            }
+            if NOT_A_ROW.iter().any(|call| code.contains(call)) {
                 continue;
             }
             if !NEEDLES.iter().any(|needle| line.contains(needle)) {
@@ -29920,10 +29952,11 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
     );
     assert!(
         offenders.is_empty(),
-        "a `Config` / `Profile` header row comes from \
-         `cfgd_core::output::config_profile_rows`, so no two surfaces can name \
-         the same pair with different keys or a host-native path (a row about \
-         a different profile takes a `// header-row-ok:` marker):\n{}",
+        "a `Config` / `Sources` / `Profile` header row comes from \
+         `cfgd_core::output::config_header_rows`, so no two surfaces can name \
+         the same facts with different keys, in a different order, or with a \
+         host-native path (a row about a different fact takes a \
+         `// header-row-ok:` marker):\n{}",
         offenders.join("\n")
     );
 }
@@ -30021,7 +30054,8 @@ fn every_owner_label_of_a_held_owner_comes_from_owner_label() {
 /// any builder.
 ///
 /// The population is every production `.rs` in both crates. A `Modules` key/
-/// value row belongs to [`cfgd_core::output::modules_header_row`]; a row
+/// value row belongs to [`cfgd_core::output::config_header_rows`] — or to the
+/// [`cfgd_core::output::modules_header_row`] primitive it wraps; a row
 /// stating a COUNT of modules, a cache directory, or a set this host is not
 /// resolving from its own profile carries a `// modules-row-ok: <why>` marker.
 #[test]
@@ -30503,7 +30537,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
     let source = home.path().join("notes");
     let source_posix = source.posix().to_string();
 
-    let rows = cfgd_core::output::config_profile_rows(Some(&config_path), Some("base"));
+    let rows = cfgd_core::output::config_header_rows(Some(&config_path), &[], Some("base"), &[]);
     let ctx = cfgd_core::reconciler::RunContext {
         title: cfgd_core::reconciler::RunTitle::Restore,
         config_path: Some(&config_path),
@@ -30530,7 +30564,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
 
     let mut surfaces = vec![
         (
-            "config_profile_rows",
+            "config_header_rows",
             rows.iter()
                 .map(|r| format!("{} {}", r.key, r.value))
                 .collect::<Vec<_>>()
@@ -30678,10 +30712,13 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
             "cfgd status",
             super::status::build_fleet_status_doc(
                 &fleet,
+                &super::status::StatusHeader {
+                    config_path: &config_path,
+                    sources: &[],
+                    profile: "base",
+                    modules: &[],
+                },
                 &[],
-                &[],
-                &config_path,
-                "base",
                 now,
                 &Default::default(),
             ),
