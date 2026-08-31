@@ -245,6 +245,7 @@ pub fn cmd_plan(
         .map(|b| b.name.clone())
         .collect();
 
+    let profile_inherits = effective_resolved.inherits_chain();
     let run = reconciler::ApplyRun::new(
         reconciler::RunContext {
             title: reconciler::RunTitle::Plan,
@@ -252,6 +253,7 @@ pub fn cmd_plan(
             profile: profile_label.as_deref(),
             sources: &composed_sources,
             modules: &header_modules,
+            profile_inherits: &profile_inherits,
             trigger: None,
             subject: None,
             unit_source: None,

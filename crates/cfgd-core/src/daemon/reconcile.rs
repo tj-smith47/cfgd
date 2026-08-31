@@ -664,6 +664,7 @@ fn reconcile_tick(
     // profile-wide "last reconcile" stamp keeps reflecting the default cadence.
     let header_modules = crate::output::HeaderModule::of_resolved(&resolved_modules_ref);
     let composed_sources = crate::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
+    let profile_inherits = resolved.inherits_chain();
     let rt = tokio::runtime::Handle::current();
     rt.block_on(async {
         let mut st = state.lock().await;
@@ -696,6 +697,7 @@ fn reconcile_tick(
             // answer wrongly.
             st.profile = Some(resolved.profile_name().to_string());
             st.modules = header_modules.clone();
+            st.profile_inherits = profile_inherits.clone();
         }
     });
 
@@ -939,6 +941,7 @@ fn reconcile_tick(
             profile: Some(profile_name),
             sources: &composed_sources,
             modules: &header_modules,
+            profile_inherits: &profile_inherits,
             trigger: Some(&trigger),
             subject: None,
             unit_source: None,

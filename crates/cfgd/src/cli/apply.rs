@@ -470,12 +470,14 @@ pub fn run_apply(
     // The rows every path below prints above its own body. Built once so a dry
     // run, an executing run and a no-work run cannot describe the same
     // invocation differently.
+    let profile_inherits = effective_resolved.inherits_chain();
     let run_ctx = |title| reconciler::RunContext {
         title,
         config_path: Some(cli.config.as_path()),
         profile: profile_label.as_deref(),
         sources: &composed_sources,
         modules: &header_modules,
+        profile_inherits: &profile_inherits,
         trigger: None,
         subject: None,
         unit_source: None,

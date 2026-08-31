@@ -85,6 +85,7 @@ fn sample_status_basic() -> DaemonStatusResponse {
         sync_interval_secs: Some(900),
         config_path: Some("/home/u/.config/cfgd/cfgd.yaml".to_string()),
         profile: Some("work".to_string()),
+        profile_inherits: vec![],
         modules: ["base", "dev-tools"]
             .into_iter()
             .map(|name| cfgd_core::output::HeaderModule {
@@ -116,6 +117,7 @@ fn sample_status_no_timestamps() -> DaemonStatusResponse {
         sync_interval_secs: None,
         config_path: None,
         profile: None,
+        profile_inherits: vec![],
         modules: vec![],
     }
 }

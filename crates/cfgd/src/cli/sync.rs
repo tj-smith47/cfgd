@@ -164,11 +164,18 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
             (declared.as_slice(), Vec::new())
         }
     };
+    // A refused resolution named nothing to inherit either — the chain came
+    // out of the same composition the `Err` arm above already gave up on.
+    let profile_inherits: Vec<String> = desired
+        .as_ref()
+        .map(|d| d.resolved.inherits_chain())
+        .unwrap_or_default();
     printer.kv_rows(cfgd_core::output::config_header_rows(
         &cfgd_core::output::ConfigHeader {
             config_path: Some(&cli.config),
             sources: header_sources,
             profile: Some(profile_name),
+            profile_inherits: &profile_inherits,
             modules: &header_modules,
         },
     ));

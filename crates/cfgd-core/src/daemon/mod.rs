@@ -440,6 +440,13 @@ pub struct DaemonStatusResponse {
     /// modules whose resolved reconcile settings earned them a dedicated timer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modules: Vec<crate::output::HeaderModule>,
+    /// The resolved profile's `inherits:` chain, nearest parent first — the
+    /// same fact [`Self::modules`] is to `HeaderModule::of_resolved`, read off
+    /// [`crate::config::ResolvedProfile::inherits_chain`] by the reconcile
+    /// tick that wrote [`Self::profile`]. Empty for a profile that declares no
+    /// `inherits:`, and from a daemon that predates the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profile_inherits: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -463,6 +470,7 @@ pub(super) struct DaemonState {
     config_path: Option<String>,
     pub(super) profile: Option<String>,
     pub(super) modules: Vec<crate::output::HeaderModule>,
+    pub(super) profile_inherits: Vec<String>,
     // The `spec.sources[]` subscriptions the config declares
     // (`ComposedSource::from_declared`), in declaration order — seeded at
     // startup and re-stated by every reconcile tick, so an unattended run names
@@ -503,6 +511,7 @@ impl DaemonState {
             config_path: None,
             profile: None,
             modules: Vec::new(),
+            profile_inherits: Vec::new(),
             composed_sources: Vec::new(),
             update_available: None,
             skills_stale_notified: None,
@@ -554,6 +563,7 @@ impl DaemonState {
             config_path: self.config_path.clone(),
             profile: self.profile.clone(),
             modules: self.modules.clone(),
+            profile_inherits: self.profile_inherits.clone(),
         }
     }
 }

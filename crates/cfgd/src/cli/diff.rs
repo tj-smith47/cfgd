@@ -99,6 +99,7 @@ pub fn cmd_diff(
                 config_path: Some(&cli.config),
                 sources: &declared,
                 profile: None,
+                profile_inherits: &[],
                 modules: &[cfgd_core::output::HeaderModule {
                     name: mod_name.to_string(),
                     platform_skip_reason: None,
@@ -147,6 +148,7 @@ pub fn cmd_diff(
             config_path: Some(&cli.config),
             sources: &composed_sources,
             profile: Some(profile_name),
+            profile_inherits: &resolved.inherits_chain(),
             modules: &cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
         },
     ));

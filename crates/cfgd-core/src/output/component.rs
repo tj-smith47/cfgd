@@ -290,6 +290,12 @@ pub struct ConfigHeader<'a> {
     pub sources: &'a [crate::reconciler::ComposedSource],
     /// The resolved profile's name, `None` for a surface with none to name.
     pub profile: Option<&'a str>,
+    /// The profile's resolved `inherits:` chain, nearest parent first
+    /// (`["core", "shared"]` for `base` → `core` → `shared`). Empty renders a
+    /// bare `Profile` row; never re-walked here — the caller reads it off
+    /// wherever the profile was already resolved
+    /// ([`crate::config::ResolvedProfile::inherits_chain`]).
+    pub profile_inherits: &'a [String],
     /// The modules that profile puts on this machine, dependency-first.
     pub modules: &'a [HeaderModule],
 }
@@ -315,6 +321,7 @@ pub fn config_header_rows(head: &ConfigHeader<'_>) -> Vec<KvPair> {
         config_path,
         sources,
         profile,
+        profile_inherits,
         modules,
     } = head;
     let mut rows = Vec::new();
@@ -340,7 +347,18 @@ pub fn config_header_rows(head: &ConfigHeader<'_>) -> Vec<KvPair> {
         ));
     }
     if let Some(profile) = profile {
-        rows.push(KvPair::new("Profile", profile));
+        if profile_inherits.is_empty() {
+            rows.push(KvPair::new("Profile", profile));
+        } else {
+            // A literal `→` joining a LIST, not `Theme::arrow()` — that glyph
+            // is reserved for an old->new relationship the theme may recolor;
+            // an inheritance chain has no "new" half to tint.
+            rows.push(KvPair::annotated(
+                "Profile",
+                profile,
+                format!("inherits: {}", profile_inherits.join(" → ")),
+            ));
+        }
     }
     rows.extend(modules_header_row_for(modules));
     rows
@@ -488,6 +506,41 @@ impl<K: Into<String>, V: Into<String>> From<(K, V)> for CommandPair {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_profile_header_row_annotates_its_inheritance_chain() {
+        let chain = ["core".to_string(), "shared".to_string()];
+        let rows = config_header_rows(&ConfigHeader {
+            config_path: None,
+            sources: &[],
+            profile: Some("base"),
+            profile_inherits: &chain,
+            modules: &[],
+        });
+        let profile_row = rows
+            .iter()
+            .find(|row| row.key == "Profile")
+            .expect("Profile row must render");
+        assert_eq!(profile_row.value, "base");
+        assert_eq!(
+            profile_row.annotation.as_deref(),
+            Some("inherits: core → shared")
+        );
+
+        let rows = config_header_rows(&ConfigHeader {
+            config_path: None,
+            sources: &[],
+            profile: Some("base"),
+            profile_inherits: &[],
+            modules: &[],
+        });
+        let profile_row = rows
+            .iter()
+            .find(|row| row.key == "Profile")
+            .expect("Profile row must render");
+        assert_eq!(profile_row.value, "base");
+        assert_eq!(profile_row.annotation, None);
+    }
 
     #[test]
     fn heading_serializes_with_type_tag() {

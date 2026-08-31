@@ -126,6 +126,29 @@ impl ResolvedProfile {
             .map(|l| l.profile_name.as_str())
             .unwrap_or("unknown")
     }
+
+    /// The requested profile's resolved `inherits:` chain, nearest parent
+    /// first (`base` → `core` → `shared` renders `["core", "shared"]`).
+    ///
+    /// Filtered to `LOCAL_LAYER` layers, never the full (possibly
+    /// composed) list: [`compose`](crate::composition::compose)
+    /// appends source layers and re-sorts by priority, but every local
+    /// layer keeps priority 1000 and a stable sort preserves their
+    /// ancestor-first relative order among themselves — so this reads the
+    /// same chain whether `self` came from a bare local resolve or a
+    /// composed one. Empty for a profile that declares no `inherits:`, or
+    /// a synthesized layer-free profile.
+    pub fn inherits_chain(&self) -> Vec<String> {
+        let mut local_names: Vec<&str> = self
+            .layers
+            .iter()
+            .filter(|layer| layer.source == LOCAL_LAYER)
+            .map(|layer| layer.profile_name.as_str())
+            .collect();
+        // The last local layer is the requested profile itself, not a parent.
+        local_names.pop();
+        local_names.into_iter().rev().map(String::from).collect()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
