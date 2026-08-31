@@ -2672,6 +2672,7 @@ fn render_backup_run(h: &Harness, specs: &[&BackupSpec]) -> (String, crate::stat
             profile: Some("workstation"),
             sources: &[],
             modules: &[],
+            profile_inherits: &[],
             trigger: None,
             subject: None,
             unit_source: None,

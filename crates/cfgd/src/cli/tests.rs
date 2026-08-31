@@ -19432,6 +19432,7 @@ fn sample_daemon_status(
         sync_interval_secs: None,
         config_path: None,
         profile: None,
+        profile_inherits: vec![],
     }
 }
 
@@ -19518,6 +19519,7 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
         sync_interval_secs: None,
         config_path: None,
         profile: None,
+        profile_inherits: vec![],
     };
     printer.emit(super::daemon::build_daemon_status_doc(
         Some(&status),
@@ -30202,6 +30204,7 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
             config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
             sources: &[],
             profile: Some("default"),
+            profile_inherits: &[],
             modules: &[],
         },
         &[],
@@ -30333,6 +30336,7 @@ fn last_apply_leads_on_its_verdict() {
             config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
             sources: &[],
             profile: Some("base"),
+            profile_inherits: &[],
             modules: &[],
         },
         &[],
@@ -31258,6 +31262,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         config_path: Some(&config_path),
         sources: &[],
         profile: Some("base"),
+        profile_inherits: &[],
         modules: &[],
     });
     let ctx = cfgd_core::reconciler::RunContext {
@@ -31266,6 +31271,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         profile: Some("base"),
         sources: &[],
         modules: &[],
+        profile_inherits: &[],
         trigger: None,
         subject: Some("notes"),
         unit_source: Some(&source_posix),
@@ -31438,6 +31444,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
                     config_path: Some(&config_path),
                     sources: &[],
                     profile: Some("base"),
+                    profile_inherits: &[],
                     modules: &[],
                 },
                 &[],

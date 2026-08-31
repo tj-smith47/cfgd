@@ -676,6 +676,7 @@ pub(super) async fn handle_backup_tick(
             profile: st.profile.clone(),
             sources: st.composed_sources.clone(),
             modules: st.modules.clone(),
+            profile_inherits: st.profile_inherits.clone(),
         }
     };
     crate::spawn_blocking_with_test_home(move || {

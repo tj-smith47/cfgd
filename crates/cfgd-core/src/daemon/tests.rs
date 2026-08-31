@@ -2876,6 +2876,7 @@ fn daemon_status_response_with_modules_round_trips() {
         config_path: None,
         profile: None,
         modules: vec![],
+        profile_inherits: vec![],
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -2908,6 +2909,7 @@ fn daemon_status_response_skips_empty_module_reconcile() {
         config_path: None,
         profile: None,
         modules: vec![],
+        profile_inherits: vec![],
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -4353,6 +4355,7 @@ fn daemon_status_response_update_available_present() {
         config_path: None,
         profile: None,
         modules: vec![],
+        profile_inherits: vec![],
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -4891,6 +4894,7 @@ fn daemon_status_response_camel_case_uptime() {
         config_path: None,
         profile: None,
         modules: vec![],
+        profile_inherits: vec![],
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -7134,6 +7138,7 @@ fn daemon_status_response_roundtrip_symmetry() {
         config_path: None,
         profile: None,
         modules: vec![],
+        profile_inherits: vec![],
     };
 
     let json = serde_json::to_string(&original).unwrap();
@@ -11232,6 +11237,7 @@ fn daemon_status_response_camel_case_keys() {
         config_path: None,
         profile: None,
         modules: vec![],
+        profile_inherits: vec![],
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -17454,6 +17460,7 @@ mod query_daemon_status_paths {
                     config_path: None,
                     profile: None,
                     modules: vec![],
+                    profile_inherits: vec![],
                 })
                 .unwrap();
                 let _ = write!(
@@ -19583,6 +19590,7 @@ mod backup_timers {
             profile: Some("workstation"),
             sources: &[],
             modules: &[],
+            profile_inherits: &[],
             trigger: None,
             subject: None,
             unit_source: None,
@@ -19701,6 +19709,7 @@ mod backup_timers {
                     name: "nvim".to_string(),
                     platform_skip_reason: None,
                 }],
+                profile_inherits: vec![],
             };
             let due = vec![(due_profile.to_string(), spec("db", &source, Some("1h")))];
             let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);

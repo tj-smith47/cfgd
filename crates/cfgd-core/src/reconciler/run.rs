@@ -101,6 +101,10 @@ pub struct RunContext<'a> {
     /// and platform gating cannot differ between this header and the `status`
     /// beside it. Empty for a run under no profile, which renders no row.
     pub modules: &'a [crate::output::HeaderModule],
+    /// The profile's resolved `inherits:` chain, nearest parent first — read
+    /// off [`crate::config::ResolvedProfile::inherits_chain`], never re-walked
+    /// here. Empty for a run under no profile, or one that does not inherit.
+    pub profile_inherits: &'a [String],
     /// What woke this run — the daemon's only extra row (`drift (3 resources)`,
     /// `schedule (daily)`).
     pub trigger: Option<&'a str>,
@@ -519,6 +523,7 @@ impl<'a> ApplyRun<'a> {
                 config_path: self.ctx.config_path,
                 sources: self.ctx.sources,
                 profile: self.ctx.profile,
+                profile_inherits: self.ctx.profile_inherits,
                 modules: &self.header_modules(),
             });
         if let Some(trigger) = self.ctx.trigger {

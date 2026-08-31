@@ -401,6 +401,9 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str) ->
             config_path: None,
             sources: &sources,
             profile: Some(&snapshot.profile),
+            // The snapshot's wire shape records the profile's NAME only — no
+            // `inherits:` chain was captured when it was taken.
+            profile_inherits: &[],
             modules: &[],
         },
     ));

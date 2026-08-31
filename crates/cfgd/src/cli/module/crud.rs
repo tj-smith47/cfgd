@@ -333,6 +333,7 @@ pub fn cmd_module_create(
             profile: None,
             sources: &declared,
             modules: &header_modules,
+            profile_inherits: &[],
             trigger: None,
             subject: None,
             unit_source: None,

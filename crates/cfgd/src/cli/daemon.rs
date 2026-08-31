@@ -154,6 +154,7 @@ pub(super) fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
         config_path: None,
         profile: None,
         modules: vec![],
+        profile_inherits: vec![],
     }
 }
 
@@ -204,6 +205,7 @@ pub fn build_daemon_status_doc(
                     config_path: s.config_path.as_deref().map(std::path::Path::new),
                     sources: declared_sources,
                     profile: s.profile.as_deref(),
+                    profile_inherits: &s.profile_inherits,
                     modules: &s.modules,
                 });
             rows.push(KvPair::new("PID", s.pid.to_string()));
@@ -576,6 +578,7 @@ mod tests {
             config_path: None,
             profile: None,
             modules: vec![],
+            profile_inherits: vec![],
         }
     }
 

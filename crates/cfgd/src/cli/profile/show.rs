@@ -26,6 +26,7 @@ pub fn build_profile_show_doc(
                     config_path: Some(config_path),
                     sources,
                     profile: None,
+                    profile_inherits: &[],
                     modules: &[],
                 },
             ));

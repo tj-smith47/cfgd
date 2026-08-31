@@ -576,6 +576,7 @@ pub(super) struct ResolvedConfiguration {
     pub(super) profile: Option<String>,
     pub(super) sources: Vec<crate::reconciler::ComposedSource>,
     pub(super) modules: Vec<crate::output::HeaderModule>,
+    pub(super) profile_inherits: Vec<String>,
 }
 
 /// Run every due scheduled backup as ONE run: a `Backup` header, the `Backups`
@@ -654,6 +655,14 @@ pub(super) fn run_scheduled_backups(
     } else {
         &[]
     };
+    // Same gating as `modules` above: the inheritance chain is a fact about
+    // the loop's OWN resolution, meaningless beside a due unit from another
+    // profile.
+    let profile_inherits: &[String] = if under_resolved_profile {
+        &resolved.profile_inherits
+    } else {
+        &[]
+    };
     // no-modules-row-ok: the loop's own resolution is the only module set this
     // fire may report, and on that arm it is about another profile.
     let ctx = crate::reconciler::RunContext {
@@ -662,6 +671,7 @@ pub(super) fn run_scheduled_backups(
         profile: single_profile,
         sources: &resolved.sources,
         modules,
+        profile_inherits,
         trigger: Some(SCHEDULE_TRIGGER),
         subject: None,
         unit_source: None,

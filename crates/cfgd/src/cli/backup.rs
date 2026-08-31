@@ -496,12 +496,14 @@ pub fn run_backup_restore(
     // header states what the unit READS, the action row what the restore
     // WRITES, so a `--to` or a followed link shows as the two disagreeing.
     let unit_source = spec.source.posix().to_string();
+    let profile_inherits = local_resolved.inherits_chain();
     let run_ctx = cfgd_core::reconciler::RunContext {
         title: cfgd_core::reconciler::RunTitle::Restore,
         config_path: Some(cli.config.as_path()),
         profile: Some(profile_name),
         sources: &sources,
         modules: &header_modules,
+        profile_inherits: &profile_inherits,
         trigger: None,
         subject: Some(args.name),
         unit_source: Some(&unit_source),
@@ -725,12 +727,14 @@ pub fn run_backup_rollback(
         .ok_or_else(|| no_rollback_copy_error(name, &unit.source()))?;
 
     let unit_source = spec.source.posix().to_string();
+    let profile_inherits = local_resolved.inherits_chain();
     let run_ctx = cfgd_core::reconciler::RunContext {
         title: cfgd_core::reconciler::RunTitle::Rollback,
         config_path: Some(cli.config.as_path()),
         profile: Some(profile_name),
         sources: &sources,
         modules: &header_modules,
+        profile_inherits: &profile_inherits,
         trigger: None,
         subject: Some(name),
         unit_source: Some(&unit_source),
@@ -888,6 +892,9 @@ pub fn run_backup_run(
     )?;
     let sources = desired.sources;
     let header_modules = cfgd_core::output::HeaderModule::of_resolved(&desired.modules);
+    // Read off `.resolved` before the `.merged.backups` move below partially
+    // moves it.
+    let profile_inherits = desired.resolved.inherits_chain();
     let backups = desired.resolved.merged.backups;
 
     let targets: Vec<&config::BackupSpec> = match name {
@@ -924,6 +931,7 @@ pub fn run_backup_run(
         profile: Some(profile_name),
         sources: &sources,
         modules: &header_modules,
+        profile_inherits: &profile_inherits,
         trigger: None,
         subject: named.map(|spec| spec.name.as_str()),
         unit_source: unit_source.as_deref(),

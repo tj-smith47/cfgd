@@ -306,6 +306,7 @@ pub fn cmd_profile_create(
             config_path: None,
             sources: &[],
             profile: None,
+            profile_inherits: &[],
             modules: &doc
                 .spec
                 .modules

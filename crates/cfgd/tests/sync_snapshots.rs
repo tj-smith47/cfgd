@@ -402,6 +402,7 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
             config_path: Some(Path::new("/tmp/cfgd.yaml")),
             sources: &[],
             profile: Some("default"),
+            profile_inherits: &[],
             modules: &[],
         },
         &declared,

@@ -467,6 +467,7 @@ fn init_apply_then_next_steps_bridge_invariant() {
             profile: Some("default"),
             sources: &[],
             modules: &modules,
+            profile_inherits: &[],
             trigger: None,
             subject: None,
             unit_source: None,

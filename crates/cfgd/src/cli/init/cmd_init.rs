@@ -654,6 +654,7 @@ pub(super) fn apply_plan(
         profile: opts.profile,
         sources: opts.sources,
         modules: &header_modules,
+        profile_inherits: &resolved.inherits_chain(),
         trigger: None,
         subject: None,
         unit_source: None,
