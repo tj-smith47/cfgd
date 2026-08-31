@@ -1246,6 +1246,25 @@ fn three_level_inheritance() {
 }
 
 #[test]
+fn resolved_profile_inherits_chain_is_nearest_parent_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let profiles = dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles).unwrap();
+
+    let shared = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: shared\nspec:\n  inherits: []\n  modules: []\n";
+    let core = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: core\nspec:\n  inherits:\n    - shared\n  modules: []\n";
+    let base = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  inherits:\n    - core\n  modules: []\n";
+
+    std::fs::write(profiles.join("shared.yaml"), shared).unwrap();
+    std::fs::write(profiles.join("core.yaml"), core).unwrap();
+    std::fs::write(profiles.join("base.yaml"), base).unwrap();
+
+    let resolved = resolve_profile("base", &profiles).unwrap();
+
+    assert_eq!(resolved.inherits_chain(), vec!["core", "shared"]);
+}
+
+#[test]
 fn script_entry_deserialize_simple() {
     let yaml = r#""echo hello""#;
     let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();

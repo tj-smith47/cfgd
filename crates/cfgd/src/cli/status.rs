@@ -3788,7 +3788,65 @@ mod tests {
         (config_dir, state_dir, config_path)
     }
 
+    /// Isolated config-dir + state-dir pair whose active profile `base`
+    /// inherits `core`, which inherits `shared` — the real resolution path
+    /// `cmd_status` drives, not a synthesized `ResolvedProfile`.
+    fn setup_env_with_inheriting_profile()
+    -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+        const CONFIG_YAML: &str = "apiVersion: cfgd.io/v1alpha1\n\
+                                   kind: Config\n\
+                                   metadata:\n  name: t\n\
+                                   spec:\n  profile: base\n";
+        const SHARED_YAML: &str = "apiVersion: cfgd.io/v1alpha1\n\
+                                   kind: Profile\n\
+                                   metadata:\n  name: shared\n\
+                                   spec:\n  inherits: []\n";
+        const CORE_YAML: &str = "apiVersion: cfgd.io/v1alpha1\n\
+                                 kind: Profile\n\
+                                 metadata:\n  name: core\n\
+                                 spec:\n  inherits:\n    - shared\n";
+        const BASE_YAML: &str = "apiVersion: cfgd.io/v1alpha1\n\
+                                 kind: Profile\n\
+                                 metadata:\n  name: base\n\
+                                 spec:\n  inherits:\n    - core\n";
+
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("shared.yaml"), SHARED_YAML).unwrap();
+        std::fs::write(profiles_dir.join("core.yaml"), CORE_YAML).unwrap();
+        std::fs::write(profiles_dir.join("base.yaml"), BASE_YAML).unwrap();
+        std::fs::create_dir_all(config_dir.path().join("modules")).unwrap();
+        (config_dir, state_dir, config_path)
+    }
+
     // --- cmd_status (aggregate) -------------------------------------------
+
+    /// End-to-end proof that a real active profile's resolved inheritance
+    /// chain reaches the rendered header: `base` inherits `core` inherits
+    /// `shared`, driven through `cmd_status`'s own resolution, not a
+    /// synthesized `ResolvedProfile`. This is the pin that fails if any
+    /// `ConfigHeader` call site threads an empty chain instead of
+    /// `resolved.inherits_chain()`, or if the chain's order inverts.
+    #[test]
+    fn cmd_status_renders_the_resolved_inheritance_chain() {
+        let (_cfg_dir, state_dir, config_path) = setup_env_with_inheriting_profile();
+        let cli = test_cli_for(config_path, state_dir.path());
+        let (printer, buf) = test_printers();
+
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        drop(printer);
+
+        let output = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            output.contains("(inherits: core → shared)"),
+            "expected the Profile row annotated with its nearest-parent-first \
+             chain, got: {output}"
+        );
+    }
 
     /// `--show-values` names items, and only the itemized view has rows to
     /// name them on — so it selects that view without `-o wide` being asked
