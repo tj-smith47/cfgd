@@ -3145,6 +3145,56 @@ fn resolve_module_files_path_traversal_rejected() {
 }
 
 #[test]
+fn resolve_module_files_drops_a_private_entry_only_when_its_source_is_absent() {
+    // `private` promises "silently skipped on machines where it doesn't
+    // exist", and resolution is where the promise is kept: the entry
+    // resolves to nothing, so no downstream consumer needs the flag. A
+    // present private source still deploys, and an absent NON-private
+    // source still resolves — the plan refuses that one loudly.
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("modules").join("mixed");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(mod_dir.join("present-private"), "local secret").unwrap();
+
+    let entry = |source: &str, private: bool| ModuleFileEntry {
+        patch: None,
+        source: source.into(),
+        target: format!("/tmp/test-resolve/{source}"),
+        strategy: None,
+        private,
+        encryption: None,
+        permissions: None,
+    };
+    let module = LoadedModule {
+        version: None,
+        name: "mixed".into(),
+        spec: ModuleSpec {
+            files: vec![
+                entry("absent-private", true),
+                entry("present-private", true),
+                entry("absent-plain", false),
+            ],
+            ..Default::default()
+        },
+        dir: mod_dir.clone(),
+        origin: None,
+    };
+
+    let printer = test_printer();
+    let resolved = resolve_module_files(&module, &dir.path().join("cache"), &printer).unwrap();
+
+    let sources: Vec<_> = resolved.iter().map(|f| f.source.clone()).collect();
+    assert_eq!(
+        sources,
+        vec![
+            mod_dir.join("present-private"),
+            mod_dir.join("absent-plain")
+        ],
+        "only the absent private entry resolves to nothing"
+    );
+}
+
+#[test]
 fn resolve_module_files_multiple_files() {
     let dir = tempfile::tempdir().unwrap();
     let mod_dir = dir.path().join("modules").join("multi");

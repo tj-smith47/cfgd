@@ -397,6 +397,15 @@ pub fn resolve_module_files(
                 }
                 .into());
             }
+            // `private` marks the source local-only: on a machine where it
+            // does not exist the entry resolves to nothing, so no downstream
+            // consumer has to know the flag existed. An absent NON-private
+            // source survives resolution on purpose — the plan refuses it
+            // as `FileError::SourceNotFound`, the same refusal the profile
+            // file path makes, instead of quietly deploying nothing.
+            if entry.private && !source.exists() {
+                continue;
+            }
             resolved.push(ResolvedFile {
                 source,
                 target: crate::expand_tilde(Path::new(&entry.target)),
