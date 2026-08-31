@@ -15,4 +15,4 @@ Status: dev-tools
 Drift
   ◉ No drift recorded
 
-→ `cfgd diff` checks the live machine; `cfgd status --scan` records the result
+→ `cfgd diff` checks the live machine for drift

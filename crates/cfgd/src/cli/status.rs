@@ -680,17 +680,10 @@ pub fn build_fleet_status_doc(
     match &output.last_apply {
         Some(last) => {
             doc = doc.section("Last Apply", |s| {
-                // `Age`, not the stored instant: `-o json`'s `lastApply.timestamp`
-                // is where an exact moment is read from, and the dashboard row
-                // is answering how stale the machine's last apply is.
-                let mut s = s.kv(
-                    "Age",
-                    cfgd_core::humanize_age_magnitude_cell(Some(&last.timestamp), now),
-                );
-                if let Some((key, value)) = recorded_scope_row(&last.profile) {
-                    s = s.kv(key, value);
-                }
-                s = s.kv("Result", last.status.human_str());
+                // The verdict leads: a reader scanning the dashboard needs to
+                // know whether the apply succeeded before they need to know
+                // what it was scoped to or how stale it is.
+                let mut s = s.kv("Result", last.status.human_str());
                 // decision-summary-ok: the `applies` record's own summary column, not a pending decision's
                 if let Some(summary) = &last.summary {
                     // Prose, never the stored column: the wire shape is what
@@ -699,7 +692,16 @@ pub fn build_fleet_status_doc(
                     // parse JSON to learn the apply went fine.
                     s = s.kv("Summary", cfgd_core::state::ApplySummary::prose(summary));
                 }
-                s
+                if let Some((key, value)) = recorded_scope_row(&last.profile) {
+                    s = s.kv(key, value);
+                }
+                // `Age`, not the stored instant: `-o json`'s `lastApply.timestamp`
+                // is where an exact moment is read from, and the dashboard row
+                // is answering how stale the machine's last apply is.
+                s.kv(
+                    "Age",
+                    cfgd_core::humanize_age_magnitude_cell(Some(&last.timestamp), now),
+                )
             });
         }
         None => {
@@ -796,11 +798,8 @@ pub fn build_fleet_status_doc(
 }
 
 /// The ONE line a recorded-state report closes with when its drift is
-/// unchecked or stale: what looks, and what records the looking. Two commands
-/// in one sentence, at the foot of the report, because the reader needs them
-/// after reading it rather than before.
-pub(super) const SCAN_HINT: &str =
-    "`cfgd diff` checks the live machine; `cfgd status --scan` records the result";
+/// unchecked or stale: the one command that looks, at the foot of the report.
+pub(super) const SCAN_HINT: &str = "`cfgd diff` checks the live machine for drift";
 
 use cfgd_core::reconciler::ENV_RESOURCE_TYPE;
 
@@ -3115,7 +3114,7 @@ mod tests {
             cfgd_core::test_helpers::captured_text(&buf)
         }
 
-        let hint = "cfgd status --scan";
+        let hint = "checks the live machine for drift";
 
         // Exactly at the threshold is not yet stale — `is_stale_since` is
         // "more than", so the boundary belongs to the fresh side and a daemon
@@ -3433,8 +3432,9 @@ mod tests {
 
     /// One screen, one hint for one need. The Drift section stated the absence
     /// AND pointed at `--scan`, and the header pointed at it again; the report
-    /// now states the absence plainly and closes with the one hint, and only
-    /// while the recorded state is old enough for it to matter.
+    /// now states the absence plainly and closes with the one hint, naming the
+    /// one command that checks the machine, and only while the recorded state
+    /// is old enough for it to matter.
     #[test]
     fn the_scan_hint_is_said_once_and_last() {
         let out = dashboard(&empty_output());
@@ -3442,21 +3442,14 @@ mod tests {
             out.contains("No drift recorded"),
             "the drift line states the absence plainly: {out}"
         );
-        let hint_lines: Vec<&str> = out
-            .lines()
-            .filter(|l| l.contains("cfgd status --scan"))
-            .collect();
+        let hint_lines: Vec<&str> = out.lines().filter(|l| l.contains("cfgd diff")).collect();
         assert_eq!(hint_lines.len(), 1, "one hint, one need: {out}");
-        assert!(
-            hint_lines[0].contains("cfgd diff"),
-            "the hint says what each command answers: {out}"
-        );
         let last = out
             .lines()
             .rfind(|l| !l.trim().is_empty())
             .unwrap_or_default();
         assert!(
-            last.contains("cfgd status --scan"),
+            last.contains("cfgd diff"),
             "a next step closes the report: {out}"
         );
 
@@ -3465,7 +3458,7 @@ mod tests {
         let mut fresh = empty_output();
         fresh.last_scan_at = Some("2026-05-14T10:04:00Z".to_string());
         assert!(
-            !dashboard(&fresh).contains("cfgd status --scan"),
+            !dashboard(&fresh).contains("cfgd diff"),
             "a fresh scan needs no hint"
         );
     }

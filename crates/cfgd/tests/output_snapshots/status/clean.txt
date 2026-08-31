@@ -4,10 +4,10 @@ Status
   Modules  base, dev-tools
 
 Last Apply
-  Age      5m
-  Profile  default
   Result   Success
   Summary  12 actions applied
+  Profile  default
+  Age      5m
 
 Drift
   ✓ No drift recorded — scanned 5m ago

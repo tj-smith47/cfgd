@@ -30297,6 +30297,70 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
     );
 }
 
+/// The fleet dashboard's Last Apply block leads on its verdict: `Result`,
+/// then `Summary`, then what the run was scoped to, then how long ago it ran.
+/// A reader scanning the dashboard needs to know whether the apply succeeded
+/// before they need to know how stale it is.
+#[test]
+fn last_apply_leads_on_its_verdict() {
+    use cfgd_core::output::{Printer, Verbosity};
+
+    let output = super::status::StatusOutput {
+        last_apply: Some(cfgd_core::state::ApplyRecord {
+            id: 1,
+            timestamp: "2026-05-12T14:00:00Z".to_string(),
+            profile: "base".to_string(),
+            plan_hash: "deadbeef".to_string(),
+            status: cfgd_core::state::ApplyStatus::Success,
+            summary: Some("8 succeeded".to_string()),
+        }),
+        drift: Vec::new(),
+        sources: Vec::new(),
+        pending_decisions: Vec::new(),
+        modules: Vec::new(),
+        managed_resources: Vec::new(),
+        warnings: Vec::new(),
+        classification_degraded: false,
+        classification_degraded_code: None,
+        classification_degraded_reason: None,
+        drift_checked_live: false,
+        last_scan_at: None,
+    };
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    printer.emit(super::status::build_fleet_status_doc(
+        &output,
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
+            sources: &[],
+            profile: Some("base"),
+            modules: &[],
+        },
+        &[],
+        "2026-05-12T14:30:25Z",
+        &Default::default(),
+    ));
+    drop(printer);
+    let rendered = cfgd_core::test_helpers::captured_text(&buf);
+
+    let section = rendered
+        .split_once("Last Apply")
+        .unwrap_or_else(|| panic!("no Last Apply section, got:\n{rendered}"))
+        .1;
+    let keys = ["Result", "Summary", "Profile", "Age"];
+    let positions: Vec<usize> = keys
+        .iter()
+        .map(|k| {
+            section
+                .find(k)
+                .unwrap_or_else(|| panic!("Last Apply section missing `{k}` row:\n{section}"))
+        })
+        .collect();
+    assert!(
+        positions.windows(2).all(|w| w[0] < w[1]),
+        "Last Apply must lead on its verdict, in order {keys:?}, got positions {positions:?} in:\n{section}"
+    );
+}
+
 /// Every surface naming the config, the sources and the profile a run acted
 /// under builds those rows through the one builder.
 ///
