@@ -135,6 +135,28 @@ impl<'a> super::Reconciler<'a> {
         observe(PhaseName::Files);
         Self::detect_file_conflicts(&file_actions, &module_actions)?;
 
+        // A module file declaring a source that does not exist is a broken
+        // declaration, refused while the plan is read — the moment the
+        // profile file path refuses it — so a fresh home cannot settle
+        // "unchanged" over files that were never written. `Patch` entries
+        // need no source, and an absent `private` source already resolved
+        // to nothing.
+        for module in &module_actions {
+            // A platform-gated module plans a single Skip and deploys
+            // nothing, so its declarations are not judged on this host.
+            if module.platform_skip_reason.is_some() {
+                continue;
+            }
+            for file in &module.files {
+                if file.patch.is_none() && !file.source.exists() {
+                    return Err(crate::errors::FileError::SourceNotFound {
+                        path: file.source.clone(),
+                    }
+                    .into());
+                }
+            }
+        }
+
         // The profile is the document the user edited, so every action derived
         // from the merged profile is owned by its leaf profile name.
         let profile = Owner::profile(resolved.profile_name());

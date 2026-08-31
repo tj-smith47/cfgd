@@ -20576,17 +20576,11 @@ spec:
         .module("dev-tools", rich_module)
         .build();
 
-    // Create the module file referenced by the module
-    let module_files_dir = h
-        .config_path()
-        .join("modules")
-        .join("dev-tools")
-        .join("files");
-    std::fs::write(
-        module_files_dir.join("gitconfig"),
-        "[user]\n  name = Test\n",
-    )
-    .unwrap();
+    // Create the module file referenced by the module, at the module's own
+    // directory — the root `LoadedModule.dir` a bare `source:` resolves
+    // against, not the empty `files/` subdirectory the harness scaffolds.
+    let module_dir = h.config_path().join("modules").join("dev-tools");
+    std::fs::write(module_dir.join("gitconfig"), "[user]\n  name = Test\n").unwrap();
 
     let cli = h.cli_with_command(Command::Plan(PlanArgs {
         from: None,

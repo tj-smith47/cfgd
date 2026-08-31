@@ -711,11 +711,15 @@ fn plan_module_with_files() {
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
 
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("nvim-config");
+    std::fs::write(&source, "config").unwrap();
+
     let modules = vec![ResolvedModule {
         name: "nvim".to_string(),
         packages: vec![],
         files: vec![ResolvedFile {
-            source: PathBuf::from("/tmp/nvim-config"),
+            source,
             target: PathBuf::from("/home/user/.config/nvim"),
             is_git_source: false,
             strategy: None,
@@ -1033,6 +1037,10 @@ fn plan_routes_module_work_to_the_phase_of_its_kind() {
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
 
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("nvim-config");
+    std::fs::write(&source, "config").unwrap();
+
     let modules = vec![ResolvedModule {
         name: "nvim".to_string(),
         packages: vec![ResolvedPackage {
@@ -1048,7 +1056,7 @@ fn plan_routes_module_work_to_the_phase_of_its_kind() {
             min_version: None,
         }],
         files: vec![ResolvedFile {
-            source: PathBuf::from("/tmp/nvim-config"),
+            source,
             target: PathBuf::from("/home/user/.config/nvim/init.lua"),
             is_git_source: false,
             strategy: None,
@@ -22769,10 +22777,14 @@ fn deployed_unit_file_precedes_systemd_enable() {
         serde_yaml::from_str("{cfgd-agent.service: enabled}").unwrap(),
     );
 
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("cfgd-agent.service");
+    std::fs::write(&source, "[Unit]").unwrap();
+
     let mut module = make_resolved_module("agent");
     module.packages = vec![];
     module.files = vec![ResolvedFile {
-        source: PathBuf::from("/tmp/cfgd-agent.service"),
+        source,
         target: PathBuf::from("/etc/systemd/system/cfgd-agent.service"),
         is_git_source: false,
         strategy: None,
@@ -26097,6 +26109,39 @@ fn a_matching_target_the_manifest_does_not_own_is_still_planned() {
     );
 }
 
+#[test]
+fn a_module_file_whose_source_does_not_exist_refuses_the_plan() {
+    // The silent alternative shipped: a fresh home settled `∅ unchanged` over
+    // files that were never written. A declaration naming a source that does
+    // not exist is refused while the plan is read — the same refusal the
+    // profile file path makes — never planned around.
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("src").join("init.lua");
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let err = reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![hooked_file_module(
+                "nvim",
+                vec![deployable_file(
+                    &missing,
+                    &dir.path().join("tgt").join("init.lua"),
+                )],
+            )],
+            ReconcileContext::Apply,
+        )
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("source file not found"),
+        "a missing module file source is a refused declaration, got: {err}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn a_symlink_entry_is_converged_only_when_the_link_points_at_its_source() {
@@ -26993,13 +27038,19 @@ fn a_script_and_env_module_keeps_its_hooks_unconditionally() {
 }
 
 #[test]
-fn a_missing_source_deploys_nothing_and_claims_no_change() {
-    // The declaration is broken, not the machine: the target keeps its bytes
-    // (removing it would trade a broken declaration for lost data), the
-    // action reports no change so `onChange` cannot fire on every run, and
-    // the manifest gains no row for a file cfgd never wrote.
+fn a_source_that_vanishes_between_plan_and_execute_fails_the_deploy() {
+    // Planning already refused a missing source, so one absent at execute
+    // vanished in between. The declaration is broken, not the machine: the
+    // action FAILS (a `∅ unchanged` here is a false convergence — the run
+    // once settled exit 0 over files it never wrote), the target keeps its
+    // bytes (removing it would trade a broken declaration for lost data),
+    // the manifest gains no row for a file cfgd never wrote, and no empty
+    // directories are left behind as the one trace of the deploy.
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("gone");
+    std::fs::write(&src, "payload").unwrap();
+    let src2 = dir.path().join("gone2");
+    std::fs::write(&src2, "payload").unwrap();
     let target = dir.path().join("kept");
     std::fs::write(&target, "the user's own bytes").unwrap();
     let nested_target = dir.path().join("never").join("made");
@@ -27011,7 +27062,7 @@ fn a_missing_source_deploys_nothing_and_claims_no_change() {
         "broken",
         vec![
             deployable_file(&src, &target),
-            deployable_file(&dir.path().join("gone2"), &nested_target),
+            deployable_file(&src2, &nested_target),
         ],
     );
     let plan = reconciler
@@ -27019,10 +27070,13 @@ fn a_missing_source_deploys_nothing_and_claims_no_change() {
             &make_empty_resolved(),
             Vec::new(),
             Vec::new(),
-            vec![module],
+            vec![module.clone()],
             ReconcileContext::Apply,
         )
         .unwrap();
+
+    std::fs::remove_file(&src).unwrap();
+    std::fs::remove_file(&src2).unwrap();
 
     let result = reconciler
         .apply(
@@ -27031,7 +27085,7 @@ fn a_missing_source_deploys_nothing_and_claims_no_change() {
             Path::new("."),
             &test_printer(),
             None,
-            &[],
+            std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
             None,
@@ -27044,10 +27098,17 @@ fn a_missing_source_deploys_nothing_and_claims_no_change() {
         .iter()
         .find(|r| r.description.contains("files"))
         .expect("the deploy action is reported");
-    assert!(deploy.success, "a missing source is not a failed action");
     assert!(
-        !deploy.changed,
-        "nothing was written, so nothing changed: {deploy:?}"
+        !deploy.success && !deploy.skipped,
+        "a vanished source fails the deploy instead of settling a skip: {deploy:?}"
+    );
+    assert!(
+        deploy
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("source file not found"),
+        "the failure names the missing source: {deploy:?}"
     );
     assert_eq!(
         std::fs::read_to_string(&target).unwrap(),
