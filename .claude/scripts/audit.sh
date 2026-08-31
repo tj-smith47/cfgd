@@ -1992,6 +1992,64 @@ else
     log_ok "Every demo tape pins the ${DEMO_THEME} theme"
 fi
 
+log_section "Rules catalog entry size (shared-utils.md / output-module.md)"
+
+# Both files' own headers promise "one to three sentences" / "a few sentences"
+# per entry. CAP is the current max entry/row size across both files, rounded
+# up to the next 50 bytes, so the next oversized entry is caught before the
+# catalog drifts back past the density its own header promises.
+CATALOG_ENTRY_CAP=750
+
+require_files "rules catalog size scan" .claude/rules/shared-utils.md .claude/rules/output-module.md || true
+
+# An "entry" is a top-level `- ` bullet plus its continuation lines, up to the
+# next bullet, blank line or heading; a table body row (row 3+ of a `|`-led
+# block, header and separator excluded) is its own entry. Byte length under
+# LC_ALL=C so a multi-byte glyph (—, …) counts its real bytes, not one char.
+catalog_entry_gaps() {
+    local file="$1" check_rows="$2"
+    LC_ALL=C awk -v file="$file" -v cap="$CATALOG_ENTRY_CAP" -v check_rows="$check_rows" '
+    function report(text, len,   head) {
+        head = text
+        gsub(/\n/, " ", head)
+        if (length(head) > 60) head = substr(head, 1, 60)
+        printf "%s: %s... (%d bytes)\n", file, head, len
+    }
+    function flush(   len) {
+        if (entry != "") {
+            len = length(entry)
+            if (len > cap) report(entry, len)
+        }
+        entry = ""
+    }
+    /^- / { flush(); row = 0; entry = $0; next }
+    /^[[:space:]]*$/ || /^#/ { flush(); row = 0; next }
+    check_rows && /^\|/ {
+        flush()
+        row++
+        if (row > 2) {
+            len = length($0)
+            if (len > cap) report($0, len)
+        }
+        next
+    }
+    { row = 0; if (entry != "") entry = entry "\n" $0 }
+    END { flush() }
+    ' "$file"
+}
+
+catalog_gap="$(
+    { catalog_entry_gaps .claude/rules/shared-utils.md 0
+      catalog_entry_gaps .claude/rules/output-module.md 1
+    } 2>&1
+)"
+if [ -n "$catalog_gap" ]; then
+    log_error "Rules catalog entries over ${CATALOG_ENTRY_CAP} bytes (re-trim to the one-to-three-sentence / few-sentence density):"
+    printf '%s\n' "$catalog_gap"
+else
+    log_ok "Every shared-utils.md/output-module.md entry and table row stays under ${CATALOG_ENTRY_CAP} bytes"
+fi
+
 # --- Summary ---
 printf "\n"
 _bold; printf "=== Audit Complete: %d errors, %d warnings ===\n" "$ERRORS" "$WARNINGS"; _reset

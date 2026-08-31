@@ -3,7 +3,7 @@ paths: ["crates/**/*.rs"]
 ---
 # cfgd Output System — critical design constraint
 
-The `output` module (`crates/cfgd-core/src/output/`) provides the `Printer` struct: the sole interface for writing to the terminal. This file is the CATALOG of that surface and the RULES for reaching it; the reasoning behind each composer lives in its own rustdoc, and a rule's story in its pinning test's doc comment. **An entry or rule row here is a few sentences**: the shape, the never-clause, at most one pin name.
+The `output` module (`crates/cfgd-core/src/output/`) provides the `Printer` struct: the sole interface for writing to the terminal. This file is the CATALOG of that surface and the RULES for reaching it; the reasoning behind each composer lives in its own rustdoc, and a rule's story in its pinning test's doc comment. **An entry or rule row here is a few sentences**: the shape, the never-clause, at most one pin name. `.claude/scripts/audit.sh` gates every entry's and table row's byte size so this density holds.
 
 ## Printer surface
 

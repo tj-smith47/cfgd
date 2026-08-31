@@ -2,7 +2,7 @@
 
 Cross-cutting functions live in `cfgd-core/src/util/<topic>.rs`, re-exported through `lib.rs` as `cfgd_core::<name>(...)`. **Before writing any helper, check the topic file first**; a function two modules need goes in the topic matching its domain.
 
-This file is an **INDEX**. The reasoning — why a helper exists, what breaks without it, which callers must agree — lives in the item's own rustdoc (for a rule with no item, in its pinning test's doc comment). Open it before changing a call site. **An entry here is one to three sentences**: what it is, when to reach for it, at most one pin name. A fix that mints a class rule adds the ONE-line entry and puts the story in the code, never a retelling here.
+This file is an **INDEX**. The reasoning — why a helper exists, what breaks without it, which callers must agree — lives in the item's own rustdoc (for a rule with no item, in its pinning test's doc comment). Open it before changing a call site. **An entry here is one to three sentences**: what it is, when to reach for it, at most one pin name. A fix that mints a class rule adds the ONE-line entry and puts the story in the code, never a retelling here. `.claude/scripts/audit.sh` gates every entry's byte size so this density holds.
 
 ## Topic files
 
