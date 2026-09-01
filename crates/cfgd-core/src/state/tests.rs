@@ -2872,13 +2872,14 @@ fn completion_index_backfills_every_historical_row_from_its_plan_position() {
 
 #[test]
 fn legacy_manager_provision_rows_meet_the_package_grammar_on_open() {
-    // The daemon once recorded a failed provision as
-    // `('manager', 'provision:<name>')` while every live check mints
-    // `('package', 'provision:<name>')` — and nothing on a CLI-only host
-    // resolves the `manager` spelling. Opening the store settles the legacy
-    // rows: one with a standing `package` twin is the duplicate and resolves,
-    // one without a twin is the only record of the finding and retypes, and
-    // history keeps the type it was recorded under.
+    // The daemon once recorded a failed provision cascade as
+    // `('manager', 'provision:<name>')` and its planned refusals as
+    // `('manager', 'refuse:<name>')`, while every live check mints both under
+    // `package` — and nothing on a CLI-only host resolves the `manager`
+    // spellings. Opening the store settles the legacy rows as ONE sweep over
+    // both retyped ids: one with a standing `package` twin is the duplicate
+    // and resolves, one without a twin is the only record of the finding and
+    // retypes, and history keeps the type it was recorded under.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     {
@@ -2888,11 +2889,15 @@ fn legacy_manager_provision_rows_meet_the_package_grammar_on_open() {
             .record_drift("manager", "provision:old", None, None, "local")
             .unwrap();
         store.resolve_all_drift().unwrap();
-        // A legacy row with a standing package twin, and one without.
+        // Each retyped spelling gets a legacy row with a standing package
+        // twin, and one without.
         for (rtype, rid) in [
             ("manager", "provision:snap"),
             ("package", "provision:snap"),
             ("manager", "provision:pipx"),
+            ("manager", "refuse:brew"),
+            ("package", "refuse:brew"),
+            ("manager", "refuse:npm"),
         ] {
             store.record_drift(rtype, rid, None, None, "local").unwrap();
         }
@@ -2912,8 +2917,10 @@ fn legacy_manager_provision_rows_meet_the_package_grammar_on_open() {
         vec![
             ("package".to_string(), "provision:pipx".to_string()),
             ("package".to_string(), "provision:snap".to_string()),
+            ("package".to_string(), "refuse:brew".to_string()),
+            ("package".to_string(), "refuse:npm".to_string()),
         ],
-        "the twinned legacy row resolves, the lone one retypes"
+        "each twinned legacy row resolves, each lone one retypes"
     );
     let resolved_as = |rtype: &str, rid: &str| -> i64 {
         store
@@ -2931,6 +2938,11 @@ fn legacy_manager_provision_rows_meet_the_package_grammar_on_open() {
         resolved_as("manager", "provision:snap"),
         1,
         "the duplicate is resolved in place, keeping its recorded type"
+    );
+    assert_eq!(
+        resolved_as("manager", "refuse:brew"),
+        1,
+        "the refuse twin gets the same in-place resolve"
     );
     assert_eq!(
         resolved_as("manager", "provision:old"),

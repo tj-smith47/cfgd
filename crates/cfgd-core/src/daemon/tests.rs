@@ -568,6 +568,76 @@ fn process_source_decisions_first_run_records_decisions() {
     );
 }
 
+/// The keep-side twin of the prune, one recorded grammar per line: the prune
+/// removes a withheld resource's action BEFORE the tick's complement-resolve
+/// reads the plan, so the exclusions themselves must name every id a drift
+/// writer mints for the four vocabularies — both producers' spellings per
+/// type — or the very rows a pending decision is about are resolved blind.
+#[test]
+fn a_withheld_resource_is_recognized_under_every_recorded_grammar() {
+    let exclusions = DecisionExclusions::from_decision_paths(
+        [
+            "files./tmp/w/app.conf".to_string(),
+            r"files./home/u/od\d.conf".to_string(),
+            "packages.brew.jq".to_string(),
+            "env.EDITOR".to_string(),
+            "system.gsettings".to_string(),
+        ],
+        crate::expand_tilde,
+    );
+    let cases: &[(&str, &str, bool)] = &[
+        // The daemon's file rows carry the exclusion set's own id.
+        ("file", "/tmp/w/app.conf", true),
+        ("file", "/tmp/w/other.conf", false),
+        // The CLI's module-file rows, matched on the trimmed tail...
+        ("module", "dev/tmp/w/app.conf", true),
+        ("module", "dev/tmp/w/other.conf", false),
+        ("module", "dev", false),
+        // ...with the tail folded the way the exclusion set folds, so a Unix
+        // target carrying a legal `\` keeps exactly where it pruned.
+        ("module", r"dev/home/u/od\d.conf", true),
+        // Both package spellings, batches judged member by member, and the
+        // withheld manager's provision/refuse findings with them.
+        ("package", "brew:jq", true),
+        ("package", "brew:rg", false),
+        ("package", "brew:rg,jq", true),
+        ("package", "cargo:jq", false),
+        ("package", "brew", false),
+        ("package", "brew-cask:jq", true),
+        ("package", "provision:brew", true),
+        ("package", "refuse:brew", true),
+        ("package", "provision:brew-cask", true),
+        ("package", "provision:cargo", false),
+        // Both system spellings; a configurator is withheld whole.
+        ("system", "gsettings.org.gnome.x key", true),
+        ("system", "gsettings:org.gnome.x key", true),
+        ("system", "xfconf.k", false),
+        ("system", "gsettings", false),
+        // The env surface is withheld as a unit, every spelling under it.
+        ("env-var", "EDITOR", true),
+        ("alias", "ll", true),
+        ("env", "env:write:/home/u/.cfgd.env", true),
+        ("env-rc", "rc:/home/u/.zshrc", true),
+        ("env-session", crate::state::ENV_SESSION_RESOURCE_ID, true),
+        ("a-type-no-grammar-mints", "x", false),
+    ];
+    for (rtype, rid, withheld) in cases {
+        assert_eq!(
+            exclusions.withholds_recorded_row(rtype, rid),
+            *withheld,
+            "wrong keep verdict for {rtype}/{rid}"
+        );
+    }
+    // No env decision → the env surface is not withheld, and its rows resolve
+    // on the plan's own say-so.
+    let no_env = DecisionExclusions::from_decision_paths(
+        ["packages.brew.jq".to_string()],
+        crate::expand_tilde,
+    );
+    assert!(!no_env.withholds_recorded_row("env-var", "EDITOR"));
+    assert!(!no_env.withholds_recorded_row("alias", "ll"));
+}
+
 #[test]
 fn first_observation_of_a_source_reasks_nothing_already_answered() {
     use crate::config::PackagesSpec;
@@ -12256,6 +12326,23 @@ spec:
             permissions: None,
             patch: None,
         }];
+        // A Unix filename may legally carry `\`: the recorded id keeps it
+        // byte-for-byte (`display_posix` folds on Windows only), so the join
+        // must probe the producer's spelling, not an unconditional fold.
+        #[cfg(unix)]
+        {
+            let bs_source = dir.path().join("od.conf");
+            std::fs::write(&bs_source, "conf").unwrap();
+            dev.files.push(crate::modules::ResolvedFile {
+                source: bs_source,
+                target: std::path::PathBuf::from(r"/home/u/od\d.conf"),
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+                permissions: None,
+                patch: None,
+            });
+        }
         let mut gated = make_resolved_module("gated");
         gated.packages.clear();
         gated.platform_skip_reason = Some("linux only".to_string());
@@ -12385,6 +12472,21 @@ spec:
                 tick_cannot_refind(rtype, rid, &none),
                 *without_plan,
                 "wrong verdict for {rtype}/{rid} against a clean tick"
+            );
+        }
+
+        // The join probes the fold the id's PRODUCER used: a recorded Unix id
+        // keeps its `\`, and the unconditionally folded spelling names a
+        // different file no row was recorded for.
+        #[cfg(unix)]
+        {
+            assert!(
+                tick_cannot_refind("module", r"dev/home/u/od\d.conf", &planned),
+                "the backslash-bearing recorded id meets the planned deploy"
+            );
+            assert!(
+                !tick_cannot_refind("module", "dev/home/u/od/d.conf", &planned),
+                "the folded spelling names a file no producer recorded"
             );
         }
     }
@@ -12601,6 +12703,118 @@ spec:
             vec![("module", "dev"), ("module", declared_id.as_str()),],
             "the tick records its own bare-module row, keeps the planned \
              file's row, and resolves the undeclared file's row"
+        );
+    }
+
+    /// A resource awaiting a source decision leaves the plan BEFORE the
+    /// complement-resolve reads it (`withhold_from_plan` runs first), so its
+    /// recorded row is one the exclusions themselves must keep: the tick
+    /// deliberately did not judge it. The sibling the decision does not name
+    /// rides the plan join as usual, and a row for a file the module never
+    /// declared resolves in the same tick — which is also the proof the tick
+    /// really ran rather than skipping fail-closed.
+    ///
+    /// Serial: `spec.sources` makes the tick resolve the source cache through
+    /// `default_cache_dir_for`, which reads the process-global
+    /// `CFGD_CACHE_DIR` BEFORE the test-home override — several sibling tests
+    /// set that env under the unnamed serial lock.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn a_tick_keeps_the_rows_of_a_resource_awaiting_a_source_decision() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.invalid/acme.git\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - dev\n",
+        )
+        .unwrap();
+        let module_dir = tmp.path().join("modules").join("dev");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(module_dir.join("app.conf"), "withheld\n").unwrap();
+        std::fs::write(module_dir.join("extra.conf"), "planned\n").unwrap();
+        // Neither target exists, so both files would plan a redeploy; the
+        // decision withholds one of them from that plan.
+        let withheld_target = tmp.path().join("deploy").join("app.conf");
+        let planned_target = tmp.path().join("deploy").join("extra.conf");
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dev\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n    - source: extra.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&withheld_target),
+                crate::to_posix_string(&planned_target)
+            ),
+        )
+        .unwrap();
+
+        let withheld_id = format!(
+            "dev/{}",
+            crate::to_posix_string(&withheld_target).trim_start_matches('/')
+        );
+        let planned_id = format!(
+            "dev/{}",
+            crate::to_posix_string(&planned_target).trim_start_matches('/')
+        );
+        let undeclared_id = format!(
+            "dev/{}",
+            crate::to_posix_string(tmp.path().join("deploy").join("gone.conf"))
+                .trim_start_matches('/')
+        );
+        {
+            let store = StateStore::open_in_dir(tmp.path()).unwrap();
+            for rid in [&withheld_id, &planned_id, &undeclared_id] {
+                store
+                    .record_drift("module", rid, Some("deployed"), Some("missing"), "local")
+                    .unwrap();
+            }
+            store
+                .upsert_pending_decision(
+                    "acme",
+                    &format!("files.{}", crate::to_posix_string(&withheld_target)),
+                    "recommended",
+                    "install",
+                    "recommended file (from acme)",
+                    None,
+                )
+                .unwrap();
+        }
+
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        let mut standing: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|e| (e.resource_type.as_str(), e.resource_id.as_str()))
+            .collect();
+        standing.sort_unstable();
+        assert_eq!(
+            standing,
+            vec![
+                ("module", "dev"),
+                ("module", withheld_id.as_str()),
+                ("module", planned_id.as_str()),
+            ],
+            "the withheld file's row survives on the exclusions' say-so, the \
+             planned sibling's on the plan join, and the undeclared file's \
+             row resolves — proof the tick ran"
         );
     }
 

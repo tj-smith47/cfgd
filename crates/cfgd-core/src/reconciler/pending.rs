@@ -2054,6 +2054,62 @@ impl DecisionExclusions {
             .get(manager)
             .is_some_and(|packages| packages.contains(package))
     }
+
+    /// Whether a recorded drift row names a resource these exclusions withheld
+    /// from the plan — the keep-side twin of the prune. [`withhold_from_plan`]
+    /// runs BEFORE the daemon's complement-resolve reads the plan, so a
+    /// withheld resource's action is already gone when the tick asks "what did
+    /// this plan not re-find"; without this predicate the very rows the
+    /// pending decision is about are resolved blind, though the tick
+    /// deliberately did not judge them. Matches every id grammar a drift
+    /// writer mints for the four exclusion vocabularies, both producers'
+    /// spellings per type.
+    pub fn withholds_recorded_row(&self, resource_type: &str, resource_id: &str) -> bool {
+        match resource_type {
+            // The daemon's file rows carry the same expanded, `/`-folded id
+            // the exclusion set stores (`withholds_action` compares the two
+            // directly).
+            "file" => self.files.contains(resource_id),
+            // The CLI's module-file rows: `<module>/<target>` with the
+            // target's leading separator trimmed. The tail is folded
+            // unconditionally before matching, the exclusion set's own
+            // `to_posix_string` fold — keep and prune then answer alike for
+            // a Unix target carrying a legal `\`.
+            "module" => resource_id.split_once('/').is_some_and(|(_, tail)| {
+                let tail = crate::posixify_text(tail);
+                self.files
+                    .iter()
+                    .any(|f| f.trim_start_matches('/') == tail.as_ref())
+            }),
+            // Every `package` grammar. A `provision:`/`refuse:` row is kept
+            // while ANY package on that manager is withheld: withholding the
+            // manager's last consumer prunes its provision node too, and the
+            // finding stands until the decision lands. Otherwise one withheld
+            // member reshapes a batch, so both the per-package and the batch
+            // spelling are judged member by member.
+            "package" => {
+                if let Some(manager) = resource_id
+                    .strip_prefix("provision:")
+                    .or_else(|| resource_id.strip_prefix("refuse:"))
+                {
+                    return self.packages.contains_key(manager)
+                        || (manager == "brew-cask" && self.packages.contains_key("brew"));
+                }
+                resource_id.split_once(':').is_some_and(|(manager, rest)| {
+                    rest.split(',').any(|p| self.withholds_package(manager, p))
+                })
+            }
+            // Both system grammars — the CLI's `<cfg>.<key>` and the daemon's
+            // `<cfg>:<key>`; a configurator is withheld whole.
+            "system" => resource_id
+                .split_once(['.', ':'])
+                .is_some_and(|(configurator, _)| self.system.contains(configurator)),
+            // The env surface is withheld as a unit, so every per-item and
+            // per-file spelling under it is a row the tick did not judge.
+            "env-var" | "alias" | "env" | "env-rc" | "env-session" => self.withholds_env_surface(),
+            _ => false,
+        }
+    }
 }
 
 /// Prune every action `exclusions` withholds out of `plan`, returning how many
