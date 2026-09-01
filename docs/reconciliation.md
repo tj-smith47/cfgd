@@ -179,7 +179,7 @@ Use `cfgd plan --context reconcile` to preview what the daemon would run.
 
 ```
 Plan
-  Config   /home/you/.config/cfgd/cfgd.yaml
+  Config   ~/.config/cfgd/cfgd.yaml
   Profile  work
   Modules  nvim
   Phases   Prerequisites, Packages, Files, System, Post-Scripts
@@ -198,11 +198,11 @@ Phase: Packages
 
 Phase: Files
   profile:work
-    - create /home/you/.gitconfig
+    - create ~/.gitconfig
   module:nvim
     - deploy 2 files
-        /home/you/.config/nvim/init.lua      — symlink
-        /home/you/.config/nvim/lua/opts.lua  — symlink
+        ~/.config/nvim/init.lua      — symlink
+        ~/.config/nvim/lua/opts.lua  — symlink
 
 Phase: System
   profile:work

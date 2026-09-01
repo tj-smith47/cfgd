@@ -254,10 +254,13 @@ pub fn condense_action_desc_for_display(action: &Action, desc: &str) -> String {
     }
 }
 
-/// Whether `action`'s subject is built over an operand LIST — the shapes
-/// whose display subject, not the raw description, is the row's authority:
-/// the one that folds the home directory in a deploy's targets while the wire
-/// string keeps the absolute path a script can `cat`.
+/// Whether `action`'s DISPLAY subject, not the raw wire description, is the
+/// row's authority. Package/module installs qualify because their subject is
+/// an operand LIST the wire string does not fold home into; `DeployFiles`
+/// qualifies for a different reason — its subject is a bare count
+/// (`deploy 3 files`) the wire description never states — but the two land in
+/// one predicate because both need the same swap in
+/// [`condense_action_desc_for_display`].
 fn carries_operand_list(action: &Action) -> bool {
     matches!(
         action,
@@ -294,10 +297,9 @@ pub(super) fn action_display_head(action: &Action) -> Option<String> {
         }) => resolved
             .first()
             .map(|pkg| format!("{} install", pkg.manager)),
-        Action::Module(ModuleAction {
-            kind: ModuleActionKind::DeployFiles { .. },
-            ..
-        }) => Some("deploy".to_string()),
+        // A deploy's subject is a bare count (`deploy 3 files`), never an
+        // operand list any more — it is already its own head, like every
+        // other non-operand-list shape below.
         _ => None,
     }
 }
@@ -417,8 +419,8 @@ pub(super) fn deploy_file_children(action: &Action) -> Option<Vec<(String, Strin
                 // `render_hint` folds its own text — one fold, at the
                 // renderer boundary, never at the producer.
                 let target = file.target.display_posix();
-                let method = file.strategy.unwrap_or_default().as_str().to_lowercase();
-                (target, method)
+                let method = file.strategy.unwrap_or_default().method_label();
+                (target, method.to_string())
             })
             .collect(),
     )

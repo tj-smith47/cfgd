@@ -2329,6 +2329,10 @@ impl<'a> super::Reconciler<'a> {
                 duration: ran.then_some(elapsed),
                 notes,
                 body,
+                // A failed deploy still lists what it was ASKED to write, not
+                // what it actually wrote — the plan promised this exact list,
+                // and a reader diagnosing the failure needs to see which
+                // targets and methods were in flight, not a blank row.
                 children: deploy_file_children(action).unwrap_or_default(),
             },
             None => {

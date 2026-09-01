@@ -1001,11 +1001,16 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
                     // step produces is stated beside the subject, never
                     // baked into it.
                     owner_section.bullet_detail(subject.body.clone(), detail);
-                    render_deploy_children(&owner_section, action);
                 } else {
                     owner_section.bullet(subject.body.clone());
-                    render_deploy_children(&owner_section, action);
                 }
+                // Structural, not one more arm to remember: `apply::settle_action`
+                // attaches a DeployFiles action's children to EVERY outcome role
+                // (`Ok`, `Fail`, a pre-skip's `Skipped`), so the preview side calls
+                // this once after the row regardless of which arm painted it — a
+                // no-op for every other action kind — rather than repeating the
+                // call in each branch that happens to reach it today.
+                render_deploy_children(&owner_section, action);
             }
         }
     }
@@ -1152,13 +1157,20 @@ pub fn align_width_of<'s>(labels: impl Iterator<Item = &'s str>) -> usize {
 /// over [`PhaseCoverage::Rendered`], because a phase that prints no block
 /// cannot widen a column no row of it occupies.
 ///
-/// One column for BOTH row shapes the plan tree prints, not just its status
+/// One column for every row shape the plan tree prints, not just its status
 /// rows: a produced count renders as a bullet's trailing detail
 /// (`- write ~/.cfgd.env — 3 vars, 3 aliases`), and `- ` is exactly as wide as
 /// a glyph and its space, so the bullet pads to the claimed column through
 /// `Emitting::bullet_column` the way a status row does through `route_status`.
 /// Ignoring the claim on the bullet put a preview's em-dashes in two places
-/// and neither at the apply's.
+/// and neither at the apply's. A `DeployFiles` action's per-file CHILD rows
+/// are the third shape: since its own subject dropped to a bare count
+/// (`deploy 6 files`), the targets that used to widen the claim by being IN
+/// the subject widen it now only because this fn folds them in explicitly —
+/// otherwise a files-only plan's claim is set by a fourteen-character subject
+/// while its children run three times that wide, and every one glues ragged
+/// instead of padding to a column (`status::pad_subject` only pads what
+/// already fits).
 ///
 /// Measured over each subject's FIRST physical row, which is the whole
 /// subject exactly when the subject fits the report's budget
@@ -1168,7 +1180,13 @@ pub fn align_width_of<'s>(labels: impl Iterator<Item = &'s str>) -> usize {
 /// settled, so it needs no column of its own and is left out of the
 /// measurement. Included, one eleven-package install would set the column at
 /// the budget and push every sibling's em-dash to the far edge, or fail the
-/// claim outright and withdraw the column from the whole report.
+/// claim outright and withdraw the column from the whole report. A child row
+/// never wraps the same way — a target too long for the budget glues instead
+/// (`Emitting::child_row_column`) — so it is left out of the claim by the
+/// same over-budget filter, at its own EFFECTIVE width: the folded target
+/// plus `status::CHILD_ROW_INDENT_DELTA`, the columns a child gives back for
+/// its extra indent and its missing glyph, because that sum is the quantity
+/// `status::pad_subject` actually judges the claim against.
 ///
 /// [`Printer::subject_budget`]: crate::output::Printer::subject_budget
 pub fn report_align_width(
@@ -1176,14 +1194,32 @@ pub fn report_align_width(
     filter: Option<&PhaseFilter>,
     budget: Option<usize>,
 ) -> usize {
-    let items: Vec<String> = in_scope_tree(plan, filter, PhaseCoverage::Rendered)
+    let actions: Vec<&Action> = in_scope_tree(plan, filter, PhaseCoverage::Rendered)
         .iter()
         .flat_map(|(_, groups)| groups.iter())
-        .flat_map(|(_, actions)| actions.iter())
+        .flat_map(|(_, actions)| actions.iter().copied())
+        .collect();
+    let subjects: Vec<String> = actions
+        .iter()
         .map(|action| action_display_subject_within(action, budget).to_string())
         .filter(|subject| budget.is_none_or(|b| measure_width(subject) <= b))
         .collect();
-    align_width_of(items.iter().map(String::as_str))
+    let subject_width = align_width_of(subjects.iter().map(String::as_str));
+    let child_width = actions
+        .iter()
+        .flat_map(|action| {
+            super::format::deploy_file_children(action)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|(target, _method)| {
+            let effective = measure_width(&crate::fold_home_in_text(&target))
+                + crate::output::renderer::status::CHILD_ROW_INDENT_DELTA;
+            budget.is_none_or(|b| effective <= b).then_some(effective)
+        })
+        .max()
+        .unwrap_or(0);
+    subject_width.max(child_width)
 }
 
 /// The subject budget THIS report's rows are cut within: the printer's floor
