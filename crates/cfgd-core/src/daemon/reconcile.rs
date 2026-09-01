@@ -731,18 +731,54 @@ fn reconcile_tick(
         }
     };
 
+    // A per-module tick probes ONE module, so beyond the re-find predicate it
+    // may heal only rows attributable to that module by identity: its own
+    // module-file rows and its bare module row. Everything else — other
+    // modules', the machine-wide surfaces, per-package rows nothing attributes
+    // to a module — stands for the next profile-wide tick to judge.
+    let outside_tick_scope = |rtype: &str, rid: &str| match module_filter {
+        None => false,
+        Some(name) => {
+            !(rtype == "module"
+                && (rid == name || rid.strip_prefix(name).is_some_and(|r| r.starts_with('/'))))
+        }
+    };
+    // The rows this tick cannot vouch for either way, spelled as extra
+    // members of the "current" set so the complement-resolve leaves them
+    // standing. A read failure keeps EVERY row standing: resolving against a
+    // set of unknown membership is how a finding gets healed blind.
+    let kept_rows = |planned: &[&crate::reconciler::Action]| match store.unresolved_drift() {
+        Ok(rows) => Some(
+            rows.into_iter()
+                .filter(|e| {
+                    outside_tick_scope(&e.resource_type, &e.resource_id)
+                        || tick_cannot_refind(&e.resource_type, &e.resource_id, planned)
+                })
+                .map(|e| (e.resource_type, e.resource_id))
+                .collect::<Vec<_>>(),
+        ),
+        Err(e) => {
+            tracing::warn!(error = %e, "reconcile: cannot read recorded drift — leaving every recorded row standing");
+            None
+        }
+    };
+
     let outcome = if effective_total == 0 {
         tracing::debug!("reconcile: no drift detected");
 
-        // This reconcile is the ground-truth snapshot: nothing drifts now, so
-        // every outstanding drift row has healed. Clear them and reset the
-        // in-memory count so `/status` and `/drift` both return to 0.
-        if let Err(e) = store.resolve_all_drift() {
+        // This reconcile is the ground-truth snapshot for everything it
+        // PROBED: a recorded row the tick re-found healed clears, while one
+        // it cannot re-find under its own grammar or scope stands. The
+        // in-memory count follows the store rather than assuming 0, so a
+        // kept row still shows on `/status` and `/drift`.
+        if let Some(keep) = kept_rows(&[])
+            && let Err(e) = store.resolve_drift_not_in(&keep)
+        {
             tracing::warn!(error = %e, "reconcile: failed to resolve outstanding drift on clean tick");
         }
         rt.block_on(async {
             let mut st = state.lock().await;
-            st.drift_count = 0;
+            st.drift_count = super::drift::current_drift_count(store).unwrap_or(0);
         });
         Some("nothing to do".to_string())
     } else {
@@ -754,6 +790,7 @@ fn reconcile_tick(
         // The plan's action set is the exact current drift set. Record each
         // diverging resource (UPSERT — no duplicate rows across ticks)...
         let mut current_drift: Vec<(String, String)> = Vec::new();
+        let mut planned: Vec<&crate::reconciler::Action> = Vec::new();
         for phase in &plan.phases {
             for action in phase.actions() {
                 let (rtype, rid) = action_resource_info(action);
@@ -767,12 +804,18 @@ fn reconcile_tick(
                     tracing::warn!(error = %e, "reconcile: failed to record drift");
                 }
                 current_drift.push((rtype, rid));
+                planned.push(action);
             }
         }
-        // ...then resolve any still-unresolved rows NOT in the current set:
-        // they healed since the last tick.
-        if let Err(e) = store.resolve_drift_not_in(&current_drift) {
-            tracing::warn!(error = %e, "reconcile: failed to resolve healed drift rows");
+        // ...then resolve any still-unresolved rows NOT in the current set —
+        // they healed since the last tick — where "current" also carries every
+        // recorded row this tick's plan re-finds under another producer's
+        // spelling or cannot judge at all.
+        if let Some(keep) = kept_rows(&planned) {
+            current_drift.extend(keep);
+            if let Err(e) = store.resolve_drift_not_in(&current_drift) {
+                tracing::warn!(error = %e, "reconcile: failed to resolve healed drift rows");
+            }
         }
 
         // The onDrift hooks of the profile and of every drifted module, as one
@@ -1248,6 +1291,113 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
                     && !matches!(ma.kind, ModuleActionKind::Skip { .. })
         )
     })
+}
+
+/// The daemon twin of the CLI keep predicate (`full_check_cannot_refind`,
+/// `crates/cfgd/src/cli/live_drift.rs`): whether a recorded drift row is one
+/// THIS tick's plan cannot vouch for, so the complement-resolve must leave it
+/// standing. The tick records one row per planned action in the daemon's own
+/// grammar; a row another producer spelled differently is re-found only when
+/// a planned action still covers the same fact, and a row about a surface the
+/// tick never probes is never the tick's to heal.
+///
+/// What the tick genuinely re-finds, judged from the recorded row's side:
+///
+/// * `env-var` / `alias` — the CLI's per-item shell rows. The tick checks the
+///   generated env FILE as a whole: a planned rewrite means the file is stale
+///   and says nothing about which items still mismatch (keep), while no
+///   planned rewrite means the file converged, which re-finds every declared
+///   item healed (resolve).
+/// * `package` `<manager>:<name>` with no `,` — the CLI's per-package
+///   spelling. The tick plans one batch per manager, so the row is re-found
+///   exactly when a planned install/uninstall on that manager still carries
+///   the package. `provision:` / `refuse:` rows are re-found through the
+///   manager node that speaks for the manager — batch members included,
+///   whose one planned node carries only its leader's id.
+/// * `module` `<module>/<target>` — the CLI's module-file spelling
+///   (`module_file_resource_id`, whose composition is the planned target with
+///   its leading separator trimmed, after the module name). Re-found when a
+///   planned file action names the same target; the plan's file actions do
+///   not carry a module owner, so the target alone is the join.
+/// * `system` `<configurator>.<key>` — the CLI's spelling
+///   ([`crate::reconciler::system_resource_key`]); the tick's own `SetValue`
+///   spells the identical fact `<configurator>:<key>`.
+/// * Every type the tick's own grammar mints resolves by row identity — a
+///   standing daemon row is already in the current set before this predicate
+///   is consulted.
+/// * A type neither grammar knows belongs to a producer this tick knows
+///   nothing about: keep.
+///
+/// A row a planned action covers stands even while this very tick's
+/// auto-apply may heal it — fail-safe overstatement for at most one interval,
+/// against wrongly healing a finding the machine still shows.
+pub(super) fn tick_cannot_refind(
+    resource_type: &str,
+    resource_id: &str,
+    planned: &[&crate::reconciler::Action],
+) -> bool {
+    use crate::providers::PackageAction;
+    use crate::reconciler::{Action, EnvAction, SystemAction};
+    match resource_type {
+        "env-var" | "alias" => planned
+            .iter()
+            .any(|a| matches!(a, Action::Env(EnvAction::WriteEnvFile { .. }))),
+        "package" => {
+            if let Some(manager) = resource_id
+                .strip_prefix("provision:")
+                .or_else(|| resource_id.strip_prefix("refuse:"))
+            {
+                return planned.iter().any(|a| match a {
+                    Action::Manager(ma) => {
+                        ma.provisioned_managers().contains(&manager)
+                            || ma.resource_id() == resource_id
+                    }
+                    _ => false,
+                });
+            }
+            let Some((manager, package)) = resource_id.split_once(':') else {
+                // The daemon's own bare Skip spelling: identity governs.
+                return false;
+            };
+            if package.contains(',') {
+                // The daemon's own batch spelling: identity governs.
+                return false;
+            }
+            planned.iter().any(|a| match a {
+                Action::Package(
+                    PackageAction::Install {
+                        manager: m,
+                        packages,
+                        ..
+                    }
+                    | PackageAction::Uninstall {
+                        manager: m,
+                        packages,
+                        ..
+                    },
+                ) => m == manager && packages.iter().any(|p| p == package),
+                _ => false,
+            })
+        }
+        "module" => match resource_id.split_once('/') {
+            // The daemon's own bare module-name spelling: identity governs.
+            None => false,
+            Some((_, tail)) => planned.iter().any(|a| {
+                matches!(action_resource_info(a),
+                    (t, target) if t == "file" && target.trim_start_matches('/') == tail)
+            }),
+        },
+        "system" if !resource_id.contains(':') => planned.iter().any(|a| match a {
+            Action::System(SystemAction::SetValue {
+                configurator, key, ..
+            }) => crate::reconciler::system_resource_key(configurator, key) == resource_id,
+            _ => false,
+        }),
+        "file" | "system" | "secret" | "script" | "env" | "env-rc" | "env-session" | "manager" => {
+            false
+        }
+        _ => true,
+    }
 }
 
 // --- Auto-apply decision handling ---

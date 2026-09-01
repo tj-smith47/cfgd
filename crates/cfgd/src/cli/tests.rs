@@ -29283,8 +29283,9 @@ fn an_adopted_file_is_copied_aside_by_a_real_apply() {
 fn every_merged_env_view_is_built_once_per_command() {
     const HATCH: &str = "per-row-merge-ok:";
     // Each production construction, by file and count: `cmd_status` and
-    // `cmd_status_module`, `cmd_verify`, and `cmd_diff`'s two env paths.
-    const EXPECTED: [(&str, usize); 3] = [("status.rs", 2), ("verify.rs", 1), ("diff.rs", 2)];
+    // `cmd_status_module`, `cmd_verify`, and `cmd_diff`'s full-machine env
+    // path (the scoped `--module` path evaluates no env surface at all).
+    const EXPECTED: [(&str, usize); 3] = [("status.rs", 2), ("verify.rs", 1), ("diff.rs", 1)];
     const LOOPY: [&str; 8] = [
         "for ", "while ", "loop {", ".map(", ".iter(", ".retain(", ".filter(", "|",
     ];

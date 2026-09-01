@@ -83,9 +83,8 @@ pub(super) fn drift_event_from(
 
 /// Record ONE live finding as a `drift_events` row, warning instead of
 /// failing: the check that found it already has its answer, and a store that
-/// refuses the row must not fail the run that produced the finding — the
-/// same policy as core's `record_drift_or_warn`. The stored operands are the
-/// finding's own literals.
+/// refuses the row must not fail the run that produced the finding. The
+/// stored operands are the finding's own literals.
 fn record_finding(state: &cfgd_core::state::StateStore, r: &VerifyResult) {
     if let Err(e) = state.record_drift(
         &r.resource_type,
@@ -275,6 +274,14 @@ pub(super) fn file_verify_results(
 /// that file drifted; the producer and that lookup must never disagree about
 /// the spelling, or a drifted file reads clean under Deployed Files.
 pub(super) fn module_file_resource_id(module: &str, target: &str) -> String {
+    // The keep-set split between the two producers' grammars rests on every
+    // live-minted module id carrying its `/` with a real half on each side —
+    // a bare id here would read as the daemon's whole-module spelling and be
+    // healed by a check that never looked at it.
+    debug_assert!(
+        !module.is_empty() && !target.trim_start_matches('/').is_empty(),
+        "a module-file id needs both halves: {module:?} / {target:?}"
+    );
     format!("{}/{}", module, target.trim_start_matches('/'))
 }
 
@@ -1372,10 +1379,88 @@ mod tests {
                 "each missing package is its own row keyed {id}: {drift:?}"
             );
         }
+        // Judged over package rows only: the no-comma rule is the PACKAGE
+        // grammar's, and another type's id (an env file path, a script body)
+        // may legitimately carry one.
         assert!(
-            !drift.iter().any(|r| r.resource_id.contains(',')),
+            !drift
+                .iter()
+                .any(|r| r.resource_type == "package" && r.resource_id.contains(',')),
             "no batch-keyed package row may reach the display: {drift:?}"
         );
+    }
+
+    /// The live-producer half of the id-shape invariant the keep predicate
+    /// rests on: a full check can re-find — and so later heal — every row it
+    /// itself mints. A producer whose row `full_check_cannot_refind` keeps
+    /// would record a finding that stands forever, because the predicate
+    /// reads a bare module or package id as the daemon's grammar. Driven over
+    /// a mixed finding set (per-package rows, a provision row) plus the
+    /// module-file composer's own output, so a new live producer minting a
+    /// bare id trips here.
+    #[test]
+    fn a_full_check_can_refind_every_row_it_mints() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = resolved_no_files();
+
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(
+            cfgd_core::test_helpers::MockPackageManager::new("npm").with_installed(&[]),
+        ));
+        registry.add_package_manager(Box::new(
+            cfgd_core::test_helpers::MockPackageManager::new("pipx")
+                .unavailable()
+                .bootstrappable_via("pip install pipx"),
+        ));
+
+        let mut module = module_with_package("dev", "npm", "left-pad");
+        module.packages.push(cfgd_core::modules::ResolvedPackage {
+            canonical_name: "black".to_string(),
+            resolved_name: "black".to_string(),
+            manager: "pipx".to_string(),
+            manager_declared: true,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: None,
+        });
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+        let mut findings = live_drift_results(
+            dir.path(),
+            &resolved,
+            &registry,
+            &[module],
+            &std::collections::HashSet::new(),
+            &state,
+            &cx,
+        )
+        .unwrap();
+        findings.push(VerifyResult {
+            resource_type: "module".to_string(),
+            resource_id: module_file_resource_id("dev", "/home/u/.conf"),
+            matches: false,
+            expected: "deployed".to_string(),
+            actual: "missing".to_string(),
+            unmanaged: false,
+        });
+        assert!(
+            findings.len() >= 3,
+            "the fixture must mint a mixed set: {findings:?}"
+        );
+
+        for f in &findings {
+            record_finding(&state, f);
+        }
+        for e in state.unresolved_drift().unwrap() {
+            assert!(
+                !full_check_cannot_refind(&e, &[]),
+                "a full check must be able to re-find its own row: {e:?}"
+            );
+        }
     }
 
     #[test]
