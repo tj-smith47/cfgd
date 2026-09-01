@@ -1669,12 +1669,13 @@ pub(super) fn cmd_status(
     // dashboard by deliberate design. `--scan` (and `--exit-code`, which
     // implies it), however, must reflect REALITY: a host with no daemon and no
     // prior scan has zero recorded events even when a managed file was just
-    // edited out-of-band. So when scanning, run the LIVE, read-only scan
-    // (never recording drift rows — the same checks `diff`/`verify` run, though
-    // it DOES stamp the last-scan timestamp this header reads back next time)
-    // BEFORE emitting, fold its findings into the displayed Drift section, then
-    // exit 5 if `--exit-code` asked for it and any drift was found. This keeps
-    // the human verdict and the exit code in agreement instead of printing "No
+    // edited out-of-band. So when scanning, run the LIVE scan (the same
+    // checks `diff`/`verify` run — the engine records every finding and
+    // resolves what it did not re-find, and the last-scan stamp this header
+    // reads back next time is written here) BEFORE emitting, fold its
+    // findings into the displayed Drift section, then exit 5 if
+    // `--exit-code` asked for it and any drift was found. This keeps the
+    // human verdict and the exit code in agreement instead of printing "No
     // drift detected" alongside exit 5.
     let live_drift = if let Some(mut registry) = registry {
         ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
@@ -1699,22 +1700,12 @@ pub(super) fn cmd_status(
         if let Some(stamped) = state.record_scan() {
             output.last_scan_at = Some(stamped);
         }
-        // A recorded row and this scan can report the SAME
-        // `(resource_type, resource_id)` — the env recompute above keeps the
-        // recorded row when the entry is still drifting, and the scan then
-        // finds the same entry and words it identically, so the report rendered
-        // one drift as two rows and `drift[]` carried it twice. The scan is the
-        // fresher reading of the same machine and carries the same recompute,
-        // so its finding REPLACES the recorded row. Matched on the exact key,
-        // which is what keeps a recorded row of a kind this scan never looked
-        // at (nothing produced a key for it) standing.
-        let scanned: std::collections::HashSet<(&str, &str)> = drift
-            .iter()
-            .map(|r| (r.resource_type.as_str(), r.resource_id.as_str()))
-            .collect();
-        output
-            .drift
-            .retain(|e| !scanned.contains(&(e.resource_type.as_str(), e.resource_id.as_str())));
+        // The scan is a FULL-machine check: it just recorded its findings and
+        // resolved every recorded row it did not re-find, so the recorded
+        // rows read above are stale on this branch — a row the scan re-found
+        // is worded fresher by the scan itself, and a row it did not re-find
+        // was just resolved as healed. The displayed set IS the scan's.
+        output.drift.clear();
         for r in &drift {
             output
                 .drift
@@ -1850,6 +1841,8 @@ pub(super) fn cmd_status_module(
     // pays for a real scan of the file content and installed packages.
     // Without this, a module that was sabotaged out-of-band read as clean
     // forever, because "Deployed Files" below only checks presence.
+    // The scan's findings are recorded MODULE-SCOPED (`live_drift`'s module
+    // doc): its own rows land and resolve, and nothing beyond them.
     // Deliberately no `record_scan` below, unlike the fleet-wide path and the
     // sibling scans in `diff`/`verify`: the stamp dates the FLEET-wide
     // dashboard's header, and one module's files and packages are not evidence
@@ -1909,6 +1902,11 @@ pub(super) fn cmd_status_module(
         printer.narrate(
             format!("Scanning module:{mod_name} files"),
             |sp| -> anyhow::Result<()> {
+                // The scoped record's two halves: every key this scan
+                // re-checked, and the non-matching subset in its producer's
+                // own literals.
+                let mut checked: Vec<(String, String)> = Vec::new();
+                let mut findings: Vec<cfgd_core::reconciler::VerifyResult> = Vec::new();
                 let file_results = super::live_drift::module_file_verify_results(
                     &fm,
                     config_dir,
@@ -1917,7 +1915,11 @@ pub(super) fn cmd_status_module(
                     registry.default_file_strategy,
                     state,
                 )?;
+                for r in &file_results {
+                    checked.push((r.resource_type.clone(), r.resource_id.clone()));
+                }
                 for r in file_results.into_iter().filter(|r| !r.matches) {
+                    findings.push(r.clone());
                     drifted_ids.insert(r.resource_id.clone());
                     // The id is where a file finding carries its owner and its
                     // path; a row names them separately. An id that splits into
@@ -1946,27 +1948,40 @@ pub(super) fn cmd_status_module(
                         // registered are both questions nothing can answer —
                         // `package_missing_drift` returns `None` for each, and
                         // reading that as "installed" would report a verdict
-                        // no manager gave.
-                        let presence = if pkg.manager == "script"
-                            || !mgr_map.contains_key(pkg.manager.as_str())
-                        {
+                        // no manager gave. Only an answerable entry joins the
+                        // scope the record can vouch for.
+                        let scannable =
+                            pkg.manager != "script" && mgr_map.contains_key(pkg.manager.as_str());
+                        if scannable {
+                            // name-row-ok: a stored resource-type key, never rendered
+                            checked.push((
+                                "package".to_string(),
+                                super::diff::package_resource_id(
+                                    &pkg.manager,
+                                    std::slice::from_ref(&pkg.resolved_name),
+                                ),
+                            ));
+                        }
+                        let presence = if !scannable {
                             ModulePackagePresence::NotScanned
                         } else if let Some(pd) =
                             super::diff::package_missing_drift(pkg, &mgr_map, &pkg_cx)
                         {
+                            let finding = cfgd_core::reconciler::VerifyResult {
+                                resource_type: "package".to_string(),
+                                resource_id: super::diff::package_resource_id(
+                                    &pd.manager,
+                                    &pd.packages,
+                                ),
+                                matches: false,
+                                expected: "installed".to_string(),
+                                actual: cfgd_core::Absence::Missing.to_string(),
+                                unmanaged: false,
+                            };
+                            findings.push(finding.clone());
                             drift.push(ModuleDrift {
                                 event: super::live_drift::drift_event_from(
-                                    &cfgd_core::reconciler::VerifyResult {
-                                        resource_type: "package".to_string(),
-                                        resource_id: super::diff::package_resource_id(
-                                            &pd.manager,
-                                            &pd.packages,
-                                        ),
-                                        matches: false,
-                                        expected: "installed".to_string(),
-                                        actual: cfgd_core::Absence::Missing.to_string(),
-                                        unmanaged: false,
-                                    },
+                                    &finding,
                                     &merged_env_items,
                                 ),
                                 // The module whose resolution declared this
@@ -1994,6 +2009,7 @@ pub(super) fn cmd_status_module(
                         }
                     }
                 }
+                super::live_drift::record_scoped_scan_findings(state, &checked, &findings);
                 Ok(())
             },
         )?;
@@ -4552,11 +4568,11 @@ mod tests {
     ///
     /// The env recompute keeps a recorded row that is still drifting, and a
     /// `--scan` of the same machine then finds the same entry and words it
-    /// identically — without the dedupe the report rendered one drift as two
-    /// rows and `drift[]` carried it twice. The scan's finding replaces the
-    /// recorded row, matched on the exact key, so a recorded row of a kind the
-    /// scan produced no key for (here a package this profile never declared)
-    /// must stand untouched.
+    /// identically — without the replacement the report rendered one drift as
+    /// two rows and `drift[]` carried it twice. The scan is a FULL-machine
+    /// check, so a recorded row it did not re-find (here a package this
+    /// profile never declared, which no check can find missing) resolves as
+    /// healed and leaves both the display and the record.
     #[test]
     fn a_recorded_row_the_scan_also_reports_renders_once() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4635,10 +4651,19 @@ mod tests {
             "drift[] must carry one entry for one drift, got: {parsed}"
         );
         assert!(
-            drift
+            !drift
                 .iter()
                 .any(|e| e["resourceType"] == "package" && e["resourceId"] == "ghost-tool"),
-            "a recorded row of a kind the scan never keyed must stand, got: {parsed}"
+            "a recorded row the full scan did not re-find has healed and must not render, got: {parsed}"
+        );
+        let store = cfgd_core::state::StateStore::open(&state_dir.join("state.db")).unwrap();
+        assert!(
+            !store
+                .unresolved_drift()
+                .unwrap()
+                .iter()
+                .any(|e| e.resource_id == "ghost-tool"),
+            "the full scan must resolve the recorded row it did not re-find"
         );
     }
 
@@ -5668,6 +5693,254 @@ mod tests {
             present.get("scope").and_then(serde_json::Value::as_str),
             Some("module:nvim"),
             "an isolated run's scope reaches the payload: {present}"
+        );
+    }
+
+    /// Config dir + state dir whose profile manages ONE file, applied for
+    /// real, so the machine holds a target cfgd itself wrote — the fixture
+    /// every record-fed drift pin below starts from.
+    fn applied_managed_file_env(
+        home: &std::path::Path,
+    ) -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let files_dir = config_dir.path().join("files");
+        std::fs::create_dir_all(&files_dir).unwrap();
+        std::fs::write(files_dir.join("managed.txt"), "declared content\n").unwrap();
+        let target = home.join("deployed.txt");
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - source: files/managed.txt\n        target: {}\n        strategy: Copy\n",
+                target.display()
+            ),
+        )
+        .unwrap();
+        std::fs::create_dir_all(config_dir.path().join("modules")).unwrap();
+
+        let cli = test_cli_for(config_path.clone(), state_dir.path());
+        let args = crate::cli::ApplyArgs {
+            on_conflict: crate::cli::OnConflict::Ask,
+            from: None,
+            dry_run: false,
+            phase: None,
+            yes: true,
+            skip: vec![],
+            only: vec![],
+            module: vec![],
+            with_profile: false,
+            skip_scripts: false,
+            context: "apply".to_string(),
+            shell: None,
+        };
+        let printer = cfgd_core::test_helpers::test_printer();
+        crate::cli::apply::cmd_apply(&cli, &printer, &args).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "declared content\n",
+            "the fixture's apply must deploy the managed file"
+        );
+        (config_dir, state_dir, config_path)
+    }
+
+    /// A drift a live check finds is a fact the record keeps: `cfgd diff`
+    /// records every finding as a `drift_events` row, so the next plain
+    /// `cfgd status` — the recorded dashboard, no scan — lists it instead of
+    /// claiming a machine the last check saw drifting is clean.
+    #[test]
+    #[serial_test::serial]
+    fn a_drift_a_live_check_finds_is_visible_to_the_next_recorded_status() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let (_config_dir, state_dir, config_path) = applied_managed_file_env(tmp_home.path());
+        let target = tmp_home.path().join("deployed.txt");
+
+        std::fs::write(&target, "edited out of band\n").unwrap();
+
+        let cli = test_cli_for(config_path.clone(), state_dir.path());
+        let printer = cfgd_core::test_helpers::test_printer();
+        crate::cli::diff::cmd_diff(&cli, &printer, None, false).unwrap();
+
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        assert!(
+            rows.iter()
+                .any(|e| e.resource_type == "file" && e.resource_id.contains("deployed.txt")),
+            "`cfgd diff` must record the file drift it found, got: {rows:?}"
+        );
+
+        let (printer, buf) = test_printers();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        drop(printer);
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("deployed.txt"),
+            "the recorded status view must list the drifted file, got: {out}"
+        );
+        assert!(
+            !out.contains("No drift recorded"),
+            "a machine the last check saw drifting is not clean, got: {out}"
+        );
+    }
+
+    /// The resolve half of the same contract: a full live check that no
+    /// longer finds a recorded drift proves it healed, so the row resolves
+    /// and the next recorded `status` reads clean again.
+    #[test]
+    #[serial_test::serial]
+    fn a_healed_drift_the_next_live_check_clears_from_the_recorded_status() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let (_config_dir, state_dir, config_path) = applied_managed_file_env(tmp_home.path());
+        let target = tmp_home.path().join("deployed.txt");
+
+        std::fs::write(&target, "edited out of band\n").unwrap();
+        let cli = test_cli_for(config_path.clone(), state_dir.path());
+        let printer = cfgd_core::test_helpers::test_printer();
+        crate::cli::diff::cmd_diff(&cli, &printer, None, false).unwrap();
+        {
+            let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+            assert!(
+                !store.unresolved_drift().unwrap().is_empty(),
+                "the fixture's first diff must record the drift"
+            );
+        }
+
+        // Heal by hand and check again: the second diff re-finds nothing,
+        // which is the evidence the recorded row needs to resolve.
+        std::fs::write(&target, "declared content\n").unwrap();
+        crate::cli::diff::cmd_diff(&cli, &printer, None, false).unwrap();
+
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        assert!(
+            rows.is_empty(),
+            "a full check that re-found nothing must resolve the recorded rows, got: {rows:?}"
+        );
+
+        let (printer, buf) = test_printers();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        drop(printer);
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("No drift recorded"),
+            "a healed machine's recorded status must read clean, got: {out}"
+        );
+        assert!(
+            !out.contains("edited out of band"),
+            "no healed finding may linger on the recorded view, got: {out}"
+        );
+    }
+
+    /// A module-scoped scan is evidence about ONE module, not the machine:
+    /// it must not write the machine-wide `last_scan` stamp, must not
+    /// resolve another module's (or the machine's) recorded rows, and must
+    /// still record and resolve rows inside its own scope.
+    #[test]
+    #[serial_test::serial]
+    fn a_module_scoped_scan_stamps_nothing_and_touches_only_its_own_rows() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_WITH_MODULE_YAML).unwrap();
+        let mod_dir = config_dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(mod_dir.join("conf"), "module content\n").unwrap();
+        let module_target = tmp_home.path().join("mod-file.txt");
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  files:\n    - source: conf\n      target: {}\n",
+                module_target.display()
+            ),
+        )
+        .unwrap();
+
+        // Rows OUTSIDE the scan's scope: another module's file, and a
+        // machine-wide file. A scoped scan may vouch for neither.
+        {
+            let store =
+                cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
+            store
+                .record_drift(
+                    "module",
+                    "other-mod/etc/other.conf",
+                    None,
+                    Some("x"),
+                    "local",
+                )
+                .unwrap();
+            store
+                .record_drift("file", "/etc/hosts", None, Some("x"), "local")
+                .unwrap();
+        }
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let printer = cfgd_core::test_helpers::test_printer();
+        // The module target is missing, so the scoped scan FINDS drift.
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            true,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
+
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+        assert_eq!(
+            store.last_scan_at().unwrap(),
+            None,
+            "one module's scan must not date the machine-wide dashboard"
+        );
+        let rows = store.unresolved_drift().unwrap();
+        assert!(
+            rows.iter()
+                .any(|e| e.resource_type == "module" && e.resource_id.starts_with("test-mod/")),
+            "the scoped scan must record its own module's finding, got: {rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|e| e.resource_id == "other-mod/etc/other.conf"),
+            "another module's recorded row must stand, got: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|e| e.resource_id == "/etc/hosts"),
+            "a machine-wide recorded row must stand, got: {rows:?}"
+        );
+
+        // Heal the module file and scan again through the OTHER scoped
+        // surface (`diff --module`): its own row resolves, the out-of-scope
+        // rows still stand, the stamp is still unwritten.
+        std::fs::write(&module_target, "module content\n").unwrap();
+        crate::cli::diff::cmd_diff(&cli, &printer, Some("test-mod"), false).unwrap();
+
+        let rows = store.unresolved_drift().unwrap();
+        assert!(
+            !rows
+                .iter()
+                .any(|e| e.resource_type == "module" && e.resource_id.starts_with("test-mod/")),
+            "a scoped check that re-found nothing in its scope must resolve its own rows, got: {rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|e| e.resource_id == "other-mod/etc/other.conf")
+                && rows.iter().any(|e| e.resource_id == "/etc/hosts"),
+            "out-of-scope rows must survive a scoped check, got: {rows:?}"
+        );
+        assert_eq!(
+            store.last_scan_at().unwrap(),
+            None,
+            "a scoped check must never write the machine-wide stamp"
         );
     }
 }
