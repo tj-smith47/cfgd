@@ -113,6 +113,7 @@
     "theme": {
       "name": "dracula"
     },
-    "update": null
+    "update": null,
+    "usageHints": null
   }
 }

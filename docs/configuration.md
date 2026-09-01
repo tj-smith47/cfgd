@@ -124,6 +124,7 @@ spec:
 | `spec.aliases.<name>` | no | — | CLI command aliases (e.g. `add: "profile update --file"`) |
 | `spec.compliance` | no | — | Continuous compliance snapshot settings. Reports the effective desired state (profile + modules), and file checks are content-aware (see [spec/config.md](spec/config.md#speccompliance)) |
 | `spec.sources[].subscription.requireSignedCommits` | no | `false` | Demand a valid GPG or SSH signature on that source's HEAD commit. ORed with the source manifest's `constraints.requireSignedCommits`, so it only adds strictness (see [sources.md](sources.md#security-model)) |
+| `spec.usageHints` | no | `true` | Whether closing `→` usage hints render. `--no-hints` / `CFGD_USAGE_HINTS` override for one invocation (see [Global Flags](#global-flags)) |
 
 All fields can be read and written programmatically via `cfgd config get <key>` and `cfgd config set <key> <value>`. See the [CLI reference](cli-reference.md) for details.
 
@@ -914,6 +915,7 @@ These flags work with any subcommand:
 | `--theme <name>` | | `CFGD_THEME` | Theme preset for this invocation. Replaces `spec.theme.name` only; `spec.theme.overrides` still apply on top. Unknown names are rejected at the flag with the preset list |
 | `--output <format>` | `-o` | | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
 | `--list-envelope` | | `CFGD_LIST_ENVELOPE` | Under `-o json`/`-o yaml`, wrap a top-level array in a KRM `List` envelope (`{apiVersion, kind: List, items}`) |
+| `--no-hints` | | `CFGD_USAGE_HINTS` | Suppress closing `→` usage hints for this invocation, dropping their leading blank line too. `--no-hints` outranks `CFGD_USAGE_HINTS`, which outranks `spec.usageHints`; all default to hints on. Note the polarity: the flag SUPPRESSES, the env var and config field name what stays ON (`CFGD_USAGE_HINTS=false` / `spec.usageHints: false` also suppress) |
 | `--scope <user\|system>` | | `CFGD_SCOPE` | Installation scope: `user` (default) or `system`. `system` switches all four directory roots to system/FHS defaults (`/etc/cfgd`, `/var/lib/cfgd`, …). See [System scope](configuration.md#system-scope). |
 | | | `CFGD_NO_UPDATE_CHECK` | Silence the automatic update check (see [Suppressing the automatic check](#suppressing-the-automatic-check)) |
 | | | `NO_UPDATE_NOTIFIER` | Same, via npm's `update-notifier` convention |

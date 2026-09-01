@@ -120,6 +120,7 @@ fn happy_config() -> CfgdConfig {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     }

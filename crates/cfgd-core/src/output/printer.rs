@@ -370,6 +370,7 @@ impl Printer {
                 self.multi_progress.clone(),
                 seed,
                 self.renderer.live.clone(),
+                self.renderer.hints_enabled(),
             )),
             output_format,
             sink_stderr: self.sink_stderr.clone(),
@@ -392,6 +393,20 @@ impl Printer {
     /// `--list-envelope` flag / `CFGD_LIST_ENVELOPE` env var.
     pub fn with_list_envelope(mut self, enabled: bool) -> Self {
         self.list_envelope = enabled;
+        self
+    }
+
+    /// Enable or disable closing `→` usage hints for this printer's lifetime.
+    /// Builder-style, mirroring [`Self::with_list_envelope`]; on by default.
+    /// Wired from `cli::resolve_hints_enabled` (`--no-hints` /
+    /// `CFGD_USAGE_HINTS` / `spec.usageHints`).
+    ///
+    /// The decision lives on the `Renderer` rather than on `Printer` itself:
+    /// `SectionGuard` and `Doc` rendering hold their own `Arc<Renderer>`
+    /// clone of `self.renderer` and reach `render_hint` directly, never
+    /// asking the `Printer`, so a flag stored only here would not reach them.
+    pub fn with_hints_enabled(self, enabled: bool) -> Self {
+        self.renderer.set_hints_enabled(enabled);
         self
     }
 
@@ -1732,6 +1747,74 @@ mod tests {
         let out = crate::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed, payload, "default emit must keep the bare array");
+    }
+
+    /// `spec.usageHints: false` / `CFGD_USAGE_HINTS=false` / `--no-hints`
+    /// resolve to `Printer::with_hints_enabled(false)`, which must suppress
+    /// BOTH the hint text AND its leading blank line — a bare blank left
+    /// behind would be a visible artifact of a feature that is supposed to
+    /// leave no trace. `render_hint`'s early return fires before
+    /// `open_top_group` arms that blank, so a run with hints off ends at its
+    /// last content line exactly as if `hint` had never been called.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn hints_off_suppresses_the_hint_and_its_leading_blank() {
+        let (on, buf_on) = Printer::for_test_at(Verbosity::Normal);
+        on.status_simple(Role::Ok, "did thing");
+        on.hint("run `cfgd apply`");
+        on.flush();
+        let with_hints = crate::test_helpers::captured_text(&buf_on);
+        assert!(
+            with_hints.ends_with("did thing\n\n→ run `cfgd apply`\n"),
+            "hints-on baseline shape changed: {with_hints:?}"
+        );
+
+        let (off, buf_off) = Printer::for_test_at(Verbosity::Normal);
+        let off = off.with_hints_enabled(false);
+        off.status_simple(Role::Ok, "did thing");
+        off.hint("run `cfgd apply`");
+        off.flush();
+        let without_hints = crate::test_helpers::captured_text(&buf_off);
+        assert!(
+            without_hints.ends_with("did thing\n"),
+            "hints off left a trailing blank line or the hint itself: {without_hints:?}"
+        );
+        assert!(
+            !without_hints.contains('→'),
+            "hint glyph leaked with hints off: {without_hints:?}"
+        );
+    }
+
+    /// `note`/`deprecation`/`alert` are NOT hints — they report what a run
+    /// did or will do, not what to run next — so `--no-hints` and its env/config
+    /// twins must never touch them. Only `render_hint` checks `hints_enabled`.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn hints_off_leaves_note_deprecation_and_alert_visible() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Verbose);
+        let p = p.with_hints_enabled(false);
+        p.note("a note");
+        p.deprecation("a deprecation");
+        p.alert("an alert");
+        p.hint("a hint");
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("a note"),
+            "note suppressed by hints-off: {out:?}"
+        );
+        assert!(
+            out.contains("a deprecation"),
+            "deprecation suppressed by hints-off: {out:?}"
+        );
+        assert!(
+            out.contains("an alert"),
+            "alert suppressed by hints-off: {out:?}"
+        );
+        assert!(
+            !out.contains("a hint"),
+            "hint text leaked with hints off: {out:?}"
+        );
     }
 
     #[cfg(feature = "test-helpers")]

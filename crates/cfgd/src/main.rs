@@ -1,6 +1,7 @@
 use clap::{CommandFactory, FromArgMatches};
 
 use cfgd::cli;
+use cfgd_core::canonical_bool_str;
 
 /// Examples block appended to `cfgd mcp --help`. brontes mints the `mcp`
 /// command without cfgd's help convention (every top-level command carries an
@@ -9,19 +10,6 @@ const MCP_HELP_EXAMPLES: &str = "Examples:\n  \
     cfgd mcp start    # run the MCP server over stdio\n  \
     cfgd mcp tools    # list the tools the server exposes\n  \
     cfgd mcp stream   # stream events over the MCP transport";
-
-/// Map a raw `CFGD_YES` value to the canonical `"true"`/`"false"` that clap's
-/// `BoolishValueParser` accepts. Mirrors that parser's accept-set exactly
-/// (case-insensitive): TRUE = {1, y, yes, t, true, on}, FALSE = {0, n, no, f,
-/// false, off}. Returns `None` for anything else so genuinely-invalid values
-/// still surface clap's validation error rather than being silently coerced.
-fn canonical_bool_str(raw: &str) -> Option<&'static str> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "1" | "y" | "yes" | "t" | "true" | "on" => Some("true"),
-        "0" | "n" | "no" | "f" | "false" | "off" => Some("false"),
-        _ => None,
-    }
-}
 
 /// Global env vars bound to a `bool` clap arg. Their value-parser rejects
 /// shell-truthy spellings (`1`/`yes`/`on`/…), so each is rewritten to the
@@ -310,13 +298,15 @@ fn main() -> anyhow::Result<()> {
 
     let theme_config =
         cli::resolve_theme_config(std::path::Path::new(&cli.config), cli.theme.as_deref());
+    let hints_enabled = cli::resolve_hints_enabled(std::path::Path::new(&cli.config), cli.no_hints);
     let printer = cfgd_core::output::Printer::with_theme_config(
         verbosity,
         theme_config.as_ref(),
         output_format,
         color_choice,
     )
-    .with_list_envelope(cli.list_envelope);
+    .with_list_envelope(cli.list_envelope)
+    .with_hints_enabled(hints_enabled);
     tracing_writer.attach(&printer);
 
     if jsonpath_deprecated {
@@ -384,8 +374,8 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_bool_str, cli, normalize_boolish_env, normalize_cfgd_verbose_env,
-        runs_reconcile_loop, tracing_filter_for,
+        cli, normalize_boolish_env, normalize_cfgd_verbose_env, runs_reconcile_loop,
+        tracing_filter_for,
     };
     use cfgd_core::test_helpers::EnvVarGuard;
     use serial_test::serial;
@@ -448,55 +438,6 @@ mod tests {
         for verbose in [0, 1, 4] {
             assert_eq!(tracing_filter_for(true, verbose, false), "error");
             assert_eq!(tracing_filter_for(true, verbose, true), "error");
-        }
-    }
-
-    #[test]
-    fn canonical_bool_str_accepts_truthy_spellings() {
-        for raw in [
-            "1", "y", "yes", "t", "true", "on", "YES", "Yes", "ON", "True",
-        ] {
-            assert_eq!(
-                canonical_bool_str(raw),
-                Some("true"),
-                "{raw:?} should normalize to true"
-            );
-        }
-    }
-
-    #[test]
-    fn canonical_bool_str_accepts_falsey_spellings() {
-        for raw in ["0", "n", "no", "f", "false", "off", "NO", "Off", "FALSE"] {
-            assert_eq!(
-                canonical_bool_str(raw),
-                Some("false"),
-                "{raw:?} should normalize to false"
-            );
-        }
-    }
-
-    #[test]
-    fn canonical_bool_str_trims_surrounding_whitespace() {
-        assert_eq!(canonical_bool_str("  1  "), Some("true"));
-        assert_eq!(canonical_bool_str("\toff\n"), Some("false"));
-    }
-
-    #[test]
-    fn canonical_bool_str_passes_through_canonical_values() {
-        assert_eq!(canonical_bool_str("true"), Some("true"));
-        assert_eq!(canonical_bool_str("false"), Some("false"));
-    }
-
-    #[test]
-    fn canonical_bool_str_rejects_unrecognized_values() {
-        // Unrecognized values return None so they remain untouched and clap's
-        // bool parser still rejects them, preserving validation.
-        for raw in ["garbage", "", "2", "tru", "yess", "10"] {
-            assert_eq!(
-                canonical_bool_str(raw),
-                None,
-                "{raw:?} should not be recognized as boolish"
-            );
         }
     }
 

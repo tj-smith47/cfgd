@@ -368,6 +368,7 @@ fn find_server_url_returns_none_for_git_origin() {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     };
@@ -403,6 +404,7 @@ fn find_server_url_returns_url_for_server_origin() {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     };
@@ -3420,6 +3422,7 @@ fn find_server_url_picks_server_among_multiple_origins() {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     };
@@ -3452,6 +3455,7 @@ fn find_server_url_returns_none_for_empty_origins() {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     };
@@ -4056,6 +4060,7 @@ fn find_server_url_picks_first_server_among_duplicates() {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     };
@@ -6260,6 +6265,7 @@ fn try_server_checkin_no_server_origin_returns_false() {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     };
@@ -6318,6 +6324,7 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     };

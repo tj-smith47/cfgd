@@ -394,6 +394,7 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: crate::cli::OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
+            no_hints: false,
             theme: None,
             jsonpath: None,
             yes: false,
