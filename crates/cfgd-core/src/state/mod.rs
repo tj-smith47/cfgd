@@ -493,23 +493,26 @@ const MIGRATIONS: &[&str] = &[
     // breakdown reports no count rather than the row's coverage.
     "ALTER TABLE managed_resources ADD COLUMN file_hashes TEXT;",
     // Migration 20, two halves of one drift-identity settlement. The index:
-    // `record_drift` is an UPDATE-then-SELECT and the set-based resolvers
-    // scan too, so every daemon tick paid full table scans per recorded row
-    // over a table that only grows. The retype: the daemon once recorded a
-    // failed provision as `('manager', 'provision:<name>')` while the CLI's
-    // live check mints `('package', 'provision:<name>')` — two spellings of
-    // one finding, and nothing on a CLI-only host resolves the `manager`
-    // one. A legacy row with a standing `package` twin is the duplicate and
-    // resolves; one without a twin is the only record of the finding and is
-    // retyped so the live check and the apply can settle it. Resolved rows
-    // keep their recorded type — history describes what was written.
+    // `record_drift` is an UPDATE-then-SELECT per recorded row over a table
+    // that only grows, and it, the per-key resolvers and the set-based
+    // resolvers' row-value `IN` all seek this index; only the complement
+    // (`NOT IN`) resolver still examines every unresolved row, which is
+    // inherent to a complement. The retype: the daemon once recorded a failed
+    // provision cascade as `('manager', 'provision:<name>')` and its planned
+    // refusals as `('manager', 'refuse:<name>')`, while the CLI's live check
+    // mints both under `package` — two spellings of one finding, and nothing
+    // on a CLI-only host resolves the `manager` one. A legacy row with a
+    // standing `package` twin is the duplicate and resolves; one without a
+    // twin is the only record of the finding and is retyped so the live check
+    // and the apply can settle it. Resolved rows keep their recorded type —
+    // history describes what was written.
     "CREATE INDEX IF NOT EXISTS idx_drift_events_resource
          ON drift_events (resource_type, resource_id);
 
      UPDATE drift_events
          SET resolved_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
        WHERE resource_type = 'manager'
-         AND resource_id GLOB 'provision:*'
+         AND (resource_id GLOB 'provision:*' OR resource_id GLOB 'refuse:*')
          AND resolved_by IS NULL AND resolved_at IS NULL
          AND EXISTS (SELECT 1 FROM drift_events p
                       WHERE p.resource_type = 'package'
@@ -519,7 +522,7 @@ const MIGRATIONS: &[&str] = &[
      UPDATE drift_events
          SET resource_type = 'package'
        WHERE resource_type = 'manager'
-         AND resource_id GLOB 'provision:*'
+         AND (resource_id GLOB 'provision:*' OR resource_id GLOB 'refuse:*')
          AND resolved_by IS NULL AND resolved_at IS NULL;",
 ];
 

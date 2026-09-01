@@ -745,13 +745,18 @@ fn reconcile_tick(
     };
     // The rows this tick cannot vouch for either way, spelled as extra
     // members of the "current" set so the complement-resolve leaves them
-    // standing. A read failure keeps EVERY row standing: resolving against a
-    // set of unknown membership is how a finding gets healed blind.
+    // standing. The plan the complement reads has already had the
+    // pending-decision prune applied, so a withheld resource's rows are kept
+    // by the exclusions themselves — the tick deliberately did not judge
+    // them. A read failure keeps EVERY row standing: resolving against a set
+    // of unknown membership is how a finding gets healed blind.
     let kept_rows = |planned: &[&crate::reconciler::Action]| match store.unresolved_drift() {
         Ok(rows) => Some(
             rows.into_iter()
                 .filter(|e| {
                     outside_tick_scope(&e.resource_type, &e.resource_id)
+                        || pending_exclusions
+                            .withholds_recorded_row(&e.resource_type, &e.resource_id)
                         || tick_cannot_refind(&e.resource_type, &e.resource_id, planned)
                 })
                 .map(|e| (e.resource_type, e.resource_id))
@@ -1326,8 +1331,9 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
 ///   manager node that speaks for the manager — batch members included,
 ///   whose one planned node carries only its leader's id.
 /// * `module` `<module>/<target>` — the CLI's module-file spelling
-///   (`module_file_resource_id`: the posix-folded target with its leading
-///   separator trimmed, after the module name). The planner spells a module
+///   (`module_file_resource_id`: the target as `display_posix` folds it —
+///   Windows-only — with its leading separator trimmed, after the module
+///   name). The planner spells a module
 ///   file's redeploy as `ModuleActionKind::DeployFiles`, never as an
 ///   `Action::File` — so the join is the owning module's own planned file
 ///   list, exact on both halves. A module the plan carries only as a
@@ -1408,10 +1414,14 @@ pub(super) fn tick_cannot_refind(
                     // A module file plans as DeployFiles, never Action::File,
                     // so the join is the owning module's own planned file
                     // list — the tick that plans a redeploy re-finds exactly
-                    // the file it will write.
+                    // the file it will write. The fold is the id PRODUCER's
+                    // (`FileDriftResult.target` is set with `display_posix`,
+                    // Windows-only): `to_posix_string`'s unconditional fold
+                    // would rename a Unix target carrying a legal `\` into a
+                    // key the recorded row never spelled.
                     ModuleActionKind::DeployFiles { files, .. } => files
                         .iter()
-                        .any(|f| crate::to_posix_string(&f.target).trim_start_matches('/') == tail),
+                        .any(|f| f.target.display_posix().trim_start_matches('/') == tail),
                     // A skipped module was never probed: its rows are vouched
                     // for neither way.
                     ModuleActionKind::Skip { .. } => true,

@@ -70,12 +70,16 @@ impl StateStore {
     /// The ONE composite-key UPDATE the three set-based resolvers share: set
     /// `set_clause` on every unresolved row whose `(resource_type,
     /// resource_id)` satisfies `membership` (`IN` / `NOT IN`) against `keys`.
-    /// The composite key is matched via a `\x1f`-joined concatenation (the
-    /// unit separator never appears in a resource type or a POSIX-folded id),
-    /// and every value is a bound param — nothing is interpolated into the
-    /// SQL, so it stays injection-safe. Empty-set semantics are each caller's
-    /// to decide BEFORE calling; an empty `keys` here is a caller bug and
-    /// matches nothing (`IN ()`) or everything (`NOT IN ()`).
+    /// The key is matched as a row value — `(resource_type, resource_id)
+    /// IN (VALUES (?,?), …)` — rather than a concatenation, because only the
+    /// row-value form is a shape `idx_drift_events_resource` can seek; an
+    /// expression over the columns forces a scan however the index is built.
+    /// (`NOT IN` still examines every unresolved row — inherent to a
+    /// complement, not to the SQL shape.) Every value is a bound param —
+    /// nothing is interpolated into the SQL, so it stays injection-safe.
+    /// Empty-set semantics are each caller's to decide BEFORE calling; an
+    /// empty `keys` here is a caller bug (`VALUES` with no rows is a syntax
+    /// error), and each of the three callers short-circuits it.
     fn update_unresolved_by_keys(
         &self,
         set_clause: &str,
@@ -83,22 +87,21 @@ impl StateStore {
         first_param: &dyn rusqlite::ToSql,
         keys: &[(String, String)],
     ) -> Result<()> {
-        let placeholders = std::iter::repeat_n("?", keys.len())
+        let placeholders = std::iter::repeat_n("(?, ?)", keys.len())
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
             "UPDATE drift_events SET {set_clause}
                  WHERE resolved_by IS NULL AND resolved_at IS NULL
-                 AND (resource_type || char(31) || resource_id) {membership} ({placeholders})",
+                 AND (resource_type, resource_id) {membership} (VALUES {placeholders})",
         );
 
-        let bound: Vec<String> = keys
-            .iter()
-            .map(|(rtype, rid)| format!("{rtype}\u{1f}{rid}"))
-            .collect();
-        let mut refs: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(keys.len() + 1);
+        let mut refs: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 * keys.len() + 1);
         refs.push(first_param);
-        refs.extend(bound.iter().map(|b| b as &dyn rusqlite::ToSql));
+        for (rtype, rid) in keys {
+            refs.push(rtype);
+            refs.push(rid);
+        }
         self.conn.execute(&sql, refs.as_slice())?;
         Ok(())
     }
@@ -107,9 +110,9 @@ impl StateStore {
     /// IS in `keys`, linking each to `apply_id`.
     ///
     /// The set-based counterpart of [`Self::resolve_drift`], for a caller
-    /// holding many keys at once: `drift_events` carries no index on those two
-    /// columns, so a per-key call is a full table scan per merged env var and
-    /// alias, paid inside the apply transaction. Only `resolved_by` is
+    /// holding many keys at once: one statement whose row-value `IN` seeks
+    /// `idx_drift_events_resource`, instead of a statement per merged env var
+    /// and alias, paid inside the apply transaction. Only `resolved_by` is
     /// written — the stored operands describe the row they were recorded with
     /// and must stay byte-exact.
     pub fn resolve_drift_keys(&self, apply_id: i64, keys: &[(String, String)]) -> Result<()> {
