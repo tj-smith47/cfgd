@@ -93,8 +93,19 @@ pub fn cmd_verify(
     // back with no output of their own, and a package enumeration inside the
     // first can take seconds.
     let mut results = printer.narrate("Verifying: resources", |sp| -> anyhow::Result<_> {
-        let mut results =
-            reconciler::verify(&resolved, &registry, state, &resolved_modules, &pkg_cx)?;
+        // A `--module` run passes `machine_surfaces: false`: its composition
+        // is module-only config, and the system/env halves diff that against
+        // machine-wide surfaces — a claim about the machine no single module
+        // can vouch for, so a scoped run neither computes, renders, judges
+        // nor records it.
+        let mut results = reconciler::verify(
+            &resolved,
+            &registry,
+            state,
+            &resolved_modules,
+            &pkg_cx,
+            module_filter.is_none(),
+        )?;
         // The reconciler cannot reach the file manager (crate boundary), so it no
         // longer checks managed files. Fold in content-aware file results here so a
         // file whose bytes drifted out-of-band fails verification and drives
@@ -130,15 +141,20 @@ pub fn cmd_verify(
         // refuse contributes no row there — the same gap `diff` and `status --scan`
         // close via `plan_managers`. Fold that half in here too, so `verify -e`
         // cannot report clean on a host `diff`/`status --scan` both flag as drifted.
-        sp.set_message("Verifying: package managers");
-        let cfgd_installed = cfgd_installed_packages(state)?;
-        results.extend(super::live_drift::manager_verify_results(
-            &resolved,
-            &registry,
-            &resolved_modules,
-            &cfgd_installed,
-            &pkg_cx,
-        )?);
+        // FULL runs only: manager provisioning is a machine-wide surface, the
+        // same scope rule as the system/env halves — and the same shape as
+        // `diff --module`/`status <mod> --scan`, which plan no managers.
+        if module_filter.is_none() {
+            sp.set_message("Verifying: package managers");
+            let cfgd_installed = cfgd_installed_packages(state)?;
+            results.extend(super::live_drift::manager_verify_results(
+                &resolved,
+                &registry,
+                &resolved_modules,
+                &cfgd_installed,
+                &pkg_cx,
+            )?);
+        }
         Ok(results)
     })?;
     // `reconciler::verify` is pure compute — this seam is where its results
@@ -151,9 +167,8 @@ pub fn cmd_verify(
     // configurator whose diff produced any row (clean or drifted) vouches
     // for its `<configurator>.` prefix, and one that errored or never ran
     // contributes no system row at all, so its recorded rows stand. A
-    // `--module` run records and resolves only the module-typed rows it
-    // checked; its manager and env halves read machine-wide surfaces and
-    // stay outside the scope it can vouch for.
+    // `--module` run computes nothing but its own module's files and
+    // packages, so it records and resolves exactly what it checked.
     if module_filter.is_none() {
         let mut evaluated_system: Vec<String> = results
             .iter()
@@ -169,17 +184,18 @@ pub fn cmd_verify(
             &evaluated_system,
         );
     } else {
+        // A scoped run computes ONLY its own module's files and packages —
+        // the machine-wide halves are gated off above — so everything in
+        // `results` is the scope: what it renders, what drives its exit
+        // code, and what it records and resolves are one set.
         let checked: Vec<(String, String)> = results
             .iter()
-            .filter(|r| r.resource_type == "module")
             .map(|r| (r.resource_type.clone(), r.resource_id.clone()))
             .collect();
         super::live_drift::record_scoped_scan_findings(
             state,
             &checked,
-            results
-                .iter()
-                .filter(|r| !r.matches && r.resource_type == "module"),
+            results.iter().filter(|r| !r.matches),
         );
     }
     // The recording above persisted the opaque `current`/`missing or
@@ -414,14 +430,14 @@ mod tests {
         );
     }
 
-    /// `reconciler::verify` persists the opaque `current`/`missing or changed`
-    /// markers for a drifted env-var/alias row — correctly, since the declared
-    /// value must stay out of `drift_events` — but `cmd_verify`'s own DISPLAY
-    /// of that same `results` vec has to recompute the real declared line, or
-    /// `cfgd verify`'s human and `-o json` renders show the storage marker
-    /// instead of the value. `status --scan` is the sibling display consumer
-    /// of the identical per-item `VerifyResult`s, and needs the same
-    /// `env_item_display_values` recompute.
+    /// The CLI recording seam persists the opaque `current`/`missing or
+    /// changed` markers for a drifted env-var/alias row — correctly, since
+    /// the declared value must stay out of `drift_events` — but
+    /// `cmd_verify`'s own DISPLAY of that same `results` vec has to recompute
+    /// the real declared line, or `cfgd verify`'s human and `-o json` renders
+    /// show the storage marker instead of the value. `status --scan` is the
+    /// sibling display consumer of the identical per-item `VerifyResult`s,
+    /// and needs the same `env_item_display_values` recompute.
     #[test]
     #[serial]
     fn cmd_verify_shows_the_declared_env_value_not_the_opaque_marker() {
@@ -520,9 +536,11 @@ mod tests {
     /// re-checked and did not re-find resolves as healed, and every recorded
     /// row it CANNOT re-find stands: a class it never evaluates (`secret`,
     /// `script`), a daemon-spelled id (`system` with `:`, a comma-batched
-    /// `package`), and a `system` row of a configurator this run never
-    /// probed. The kept rows are their own writer's to resolve; a verify that
-    /// cleared them would erase findings nothing re-checked.
+    /// `package`, a `ModuleAction`'s bare module name, a
+    /// `PackageAction::Skip`'s bare manager name), and a `system` row of a
+    /// configurator this run never probed. The kept rows are their own
+    /// writer's to resolve; a verify that cleared them would erase findings
+    /// nothing re-checked.
     #[test]
     #[serial_test::serial]
     fn a_full_verify_records_its_findings_and_keeps_rows_it_cannot_refind() {
@@ -558,13 +576,17 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
 
         // Rows a full verify cannot re-find (they must stand), plus one stale
-        // row of a class it DOES re-check (it must resolve).
-        let kept: [(&str, &str); 5] = [
+        // row of a class it DOES re-check (it must resolve). The last two are
+        // the daemon's bare action spellings: a `ModuleAction`'s module name
+        // (no `/`) and a `PackageAction::Skip`'s manager name (no `:`).
+        let kept: [(&str, &str); 7] = [
             ("secret", "op://vault/item"),
             ("script", "echo hi"),
             ("system", "sysctl:vm.swappiness"),
             ("package", "brew:jq,ripgrep"),
             ("system", "ghostcfg.some.key"),
+            ("module", "nvim"),
+            ("package", "brew"),
         ];
         {
             let store = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
@@ -619,16 +641,95 @@ mod tests {
         );
     }
 
-    /// A `--module` verify is evidence about ONE module: it records and
-    /// resolves only `module`-typed rows in its own scope, writes nothing for
-    /// the machine-wide env/system comparison its empty-profile composition
-    /// makes (that comparison is module-only config against machine-wide
-    /// surfaces — factually wrong as a machine claim), and leaves foreign
-    /// rows and the machine-wide stamp alone.
+    /// The `system` arm of the keep-set is derived, not assumed: a full
+    /// verify vouches only for the configurators its own results carry, so a
+    /// stale row under a namespace it evaluated resolves while one under a
+    /// configurator nothing probed stands. Linux-only because the fixture's
+    /// configurator is `gsettings`, which the registry registers only on
+    /// Linux; the seam makes it available and answers its bulk read with the
+    /// declared value, so the clean probe still counts as evaluated.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial_test::serial]
+    fn a_full_verify_resolves_stale_rows_only_under_configurators_it_evaluated() {
+        use crate::cli::helpers::tests::{make_cli, quiet_printer};
+
+        let _shim = cfgd_core::test_helpers::ToolShim::install(
+            "CFGD_GSETTINGS_BIN",
+            0,
+            "org.gnome.cfgd key 'declared'\n",
+            "",
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  system:\n    gsettings:\n      org.gnome.cfgd:\n        key: declared\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("modules")).unwrap();
+
+        let state_dir = tmp.path().join("state");
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(state_dir.clone());
+        cli.cache_dir = Some(tmp.path().join("cache"));
+
+        {
+            let store = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
+            store
+                .record_drift(
+                    "system",
+                    "gsettings.stale.key",
+                    Some("x"),
+                    Some("y"),
+                    "daemon",
+                )
+                .unwrap();
+            store
+                .record_drift(
+                    "system",
+                    "ghostcfg.other.key",
+                    Some("x"),
+                    Some("y"),
+                    "daemon",
+                )
+                .unwrap();
+        }
+
+        let printer = quiet_printer();
+        cmd_verify(&cli, &printer, None, false).unwrap();
+
+        let store = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        assert!(
+            !rows.iter().any(|e| e.resource_id == "gsettings.stale.key"),
+            "a stale row under an evaluated configurator must resolve, got: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|e| e.resource_id == "ghostcfg.other.key"),
+            "a row under a configurator nothing probed must stand, got: {rows:?}"
+        );
+    }
+
+    /// A `--module` verify is evidence about ONE module: it computes,
+    /// renders, judges and records only its own module's files and packages.
+    /// The machine-wide env/system/manager comparison its empty-profile
+    /// composition would make (module-only config against machine-wide
+    /// surfaces — factually wrong as a machine claim) reaches neither the
+    /// store NOR the rendered report and exit verdict, and foreign rows and
+    /// the machine-wide stamp stay untouched.
     #[test]
     #[serial_test::serial]
     fn a_module_scoped_verify_records_only_its_own_modules_rows_and_no_stamp() {
-        use crate::cli::helpers::tests::{make_cli, quiet_printer};
+        use crate::cli::helpers::tests::make_cli;
 
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
@@ -686,8 +787,31 @@ mod tests {
             }
         }
 
-        let printer = quiet_printer();
+        let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         cmd_verify(&cli, &printer, Some("test-mod"), false).unwrap();
+        drop(printer);
+        // The DISPLAY half of the scope rule: the rendered report carries the
+        // module's own finding and none of the machine-wide env/rc rows the
+        // full run would show — `fail_count` and the exit verdict read the
+        // same vec, so a leak here is also a wrongful exit 5.
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("mod-target.txt"),
+            "the scoped report must render its own module's finding, got: {out}"
+        );
+        for machine_row in [
+            ".cfgd.env",
+            ".bashrc",
+            ".zshenv",
+            ".profile",
+            "environment.d",
+        ] {
+            assert!(
+                !out.contains(machine_row),
+                "a scoped verify may not render the machine-wide env comparison \
+                 ({machine_row}), got: {out}"
+            );
+        }
 
         let store = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
         let rows = store.unresolved_drift().unwrap();

@@ -4574,8 +4574,9 @@ mod tests {
     /// identically — without the replacement the report rendered one drift as
     /// two rows and `drift[]` carried it twice. The scan is a FULL-machine
     /// check, so a recorded row it did not re-find (here a package this
-    /// profile never declared, which no check can find missing) resolves as
-    /// healed and leaves both the display and the record.
+    /// profile never declared, in the live check's own `<manager>:<name>`
+    /// grammar — a bare name would be a daemon spelling the scan keeps)
+    /// resolves as healed and leaves both the display and the record.
     #[test]
     fn a_recorded_row_the_scan_also_reports_renders_once() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4617,7 +4618,7 @@ mod tests {
             state
                 .record_drift(
                     "package",
-                    "ghost-tool",
+                    "brew:ghost-tool",
                     Some("installed"),
                     Some("not installed"),
                     cfgd_core::config::LOCAL_LAYER,
@@ -4656,7 +4657,7 @@ mod tests {
         assert!(
             !drift
                 .iter()
-                .any(|e| e["resourceType"] == "package" && e["resourceId"] == "ghost-tool"),
+                .any(|e| e["resourceType"] == "package" && e["resourceId"] == "brew:ghost-tool"),
             "a recorded row the full scan did not re-find has healed and must not render, got: {parsed}"
         );
         let store = cfgd_core::state::StateStore::open(&state_dir.join("state.db")).unwrap();
@@ -4665,7 +4666,7 @@ mod tests {
                 .unresolved_drift()
                 .unwrap()
                 .iter()
-                .any(|e| e.resource_id == "ghost-tool"),
+                .any(|e| e.resource_id == "brew:ghost-tool"),
             "the full scan must resolve the recorded row it did not re-find"
         );
     }

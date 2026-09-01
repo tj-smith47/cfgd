@@ -24,12 +24,21 @@ use super::env_engine::{
 /// manager half of `cfgd verify` — planned separately, in the CLI — reads the
 /// same enumeration this function does instead of walking every manager a
 /// second time.
+///
+/// `machine_surfaces` gates the system and env halves, which compare
+/// MACHINE-wide surfaces (the live configurator state, the deployed env
+/// files) against the composed desired state. A module-scoped caller passes
+/// `false`: its composition holds module-only config, and diffing that
+/// against a machine-wide surface produces a claim about the machine no
+/// single module can vouch for — the same scope rule the CLI's recording
+/// seam applies to what it stores.
 pub fn verify(
     resolved: &ResolvedProfile,
     registry: &ProviderRegistry,
     state: &StateStore,
     modules: &[ResolvedModule],
     cx: &crate::providers::PackageContext<'_>,
+    machine_surfaces: bool,
 ) -> Result<Vec<VerifyResult>> {
     let mut results = Vec::new();
 
@@ -65,17 +74,16 @@ pub fn verify(
             .installed_for(*mgr)?
             .contains(&mgr.package_identity(&ep.name));
 
-        // Preserve each origin's resource conventions: module packages report as
-        // `module` / `<module>/<name>`; profile packages as `package` /
-        // `<manager>:<name>`.
-        let (resource_type, resource_id) = match &ep.origin {
-            crate::effective::Origin::Module(name) => ("module", format!("{}/{}", name, ep.name)),
-            crate::effective::Origin::Profile => ("package", format!("{}:{}", ep.manager, ep.name)),
-        };
-
+        // ONE identity per (manager, package), whichever origin declared it:
+        // `package` / `<manager>:<name>`, the same key every CLI live check
+        // mints (`cli::diff::package_resource_id`). A module-qualified key
+        // here made `verify` and `diff`/`status --scan` record two rows for
+        // one missing package — and resolve each other's as healed. The
+        // module attribution stays an ORIGIN fact (`ep.origin`), not part of
+        // the row's identity.
         results.push(VerifyResult {
-            resource_type: resource_type.to_string(),
-            resource_id: resource_id.clone(),
+            resource_type: "package".to_string(),
+            resource_id: format!("{}:{}", ep.manager, ep.name),
             matches: ok,
             expected: "installed".to_string(),
             actual: if ok {
@@ -85,6 +93,10 @@ pub fn verify(
             },
             unmanaged: false,
         });
+    }
+
+    if !machine_surfaces {
+        return Ok(results);
     }
 
     // Verify system configurators against the effective (profile ⊕ modules)
@@ -314,11 +326,11 @@ fn verify_env_items(
             resource_id: ev.name.clone(),
             matches,
             // Opaque markers, not the rendered line: the line is the user's own
-            // declared value (`export EDITOR="nvim"`), and this result flows
-            // unmodified into `drift_events` (`record_drift_or_warn`, below) and
-            // the device gateway. A display surface that wants the actual line
-            // recomputes it from the declared config at render time — see
-            // `env_item_declared_line`.
+            // declared value (`export EDITOR="nvim"`), and the CLI recording
+            // seam stores each result's operands verbatim in `drift_events`,
+            // which flows on to the device gateway. A display surface that
+            // wants the actual line recomputes it from the declared config at
+            // render time — see `env_item_declared_line`.
             expected: "current".to_string(),
             actual: if matches {
                 "current".to_string()
