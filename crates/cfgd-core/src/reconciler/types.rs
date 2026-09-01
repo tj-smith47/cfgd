@@ -1263,6 +1263,21 @@ pub fn package_drift_resource_id(manager: &str, packages: &[String]) -> String {
     format!("{}:{}", manager, packages.join(","))
 }
 
+/// The inverse of [`package_drift_resource_id`], kept beside its producer so
+/// the two spellings cannot drift: `<manager>:<a>,<b>` back into the manager
+/// and its packages. `None` for a string carrying no `:` — the daemon's `Skip`
+/// spelling, which names no manager. A reader RENDERING a package row's parts
+/// is its whole audience; nothing re-derives a stored id from what this
+/// returns.
+#[must_use]
+pub fn split_package_drift_resource_id(id: &str) -> Option<(&str, Vec<&str>)> {
+    let (manager, packages) = id.split_once(':')?;
+    if manager.is_empty() || packages.is_empty() {
+        return None;
+    }
+    Some((manager, packages.split(',').collect()))
+}
+
 /// The `(resource_type, resource_id)` pair a planned action is recorded under.
 ///
 /// The ONE derivation of a persisted action identity: drift rows, journal

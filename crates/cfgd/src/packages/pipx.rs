@@ -314,7 +314,7 @@ pub(super) fn parse_pipx_list_versions(
             let version = info
                 .pointer("/metadata/main_package/package_version")
                 .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
+                .unwrap_or(cfgd_core::providers::UNKNOWN_PACKAGE_VERSION)
                 .to_string();
             packages.push(cfgd_core::providers::PackageInfo {
                 name: name.clone(),

@@ -118,20 +118,31 @@ pub(in crate::cli) const FULL_CHECK_RESOLVABLE_TYPES: &[&str] = &[
 /// Whether a recorded row is one THIS full check could not have re-found, so
 /// the complement-resolve must keep it standing (see the module doc).
 ///
-/// Four shapes qualify: a type outside [`FULL_CHECK_RESOLVABLE_TYPES`]; a
+/// Five shapes qualify: a type outside [`FULL_CHECK_RESOLVABLE_TYPES`]; a
 /// `module` or `package` id spelled only by the daemon's action grammar —
 /// every id a live check mints for those types carries its separator
 /// (`<module>/<target-or-file>`, `<manager>:<name>` and the
 /// `provision:`/`refuse:` manager rows), while the daemon also records a
 /// bare module name (a `ModuleAction`) and a bare manager name (a
 /// `PackageAction::Skip`), plus comma-batched install ACTIONS this check
-/// prices one row per package; and a `system` row outside the configurators
+/// prices one row per package; a `system` row outside the configurators
 /// this check actually evaluated — an errored probe, a tool that has since
 /// left the host, a platform-gated module — including the daemon's own
 /// `configurator:key` spelling, which no evaluated `configurator.` prefix
-/// matches.
-fn full_check_cannot_refind(e: &cfgd_core::state::DriftEvent, evaluated_system: &[String]) -> bool {
+/// matches; and any row whose key a check ERROR names, whichever check
+/// minted it. That last shape is why the errors travel here at all: a
+/// pinned package whose manager states no version is checked for presence
+/// and not for its floor, so healing its recorded row on the presence answer
+/// alone would erase a version finding nothing re-examined.
+fn full_check_cannot_refind(
+    e: &cfgd_core::state::DriftEvent,
+    evaluated_system: &[String],
+    check_errors: &[super::output_types::SystemCheckError],
+) -> bool {
     if !FULL_CHECK_RESOLVABLE_TYPES.contains(&e.resource_type.as_str()) {
+        return true;
+    }
+    if check_errors.iter().any(|c| c.key == e.resource_id) {
         return true;
     }
     match e.resource_type.as_str() {
@@ -154,14 +165,16 @@ fn full_check_cannot_refind(e: &cfgd_core::state::DriftEvent, evaluated_system: 
 ///
 /// `evaluated_system` names the system configurators whose probe answered
 /// during this check; a recorded `system` row outside them can be vouched
-/// for neither way and stays standing. If the keep-set itself cannot be
-/// read, the resolve is skipped outright — recording without resolving
-/// overstates drift at worst, while resolving rows nothing checked erases
-/// real findings.
+/// for neither way and stays standing. `check_errors` names every OTHER key
+/// this check could not answer for, on the same rule. If the keep-set itself
+/// cannot be read, the resolve is skipped outright — recording without
+/// resolving overstates drift at worst, while resolving rows nothing checked
+/// erases real findings.
 pub(super) fn record_full_scan_findings<'a>(
     state: &cfgd_core::state::StateStore,
     findings: impl IntoIterator<Item = &'a VerifyResult>,
     evaluated_system: &[String],
+    check_errors: &[super::output_types::SystemCheckError],
 ) {
     // One transaction over the whole record-and-resolve batch: each upsert is
     // two scans of an append-only table, and a per-row implicit commit is its
@@ -176,7 +189,7 @@ pub(super) fn record_full_scan_findings<'a>(
         match state.unresolved_drift() {
             Ok(rows) => current.extend(
                 rows.into_iter()
-                    .filter(|e| full_check_cannot_refind(e, evaluated_system))
+                    .filter(|e| full_check_cannot_refind(e, evaluated_system, check_errors))
                     .map(|e| (e.resource_type, e.resource_id)),
             ),
             Err(e) => {
@@ -408,6 +421,12 @@ pub(super) struct LiveDriftReport {
     /// verdict rather than a clean one, so every `--exit-code` surface
     /// escalates these to the Error exit ahead of `DriftDetected`.
     pub check_errors: Vec<super::output_types::SystemCheckError>,
+    /// The same shape from the package-version pass, kept apart from the
+    /// system errors for ONE reason: a surface that files its rows by
+    /// category renders a package's unanswerable check under Packages, where
+    /// the package it names lives. Every other reader wants the whole list and
+    /// asks [`LiveDriftReport::all_check_errors`] for it.
+    pub package_check_errors: Vec<super::output_types::SystemCheckError>,
     /// The package plan the package/manager findings were priced from, so
     /// `diff` renders its Packages section from the scan's own plan instead
     /// of planning a second time.
@@ -416,6 +435,18 @@ pub(super) struct LiveDriftReport {
     /// The recorded bootstrap PATH dirs the env check compared against, for a
     /// caller recomputing an env row's display values over the same inputs.
     pub path_dirs: Vec<cfgd_core::reconciler::ManagerPathDir>,
+}
+
+impl LiveDriftReport {
+    /// Every check that could not run, whatever pass reported it — what an
+    /// exit gate, a recorded keep-set and a `-o json` payload each read, none
+    /// of which may miss one because of where it will be rendered.
+    pub(super) fn all_check_errors(&self) -> Vec<super::output_types::SystemCheckError> {
+        let mut all = Vec::with_capacity(self.check_errors.len() + self.package_check_errors.len());
+        all.extend(self.check_errors.iter().cloned());
+        all.extend(self.package_check_errors.iter().cloned());
+        all
+    }
 }
 
 /// Non-matching live verify results across every category the live scan covers
@@ -517,6 +548,19 @@ fn live_drift_results_inner(
         drift.extend(package_action_drift(action));
     }
 
+    // Versions: the package plan above diffs NAMES, so a declaration pinning a
+    // `minVersion` is converged in its eyes the moment anything by that name is
+    // installed. This pass asks the second question — does the copy the machine
+    // HOLDS clear the declared floor — through the same engine `cfgd verify`
+    // reads, so no two surfaces can disagree about an out-of-date package. A
+    // pinned package whose manager states no version is an erroring check, and
+    // its recorded rows are kept from the resolve below.
+    sp.set_message("Scanning: package versions");
+    let effective = cfgd_core::effective::effective_desired_packages(&resolved.merged, modules);
+    let (version_drift, package_check_errors) =
+        cfgd_core::reconciler::package_version_drift(&effective, registry, cx)?;
+    drift.extend(version_drift);
+
     // Managers: a manager the plan would provision or refuse is itself drift —
     // the same signal `diff`'s `cfgd:managers` group renders, from the same
     // planner, so `verify`/`status --scan` cannot disagree with `diff` about
@@ -535,8 +579,8 @@ fn live_drift_results_inner(
     // map combines profile and module system config so module system tweaks
     // surface here exactly as they do on the write path.
     sp.set_message("Scanning: system");
-    let mut evaluated_system: Vec<String> = Vec::new();
     let mut check_errors: Vec<super::output_types::SystemCheckError> = Vec::new();
+    let mut evaluated_system: Vec<String> = Vec::new();
     let system = cfgd_core::effective::effective_system_map(&resolved.merged, modules);
     for configurator in &registry.available_system_configurators() {
         if let Some(desired) = system.get(configurator.name()) {
@@ -597,15 +641,40 @@ fn live_drift_results_inner(
         .filter(|r| !r.matches),
     );
 
-    record_full_scan_findings(state, &drift, &evaluated_system);
-
-    Ok(LiveDriftReport {
+    let report = LiveDriftReport {
         findings: drift,
         check_errors,
+        package_check_errors,
         pkg_actions,
         manager_actions,
         path_dirs,
-    })
+    };
+    record_full_scan_findings(
+        state,
+        &report.findings,
+        &evaluated_system,
+        &report.all_check_errors(),
+    );
+    Ok(report)
+}
+
+/// What the PRESENCE pass writes into a package row's `expected` slot. The
+/// two words are the whole vocabulary of that half, which is what lets
+/// [`is_presence_package_row`] tell it apart from the floor half without
+/// re-deriving either.
+pub(super) const PRESENCE_WANT_INSTALLED: &str = "installed";
+pub(super) const PRESENCE_WANT_ABSENT: &str = "absent";
+
+/// Whether a `package` finding came from the presence pass rather than the
+/// declared-floor one. A surface that files package rows by shape asks here:
+/// the floor pass's operands are two versions, and rendering them under the
+/// presence pass's `not installed` wording would describe a package the
+/// machine HAS as missing.
+pub(super) fn is_presence_package_row(r: &VerifyResult) -> bool {
+    matches!(
+        r.expected.as_str(),
+        PRESENCE_WANT_INSTALLED | PRESENCE_WANT_ABSENT
+    )
 }
 
 /// Map a non-`Skip` [`PackageAction`] to its drift `VerifyResult` rows — ONE
@@ -636,7 +705,7 @@ pub(super) fn package_action_drift(action: &PackageAction) -> Vec<VerifyResult> 
                 row(
                     manager,
                     p,
-                    "installed",
+                    PRESENCE_WANT_INSTALLED,
                     cfgd_core::Absence::NotInstalled.to_string(),
                 )
             })
@@ -645,7 +714,7 @@ pub(super) fn package_action_drift(action: &PackageAction) -> Vec<VerifyResult> 
             manager, packages, ..
         } => packages
             .iter()
-            .map(|p| row(manager, p, "absent", "to remove".to_string()))
+            .map(|p| row(manager, p, PRESENCE_WANT_ABSENT, "to remove".to_string()))
             .collect(),
     }
 }
@@ -1547,10 +1616,210 @@ mod tests {
         }
         for e in state.unresolved_drift().unwrap() {
             assert!(
-                !full_check_cannot_refind(&e, &[]),
+                !full_check_cannot_refind(&e, &[], &[]),
                 "a full check must be able to re-find its own row: {e:?}"
             );
         }
+    }
+
+    /// [`module_with_package`] whose entry pins a `minVersion` floor.
+    fn module_with_pinned_package(
+        name: &str,
+        manager: &str,
+        pkg: &str,
+        min_version: &str,
+    ) -> ResolvedModule {
+        let mut m = module_with_package(name, manager, pkg);
+        m.packages[0].min_version = Some(min_version.to_string());
+        m
+    }
+
+    /// The full-machine scan prices its Packages section off a package PLAN,
+    /// which diffs names: anything called `left-pad` satisfies `left-pad`. A
+    /// declaration that pins a version asks a second question the plan cannot,
+    /// and this is the surface `diff`, `status --scan` and both `-e` gates all
+    /// read — so a machine holding `1.0.0` under `minVersion: 2` is drifted
+    /// here or nowhere.
+    ///
+    /// The row keeps the presence grammar's `<manager>:<name>` id, so the
+    /// recorded row it lands as is one the next converged scan can resolve.
+    #[test]
+    fn a_pinned_package_below_its_bound_is_live_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = resolved_no_files();
+
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(
+            cfgd_core::test_helpers::MockPackageManager::new("npm")
+                .with_installed_at("left-pad", "1.0.0"),
+        ));
+
+        let modules = vec![module_with_pinned_package("dev", "npm", "left-pad", "2")];
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+        let report = live_drift_results(
+            dir.path(),
+            &resolved,
+            &registry,
+            &modules,
+            &std::collections::HashSet::new(),
+            &state,
+            &cx,
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+        )
+        .unwrap();
+
+        let row = report
+            .findings
+            .iter()
+            .find(|r| r.resource_type == "package" && r.resource_id == "npm:left-pad")
+            .unwrap_or_else(|| {
+                panic!(
+                    "a package below its declared floor must be live drift: {:?}",
+                    report.findings
+                )
+            });
+        assert_eq!(row.expected, "2");
+        assert_eq!(row.actual, "1.0.0");
+        assert_eq!(
+            cfgd_core::output::drift_terse_cause("package", &row.expected, &row.actual),
+            "version mismatch"
+        );
+        assert!(report.check_errors.is_empty());
+
+        // The finding is recorded under the SAME id, so nothing about the
+        // version fact is in the key the resolve matches on.
+        let recorded = state.unresolved_drift().unwrap();
+        assert!(
+            recorded
+                .iter()
+                .any(|e| e.resource_type == "package" && e.resource_id == "npm:left-pad"),
+            "the version finding is recorded under the presence grammar's id: {recorded:?}"
+        );
+    }
+
+    /// The recorded row heals the moment the machine clears the floor: the
+    /// scan that finds `2.1.0` installed mints no finding, and the complement
+    /// resolve — which matches on the recorded id — clears the row it left
+    /// behind. A version fact smuggled into the id would strand it forever.
+    #[test]
+    fn a_recorded_version_finding_resolves_once_the_machine_clears_the_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = resolved_no_files();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let (printer, _cap) = Printer::for_test_doc();
+        let modules = vec![module_with_pinned_package("dev", "npm", "left-pad", "2")];
+        let scan = |version: &str| {
+            let mut registry = ProviderRegistry::new();
+            registry.add_package_manager(Box::new(
+                cfgd_core::test_helpers::MockPackageManager::new("npm")
+                    .with_installed_at("left-pad", version),
+            ));
+            let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+            live_drift_results(
+                dir.path(),
+                &resolved,
+                &registry,
+                &modules,
+                &std::collections::HashSet::new(),
+                &state,
+                &cx,
+                &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+            )
+            .unwrap();
+        };
+
+        scan("1.0.0");
+        assert!(
+            state
+                .unresolved_drift()
+                .unwrap()
+                .iter()
+                .any(|e| e.resource_id == "npm:left-pad"),
+            "the version finding records under the presence grammar's id: {:?}",
+            state.unresolved_drift().unwrap()
+        );
+
+        scan("2.1.0");
+        assert!(
+            !state
+                .unresolved_drift()
+                .unwrap()
+                .iter()
+                .any(|e| e.resource_id == "npm:left-pad"),
+            "a converged scan resolves the version row it recorded: {:?}",
+            state.unresolved_drift().unwrap()
+        );
+    }
+
+    /// A pinned package whose manager states no version leaves the floor
+    /// unjudged, and an unknown verdict is not a clean one: the scan reports an
+    /// erroring check (which every `--exit-code` surface escalates to `Error`)
+    /// and keeps the package's recorded row standing rather than healing it on
+    /// the presence answer alone.
+    #[test]
+    fn a_pinned_package_with_no_reported_version_errors_and_keeps_its_recorded_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = resolved_no_files();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        state
+            .record_drift(
+                "package",
+                "npm:left-pad",
+                Some("2"),
+                Some("1.0.0"),
+                cfgd_core::config::LOCAL_LAYER,
+            )
+            .unwrap();
+
+        let mut registry = ProviderRegistry::new();
+        // `with_installed` and no version: the trait default lists every name
+        // at `UNKNOWN_PACKAGE_VERSION`.
+        registry.add_package_manager(Box::new(
+            cfgd_core::test_helpers::MockPackageManager::new("npm").with_installed(&["left-pad"]),
+        ));
+
+        let modules = vec![module_with_pinned_package("dev", "npm", "left-pad", "2")];
+        let (printer, _cap) = Printer::for_test_doc();
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+        let report = live_drift_results(
+            dir.path(),
+            &resolved,
+            &registry,
+            &modules,
+            &std::collections::HashSet::new(),
+            &state,
+            &cx,
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            report
+                .package_check_errors
+                .iter()
+                .any(|e| e.key == "npm:left-pad" && e.error.contains("no version")),
+            "an unreadable version is an erroring check: {:?}",
+            report.package_check_errors
+        );
+        assert!(
+            report
+                .all_check_errors()
+                .iter()
+                .any(|e| e.key == "npm:left-pad"),
+            "and every reader of the whole list sees it: {:?}",
+            report.all_check_errors()
+        );
+        assert!(
+            state
+                .unresolved_drift()
+                .unwrap()
+                .iter()
+                .any(|e| e.resource_id == "npm:left-pad"),
+            "a row whose check could not run stays standing: {:?}",
+            state.unresolved_drift().unwrap()
+        );
     }
 
     #[test]
@@ -1797,6 +2066,8 @@ mod tests {
             crate::cli::diff::print_package_drift(
                 &[],
                 std::slice::from_ref(&action),
+                &[],
+                &[],
                 &section,
                 &cfgd_core::reconciler::Owner::profile("tiny"),
                 &mut payload,

@@ -124,12 +124,14 @@ pub fn plan_packages(
 }
 
 /// The observation's version for one listed package: the version the manager
-/// reported, unless it reported none. `"unknown"` is the
+/// reported, unless it reported none. [`UNKNOWN_PACKAGE_VERSION`] is the
 /// [`PackageManager::installed_packages_with_versions`] contract's sentinel
 /// for "this manager does not know", and an empty string is the same answer.
+///
+/// [`UNKNOWN_PACKAGE_VERSION`]: cfgd_core::providers::UNKNOWN_PACKAGE_VERSION
 fn known_version(pkg: &cfgd_core::providers::PackageInfo) -> Option<String> {
     let v = pkg.version.trim();
-    if v.is_empty() || v == "unknown" {
+    if v.is_empty() || v == cfgd_core::providers::UNKNOWN_PACKAGE_VERSION {
         None
     } else {
         Some(v.to_string())

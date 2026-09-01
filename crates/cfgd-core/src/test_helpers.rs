@@ -2975,6 +2975,10 @@ pub struct MockPackageManager {
     /// Whether this mock's entries register package SOURCES for its family,
     /// the `brew-tap` shape — the flag every tap-first ordering surface reads.
     registers_sources: bool,
+    /// What this manager's listing reports as each package's installed
+    /// version, keyed by name. A name with no entry lists as
+    /// `UNKNOWN_PACKAGE_VERSION`, the trait default's answer.
+    versions: std::collections::BTreeMap<String, String>,
     /// Everything `install()` has landed, folded into `installed_packages`
     /// alongside `installed`.
     ///
@@ -3012,6 +3016,7 @@ impl MockPackageManager {
             enumerations: std::sync::Arc::default(),
             folds_case: false,
             registers_sources: false,
+            versions: std::collections::BTreeMap::new(),
         }
     }
 
@@ -3045,6 +3050,19 @@ impl MockPackageManager {
         for p in pkgs {
             self.installed.insert((*p).to_string());
         }
+        self
+    }
+
+    /// Installed, and reporting `version` for it — the shape a manager whose
+    /// listing states versions really has, so a declared `minVersion` floor
+    /// has something to be judged against. Spelled the same as
+    /// `StubPackageManager::with_installed_at` in cfgd-core's own tests, since
+    /// the two mocks answer the same question. A name left out keeps
+    /// `UNKNOWN_PACKAGE_VERSION`, which is what a manager that cannot state a
+    /// version answers.
+    pub fn with_installed_at(mut self, pkg: &str, version: &str) -> Self {
+        self.installed.insert(pkg.to_string());
+        self.versions.insert(pkg.to_string(), version.to_string());
         self
     }
 
@@ -3253,6 +3271,24 @@ impl crate::providers::PackageManager for MockPackageManager {
         let mut reported = self.installed.clone();
         reported.extend(self.landed.lock().unwrap().iter().cloned());
         Ok(reported)
+    }
+
+    fn installed_packages_with_versions(
+        &self,
+        cx: &crate::providers::PackageContext<'_>,
+    ) -> crate::errors::Result<Vec<crate::providers::PackageInfo>> {
+        Ok(self
+            .installed_packages(cx)?
+            .into_iter()
+            .map(|name| {
+                let version = self
+                    .versions
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| crate::providers::UNKNOWN_PACKAGE_VERSION.to_string());
+                crate::providers::PackageInfo { name, version }
+            })
+            .collect())
     }
 
     fn package_identity(&self, entry: &str) -> String {

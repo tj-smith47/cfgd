@@ -201,7 +201,7 @@ pub(super) fn parse_cargo_install_list(stdout: &str) -> Vec<cfgd_core::providers
             Some(cfgd_core::providers::PackageInfo {
                 name: name.to_string(),
                 version: if version.is_empty() {
-                    "unknown".to_string()
+                    cfgd_core::providers::UNKNOWN_PACKAGE_VERSION.to_string()
                 } else {
                     version.to_string()
                 },

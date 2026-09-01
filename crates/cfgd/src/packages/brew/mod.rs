@@ -537,7 +537,7 @@ pub(super) fn parse_brew_versions(stdout: &str) -> Vec<cfgd_core::providers::Pac
             let version = parts
                 .next()
                 .and_then(|v| v.split_whitespace().last())
-                .unwrap_or("unknown");
+                .unwrap_or(cfgd_core::providers::UNKNOWN_PACKAGE_VERSION);
             if name.is_empty() {
                 return None;
             }

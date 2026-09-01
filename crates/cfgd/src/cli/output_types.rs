@@ -241,7 +241,7 @@ pub struct DiffSummary {
 #[serde(rename_all = "camelCase")]
 pub struct PackageDrift {
     pub manager: String,
-    /// `missing` | `extra` | `provision` | `refused`. `provision`/`refused` are
+    /// `missing` | `extra` | `outdated` | `provision` | `refused`. `provision`/`refused` are
     /// package-less rows: the manager itself is what drifts, not a package it
     /// would install, so `packages` stays empty for both. `provision` names the
     /// plan-state fact (matches `ManagerAction::Provision`'s machine vocabulary
@@ -259,6 +259,13 @@ pub struct PackageDrift {
     /// `shape == "refused"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The declared `minVersion` floor and the version the machine holds.
+    /// `Some` only when `shape == "outdated"`: the two operands are the whole
+    /// content of that row, and a presence row has no version to state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1491,6 +1498,8 @@ mod tests {
                 packages: vec!["ripgrep".to_string()],
                 bootstrap_method: None,
                 reason: None,
+                expected: None,
+                actual: None,
             }],
             system: vec![SystemDriftOutput {
                 key: "sysctl.kernel.x".to_string(),
@@ -1598,6 +1607,8 @@ mod tests {
             packages: vec![],
             bootstrap_method: None,
             reason: None,
+            expected: None,
+            actual: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["manager"], json!("apt"));
@@ -1616,6 +1627,8 @@ mod tests {
             packages: vec!["bat".to_string(), "fd-find".to_string()],
             bootstrap_method: None,
             reason: None,
+            expected: None,
+            actual: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["packages"], json!(["bat", "fd-find"]));

@@ -613,8 +613,8 @@ scan, so its `lastScanAt` is the stamp this run wrote; `--scan --module` does
 not record one, because a single module's check is not evidence the machine was
 scanned. It composes with `--module` (scanning that one module) and with
 `--exit-code`. `--exit-code` / `-e` implies `--scan` and additionally exits `5`
-when the scan found drift, or `1` when a system configurator check itself
-failed: the same split `cfgd diff --exit-code` and `cfgd verify --exit-code`
+when the scan found drift, or `1` when a check itself failed (a system
+configurator's probe, or a pinned package whose manager reports no version): the same split `cfgd diff --exit-code` and `cfgd verify --exit-code`
 report, since an unknown state outranks a known one (see
 [Exit Codes](#exit-codes)); `--scan` on its own never changes the exit code.
 A failed check is never silently dropped: the report renders it as its own
@@ -979,12 +979,13 @@ Every file entry also carries `unmanaged` (a bool): `true` when the target holds
 
 A managed file whose `source` cannot be found is reported as drift here and by `cfgd verify` / `cfgd status`: the desired content could not be determined, which is never the same as convergence.
 
-`packages[]` entries carry `manager`, `shape` (`missing` | `extra` | `provision` | `refused`), and `packages` (empty for the two manager-drift shapes). `shape: "provision"` matches the machine vocabulary `plan -o json`'s `Prerequisites` phase already uses for the same fact (`type: "provision"`); the mechanism itself still keeps the "bootstrap" word, in `bootstrapMethod` and in the human render above. A `provision` entry adds `bootstrapMethod`; a `refused` entry adds `reason` instead: the same fields [`cfgd doctor`](#cfgd-doctor)'s manager checks use, so a script reading either surface for "can this manager self-heal" reads one field name:
+`packages[]` entries carry `manager`, `shape` (`missing` | `extra` | `outdated` | `provision` | `refused`), and `packages` (empty for the two manager-drift shapes). `shape: "outdated"` is a package the machine HOLDS whose installed version is below the `minVersion` its declaration pins; it adds `expected` (the declared floor) and `actual` (the version the manager reports). `shape: "provision"` matches the machine vocabulary `plan -o json`'s `Prerequisites` phase already uses for the same fact (`type: "provision"`); the mechanism itself still keeps the "bootstrap" word, in `bootstrapMethod` and in the human render above. A `provision` entry adds `bootstrapMethod`; a `refused` entry adds `reason` instead: the same fields [`cfgd doctor`](#cfgd-doctor)'s manager checks use, so a script reading either surface for "can this manager self-heal" reads one field name:
 
 ```json
 {
   "packages": [
     { "manager": "cargo", "shape": "missing", "packages": ["ripgrep"] },
+    { "manager": "brew", "shape": "outdated", "packages": ["neovim"], "expected": "0.9", "actual": "0.8.3" },
     { "manager": "pipx", "shape": "provision", "bootstrapMethod": "pip install pipx" },
     { "manager": "snap", "shape": "refused", "reason": "no available system manager" }
   ]

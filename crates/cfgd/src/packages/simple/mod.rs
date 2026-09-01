@@ -90,7 +90,8 @@ pub struct SimpleManager {
     /// Custom availability check. When None, uses `command_available(mgr_name)`.
     pub(super) is_available_fn: Option<fn() -> bool>,
     /// Override for installed_packages_with_versions. When None, falls back to
-    /// the default trait implementation (wraps installed_packages with "unknown").
+    /// the default trait implementation (wraps installed_packages with the
+    /// unknown-version sentinel).
     pub(super) list_with_versions: Option<ListWithVersionsFn>,
     /// Override for package_aliases. When None, returns empty vec (default).
     pub(super) aliases_fn: Option<fn(&str) -> Vec<String>>,
@@ -235,13 +236,13 @@ impl PackageManager for SimpleManager {
         if let Some(f) = self.list_with_versions {
             f(self.mgr_name)
         } else {
-            // Default: wrap installed_packages with "unknown"
+            // Default: wrap installed_packages with the unknown sentinel
             Ok(self
                 .installed_packages(cx)?
                 .into_iter()
                 .map(|name| cfgd_core::providers::PackageInfo {
                     name,
-                    version: "unknown".into(),
+                    version: cfgd_core::providers::UNKNOWN_PACKAGE_VERSION.into(),
                 })
                 .collect())
         }

@@ -196,14 +196,17 @@ pub(super) fn parse_tab_separated_versions(stdout: &str) -> Vec<cfgd_core::provi
         .filter_map(|line| {
             let mut parts = line.splitn(2, '\t');
             let name = parts.next()?.trim();
-            let version = parts.next().unwrap_or("unknown").trim();
+            let version = parts
+                .next()
+                .unwrap_or(cfgd_core::providers::UNKNOWN_PACKAGE_VERSION)
+                .trim();
             if name.is_empty() {
                 return None;
             }
             Some(cfgd_core::providers::PackageInfo {
                 name: name.to_string(),
                 version: if version.is_empty() {
-                    "unknown".to_string()
+                    cfgd_core::providers::UNKNOWN_PACKAGE_VERSION.to_string()
                 } else {
                     version.to_string()
                 },

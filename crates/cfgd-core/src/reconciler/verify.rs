@@ -40,14 +40,22 @@ pub fn verify(
     cx: &crate::providers::PackageContext<'_>,
     machine_surfaces: bool,
 ) -> Result<VerifyReport> {
-    let mut results = Vec::new();
-    let mut check_errors = Vec::new();
-
     // Verify packages — profile and module packages share one effective desired
     // set so a `(manager, name)` declared in both is checked once, and the
     // module-vs-profile attribution drives the result shape.
     let available_managers = registry.available_package_managers();
-    for ep in crate::effective::effective_desired_packages(&resolved.merged, modules) {
+    let effective = crate::effective::effective_desired_packages(&resolved.merged, modules);
+    // The declared-floor pass runs FIRST, so the presence loop can leave the
+    // packages it already has a verdict about alone: both passes mint the one
+    // `<manager>:<name>` id, and a second row under it would answer the same
+    // key twice — `installed` beside `want: 2, have: 1.0.0`.
+    let (mut results, mut check_errors) = package_version_drift(&effective, registry, cx)?;
+    let versioned: std::collections::HashSet<String> = results
+        .iter()
+        .map(|r| r.resource_id.clone())
+        .chain(check_errors.iter().map(|e| e.key.clone()))
+        .collect();
+    for ep in &effective {
         // A `prefer: [script]` package has no queryable installed-state: a custom
         // install script can put anything anywhere, so there is no
         // installed_packages() set to diff it against. It is therefore invisible
@@ -70,23 +78,29 @@ pub fn verify(
 
         // Compare through package_identity so case-insensitive managers (choco/scoop/
         // winget: `wget` vs installed `Wget`) and name-remapping managers (go: module
-        // path vs binary) match like with like.
+        // path vs binary) match like with like. Read before the claimed-key
+        // skip below because the listing is the context's memo: the floor pass
+        // above already asked this manager, so the question costs nothing here.
         let ok = cx
             .installed_for(*mgr)?
             .contains(&mgr.package_identity(&ep.name));
 
         // ONE identity per (manager, package), whichever origin declared it —
-        // the same key every CLI live check mints. A module-qualified key
-        // here made `verify` and `diff`/`status --scan` record two rows for
-        // one missing package — and resolve each other's as healed. The
-        // module attribution stays an ORIGIN fact (`ep.origin`), not part of
-        // the row's identity.
+        // the same key every CLI live check mints, which is also why the floor
+        // pass's rows are claimed here rather than answered twice. A
+        // module-qualified key here made `verify` and `diff`/`status --scan`
+        // record two rows for one missing package — and resolve each other's
+        // as healed. The module attribution stays an ORIGIN fact
+        // (`ep.origin`), not part of the row's identity.
+        let resource_id =
+            super::package_drift_resource_id(&ep.manager, std::slice::from_ref(&ep.name));
+        if versioned.contains(&resource_id) {
+            continue;
+        }
+
         results.push(VerifyResult {
             resource_type: "package".to_string(),
-            resource_id: super::package_drift_resource_id(
-                &ep.manager,
-                std::slice::from_ref(&ep.name),
-            ),
+            resource_id,
             matches: ok,
             expected: "installed".to_string(),
             actual: if ok {
@@ -196,6 +210,138 @@ pub struct VerifyReport {
 pub struct SystemCheckError {
     pub key: String,
     pub error: String,
+}
+
+/// Where a declared package's installed copy stands against the `minVersion`
+/// floor its declaration pins.
+///
+/// PRESENCE is a different question, answered by the pass this one runs
+/// beside: a package the manager does not report installed never reaches here,
+/// and an entry that pins nothing is [`Met`](Self::Met) without a comparison
+/// being attempted at all — a declaration that named no floor cannot be below
+/// one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionFloor {
+    /// No floor declared, or the installed copy clears it.
+    Met,
+    /// Installed below the declared floor. The two strings are the operands a
+    /// drift row STORES: the floor exactly as the declaration spells it, and
+    /// the version the manager reported — both parseable as versions, which is
+    /// what lets a terse report read the pair as `version mismatch` rather
+    /// than echoing one operand.
+    Below { floor: String, installed: String },
+    /// Installed, and the manager stated no version at all
+    /// ([`UNKNOWN_PACKAGE_VERSION`](crate::providers::UNKNOWN_PACKAGE_VERSION),
+    /// or nothing). The floor is neither met nor missed, and no verdict may
+    /// stand in for that: the caller reports an erroring check and no row.
+    Unreadable { detail: String },
+}
+
+/// One declared package's verdict against its declared `minVersion` floor.
+///
+/// The COMPARATOR is the manager's own (`version_meets_minimum`), because a
+/// version scheme is the manager's: FreeBSD's `pkg` compares `8.5.0_2` through
+/// `pkg version -t` where everyone else falls to loose semver. This function
+/// only decides WHICH question the manager is asked, and reads the one answer
+/// no comparator can give — a listing that states no version at all, which is
+/// a check that could not run rather than a floor that was missed.
+///
+/// The listing scan is behind the `min_version` guard, so an unpinned package
+/// — very nearly all of them — costs nothing beyond the `Option` test.
+#[must_use]
+pub fn package_version_floor(
+    mgr: &dyn crate::providers::PackageManager,
+    installed: &crate::providers::InstalledPackages,
+    package: &str,
+    min_version: Option<&str>,
+) -> VersionFloor {
+    let Some(floor) = min_version else {
+        return VersionFloor::Met;
+    };
+    let identity = mgr.package_identity(package);
+    let Some(entry) = installed
+        .listed()
+        .iter()
+        .find(|p| mgr.listed_identity(&p.name) == identity)
+    else {
+        // Not in the listing: the presence pass owns this package's verdict,
+        // and a floor cannot be judged against a copy that is not there.
+        return VersionFloor::Met;
+    };
+    let reported = entry.version.trim();
+    if reported.is_empty() || reported == crate::providers::UNKNOWN_PACKAGE_VERSION {
+        return VersionFloor::Unreadable {
+            detail: format!(
+                "{} reports no version for {package}, so the declared minVersion {floor} \
+                 can be neither met nor missed",
+                mgr.name()
+            ),
+        };
+    }
+    if mgr.version_meets_minimum(reported, floor) {
+        VersionFloor::Met
+    } else {
+        VersionFloor::Below {
+            floor: floor.to_string(),
+            installed: reported.to_string(),
+        }
+    }
+}
+
+/// The live `minVersion` pass over an effective desired package set: one drift
+/// row per package the machine holds BELOW its declared floor, and one erroring
+/// check per pinned package whose manager states no version.
+///
+/// The ONE version check, read by [`verify`]'s package half and by the CLI's
+/// full-machine live scan (`cli::live_drift`), so `verify`, `diff` and `status
+/// --scan` cannot disagree about whether an out-of-date package is drift. It
+/// runs BESIDE a presence pass rather than inside one, because the two surfaces
+/// answer presence differently (`verify` diffs the desired set, the CLI scan
+/// prices a package plan) while the floor question is identical — and a row it
+/// mints carries the SAME `<manager>:<name>` id the presence row carries, the
+/// version fact living in the operands, or the recorded row could never be
+/// resolved by the scan that finds the machine converged.
+///
+/// A manager that is not available on this host is skipped exactly as the
+/// presence checks skip it: it can report neither presence nor version, and a
+/// verdict either way would be a false alarm. `script` packages have no
+/// queryable installed state at all.
+pub fn package_version_drift(
+    effective: &[crate::effective::EffectivePackage],
+    registry: &ProviderRegistry,
+    cx: &crate::providers::PackageContext<'_>,
+) -> Result<(Vec<VerifyResult>, Vec<SystemCheckError>)> {
+    let mut results = Vec::new();
+    let mut check_errors = Vec::new();
+    let available = registry.available_package_managers();
+    for ep in effective.iter().filter(|ep| ep.min_version.is_some()) {
+        if ep.manager == "script" {
+            continue;
+        }
+        let Some(mgr) = available.iter().find(|m| m.name() == ep.manager) else {
+            continue;
+        };
+        let installed = cx.installed_for(*mgr)?;
+        match package_version_floor(*mgr, &installed, &ep.name, ep.min_version.as_deref()) {
+            VersionFloor::Met => {}
+            VersionFloor::Unreadable { detail } => check_errors.push(SystemCheckError {
+                key: super::package_drift_resource_id(&ep.manager, std::slice::from_ref(&ep.name)),
+                error: detail,
+            }),
+            VersionFloor::Below { floor, installed } => results.push(VerifyResult {
+                resource_type: "package".to_string(),
+                resource_id: super::package_drift_resource_id(
+                    &ep.manager,
+                    std::slice::from_ref(&ep.name),
+                ),
+                matches: false,
+                expected: floor,
+                actual: installed,
+                unmanaged: false,
+            }),
+        }
+    }
+    Ok((results, check_errors))
 }
 
 /// Result of verifying a single resource.

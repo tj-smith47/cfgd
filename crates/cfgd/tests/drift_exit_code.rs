@@ -175,6 +175,161 @@ fn an_erroring_check_outranks_real_drift_on_every_exit_code_surface() {
     }
 }
 
+/// An `apk` stand-in: it OFFERS `demo` at 3.0.0 (so the declaration's
+/// `minVersion` resolves onto apk) while its installed listing carries no
+/// versions at all — apk's real listing format, which is why apk has no
+/// `list_with_versions` override. A pinned package this manager holds can
+/// therefore be neither met nor missed, which is the check-error case.
+fn versionless_apk(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let shim = dir.join("apk-versionless");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\ncase \"$1\" in\n  list) echo 'demo-3.0.0-r0 x86_64 {demo} (MIT) [installed]' ;;\n  policy) printf 'demo policy:\\n  3.0.0:\\n    https://example.invalid/alpine/main\\n' ;;\nesac\nexit 0\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&shim).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&shim, perms).unwrap();
+    shim
+}
+
+/// One module pinning a package's version onto the versionless manager above,
+/// and a profile that resolves it.
+fn write_pinned_package_config(dir: &Path, manager: &str) {
+    let module_dir = dir.join("modules").join("pinned");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pinned\nspec:\n  packages:\n    - name: demo\n      minVersion: \"2\"\n      prefer: [{manager}]\n"
+        ),
+    )
+    .unwrap();
+    let profiles_dir = dir.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("tiny.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  modules:\n    - pinned\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n",
+    )
+    .unwrap();
+}
+
+/// The version half of the same contract: a package the machine HOLDS still
+/// fails its check when the declaration pins a floor and the manager cannot
+/// state what is installed. Presence alone would exit 0 here.
+#[test]
+fn a_pinned_package_whose_version_cannot_be_read_escalates_on_every_exit_code_surface() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    write_pinned_package_config(config_tmp.path(), "apk");
+    let apk = versionless_apk(config_tmp.path());
+
+    for args in EXIT_CODE_SURFACES {
+        let state_tmp = tempfile::tempdir().unwrap();
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let out = cmd
+            .args(args)
+            .arg("--config")
+            .arg(config_tmp.path().join("cfgd.yaml"))
+            .arg("--state-dir")
+            .arg(state_tmp.path())
+            .env("HOME", home_tmp.path())
+            .env("CFGD_APK_BIN", &apk)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "cfgd {args:?}: an unreadable installed version exits Error, got: {text}"
+        );
+        assert!(
+            text.contains("apk:demo") && text.contains("error checking drift"),
+            "cfgd {args:?}: the unanswerable version check renders as its own row, got: {text}"
+        );
+    }
+}
+
+/// A `dnf`/`rpm` pair that OFFERS `demo` at 3.0.0 and reports 1.0.0 installed
+/// — a machine holding a package whose declared floor it no longer meets.
+fn below_floor_dnf(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let write = |name: &str, body: &str| {
+        let shim = dir.join(name);
+        std::fs::write(&shim, body).unwrap();
+        let mut perms = std::fs::metadata(&shim).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&shim, perms).unwrap();
+        shim
+    };
+    let dnf = write(
+        "dnf-offers-3",
+        "#!/bin/sh\ncase \"$1\" in\n  info) printf 'Name : demo\\nVersion : 3.0.0\\n' ;;\n  list) echo 'demo.x86_64  1.0.0-1  @main' ;;\nesac\nexit 0\n",
+    );
+    let rpm = write(
+        "rpm-holds-1",
+        "#!/bin/sh\nprintf 'demo\\t1.0.0\\n'\nexit 0\n",
+    );
+    (dnf, rpm)
+}
+
+/// The version half's DRIFT cell: every check answered, one of them below its
+/// declared floor, so every surface exits `DriftDetected` and names both
+/// operands. Presence alone would exit 0 — the package IS installed.
+#[test]
+fn a_pinned_package_below_its_floor_exits_drift_detected_on_every_surface() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    write_pinned_package_config(config_tmp.path(), "dnf");
+    let (dnf, rpm) = below_floor_dnf(config_tmp.path());
+
+    for args in EXIT_CODE_SURFACES {
+        let state_tmp = tempfile::tempdir().unwrap();
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let out = cmd
+            .args(args)
+            .arg("--config")
+            .arg(config_tmp.path().join("cfgd.yaml"))
+            .arg("--state-dir")
+            .arg(state_tmp.path())
+            .env("HOME", home_tmp.path())
+            .env("CFGD_DNF_BIN", &dnf)
+            .env("CFGD_RPM_BIN", &rpm)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(5),
+            "cfgd {args:?}: an installed package below its floor is drift, got: {text}"
+        );
+        // Each surface states the same finding in its own register: `status`
+        // summarises the recorded operands as their terse cause, while `diff`
+        // and `verify` print the pair. Both are the ONE finding, named by the
+        // ONE id.
+        assert!(
+            text.contains("dnf:demo")
+                && (text.contains("version mismatch")
+                    || (text.contains("want: 2") && text.contains("have: 1.0.0"))),
+            "cfgd {args:?}: the version finding names its package and its cause, got: {text}"
+        );
+    }
+}
+
 /// One module declaring an env var, so a scoped run's merged env is
 /// non-empty and the env probe actually runs.
 fn write_module_config(dir: &Path) {

@@ -49,7 +49,7 @@ fn parse_winget_list_versions(output: &str) -> Vec<PackageInfo> {
                     .get(id_end..)
                     .and_then(|s| s.split_whitespace().next())
                     .filter(|v| !v.is_empty())
-                    .unwrap_or("unknown");
+                    .unwrap_or(cfgd_core::providers::UNKNOWN_PACKAGE_VERSION);
                 out.push(PackageInfo {
                     name: id.to_string(),
                     version: version.to_string(),

@@ -360,6 +360,8 @@ fn diff_bridge_one_blank_line() {
             packages: vec!["pkg-a".to_string()],
             bootstrap_method: None,
             reason: None,
+            expected: None,
+            actual: None,
         }],
         system: Vec::new(),
         system_errors: Vec::new(),

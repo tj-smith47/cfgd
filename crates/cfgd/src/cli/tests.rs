@@ -29808,7 +29808,8 @@ fn every_live_minted_drift_id_comes_from_its_composer() {
 /// The core-crate twin of the walk above: `cfgd-core` mints the same
 /// `<mgr>:<pkg>` / `<mgr>:<a>,<b>` package drift grammar — the apply's
 /// healed-key loop, `action_resource_info`'s two `PackageAction` arms and
-/// `verify`'s missing-package row — but lives outside `src/cli`, so the cli
+/// `verify`'s missing-package and below-the-floor rows — but lives outside
+/// `src/cli`, so the cli
 /// walk is structurally blind to it. Same anchor, same window, same hatch:
 /// every production line typing a `"package"` drift row composes its id
 /// through `reconciler::package_drift_resource_id` or a manager-node
@@ -29825,7 +29826,7 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
         "refuse_resource_id(",
     ];
     // Each production anchor, by file and count, hatched lines excluded.
-    const EXPECTED: [(&str, usize); 3] = [("apply.rs", 4), ("types.rs", 3), ("verify.rs", 1)];
+    const EXPECTED: [(&str, usize); 3] = [("apply.rs", 4), ("types.rs", 3), ("verify.rs", 2)];
 
     let core_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src");
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -29941,6 +29942,51 @@ fn every_resolved_package_producer_routes_through_the_one_resolver() {
     assert!(
         !producers.is_empty(),
         "the walk found no producer at all, so it proved nothing"
+    );
+}
+
+/// The version a manager reports for a package whose version it cannot state
+/// is a SENTINEL two readers judge on — the planner's pinned-source gate
+/// (`known_version`) and the live `minVersion` check
+/// (`reconciler::package_version_floor`) — so every manager that produces it
+/// spells it one way, through `providers::UNKNOWN_PACKAGE_VERSION`. A
+/// hand-typed literal in one listing parser is a manager whose unversioned
+/// packages one reader treats as "did not say" and the other as a version
+/// string that failed to parse, which is a check error nothing caused.
+#[test]
+fn every_unknown_package_version_a_manager_reports_comes_from_the_one_sentinel() {
+    let packages = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut files = walk_rust_files(&packages);
+    files.sort();
+    let mut offenders = Vec::new();
+    for path in files {
+        if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = body
+            .split_once("\n#[cfg(test)]")
+            .map(|(head, _)| head)
+            .unwrap_or(&body);
+        for (i, line) in production.lines().enumerate() {
+            let code = line.trim();
+            if code.starts_with("//") || !code.contains("\"unknown\"") {
+                continue;
+            }
+            offenders.push(format!(
+                "{}:{}: {code}",
+                cfgd_core::to_posix_string(&path),
+                i + 1
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the unknown-version sentinel is spelled by `providers::UNKNOWN_PACKAGE_VERSION`, \
+         never by a literal:\n{}",
+        offenders.join("\n")
     );
 }
 
@@ -31431,7 +31477,16 @@ fn one_stored_literal_for_a_missing_package() {
                 continue;
             };
             seen += 1;
+            // Bounded at the row's last field, so a following construction's
+            // literals cannot be read as this arm's.
             let arm = &window[actual_at..];
+            let arm = arm.find("unmanaged:").map_or(arm, |end| &arm[..end]);
+            // An arm naming a BINDING states no literal at all (the declared
+            // floor half's `actual` is the version the manager reported), and
+            // there is no second spelling to drift from.
+            if !arm.contains('"') {
+                continue;
+            }
             // `phrase.state` is `manager_drift_phrase`'s field, itself spelled
             // from `Absence::NotInstalled` in the same walked file — the one
             // accepted indirection.

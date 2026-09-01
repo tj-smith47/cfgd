@@ -64,7 +64,7 @@ fn parse_choco_list_versions(output: &str) -> Vec<PackageInfo> {
         .map(|(name, version)| PackageInfo {
             name,
             version: if version.is_empty() {
-                "unknown".into()
+                cfgd_core::providers::UNKNOWN_PACKAGE_VERSION.into()
             } else {
                 version
             },
