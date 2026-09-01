@@ -17,7 +17,8 @@ pub struct StatusFields<'a> {
     /// `None` = the subject is painted with the role style.
     pub subject_style: Option<ThemedStyle>,
     /// Style for the DETAIL only. `None` = the detail is written unstyled, in
-    /// the terminal's default foreground.
+    /// the terminal's default foreground. Ignored when `verdict` is set: a
+    /// verdict row's detail is always the muted parenthetical.
     pub detail_style: Option<ThemedStyle>,
     /// A verdict-led detail's leading word (`Synced`), painted with the ROLE's
     /// style whatever `subject_style` took. When set, `detail` renders as the

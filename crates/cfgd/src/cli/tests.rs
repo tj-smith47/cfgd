@@ -30476,6 +30476,18 @@ fn component_health_fixture() -> super::status::StatusOutput {
         sources: Vec::new(),
         pending_decisions: Vec::new(),
         modules: vec![
+            // A failed module beside the synced ones, so the render carries
+            // two ROLES and the colored assertion can prove the verdict slot
+            // follows the row's role rather than always painting success.
+            super::status::ModuleStatusEntry {
+                name: "broken".into(),
+                packages: 0,
+                files: 0,
+                scripts: 0,
+                status: cfgd_core::state::MODULE_STATUS_ERROR.into(),
+                platform_skip_reason: None,
+                declared: Default::default(),
+            },
             super::status::ModuleStatusEntry {
                 name: "git".into(),
                 packages: 0,
@@ -30520,13 +30532,16 @@ fn component_health_fixture() -> super::status::StatusOutput {
     }
 }
 
-fn component_health_doc(output: &super::status::StatusOutput) -> cfgd_core::output::Doc {
+fn component_health_doc(
+    output: &super::status::StatusOutput,
+    profile: Option<&str>,
+) -> cfgd_core::output::Doc {
     super::status::build_fleet_status_doc(
         output,
         &cfgd_core::output::ConfigHeader {
             config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
             sources: &[],
-            profile: Some("base"),
+            profile,
             profile_inherits: &[],
             modules: &[],
         },
@@ -30534,6 +30549,17 @@ fn component_health_doc(output: &super::status::StatusOutput) -> cfgd_core::outp
         "2026-05-14T10:05:00Z",
         &Default::default(),
     )
+}
+
+/// The Component Health rows of one render: everything between the heading
+/// and the Managed Resources table, so an order or presence claim reads only
+/// the section it names — the table below carries the same owner tokens.
+fn component_health_section(rendered: &str) -> &str {
+    let after = rendered
+        .split_once("Component Health")
+        .unwrap_or_else(|| panic!("no Component Health section, got:\n{rendered}"))
+        .1;
+    after.split("Managed Resources").next().unwrap_or(after)
 }
 
 /// The Component Health section covers EVERY owner holding managed state on
@@ -30556,34 +30582,42 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
 
     let output = component_health_fixture();
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    printer.emit(component_health_doc(&output));
+    printer.emit(component_health_doc(&output, Some("base")));
     drop(printer);
     let rendered = cfgd_core::test_helpers::captured_text(&buf);
 
-    let section = rendered
-        .split_once("Component Health")
-        .unwrap_or_else(|| panic!("no Component Health section, got:\n{rendered}"))
-        .1;
+    let section = component_health_section(&rendered);
     let heading_line = section.lines().next().unwrap_or_default();
     assert!(
         heading_line.contains("(checked 3m ago)"),
         "the heading carries the recorded scan's age, got:\n{heading_line}"
+    );
+    // One composer dates the recorded verdicts: the Drift verdict's qualifier
+    // spells the same fact with the same words as the heading's annotation.
+    let drift_line = rendered
+        .lines()
+        .find(|l| l.contains("No drift recorded"))
+        .unwrap_or_else(|| panic!("no drift verdict rendered:\n{rendered}"));
+    assert!(
+        drift_line.contains("checked 3m ago"),
+        "the Drift verdict and the heading date one fact in one vocabulary:\n{drift_line}"
     );
 
     let rows = [
         ("profile:base", "— Synced (1 file)"),
         ("cfgd:env", "— Synced (1 env file)"),
         ("cfgd:session", "— Synced (1 session env)"),
+        ("module:broken", "— Failed"),
         ("module:git", "— Synced (1 file)"),
         ("module:nvim", "— Synced (6 files)"),
     ];
     let mut last = 0usize;
-    for (owner, trailing) in rows {
+    for (i, (owner, trailing)) in rows.into_iter().enumerate() {
         let at = section
             .find(owner)
             .unwrap_or_else(|| panic!("no `{owner}` health row in:\n{section}"));
         assert!(
-            at > last || last == 0,
+            i == 0 || at > last,
             "`{owner}` lands out of Owner::order in:\n{section}"
         );
         last = at;
@@ -30593,31 +30627,70 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
             "`{owner}`'s row must lead on its verdict with counts as the parenthetical, want `{trailing}` in:\n{line}"
         );
     }
+    // An all-zero component reads its bare verdict — no `(0 …)` inventory.
+    let broken_line = section
+        .lines()
+        .find(|l| l.contains("module:broken"))
+        .unwrap_or_default();
+    assert!(
+        !broken_line.contains('('),
+        "a component holding nothing renders no parenthetical:\n{broken_line}"
+    );
 
-    // With no recorded scan stamp the heading says so instead of an age.
+    // With no recorded scan stamp both surfaces say so instead of an age.
     let mut never_checked = component_health_fixture();
     never_checked.last_scan_at = None;
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    printer.emit(component_health_doc(&never_checked));
+    printer.emit(component_health_doc(&never_checked, Some("base")));
     drop(printer);
     let rendered = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         rendered.contains("Component Health (drift never checked)"),
         "an unscanned host's heading says drift was never checked, got:\n{rendered}"
     );
+    assert!(
+        rendered
+            .lines()
+            .any(|l| l.contains("No drift recorded") && l.contains("drift never checked")),
+        "the Drift verdict shares the heading's never-checked wording:\n{rendered}"
+    );
 
-    // The verdict word carries the row's ROLE style and the counts the muted
-    // one — proof the slot is the renderer's, not a caller's coat that
-    // `cursor_safe` would strip.
+    // No derivable profile (a `--module` isolated run): the profile-declared
+    // rows have no owner a health row could name, so they drop from the
+    // section while the table below still lists them under `-`. Everything
+    // cfgd or a module owns survives.
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    printer.emit(component_health_doc(&output, None));
+    drop(printer);
+    let rendered = cfgd_core::test_helpers::captured_text(&buf);
+    let section = component_health_section(&rendered);
+    assert!(
+        !section.contains("profile:"),
+        "a health row cannot name a profile the run did not resolve:\n{section}"
+    );
+    for survivor in ["cfgd:env", "cfgd:session", "module:git", "module:nvim"] {
+        assert!(
+            section.contains(survivor),
+            "`{survivor}` must survive an underivable profile:\n{section}"
+        );
+    }
+
+    // The verdict word carries the row's ROLE style — one role per row, not
+    // success everywhere — and the counts the muted one: proof the slot is
+    // the renderer's, not a caller's coat that `cursor_safe` would strip.
     let theme = cfgd_core::output::Theme::from_preset("dracula").with_colors(true);
     let (printer, buf) = Printer::for_test_with_theme_colored(theme.clone(), Verbosity::Normal);
-    printer.emit(component_health_doc(&output));
+    printer.emit(component_health_doc(&output, Some("base")));
     printer.flush();
     // raw-capture-ok: the subject IS the verdict's SGR bytes, which captured_text strips.
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
     assert!(
         raw.contains(&theme.success.apply_to("Synced").to_string()),
-        "the verdict word must carry its role's style in:\n{raw:?}"
+        "an Ok verdict must carry the success style in:\n{raw:?}"
+    );
+    assert!(
+        raw.contains(&theme.error.apply_to("Failed").to_string()),
+        "a Fail verdict must carry the error style, not success in:\n{raw:?}"
     );
     assert!(
         raw.contains(&theme.muted.apply_to(" (1 file)").to_string()),

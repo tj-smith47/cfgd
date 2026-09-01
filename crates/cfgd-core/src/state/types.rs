@@ -77,6 +77,23 @@ impl ApplyStatus {
         }
     }
 
+    /// [`Self::human_str`] paired with the role every rendered slot tints it
+    /// by — the run-outcome member of the status-display family beside
+    /// [`module_status_display`] and [`source_status_display`], so `cfgd
+    /// status`'s Result row and `cfgd log`'s Status column cannot theme one
+    /// recorded outcome two ways. The roles follow the run rollup's own
+    /// verdict lines: a completed run is `Ok`, a failed one `Fail`, and
+    /// everything that stopped short of its plan — partial, aborted, or a row
+    /// still reading in-progress — asks for attention with `Warn`.
+    pub fn human_display(&self) -> (&'static str, Role) {
+        let role = match self {
+            ApplyStatus::Success => Role::Ok,
+            ApplyStatus::Failed => Role::Fail,
+            ApplyStatus::Partial | ApplyStatus::InProgress | ApplyStatus::Aborted => Role::Warn,
+        };
+        (self.human_str(), role)
+    }
+
     pub(in crate::state) fn from_str(s: &str) -> Self {
         match s {
             "success" => ApplyStatus::Success,

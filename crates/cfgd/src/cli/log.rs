@@ -122,39 +122,47 @@ pub fn build_log_doc(output: &LogOutput, now: &str) -> Doc {
     if output.entries.is_empty() {
         doc = doc.status(Role::Info, "No applies recorded yet");
     } else {
-        let rows: Vec<Vec<String>> = output
-            .entries
-            .iter()
-            .map(|record| {
-                vec![
-                    record.id.to_string(),
-                    // `Age`, not the stored instant: the `-o json` payload
-                    // carries `timestamp` for a consumer that needs the exact
-                    // moment, and the column a reader scans is answering "how
-                    // long ago". The `ID` beside it is the correlation key.
+        let mut t = Table::new(["ID", "Age", "Scope", "Status", "Summary"]);
+        for record in &output.entries {
+            // The Status cell carries the outcome's own role, from the one
+            // word-and-role pairing every surface rendering an apply verdict
+            // reads (`human_display`), so this column and the status
+            // dashboard's Result row cannot theme one recorded outcome two
+            // ways.
+            let (status_word, status_role) = record.status.human_display();
+            t = t.row_styled([
+                (record.id.to_string(), None),
+                // `Age`, not the stored instant: the `-o json` payload
+                // carries `timestamp` for a consumer that needs the exact
+                // moment, and the column a reader scans is answering "how
+                // long ago". The `ID` beside it is the correlation key.
+                (
                     cfgd_core::humanize_age_magnitude_cell(Some(&record.timestamp), now),
-                    // What the run was scoped to: a profile name, or the
-                    // `module:<name>` list an isolated run records instead.
-                    // Judged by the same predicate the status dashboard uses,
-                    // so a legacy row's `unknown` placeholder is refused in
-                    // one place rather than in two that can disagree.
+                    None,
+                ),
+                // What the run was scoped to: a profile name, or the
+                // `module:<name>` list an isolated run records instead.
+                // Judged by the same predicate the status dashboard uses,
+                // so a legacy row's `unknown` placeholder is refused in
+                // one place rather than in two that can disagree.
+                (
                     super::status::derivable_profile(&record.profile)
                         .unwrap_or(cfgd_core::ABSENT)
                         .to_string(),
-                    record.status.human_str().to_string(),
-                    // The same prose the status dashboard's Summary row reads,
-                    // not the stored wire shape — one column, one rendering.
+                    None,
+                ),
+                (status_word.to_string(), Some(status_role)),
+                // The same prose the status dashboard's Summary row reads,
+                // not the stored wire shape — one column, one rendering.
+                (
                     record
                         .summary
                         .as_deref()
                         .map(cfgd_core::state::ApplySummary::prose)
                         .unwrap_or_else(|| cfgd_core::ABSENT.into()),
-                ]
-            })
-            .collect();
-        let mut t = Table::new(["ID", "Age", "Scope", "Status", "Summary"]);
-        for row in rows {
-            t = t.row(row);
+                    None,
+                ),
+            ]);
         }
         doc = doc.table(t.without_unfillable_columns());
     }
