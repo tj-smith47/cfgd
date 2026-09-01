@@ -19,6 +19,10 @@ pub struct StatusFields<'a> {
     /// Style for the DETAIL only. `None` = the detail is written unstyled, in
     /// the terminal's default foreground.
     pub detail_style: Option<ThemedStyle>,
+    /// A verdict-led detail's leading word (`Synced`), painted with the ROLE's
+    /// style whatever `subject_style` took. When set, `detail` renders as the
+    /// muted parenthetical after it instead of the plain em-dash detail.
+    pub verdict: Option<&'a str>,
 }
 
 /// Where a status emission lands: into the innermost section's close-time
@@ -66,13 +70,14 @@ pub(crate) fn has_trailing(
     detail: Option<&str>,
     duration: Option<Elapsed>,
     target: Option<&Path>,
+    verdict: Option<&str>,
 ) -> bool {
-    detail.is_some() || duration.is_some() || target.is_some()
+    detail.is_some() || duration.is_some() || target.is_some() || verdict.is_some()
 }
 
 impl StatusFields<'_> {
     pub(crate) fn has_trailing(&self) -> bool {
-        has_trailing(self.detail, self.duration, self.target)
+        has_trailing(self.detail, self.duration, self.target, self.verdict)
     }
 }
 
@@ -116,7 +121,19 @@ pub(crate) fn compose_status(theme: &Theme, f: &StatusFields<'_>) -> (String, Ve
     // the same depth. write_line forbids embedded newlines, so passing an
     // unsplit multi-line detail would panic in debug builds.
     let mut detail_tail: Vec<String> = Vec::new();
-    if let Some(detail) = f.detail {
+    if let Some(word) = f.verdict {
+        // The verdict keeps the ROLE's style even where the subject took an
+        // override: the word is the row's health, not its emphasis.
+        line.push_str(" — ");
+        line.push_str(&style.apply_to(cursor_safe(word)).to_string());
+        if let Some(detail) = f.detail {
+            // The counts are the verdict's parenthetical — renderer-owned
+            // parens and coat, like `target`'s. One physical line: a newline
+            // inside the parens would split the pair `write_line` forbids.
+            let flat = cursor_safe(detail).replace('\n', " ");
+            line.push_str(&theme.muted.apply_to(format!(" ({flat})")).to_string());
+        }
+    } else if let Some(detail) = f.detail {
         // Sanitize at the renderer boundary: detail may carry embedded ANSI
         // escapes and bare control bytes. A stray `\x1b[0m` would
         // prematurely terminate the role styling above; foreign color
@@ -203,6 +220,7 @@ pub(crate) fn compose_status_split(
             target: f.target,
             subject_style: f.subject_style.clone(),
             detail_style: f.detail_style.clone(),
+            verdict: f.verdict,
         },
     );
     let trailer = f.duration.map(|d| duration_trailer(theme, d));
@@ -411,6 +429,7 @@ impl Emitting<'_> {
                         depth,
                         subject_style: f.subject_style.clone(),
                         detail_style: f.detail_style.clone(),
+                        verdict: f.verdict.map(|v| v.to_string()),
                     });
                 }
             }
@@ -430,6 +449,7 @@ impl Emitting<'_> {
                             target: f.target,
                             subject_style: f.subject_style.clone(),
                             detail_style: f.detail_style.clone(),
+                            verdict: f.verdict,
                         },
                         column,
                     ),
@@ -582,6 +602,7 @@ mod tests {
             target: None,
             subject_style: None,
             detail_style: None,
+            verdict: None,
         }
     }
 
@@ -647,6 +668,7 @@ mod tests {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
         let out = crate::test_helpers::captured_text(&buf);
@@ -667,6 +689,7 @@ mod tests {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
         let out = crate::test_helpers::captured_text(&buf);
@@ -687,6 +710,7 @@ mod tests {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
         let out = crate::test_helpers::captured_text(&buf);
@@ -710,6 +734,7 @@ mod tests {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
         let out = crate::test_helpers::captured_text(&buf);
@@ -732,6 +757,7 @@ mod tests {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
         let out = crate::test_helpers::captured_text(&buf);
@@ -770,6 +796,7 @@ mod tests {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
         assert!(crate::test_helpers::captured_text(&buf).is_empty());
@@ -795,6 +822,7 @@ mod tests {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
         let out = crate::test_helpers::captured_text(&buf);
@@ -832,6 +860,7 @@ mod tests {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
         let raw = crate::test_helpers::captured_text(&buf);
@@ -898,6 +927,7 @@ mod tests {
             target: None,
             subject_style: None,
             detail_style: None,
+            verdict: None,
         }
     }
 
@@ -1070,6 +1100,7 @@ mod tests {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
         assert!(
@@ -1086,6 +1117,7 @@ mod tests {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
         assert_eq!(

@@ -30466,6 +30466,169 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
     );
 }
 
+/// A fleet dashboard whose recorded state has one owner of every kind the
+/// Component Health section can name: a profile-declared file, cfgd's env
+/// file and live-session surface, and two modules.
+fn component_health_fixture() -> super::status::StatusOutput {
+    super::status::StatusOutput {
+        last_apply: None,
+        drift: Vec::new(),
+        sources: Vec::new(),
+        pending_decisions: Vec::new(),
+        modules: vec![
+            super::status::ModuleStatusEntry {
+                name: "git".into(),
+                packages: 0,
+                files: 1,
+                scripts: 0,
+                status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
+                platform_skip_reason: None,
+                declared: Default::default(),
+            },
+            super::status::ModuleStatusEntry {
+                name: "nvim".into(),
+                packages: 0,
+                files: 6,
+                scripts: 0,
+                status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
+                platform_skip_reason: None,
+                declared: Default::default(),
+            },
+        ],
+        managed_resources: [
+            ("file", "~/.gitconfig"),
+            ("env", "/home/user/.cfgd.env"),
+            ("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
+        ]
+        .into_iter()
+        .map(
+            |(resource_type, resource_id)| cfgd_core::state::ManagedResource {
+                resource_type: resource_type.into(),
+                resource_id: resource_id.into(),
+                source: "local".into(),
+                last_hash: Some("hash1".into()),
+                last_applied: Some(1_715_680_800),
+            },
+        )
+        .collect(),
+        warnings: Vec::new(),
+        classification_degraded: false,
+        classification_degraded_code: None,
+        classification_degraded_reason: None,
+        drift_checked_live: false,
+        last_scan_at: Some("2026-05-14T10:02:00Z".into()),
+    }
+}
+
+fn component_health_doc(output: &super::status::StatusOutput) -> cfgd_core::output::Doc {
+    super::status::build_fleet_status_doc(
+        output,
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
+            sources: &[],
+            profile: Some("base"),
+            profile_inherits: &[],
+            modules: &[],
+        },
+        &[],
+        "2026-05-14T10:05:00Z",
+        &Default::default(),
+    )
+}
+
+/// The Component Health section covers EVERY owner holding managed state on
+/// this host — the profile's own recorded rows and cfgd's env surfaces beside
+/// the module rows — in [`cfgd_core::reconciler::Owner::order`]'s order, with
+/// each row leading on its verdict word and the heading carrying how old the
+/// recorded drift verdicts are.
+///
+/// The Modules section this replaced listed modules only, so a profile file
+/// or cfgd's env file had rows in the Managed Resources table below but no
+/// health row above them, and nothing said how stale "no drift" was. The
+/// verdict word is a renderer-owned slot painted with the row's ROLE and the
+/// counts are the muted parenthetical — a caller-painted verdict would be
+/// eaten by the renderer's `cursor_safe` fold, which is why the colored
+/// assertion here reads the raw buffer.
+#[test]
+#[serial_test::serial]
+fn component_health_lists_every_owner_with_a_themed_verdict() {
+    use cfgd_core::output::{Printer, Verbosity};
+
+    let output = component_health_fixture();
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    printer.emit(component_health_doc(&output));
+    drop(printer);
+    let rendered = cfgd_core::test_helpers::captured_text(&buf);
+
+    let section = rendered
+        .split_once("Component Health")
+        .unwrap_or_else(|| panic!("no Component Health section, got:\n{rendered}"))
+        .1;
+    let heading_line = section.lines().next().unwrap_or_default();
+    assert!(
+        heading_line.contains("(checked 3m ago)"),
+        "the heading carries the recorded scan's age, got:\n{heading_line}"
+    );
+
+    let rows = [
+        ("profile:base", "— Synced (1 file)"),
+        ("cfgd:env", "— Synced (1 env file)"),
+        ("cfgd:session", "— Synced (1 session env)"),
+        ("module:git", "— Synced (1 file)"),
+        ("module:nvim", "— Synced (6 files)"),
+    ];
+    let mut last = 0usize;
+    for (owner, trailing) in rows {
+        let at = section
+            .find(owner)
+            .unwrap_or_else(|| panic!("no `{owner}` health row in:\n{section}"));
+        assert!(
+            at > last || last == 0,
+            "`{owner}` lands out of Owner::order in:\n{section}"
+        );
+        last = at;
+        let line = section[at..].lines().next().unwrap_or_default();
+        assert!(
+            line.contains(trailing),
+            "`{owner}`'s row must lead on its verdict with counts as the parenthetical, want `{trailing}` in:\n{line}"
+        );
+    }
+
+    // With no recorded scan stamp the heading says so instead of an age.
+    let mut never_checked = component_health_fixture();
+    never_checked.last_scan_at = None;
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    printer.emit(component_health_doc(&never_checked));
+    drop(printer);
+    let rendered = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        rendered.contains("Component Health (drift never checked)"),
+        "an unscanned host's heading says drift was never checked, got:\n{rendered}"
+    );
+
+    // The verdict word carries the row's ROLE style and the counts the muted
+    // one — proof the slot is the renderer's, not a caller's coat that
+    // `cursor_safe` would strip.
+    let theme = cfgd_core::output::Theme::from_preset("dracula").with_colors(true);
+    let (printer, buf) = Printer::for_test_with_theme_colored(theme.clone(), Verbosity::Normal);
+    printer.emit(component_health_doc(&output));
+    printer.flush();
+    // raw-capture-ok: the subject IS the verdict's SGR bytes, which captured_text strips.
+    let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(
+        raw.contains(&theme.success.apply_to("Synced").to_string()),
+        "the verdict word must carry its role's style in:\n{raw:?}"
+    );
+    assert!(
+        raw.contains(&theme.muted.apply_to(" (1 file)").to_string()),
+        "the counts must render as the muted parenthetical in:\n{raw:?}"
+    );
+    assert!(
+        raw.contains(&theme.muted.apply_to(" (checked 3m ago)").to_string()),
+        "the heading's freshness note must render muted in:\n{raw:?}"
+    );
+}
+
 /// The fleet dashboard's Last Apply block leads on its verdict: `Result`,
 /// then `Summary`, then what the run was scoped to, then how long ago it ran.
 /// A reader scanning the dashboard needs to know whether the apply succeeded

@@ -12,8 +12,10 @@ Last Apply
 Drift
   ✓ No drift recorded — scanned 5m ago
 
-Modules
-  ✓ module:base      — Synced (5 packages, 3 files, 0 scripts)
+Component Health (checked 5m ago)
+  ✓ profile:default  — Synced (2 packages, 1 file)
+  ✓ cfgd:env         — Synced (1 env file)
+  ✓ module:base      — Synced (5 packages, 3 files)
   ✓ module:dev-tools — Synced (18 packages, 12 files, 3 scripts)
 
 Managed Resources

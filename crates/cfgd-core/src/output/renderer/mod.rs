@@ -1364,6 +1364,7 @@ mod tests {
                     target: None,
                     subject_style: None,
                     detail_style: None,
+                    verdict: None,
                 },
             )
         });
@@ -1388,6 +1389,7 @@ mod tests {
             target: None,
             subject_style: None,
             detail_style: None,
+            verdict: None,
         };
 
         let (r, sink, buf) = capture();
@@ -1418,6 +1420,7 @@ mod tests {
             target: None,
             subject_style: None,
             detail_style: None,
+            verdict: None,
         };
 
         let (r, sink, buf) = capture();
@@ -1579,6 +1582,7 @@ mod tests {
                             target: None,
                             subject_style: None,
                             detail_style: None,
+                            verdict: None,
                         },
                     )
                 }),

@@ -743,33 +743,31 @@ pub fn build_fleet_status_doc(
         .iter()
         .fold(doc, |d, w| d.status(Role::Warn, w));
 
-    doc = doc.section_if_nonempty("Modules", &output.modules, |s, mods| {
-        mods.iter().fold(s, |s, m| {
-            let summary = format!(
-                "{}, {}, {}",
-                cfgd_core::pluralize(m.packages, "package"),
-                cfgd_core::pluralize(m.files, "file"),
-                cfgd_core::pluralize(m.scripts, "script")
-            );
-            // The dashboard reads RECORDED state only, so no row here can
-            // claim `Drifted` — this surface's Drift section is what reports
-            // that, and `cfgd status --module --scan` is what derives it.
-            let (state_word, role) = cfgd_core::state::module_status_display(&m.status, false);
-            // Subject is the owner token, exactly as the tree that applied the
-            // module heads its group; the counts and the state are what the
-            // line reports about it.
-            //
-            // The verdict LEADS and the inventory is parenthesised under it:
-            // comma-joined onto the end, `Synced` read as a fourth inventory
-            // item, and `Failed` — the one word the reader is scanning for —
-            // landed last and least prominent behind three counts.
-            s.status_with(
-                role,
-                cfgd_core::reconciler::Owner::module(&m.name).token(),
-                |f| f.detail(format!("{state_word} ({summary})")),
-            )
-        })
-    });
+    let health = component_health_rows(output, profile);
+    if !health.is_empty() {
+        doc = doc.section_annotated(
+            COMPONENT_HEALTH_SECTION,
+            drift_checked_note(output.last_scan_at.as_deref(), now),
+            |s| {
+                health.into_iter().fold(s, |s, row| {
+                    // Subject is the owner token, exactly as the tree that
+                    // applied the component heads its group; the verdict LEADS
+                    // in the role's own colour and the inventory is the muted
+                    // parenthetical under it — comma-joined onto the end,
+                    // `Synced` read as a fourth inventory item, and `Failed` —
+                    // the one word the reader is scanning for — landed last
+                    // and least prominent behind three counts.
+                    s.status_with(row.role, row.owner.token(), |f| {
+                        let f = f.verdict(row.verdict);
+                        match &row.counts {
+                            Some(counts) => f.detail(counts),
+                            None => f,
+                        }
+                    })
+                })
+            },
+        );
+    }
 
     doc = doc.section_if_nonempty(
         "Managed Resources",
@@ -1077,8 +1075,8 @@ fn row_manager<'a>(names: &[&str], declared: Option<&'a ModuleDeclared>) -> Opti
 /// The package names one `module:<name>:packages:<a,b,c>` id records, sorted.
 ///
 /// The ONE read of that field, shared by the table cell and the per-module
-/// tally the Modules headline reports — a count derived a second way is how the
-/// headline came to claim 28 packages over a table listing 24.
+/// tally the Component Health row reports — a count derived a second way is
+/// how the headline came to claim 28 packages over a table listing 24.
 fn module_package_names(recorded: &str) -> Vec<&str> {
     let mut names: Vec<&str> = recorded.split(',').filter(|n| !n.is_empty()).collect();
     names.sort_unstable();
@@ -1105,12 +1103,13 @@ pub(super) struct ModuleTally {
 
 /// What the Managed Resources table says this host manages for each module.
 ///
-/// The Modules headline reports these counts rather than the module's resolved
-/// declaration, because the two answer different questions and the report put
-/// them one section apart: resolution says what the module WOULD put on a host,
-/// the recorded rows say what cfgd HAS put on this one. Only the second is
-/// what the table beneath the headline lists, and a headline that disagrees
-/// with the table under it is a report arguing with itself.
+/// A module's Component Health row reports these counts rather than the
+/// module's resolved declaration, because the two answer different questions
+/// and the report put them one section apart: resolution says what the module
+/// WOULD put on a host, the recorded rows say what cfgd HAS put on this one.
+/// Only the second is what the table beneath the health rows lists, and a
+/// health row that disagrees with the table under it is a report arguing with
+/// itself.
 ///
 /// `declared` is what the table's own cells read for the same rows, so the two
 /// renderings of one row cannot name different numbers.
@@ -1138,6 +1137,153 @@ pub(super) fn recorded_module_tallies(
         }
     }
     tallies
+}
+
+/// The section naming every owner that holds managed state on this host, one
+/// row per component with its verdict leading.
+const COMPONENT_HEALTH_SECTION: &str = "Component Health";
+
+/// The Component Health heading's drift-freshness annotation: how old the
+/// recorded scan stamp is, or that no scan has ever run. The fact rides the
+/// heading as a muted annotation rather than a section of its own; the ISO
+/// instant stays in `-o json`'s `lastScanAt`.
+fn drift_checked_note(last_scan_at: Option<&str>, now: &str) -> String {
+    match last_scan_at {
+        Some(ts) => format!(
+            "checked {}",
+            cfgd_core::humanize_age_since(ts, now).unwrap_or_else(|| ts.to_string())
+        ),
+        None => "drift never checked".to_string(),
+    }
+}
+
+/// One Component Health row: the owner the run's trees head their groups
+/// with, the verdict word and role from the workspace's one module-state
+/// vocabulary, and the nonzero inventory counts as one joined clause.
+struct HealthRow {
+    owner: cfgd_core::reconciler::Owner,
+    verdict: &'static str,
+    role: cfgd_core::output::Role,
+    counts: Option<String>,
+}
+
+/// Every owner the dashboard can report health for, in
+/// [`cfgd_core::reconciler::Owner::order`]'s order: the resolved modules, and
+/// each non-module owner whose recorded Managed Resources rows the table
+/// below renders — the profile and cfgd's own env surfaces.
+///
+/// The owner split is [`recorded_owner`]'s and the module counts are the
+/// recorded tallies already on `output.modules`, so this section and the
+/// table cannot attribute one row to two owners or two counts. The verdicts
+/// read RECORDED state only (`drifted: false`), same as every row of this
+/// dashboard: a recorded row is a surface an apply settled, so a non-module
+/// owner holding rows reads the installed token's word.
+fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Vec<HealthRow> {
+    use cfgd_core::reconciler::Owner;
+    let profile_owner = profile.map(|p| Owner::profile(p).token());
+    // Per-owner, per-noun counts of the recorded non-module rows. Keyed by
+    // the rendered token because `Owner` carries no ordering of its own here;
+    // `owner_from_token` reads each key back for the comparator below.
+    let mut recorded: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, usize>,
+    > = std::collections::BTreeMap::new();
+    for r in &output.managed_resources {
+        if module_id_parts(&r.resource_type, &r.resource_id).is_some() {
+            continue;
+        }
+        let noun = if r.resource_type == ENV_RESOURCE_TYPE {
+            if is_session_env_row(r) {
+                "session env".to_string()
+            } else {
+                "env file".to_string()
+            }
+        } else {
+            // A profile-declared row with no derivable profile has no owner a
+            // component row could name; the table renders it under `-`.
+            if profile_owner.is_none() {
+                continue;
+            }
+            display_type(&r.resource_type)
+        };
+        let token = recorded_owner(r, profile_owner.as_deref().unwrap_or(NO_DETAIL));
+        *recorded.entry(token).or_default().entry(noun).or_default() += 1;
+    }
+
+    let mut owners: Vec<Owner> = recorded
+        .keys()
+        .filter_map(|token| owner_from_token(token))
+        .chain(output.modules.iter().map(|m| Owner::module(&m.name)))
+        .collect();
+    Owner::order(&mut owners);
+
+    let (installed_word, installed_role) =
+        cfgd_core::state::module_status_display(cfgd_core::state::MODULE_STATUS_INSTALLED, false);
+    owners
+        .into_iter()
+        .map(|owner| {
+            let module = (owner.kind == cfgd_core::reconciler::OwnerKind::Module)
+                .then(|| output.modules.iter().find(|m| m.name == owner.name))
+                .flatten();
+            let (verdict, role, counts) = match module {
+                Some(m) => {
+                    // The dashboard reads RECORDED state only, so no row here
+                    // can claim `Drifted` — this surface's Drift section is
+                    // what reports that, and a `--scan` run is what derives it.
+                    let (word, role) = cfgd_core::state::module_status_display(&m.status, false);
+                    let counts = health_counts(
+                        [
+                            ("package", m.packages),
+                            ("file", m.files),
+                            ("script", m.scripts),
+                        ]
+                        .into_iter(),
+                    );
+                    (word, role, counts)
+                }
+                None => {
+                    let counts = recorded
+                        .get(&owner.token())
+                        .and_then(|kinds| health_counts(ordered_kind_counts(kinds)));
+                    (installed_word, installed_role, counts)
+                }
+            };
+            HealthRow {
+                owner,
+                verdict,
+                role,
+                counts,
+            }
+        })
+        .collect()
+}
+
+/// The nonzero inventory counts of one component, pluralized and joined in
+/// the caller's order — the parenthetical under its verdict. `None` when the
+/// component holds nothing to count, so a bare verdict renders no `()`.
+fn health_counts<'a>(kinds: impl Iterator<Item = (&'a str, usize)>) -> Option<String> {
+    let parts: Vec<String> = kinds
+        .filter(|(_, n)| *n > 0)
+        .map(|(noun, n)| cfgd_core::pluralize(n, noun))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+/// A recorded owner's kind counts in render order: the three nouns every
+/// module row also leads with, then anything else in the map's own
+/// alphabetical order.
+fn ordered_kind_counts(
+    kinds: &std::collections::BTreeMap<String, usize>,
+) -> impl Iterator<Item = (&str, usize)> {
+    const LEAD: [&str; 3] = ["package", "file", "script"];
+    LEAD.iter()
+        .filter_map(|noun| kinds.get(*noun).map(|n| (*noun, *n)))
+        .chain(
+            kinds
+                .iter()
+                .filter(|(noun, _)| !LEAD.contains(&noun.as_str()))
+                .map(|(noun, n)| (noun.as_str(), *n)),
+        )
 }
 
 /// The word the Type column reads for a recorded `resource_type` or for a
@@ -3008,8 +3154,9 @@ mod tests {
     }
 
     /// The module health line's units agree with their own counts: a module
-    /// with one of each reads `1 package, 1 file, 1 script`, and anything else
-    /// — including zero — keeps the plural.
+    /// with one of each reads `1 package, 1 file, 1 script`, many stay
+    /// plural, and a zero count is dropped rather than reported — a module
+    /// holding nothing reads its bare verdict with no parenthetical at all.
     #[test]
     fn module_status_line_units_agree_with_their_counts() {
         let output = StatusOutput {
@@ -3080,9 +3227,13 @@ mod tests {
             out.contains("Synced (3 packages, 12 files, 7 scripts)"),
             "many must stay plural: {out}"
         );
+        let git_row = out
+            .lines()
+            .find(|l| l.contains("module:git"))
+            .unwrap_or_default();
         assert!(
-            out.contains("Synced (0 packages, 0 files, 0 scripts)"),
-            "zero keeps the plural: {out}"
+            git_row.contains("Synced") && !git_row.contains('('),
+            "a module holding nothing reads its bare verdict, no `(0 …)` inventory: {git_row}"
         );
     }
 
@@ -3487,8 +3638,8 @@ mod tests {
         );
     }
 
-    /// The Modules headline and the Managed Resources table answer the same
-    /// question and must give the same number: the headline said `28 packages`
+    /// A module's Component Health row and the Managed Resources table answer
+    /// the same question and must give the same number: the row said `28 packages`
     /// over a table listing 24, and later omitted the module's scripts while
     /// the table two lines below listed seven of them.
     #[test]

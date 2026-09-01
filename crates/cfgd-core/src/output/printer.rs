@@ -768,6 +768,7 @@ impl Printer {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
     }
@@ -1081,6 +1082,7 @@ impl Printer {
         self.renderer.render_section_open_styled(
             &label.plain(),
             Some(label.styled(&self.renderer.theme)),
+            None,
             /*keep_when_empty=*/ true,
         );
         self.renderer
@@ -1107,6 +1109,7 @@ impl Printer {
         self.renderer.render_section_open_styled(
             &label.plain(),
             Some(label.styled(&self.renderer.theme)),
+            None,
             /*keep_when_empty=*/ true,
         );
         super::section_guard::SectionGuard {
@@ -1126,6 +1129,7 @@ impl Printer {
         self.renderer.render_section_open_styled(
             &label.plain(),
             Some(label.styled(&self.renderer.theme)),
+            None,
             /*keep_when_empty=*/ true,
         );
         super::section_guard::SectionGuard {
@@ -1152,6 +1156,7 @@ impl Printer {
         self.renderer.render_section_open_styled(
             &label.plain(),
             Some(label.styled(&self.renderer.theme)),
+            None,
             /*keep_when_empty=*/ false,
         );
         super::section_guard::SectionGuard {
@@ -1182,6 +1187,7 @@ impl Printer {
         self.renderer.render_section_open_styled(
             label.plain(),
             Some(styled),
+            None,
             /*keep_when_empty=*/ true,
         );
         super::section_guard::SectionGuard {

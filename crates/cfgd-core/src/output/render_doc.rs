@@ -57,6 +57,7 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             target,
             qualifier,
             label,
+            verdict,
         } => {
             let target_pb: Option<PathBuf> = target.as_ref().map(PathBuf::from);
             // Sanitize caller-supplied subject ANSI BEFORE composing the
@@ -81,6 +82,7 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
                     target: target_pb.as_deref(),
                     subject_style: None,
                     detail_style: None,
+                    verdict: verdict.as_deref(),
                 },
             );
         }
@@ -112,6 +114,7 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             keep_when_empty,
             empty_state,
             owner,
+            annotation,
             children,
         } => {
             // `owner` sections are built via `SectionBuilder::new_owner`, whose
@@ -125,7 +128,12 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             } else {
                 None
             };
-            renderer.render_section_open_styled(name, styled_name, *keep_when_empty);
+            renderer.render_section_open_styled(
+                name,
+                styled_name,
+                annotation.clone(),
+                *keep_when_empty,
+            );
             if let Some(es) = empty_state {
                 renderer.render_section_empty_state(es);
             }

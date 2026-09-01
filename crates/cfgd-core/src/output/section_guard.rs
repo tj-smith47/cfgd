@@ -215,6 +215,7 @@ impl<'p> SectionGuard<'p> {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
         self
@@ -272,6 +273,7 @@ impl<'p> SectionGuard<'p> {
         self.renderer.render_section_open_styled(
             &label.plain(),
             Some(label.styled(&self.renderer.theme)),
+            None,
             /*keep_when_empty=*/ true,
         );
         SectionGuard {
@@ -296,6 +298,7 @@ impl<'p> SectionGuard<'p> {
         self.renderer.render_section_open_styled(
             &label.plain(),
             Some(label.styled(&self.renderer.theme)),
+            None,
             /*keep_when_empty=*/ false,
         );
         SectionGuard {

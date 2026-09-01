@@ -38,6 +38,7 @@ pub struct StatusFields {
     pub target: Option<String>,
     pub qualifier: Option<String>,
     pub label: Option<StatusLabel>,
+    pub verdict: Option<String>,
 }
 
 impl StatusFields {
@@ -82,6 +83,18 @@ impl StatusFields {
             role,
             text: text.into(),
         });
+        self
+    }
+    /// A verdict-led detail: the health word (`Synced`, `Failed`) painted with
+    /// the row's own role at render time, with `detail` demoted to the muted
+    /// parenthetical after it — `— Synced (24 packages, 6 files)`. The one way
+    /// a detail slot's leading word takes the role's colour: painted at a call
+    /// site the coat is eaten by the renderer's `cursor_safe` fold, and inside
+    /// a plain detail string the verdict is one more muted clause, invisible
+    /// beside counts that read the same on a healthy component and a broken
+    /// one. Pinned by `component_health_lists_every_owner_with_a_themed_verdict`.
+    pub fn verdict(mut self, word: impl Into<String>) -> Self {
+        self.verdict = Some(word.into());
         self
     }
 }
@@ -232,6 +245,7 @@ impl Doc {
             target: None,
             qualifier: None,
             label: None,
+            verdict: None,
         });
         self
     }
@@ -251,6 +265,7 @@ impl Doc {
             target: f.target,
             qualifier: f.qualifier,
             label: f.label,
+            verdict: f.verdict,
         });
         self
     }
@@ -346,6 +361,26 @@ impl Doc {
         s
     }
 
+    /// A section whose heading carries a muted trailing annotation —
+    /// `Component Health (checked 3m ago)`. The annotation is a fact ABOUT
+    /// the rows below, dated on the heading rather than spent on a row of its
+    /// own; the renderer owns the parentheses and the muted coat, so a caller
+    /// can neither paint it nor promote it to a row by accident.
+    pub fn section_annotated<F>(
+        mut self,
+        name: impl Into<String>,
+        annotation: impl Into<String>,
+        build: F,
+    ) -> Self
+    where
+        F: FnOnce(SectionBuilder) -> SectionBuilder,
+    {
+        let mut sb = SectionBuilder::new(name, /*keep_when_empty=*/ true);
+        sb.annotation = Some(annotation.into());
+        self.children.push(build(sb).into_component());
+        self
+    }
+
     /// Attach a typed payload that REPLACES Doc-derived JSON in structured modes.
     pub fn with_data<T: Serialize>(mut self, value: T) -> Self {
         self.data = Some(serde_json::to_value(&value).unwrap_or(serde_json::Value::Null));
@@ -405,6 +440,9 @@ pub struct SectionBuilder {
     owner: bool,
     keep_when_empty: bool,
     empty_state: Option<String>,
+    /// Set only by [`Doc::section_annotated`]: a muted trailing annotation on
+    /// the heading. Display-only, like `owner`.
+    annotation: Option<String>,
     children: Vec<Component>,
 }
 
@@ -415,6 +453,7 @@ impl SectionBuilder {
             owner: false,
             keep_when_empty,
             empty_state: None,
+            annotation: None,
             children: Vec::new(),
         }
     }
@@ -427,6 +466,7 @@ impl SectionBuilder {
             owner: true,
             keep_when_empty,
             empty_state: None,
+            annotation: None,
             children: Vec::new(),
         }
     }
@@ -437,6 +477,7 @@ impl SectionBuilder {
             owner: self.owner,
             keep_when_empty: self.keep_when_empty,
             empty_state: self.empty_state,
+            annotation: self.annotation,
             children: self.children,
         }
     }
@@ -504,6 +545,7 @@ impl SectionBuilder {
             target: None,
             qualifier: None,
             label: None,
+            verdict: None,
         });
         self
     }
@@ -523,6 +565,7 @@ impl SectionBuilder {
             target: f.target,
             qualifier: f.qualifier,
             label: f.label,
+            verdict: f.verdict,
         });
         self
     }
@@ -789,9 +832,11 @@ mod tests {
             target,
             qualifier,
             label,
+            verdict,
         } = &d.children[0]
         {
             assert!(matches!(role, Role::Ok));
+            assert!(verdict.is_none());
             assert_eq!(subject, "applied");
             assert!(detail.is_none());
             assert!(duration_ms.is_none());
@@ -820,6 +865,7 @@ mod tests {
             target,
             qualifier,
             label,
+            verdict: _,
         } = &d.children[0]
         {
             assert!(matches!(role, Role::Warn));

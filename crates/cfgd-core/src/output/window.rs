@@ -115,6 +115,7 @@ impl<'p> OutputWindow<'p> {
                     target: None,
                     subject_style: None,
                     detail_style: None,
+                    verdict: None,
                 },
             );
         }
