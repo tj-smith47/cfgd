@@ -536,6 +536,7 @@ mod tests {
             &DaemonDirOverrides {
                 state_dir: Some(PathBuf::from("/srv/my state")),
                 runtime_dir: Some(PathBuf::from("/run/my cfgd")),
+                cache_dir: None,
             },
         );
         assert!(
@@ -827,6 +828,7 @@ mod tests {
         let dirs = DaemonDirOverrides {
             state_dir: Some(PathBuf::from("/srv/cfgd/state")),
             runtime_dir: Some(PathBuf::from("/srv/cfgd/run")),
+            ..Default::default()
         };
         let unit = generate_systemd_unit(
             Path::new("/usr/local/bin/cfgd"),
@@ -860,6 +862,7 @@ mod tests {
         let dirs = DaemonDirOverrides {
             state_dir: Some(PathBuf::from("/srv/cfgd/state")),
             runtime_dir: None,
+            ..Default::default()
         };
         let unit = generate_systemd_unit(
             Path::new("/usr/local/bin/cfgd"),
@@ -907,6 +910,7 @@ mod tests {
             &DaemonDirOverrides {
                 state_dir: Some(state.clone()),
                 runtime_dir: Some(runtime.clone()),
+                ..Default::default()
             },
         )
         .expect("install");

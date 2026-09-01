@@ -579,6 +579,7 @@ mod tests {
             &DaemonDirOverrides {
                 state_dir: Some(PathBuf::from("/Users/t/state")),
                 runtime_dir: Some(PathBuf::from("/Users/t/run")),
+                ..Default::default()
             },
         );
         assert!(plist.contains("<string>--state-dir</string>"), "{plist}");

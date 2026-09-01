@@ -434,6 +434,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             let dirs = cfgd_core::daemon::DaemonDirOverrides {
                 runtime_dir: args.runtime_dir.map(Path::to_path_buf),
                 state_dir: args.state_dir.map(Path::to_path_buf),
+                cache_dir: args.cache_dir.map(Path::to_path_buf),
             };
             match cfgd_core::daemon::install_service(&config_path, profile, args.scope, &dirs) {
                 Ok(()) => {

@@ -402,12 +402,14 @@ pub(super) fn compliance_snapshot_unchanged(latest_hash: Option<&str>, fresh_has
     latest_hash == Some(fresh_hash)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_compliance_snapshot(
     config_path: &Path,
     profile_override: Option<&str>,
     hooks: &dyn DaemonHooks,
     compliance_cfg: &config::ComplianceConfig,
     state_dir_override: Option<&Path>,
+    cache_dir_override: Option<&Path>,
     scope: crate::Scope,
     printer: &crate::output::Printer,
 ) {
@@ -458,6 +460,7 @@ pub(crate) fn handle_compliance_snapshot(
         &local_resolved,
         &printer,
         scope,
+        cache_dir_override,
     ) {
         Ok(composed) => (composed.resolved, composed.source_module_roots),
         Err(e) => {
@@ -509,6 +512,7 @@ pub(crate) fn handle_compliance_snapshot(
         Some(&pkg_cx),
         &printer,
         scope,
+        cache_dir_override,
     );
 
     // Wire a content-aware file manager when this binary provides one. The

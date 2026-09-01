@@ -145,6 +145,7 @@ pub trait DaemonHooks: Send + Sync {
 /// declares no modules or when resolution fails, logging the failure at `warn`
 /// so it is never silently swallowed. Shared by the reconcile and compliance
 /// ticks so both resolve modules identically.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_daemon_modules(
     registry: &ProviderRegistry,
     resolved: &ResolvedProfile,
@@ -153,13 +154,15 @@ pub(crate) fn resolve_daemon_modules(
     installed: Option<&PackageContext<'_>>,
     printer: &Printer,
     scope: crate::Scope,
+    cache_dir_override: Option<&Path>,
 ) -> Vec<crate::modules::ResolvedModule> {
     if resolved.merged.modules.is_empty() {
         return Vec::new();
     }
     let platform = crate::platform::Platform::current();
     let mgr_map = registry.manager_map();
-    let cache_base = crate::modules::default_module_cache_dir_for(scope)
+    let cache_base = crate::resolve_cache_dir(cache_dir_override, scope)
+        .map(|d| d.join("modules"))
         .unwrap_or_else(|_| config_dir.join(".module-cache"));
     match crate::modules::resolve_modules(
         &resolved.merged.modules,
@@ -213,6 +216,7 @@ pub(crate) fn compose_daemon_desired_state(
     local: &ResolvedProfile,
     printer: &Printer,
     scope: crate::Scope,
+    cache_dir_override: Option<&Path>,
 ) -> Result<DaemonComposition> {
     if cfg.spec.sources.is_empty() {
         return Ok(DaemonComposition {
@@ -221,7 +225,8 @@ pub(crate) fn compose_daemon_desired_state(
             advisories: Vec::new(),
         });
     }
-    let cache_dir = crate::sources::SourceManager::default_cache_dir_for(scope)
+    let cache_dir = crate::resolve_cache_dir(cache_dir_override, scope)
+        .map(|d| d.join("sources"))
         .unwrap_or_else(|_| PathBuf::from(".cfgd-sources"));
     let mut mgr = crate::sources::SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
@@ -784,6 +789,7 @@ pub(super) struct PreLoopSetup {
 /// helpers from `daemon_config`, `checkin`, and `reconcile` submodules. No
 /// sockets, no spawned tasks, no network. Production callers use this from
 /// `run_daemon`; tests use it to exercise the SETUP arms directly.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_pre_loop_setup(
     config_path: &Path,
     profile_override: Option<&str>,
@@ -791,6 +797,7 @@ pub(super) fn build_pre_loop_setup(
     scope: crate::Scope,
     printer: &Printer,
     state_dir: Option<&Path>,
+    cache_dir: Option<&Path>,
 ) -> Result<PreLoopSetup> {
     let mut cfg = config::load_config(config_path)?;
     // Once per process lifetime, not per reconcile tick: the daemon reloads
@@ -822,7 +829,8 @@ pub(super) fn build_pre_loop_setup(
         .to_path_buf();
     let allow_unsigned = cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned);
 
-    let source_cache_dir = crate::sources::SourceManager::default_cache_dir_for(scope)
+    let source_cache_dir = crate::resolve_cache_dir(cache_dir, scope)
+        .map(|d| d.join("sources"))
         .unwrap_or_else(|_| config_dir.join(".cfgd-sources"));
     let sync_tasks = build_sync_tasks(
         &config_dir,
@@ -883,6 +891,7 @@ pub(super) fn build_pre_loop_setup(
         printer,
         scope,
         state_dir,
+        cache_dir,
         now,
     ) {
         Ok(resolved) => BackupTimers::new(resolved, now),
@@ -920,12 +929,19 @@ pub(super) fn build_pre_loop_setup(
 // --- Main Daemon Entry Point ---
 
 /// The directory roots a caller relocates when the process-level `--runtime-dir`
-/// / `--state-dir` flags are set. `None` for either falls through to its env var
-/// (`CFGD_RUNTIME_DIR` / `CFGD_STATE_DIR`), then to the scope default.
+/// / `--state-dir` / `--cache-dir` flags are set. `None` for any of them falls
+/// through to its env var (`CFGD_RUNTIME_DIR` / `CFGD_STATE_DIR` /
+/// `CFGD_CACHE_DIR`), then to the scope default.
 #[derive(Debug, Clone, Default)]
 pub struct DaemonDirOverrides {
     pub runtime_dir: Option<PathBuf>,
     pub state_dir: Option<PathBuf>,
+    /// Threaded to every source/module cache resolution the reconcile loop
+    /// makes, so a daemon started with `--cache-dir` reads the SAME cache every
+    /// non-daemon verb already honors through `resolve_cache_dir` — a daemon
+    /// silently resolving the default cache while `cfgd sync` fills a caller-named
+    /// one would compose sources whose checkout the reconcile loop never sees.
+    pub cache_dir: Option<PathBuf>,
 }
 
 /// `cfgd_version` is the running binary's `env!("CARGO_PKG_VERSION")` — the
@@ -973,6 +989,7 @@ pub(super) fn cli_run_overrides(
     DaemonRunOverrides {
         ipc_path: Some(resolve_default_ipc_path(dirs.runtime_dir.as_deref(), scope)),
         state_dir_override: dirs.state_dir,
+        cache_dir_override: dirs.cache_dir,
         scope,
         ..DaemonRunOverrides::default()
     }
@@ -1002,6 +1019,11 @@ pub(super) fn cli_run_overrides(
 pub(super) struct DaemonRunOverrides {
     pub ipc_path: Option<PathBuf>,
     pub state_dir_override: Option<PathBuf>,
+    /// The `--cache-dir` twin of `state_dir_override`: threaded to every source
+    /// and module cache resolution the loop makes (compose, module resolution,
+    /// the startup source-cache scan). `None` falls through to `CFGD_CACHE_DIR`
+    /// then the scope default, exactly like every non-daemon verb's `--cache-dir`.
+    pub cache_dir_override: Option<PathBuf>,
     pub skip_health_server: bool,
     pub skip_startup_checkin: bool,
     pub(in crate::daemon) external_triggers: Option<DaemonTriggers>,
@@ -1012,6 +1034,7 @@ impl Default for DaemonRunOverrides {
     fn default() -> Self {
         Self {
             ipc_path: None,
+            cache_dir_override: None,
             state_dir_override: None,
             skip_health_server: false,
             skip_startup_checkin: false,
@@ -1072,6 +1095,7 @@ pub(super) async fn run_daemon_with(
         overrides.scope,
         &printer,
         resolved_state_dir.as_deref(),
+        overrides.cache_dir_override.as_deref(),
     )?;
 
     let (daemon_state, state_dir_warning) =
@@ -1274,6 +1298,7 @@ pub(super) async fn run_daemon_with(
         printer: Arc::clone(&printer),
         state_dir_override: resolved_state_dir.clone(),
         explicit_state_dir,
+        cache_dir_override: overrides.cache_dir_override.clone(),
         managed_paths: setup.managed_paths.clone(),
         scope: overrides.scope,
         cfgd_version: cfgd_version.to_string(),

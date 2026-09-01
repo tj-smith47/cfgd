@@ -889,6 +889,7 @@ impl Cli {
         cfgd_core::daemon::DaemonDirOverrides {
             runtime_dir: self.runtime_dir.clone(),
             state_dir: self.state_dir.clone(),
+            cache_dir: self.cache_dir.clone(),
         }
     }
 
