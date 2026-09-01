@@ -2055,7 +2055,7 @@ impl<'a> super::Reconciler<'a> {
                 }
                 self.state.resolve_drift_keys(apply_id, &healed)?;
                 for pkg in &packages {
-                    let rid = format!("{manager}/{pkg}");
+                    let rid = crate::state::package_resource_id(&manager, pkg);
                     match verb.as_str() {
                         "install" => {
                             // Persist the scripted uninstall command (Some only for

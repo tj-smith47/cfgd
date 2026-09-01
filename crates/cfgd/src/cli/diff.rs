@@ -565,14 +565,17 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                 if pkg.manager != "script" && mgr_map.contains_key(pkg.manager.as_str()) {
                     checked.push((
                         "package".to_string(),
-                        package_resource_id(&pkg.manager, std::slice::from_ref(&pkg.resolved_name)),
+                        package_drift_resource_id(
+                            &pkg.manager,
+                            std::slice::from_ref(&pkg.resolved_name),
+                        ),
                     ));
                 }
                 if let Some(drift) = package_missing_drift(pkg, &mgr_map, &pkg_cx) {
                     has_pkg_drift = true;
                     findings.push(cfgd_core::reconciler::VerifyResult {
                         resource_type: "package".to_string(),
-                        resource_id: package_resource_id(&drift.manager, &drift.packages),
+                        resource_id: package_drift_resource_id(&drift.manager, &drift.packages),
                         matches: false,
                         expected: "installed".to_string(),
                         // The RECORDED operand takes the one stored spelling
@@ -756,7 +759,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
 /// what `full_check_cannot_refind` keeps a live check from resolving. `/`
 /// collides with a package name that legitimately contains one (a scoped npm
 /// package, `@org/name`), which `:` cannot.
-pub(super) fn package_resource_id(manager: &str, packages: &[String]) -> String {
+pub(super) fn package_drift_resource_id(manager: &str, packages: &[String]) -> String {
     // The keep-set split between the two producers' grammars rests on every
     // live-minted package id carrying its `:` with a real manager in front —
     // a bare id here would read as the daemon's Skip spelling and stand

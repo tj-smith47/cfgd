@@ -520,6 +520,30 @@ fn a_row_with_no_breakdown_is_backfilled_once_and_silently() {
     );
 }
 
+/// The package tracking row's id grammar has one producer and one reader,
+/// kept as inverses: what [`package_resource_id`] mints,
+/// [`split_package_resource_id`] reads back exactly. A reader guessing the
+/// separator for itself (the `<mgr>:<pkg>` DRIFT grammar, say) is what let a
+/// profile-declared package render as an unowned finding — this pin fails the
+/// moment either side's spelling moves without the other.
+#[test]
+fn the_package_resource_id_and_its_split_are_inverses() {
+    let id = package_resource_id("brew", "fd");
+    assert_eq!(id, "brew/fd", "the recorded grammar is <manager>/<package>");
+    assert_eq!(split_package_resource_id(&id), Some(("brew", "fd")));
+    // The FIRST `/` is the boundary, so a package name carrying `/` keeps its tail.
+    let scoped = package_resource_id("npm", "@types/node");
+    assert_eq!(
+        split_package_resource_id(&scoped),
+        Some(("npm", "@types/node"))
+    );
+    // The drift grammar and a half-empty id both refuse to parse as a tracking
+    // row rather than yielding a pair claiming a manager the id never named.
+    assert_eq!(split_package_resource_id("brew:fd"), None);
+    assert_eq!(split_package_resource_id("/fd"), None);
+    assert_eq!(split_package_resource_id("brew/"), None);
+}
+
 #[test]
 fn upsert_package_resource_persists_uninstall_cmd() {
     use crate::providers::OrphanedPackage;

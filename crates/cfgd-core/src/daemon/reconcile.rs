@@ -451,7 +451,7 @@ fn reconcile_tick(
         .managed_package_ids()
         .unwrap_or_default()
         .into_iter()
-        .map(|(mgr, pkg)| format!("{mgr}/{pkg}"))
+        .map(|(mgr, pkg)| crate::state::package_resource_id(&mgr, &pkg))
         .collect();
     // The enumerations are LENT by the daemon rather than owned by the tick:
     // asking every manager what it has installed is the tick's most expensive
@@ -1085,7 +1085,7 @@ fn reconcile_tick(
                             ) {
                                 Ok(stale) => {
                                     for (mgr, id) in stale {
-                                        let rid = format!("{mgr}/{id}");
+                                        let rid = crate::state::package_resource_id(&mgr, &id);
                                         if let Err(e) =
                                             store.remove_managed_resource("package", &rid)
                                         {
@@ -1106,7 +1106,7 @@ fn reconcile_tick(
                                     for (mgr, pkg) in
                                         hooks.prune_orphaned_packages(&orphans, &pkg_cx)
                                     {
-                                        let rid = format!("{mgr}/{pkg}");
+                                        let rid = crate::state::package_resource_id(&mgr, &pkg);
                                         if let Err(e) =
                                             store.remove_managed_resource("package", &rid)
                                         {
