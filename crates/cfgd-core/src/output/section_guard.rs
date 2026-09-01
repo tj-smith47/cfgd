@@ -58,7 +58,7 @@ impl<'p> SectionGuard<'p> {
         self
     }
 
-    /// A deploy row's per-file child: `target — method`, two depths below
+    /// A deploy row's per-file child: `target — method`, one depth below
     /// this section, no glyph. See [`crate::output::renderer::Renderer::render_child_row`]
     /// for why the extra depth and the missing glyph still land the trailing
     /// method at this section's claimed column.

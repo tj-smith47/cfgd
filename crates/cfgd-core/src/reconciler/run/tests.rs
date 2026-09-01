@@ -995,7 +995,7 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
     );
 
     // The third row shape: a deploy's per-file child pads to the SAME claim,
-    // two depths below its parent, with no glyph of its own.
+    // one depth below its parent, with no glyph of its own.
     let deploy = plan.phases[0]
         .actions()
         .find(|a| {
@@ -1611,8 +1611,8 @@ fn both_trees_paint_a_withheld_row_with_the_same_bytes() {
 /// A deploy row enumerates every file it writes as its own child row, in
 /// manifest order, target then resolved method. The plan preview tree and the
 /// settled apply tree paint those child rows byte-for-byte identical, at the
-/// SAME report column their parent's own trailer would have landed at, two
-/// depths below it. `deploy_file_children` is the ONE producer both trees
+/// SAME report column their parent's own trailer would have landed at, one
+/// depth below it. `deploy_file_children` is the ONE producer both trees
 /// read, so a future action changing what a deploy writes trips this walk
 /// before either tree can disagree about it. The one-file `deploy 1 file`
 /// ruling — no inline shorthand even for a single file — is a separate
@@ -1727,8 +1727,8 @@ fn a_deploy_row_enumerates_every_file_with_its_method_at_the_reports_column() {
         "a file's own resolved strategy names its method: {b_row:?}"
     );
     // The trailing method lands at the report's one claimed column, exactly
-    // where the parent row's own `— detail`/`(time)` would have — two
-    // depths of extra indent traded for the glyph column a child never opens.
+    // where the parent row's own `— detail`/`(time)` would have — one
+    // depth of extra indent traded for the glyph column a child never opens.
     let dash_at = |line: &str| {
         crate::output::measure_width(line.split_once(" — ").map_or("", |(head, _)| head))
     };

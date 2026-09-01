@@ -201,8 +201,8 @@ Phase: Files
     - create ~/.gitconfig
   module:nvim
     - deploy 2 files
-        ~/.config/nvim/init.lua      — symlink
-        ~/.config/nvim/lua/opts.lua  — symlink
+      ~/.config/nvim/init.lua      — symlink
+      ~/.config/nvim/lua/opts.lua  — symlink
 
 Phase: System
   profile:work
