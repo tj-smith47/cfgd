@@ -1473,14 +1473,15 @@ mod tests {
             "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: env-mod\nspec:\n  depends:\n    - aaa-dep\n  env:\n    - name: EDITOR\n      value: vim\n",
         )
         .unwrap();
-        // A dependency that ALSO declares EDITOR: the isolate's fold visits
-        // it first, so env-mod's value wins the merge and the finding's owner
-        // is env-mod — never the module that merely sorts first.
+        // A dependency that ALSO declares EDITOR (outvoted: the fold visits
+        // it first, so env-mod's value wins) and declares VISUAL alone — an
+        // entry whose owner CANNOT be the reported module, so an ownership
+        // lookup that defaulted to the reported module cannot pass by luck.
         let dep_mod_dir = tmp.path().join("modules").join("aaa-dep");
         std::fs::create_dir_all(&dep_mod_dir).unwrap();
         std::fs::write(
             dep_mod_dir.join("module.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: aaa-dep\nspec:\n  env:\n    - name: EDITOR\n      value: emacs\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: aaa-dep\nspec:\n  env:\n    - name: EDITOR\n      value: emacs\n    - name: VISUAL\n      value: micro\n",
         )
         .unwrap();
         let other_mod_dir = tmp.path().join("modules").join("other-mod");
@@ -1549,13 +1550,24 @@ mod tests {
             human.contains("module:env-mod"),
             "the finding renders under its owner's group: {human}"
         );
+        // The dependency-owned entry is the structural proof: VISUAL's owner
+        // CANNOT be the reported module (env-mod never declares it), so an
+        // ownership lookup that defaulted to the reported module fails here
+        // rather than passing by luck. Groups render in module-name order —
+        // aaa-dep's group with its own entry ahead of env-mod's with the
+        // contested one.
+        let dep_group = human.find("module:aaa-dep").expect("dep group opens");
+        let visual = human.find("env: VISUAL").expect("dep-owned finding");
+        let mod_group = human.find("module:env-mod").unwrap();
+        let editor = human.find("env: EDITOR").unwrap();
         assert!(
-            !human.contains("module:aaa-dep"),
-            "the outvoted declarer owns nothing, so its group never opens: {human}"
+            dep_group < visual && visual < mod_group && mod_group < editor,
+            "each finding renders under the module the merge says owns it, \
+             never blanket-attributed to the reported module: {human}"
         );
         assert!(
             human.contains("vim") && !human.contains("emacs"),
-            "the declared operand is the merge winner's value: {human}"
+            "the contested entry's declared operand is the merge winner's value: {human}"
         );
 
         // The record half: the scoped check recorded the row it can vouch
