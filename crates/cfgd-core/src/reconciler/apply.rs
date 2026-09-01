@@ -2045,12 +2045,17 @@ impl<'a> super::Reconciler<'a> {
                 // under THAT grammar, per package plus the batch spelling.
                 let mut healed: Vec<(String, String)> = packages
                     .iter()
-                    .map(|pkg| ("package".to_string(), format!("{manager}:{pkg}")))
+                    .map(|pkg| {
+                        (
+                            "package".to_string(),
+                            super::package_drift_resource_id(&manager, std::slice::from_ref(pkg)),
+                        )
+                    })
                     .collect();
                 if packages.len() > 1 {
                     healed.push((
                         "package".to_string(),
-                        format!("{manager}:{}", packages.join(",")),
+                        super::package_drift_resource_id(&manager, &packages),
                     ));
                 }
                 self.state.resolve_drift_keys(apply_id, &healed)?;

@@ -87,6 +87,7 @@ pub use types::{
     ENV_RESOURCE_TYPE, EnvAction, MANAGERS_GROUP, ManagerAction, ModuleAction, ModuleActionKind,
     Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext,
     RollbackResult, SESSION_GROUP, ScriptAction, ScriptPhase, SystemAction, Tier, attempted_count,
+    package_drift_resource_id,
 };
 pub use verify::{
     EnvItemCheck, MergedEnvItems, SystemCheckError, VerifyReport, VerifyResult,

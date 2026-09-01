@@ -756,20 +756,10 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
 /// spell the same missing package identically and one heals what the other
 /// recorded. The daemon's batch spelling (`mgr:a,b`, from
 /// `action_resource_info`) names an ACTION, not a package, and is exactly
-/// what `full_check_cannot_refind` keeps a live check from resolving. `/`
-/// collides with a package name that legitimately contains one (a scoped npm
-/// package, `@org/name`), which `:` cannot.
-pub(super) fn package_drift_resource_id(manager: &str, packages: &[String]) -> String {
-    // The keep-set split between the two producers' grammars rests on every
-    // live-minted package id carrying its `:` with a real manager in front —
-    // a bare id here would read as the daemon's Skip spelling and stand
-    // forever instead of healing.
-    debug_assert!(
-        !manager.is_empty() && packages.iter().all(|p| !p.is_empty()),
-        "a package id needs a manager and real package names: {manager:?} / {packages:?}"
-    );
-    format!("{}:{}", manager, packages.join(", "))
-}
+/// what `full_check_cannot_refind` keeps a live check from resolving. The
+/// composer itself is core's — the batch producers live there — so the CLI
+/// and the daemon cannot spell one package two ways.
+pub(super) use cfgd_core::reconciler::package_drift_resource_id;
 
 /// Drift record for a module-declared package that is not installed, or `None`
 /// when it is installed, script-based, or its manager isn't registered.

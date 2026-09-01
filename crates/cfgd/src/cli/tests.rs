@@ -29805,6 +29805,94 @@ fn every_live_minted_drift_id_comes_from_its_composer() {
     );
 }
 
+/// The core-crate twin of the walk above: `cfgd-core` mints the same
+/// `<mgr>:<pkg>` / `<mgr>:<a>,<b>` package drift grammar — the apply's
+/// healed-key loop, `action_resource_info`'s two `PackageAction` arms and
+/// `verify`'s missing-package row — but lives outside `src/cli`, so the cli
+/// walk is structurally blind to it. Same anchor, same window, same hatch:
+/// every production line typing a `"package"` drift row composes its id
+/// through `reconciler::package_drift_resource_id` or a manager-node
+/// composer, or carries `// composed-id-ok: <why>`. Identical hand-typed
+/// format strings agreeing only by convention are how a producer and a
+/// reader of the tracking grammar drifted apart.
+#[test]
+fn every_core_minted_package_drift_id_comes_from_its_composer() {
+    const HATCH: &str = "composed-id-ok:";
+    const COMPOSERS: [&str; 4] = [
+        "package_drift_resource_id(",
+        ".resource_id()",
+        "provision_resource_id(",
+        "refuse_resource_id(",
+    ];
+    // Each production anchor, by file and count, hatched lines excluded.
+    const EXPECTED: [(&str, usize); 3] = [("apply.rs", 4), ("types.rs", 3), ("verify.rs", 1)];
+
+    let core_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src");
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut offenders = Vec::new();
+    let mut files = walk_rust_files(&core_src);
+    files.sort();
+    for path in files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if name == "tests.rs" || name == "test_helpers.rs" {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        // Cut at the trailing test MODULE, not the first `#[cfg(test)]` —
+        // core files carry mid-file `#[cfg(test)] impl` helpers, and cutting
+        // there would blind the walk to every production mint below them.
+        let production = body
+            .split_once("\n#[cfg(test)]\nmod ")
+            .map(|(head, _)| head)
+            .unwrap_or(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("\"package\".to_string()")
+                && !line.contains("resource_type: \"package\"")
+            {
+                continue;
+            }
+            if line.contains(HATCH) || (i > 0 && lines[i - 1].contains(HATCH)) {
+                continue;
+            }
+            *counts.entry(name.clone()).or_default() += 1;
+            // The id may be composed on the anchor line itself or just
+            // around it (the batch push composes on the following line).
+            let lo = i.saturating_sub(10);
+            let hi = (i + 16).min(lines.len());
+            if !lines[lo..hi]
+                .iter()
+                .any(|l| COMPOSERS.iter().any(|c| l.contains(c)))
+            {
+                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a core-minted package drift id is composed by the one composer, never spelled \
+         by hand (or carries `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+    let found: Vec<(String, usize)> = counts.into_iter().collect();
+    let mut expected: Vec<(String, usize)> = EXPECTED
+        .iter()
+        .map(|(f, n)| ((*f).to_string(), *n))
+        .collect();
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "every core production package-drift mint is pinned here; a new one means a \
+         producer whose ids nothing resolves until it is reviewed"
+    );
+}
+
 /// A `ResolvedPackage` is minted by `modules::resolve_package` and nowhere
 /// else in production: it is the one site that decides WHICH manager a bare
 /// entry lands on (the one that already holds it, else the platform default),

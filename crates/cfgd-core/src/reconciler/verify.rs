@@ -75,16 +75,18 @@ pub fn verify(
             .installed_for(*mgr)?
             .contains(&mgr.package_identity(&ep.name));
 
-        // ONE identity per (manager, package), whichever origin declared it:
-        // `package` / `<manager>:<name>`, the same key every CLI live check
-        // mints (`cli::diff::package_resource_id`). A module-qualified key
+        // ONE identity per (manager, package), whichever origin declared it —
+        // the same key every CLI live check mints. A module-qualified key
         // here made `verify` and `diff`/`status --scan` record two rows for
         // one missing package — and resolve each other's as healed. The
         // module attribution stays an ORIGIN fact (`ep.origin`), not part of
         // the row's identity.
         results.push(VerifyResult {
             resource_type: "package".to_string(),
-            resource_id: format!("{}:{}", ep.manager, ep.name),
+            resource_id: super::package_drift_resource_id(
+                &ep.manager,
+                std::slice::from_ref(&ep.name),
+            ),
             matches: ok,
             expected: "installed".to_string(),
             actual: if ok {
