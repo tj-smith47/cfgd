@@ -602,71 +602,89 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
             &resolved.merged.entry_owners,
             &resolved_modules,
         );
-        for r in &check.results {
-            checked.push((r.resource_type.clone(), r.resource_id.clone()));
-        }
-        // The ONE ownership answer for which module's group a finding renders
-        // under — the same fold the isolate's merge just applied, so a name
-        // two modules declare lands under the writer whose value survived.
-        let owners = cfgd_core::reconciler::merged_entry_owners(&resolved, &resolved_modules);
-        // `path_dirs` feeds only the folded `PATH` line, which the scoped
-        // check never renders a row for.
-        let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved.merged.entry_owners,
-            &resolved_modules,
-            &[],
-        );
+        // The env ids stay OUT of `checked` deliberately: they are
+        // machine-scope (`env-var:EDITOR` names the deployed line, not this
+        // module's claim on it), and a name a module OUTSIDE this chain
+        // redeclares can be drifted machine-wide while the isolate's own
+        // value happens to match — a scoped "clean" that healed the row
+        // would erase a finding it never re-checked. Findings still record;
+        // only the machine-wide check heals or re-verdicts these keys.
         let results = env_drift_ordered(check.results);
-        findings.extend(results.iter().cloned());
-        let mut remaining: Vec<&cfgd_core::reconciler::VerifyResult> = results.iter().collect();
-        for module in modules_by_name(&resolved_modules) {
-            let token = cfgd_core::reconciler::Owner::module(&module.name).token();
-            let owned_here = |r: &cfgd_core::reconciler::VerifyResult| {
+        {
+            // The ONE ownership answer for which module's group a finding
+            // renders under — the same fold the isolate's merge just applied,
+            // so a name two modules declare lands under the writer whose
+            // value survived.
+            let owners = cfgd_core::reconciler::merged_entry_owners(&resolved, &resolved_modules);
+            // `path_dirs` feeds only the folded `PATH` line, which the scoped
+            // check never renders a row for.
+            let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
+                &resolved.merged.env,
+                &resolved.merged.aliases,
+                &resolved.merged.entry_owners,
+                &resolved_modules,
+                &[],
+            );
+            // One pass: every finding lands in exactly one bucket — the
+            // fold's recorded winner when that token names a chain module,
+            // else the module under report (the only module the caller asked
+            // about, exactly as the scoped status does for an unsplittable
+            // file id) — so no finding can fall between the groups.
+            let tokens: std::collections::HashMap<String, &str> = resolved_modules
+                .iter()
+                .map(|m| {
+                    (
+                        cfgd_core::reconciler::Owner::module(&m.name).token(),
+                        m.name.as_str(),
+                    )
+                })
+                .collect();
+            let mut grouped: std::collections::HashMap<
+                &str,
+                Vec<&cfgd_core::reconciler::VerifyResult>,
+            > = std::collections::HashMap::new();
+            for r in &results {
                 let owner = if r.resource_type == "alias" {
                     owners.aliases.get(&r.resource_id)
                 } else {
                     owners.env.get(&r.resource_id)
                 };
-                // A finding whose owner the record cannot name attributes
-                // itself to the module under report — the only module the
-                // caller asked about — exactly as the scoped status does for
-                // an unsplittable file id.
-                owner.map_or(module.name == mod_name, |o| *o == token)
-            };
-            let (mine, rest): (Vec<_>, Vec<_>) = remaining.into_iter().partition(|r| {
-                let r: &cfgd_core::reconciler::VerifyResult = r;
-                owned_here(r)
-            });
-            remaining = rest;
-            if mine.is_empty() {
-                continue;
+                let module_name = owner
+                    .and_then(|o| tokens.get(o.as_str()).copied())
+                    .unwrap_or(mod_name);
+                grouped.entry(module_name).or_default().push(r);
             }
-            let group = env_sec.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
-            for r in mine {
-                // The stored operands are opaque markers; recompute the real
-                // declared/deployed lines for this display only, exactly as
-                // the machine-wide Shell section does.
-                let (expected, actual) = merged_env_items
-                    .display_values(&r.resource_type, &r.resource_id)
-                    .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
-                let (expected, actual) =
-                    cfgd_core::output::drift_operands(&r.resource_type, &expected, &actual);
-                group
-                    .status(
-                        Role::Warn,
-                        cfgd_core::output::drift_item_subject(&r.resource_type, &r.resource_id),
-                    )
-                    .drift(&expected, &actual);
-                diff_payload.env.push(EnvDriftOutput {
-                    kind: r.resource_type.clone(),
-                    name: r.resource_id.clone(),
-                    expected,
-                    actual,
-                });
+            for module in modules_by_name(&resolved_modules) {
+                let Some(mine) = grouped.remove(module.name.as_str()) else {
+                    continue;
+                };
+                let group =
+                    env_sec.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
+                for r in mine {
+                    // The stored operands are opaque markers; recompute the
+                    // real declared/deployed lines for this display only,
+                    // exactly as the machine-wide Shell section does.
+                    let (expected, actual) = merged_env_items
+                        .display_values(&r.resource_type, &r.resource_id)
+                        .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
+                    let (expected, actual) =
+                        cfgd_core::output::drift_operands(&r.resource_type, &expected, &actual);
+                    group
+                        .status(
+                            Role::Warn,
+                            cfgd_core::output::drift_item_subject(&r.resource_type, &r.resource_id),
+                        )
+                        .drift(&expected, &actual);
+                    diff_payload.env.push(EnvDriftOutput {
+                        kind: r.resource_type.clone(),
+                        name: r.resource_id.clone(),
+                        expected,
+                        actual,
+                    });
+                }
             }
         }
+        findings.extend(results);
         if let Some(err) = &check.check_error {
             // The same first-class row an erroring system check renders, so a
             // probe that could not run is never read as clean; the path folds
@@ -1452,7 +1470,17 @@ mod tests {
         std::fs::create_dir_all(&env_mod_dir).unwrap();
         std::fs::write(
             env_mod_dir.join("module.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: env-mod\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: env-mod\nspec:\n  depends:\n    - aaa-dep\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+        // A dependency that ALSO declares EDITOR: the isolate's fold visits
+        // it first, so env-mod's value wins the merge and the finding's owner
+        // is env-mod — never the module that merely sorts first.
+        let dep_mod_dir = tmp.path().join("modules").join("aaa-dep");
+        std::fs::create_dir_all(&dep_mod_dir).unwrap();
+        std::fs::write(
+            dep_mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: aaa-dep\nspec:\n  env:\n    - name: EDITOR\n      value: emacs\n",
         )
         .unwrap();
         let other_mod_dir = tmp.path().join("modules").join("other-mod");
@@ -1506,6 +1534,11 @@ mod tests {
             !env.iter().any(|e| e["name"] == "PAGER"),
             "the profile-owned entry never joins a module's findings: {env:?}"
         );
+        assert_eq!(
+            env.iter().filter(|e| e["name"] == "EDITOR").count(),
+            1,
+            "two declarers, one merged entry, one finding: {env:?}"
+        );
         assert_eq!(json["summary"]["hasEnvDrift"], serde_json::json!(true));
         let human = strip_ansi(&cap.human());
         assert!(
@@ -1515,6 +1548,14 @@ mod tests {
         assert!(
             human.contains("module:env-mod"),
             "the finding renders under its owner's group: {human}"
+        );
+        assert!(
+            !human.contains("module:aaa-dep"),
+            "the outvoted declarer owns nothing, so its group never opens: {human}"
+        );
+        assert!(
+            human.contains("vim") && !human.contains("emacs"),
+            "the declared operand is the merge winner's value: {human}"
         );
 
         // The record half: the scoped check recorded the row it can vouch
@@ -1535,6 +1576,91 @@ mod tests {
                 .any(|r| matches!(r.resource_type.as_str(), "env" | "env-rc")
                     || r.resource_id == "PAGER"),
             "nothing outside the module's ownership is recorded: {rows:?}"
+        );
+    }
+
+    /// A scoped diff whose env probe itself fails — the managed env file
+    /// exists but cannot be read — reports the failure as a first-class row
+    /// and flags `envCheckFailed`, the state `diff_exit_code` maps to
+    /// `Error` (1) ahead of `DriftDetected` (5): unknown outranks known on
+    /// the scoped surface exactly as on the three unscoped ones
+    /// (`tests/drift_exit_code.rs`). The fixture makes `~/.cfgd.env` a
+    /// DIRECTORY, so the read fails with something other than NotFound even
+    /// under root.
+    #[test]
+    #[serial]
+    fn a_module_diff_reports_an_env_probe_it_could_not_run() {
+        use crate::cli::helpers::tests::make_cli;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  modules:\n    - env-mod\n",
+        )
+        .unwrap();
+        let env_mod_dir = tmp.path().join("modules").join("env-mod");
+        std::fs::create_dir_all(&env_mod_dir).unwrap();
+        std::fs::write(
+            env_mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: env-mod\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        std::fs::create_dir_all(tmp_home.path().join(".cfgd.env")).unwrap();
+
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(tmp.path().join("state"));
+        cli.cache_dir = Some(tmp.path().join("cache"));
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_diff(&cli, &printer, Some("env-mod"), false).unwrap();
+        drop(printer);
+        let json = cap.json().expect("diff emits a data payload");
+        assert_eq!(
+            json["summary"]["envCheckFailed"],
+            serde_json::json!(true),
+            "an unreadable env file is a failed check, not a clean surface: {json}"
+        );
+        assert!(
+            json["envCheckError"]
+                .as_str()
+                .is_some_and(|e| !e.is_empty()),
+            "the payload names why the probe failed: {json}"
+        );
+        assert_eq!(
+            json["env"].as_array().map(Vec::as_slice),
+            Some(&[][..]),
+            "no per-item verdict survives a probe that never answered: {json}"
+        );
+        let human = strip_ansi(&cap.human());
+        assert!(
+            human.contains("error checking drift"),
+            "the failed probe renders as its own row: {human}"
+        );
+
+        // The exit mapping over exactly the summary this run put on the wire.
+        let summary = DiffSummary {
+            has_file_drift: json["summary"]["hasFileDrift"] == serde_json::json!(true),
+            has_pkg_drift: json["summary"]["hasPkgDrift"] == serde_json::json!(true),
+            has_system_drift: false,
+            system_check_failed: false,
+            has_env_drift: json["summary"]["hasEnvDrift"] == serde_json::json!(true),
+            env_check_failed: true,
+        };
+        assert_eq!(
+            diff_exit_code(&summary),
+            Some(cfgd_core::exit::ExitCode::Error),
+            "the scoped surface exits Error for a check that could not run"
         );
     }
 

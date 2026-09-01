@@ -161,10 +161,14 @@ fn drift_output() -> StatusOutput {
             status: ApplyStatus::Success,
             summary: None,
         }),
+        // Before `NOW` too, and older than the staleness window: a recorded
+        // row's own timestamp is evidence a check ran, and the report's
+        // freshness note and scan-hint gate both read the freshest of these
+        // and the machine-wide stamp.
         drift: vec![
             DriftEvent {
                 id: 10,
-                timestamp: "2026-05-14T12:00:00Z".into(),
+                timestamp: "2026-05-14T09:58:00Z".into(),
                 resource_type: "file".into(),
                 resource_id: "~/.zshrc".into(),
                 expected: Some("hash-desired".into()),
@@ -176,7 +180,7 @@ fn drift_output() -> StatusOutput {
             },
             DriftEvent {
                 id: 11,
-                timestamp: "2026-05-14T12:01:00Z".into(),
+                timestamp: "2026-05-14T09:59:00Z".into(),
                 resource_type: "package".into(),
                 resource_id: "ripgrep".into(),
                 expected: Some("14.1.0".into()),
