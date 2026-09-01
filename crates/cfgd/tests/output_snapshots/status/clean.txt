@@ -9,9 +9,6 @@ Last Apply
   Profile  default
   Age      5m
 
-Drift
-  ✓ No drift recorded — checked 5m ago
-
 Component Health (checked 5m ago)
   ✓ profile:default  — Synced (2 packages, 1 file)
   ✓ cfgd:env         — Synced (1 env file)

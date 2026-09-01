@@ -2400,11 +2400,12 @@ fn status_plain_keeps_recorded_dashboard_despite_live_drift() {
     // The human Doc renders to stderr; stdout is reserved for structured `-o`.
     let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(
-        out.contains("No drift recorded"),
-        "plain status shows the recorded dashboard (no live scan), got:\n{out}"
+        out.contains("`cfgd diff` checks the live machine"),
+        "plain status shows the recorded dashboard and points at the live \
+         check it did not run, got:\n{out}"
     );
     assert!(
-        !out.contains("No drift detected"),
+        !out.contains("No drift detected") && !out.contains("Drifted"),
         "nothing detected anything: the file at `deployed.conf` is drifted right \
          now and this run never looked, got:\n{out}"
     );

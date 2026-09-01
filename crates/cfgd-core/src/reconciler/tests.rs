@@ -13311,7 +13311,8 @@ fn verify_multiple_packages_mixed_status() {
         .expect("should have tmux result");
     assert!(!tmux_result.matches);
     assert_eq!(tmux_result.expected, "installed");
-    assert_eq!(tmux_result.actual, "missing");
+    // The stored literal is the one live_drift stores for the same fact.
+    assert_eq!(tmux_result.actual, crate::Absence::NotInstalled.as_str());
 }
 
 // --- format_action_description additional tests ---

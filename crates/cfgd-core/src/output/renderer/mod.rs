@@ -1130,11 +1130,27 @@ impl Renderer {
     /// captured output, because a child row belongs to the action above it,
     /// not to a block of its own.
     pub fn render_child_row(&self, w: &dyn Writer, depth: usize, target: &str, method: &str) {
+        self.render_child_row_labeled(w, depth, target, method, None);
+    }
+
+    /// [`Self::render_child_row`] with the trailing styled label slot filled —
+    /// the same at-end-of-subject composition a Status row's `label` takes
+    /// (via `finalize_subject`), for a nested finding annotated with the
+    /// source that declared it. The subject is folded and sanitized FIRST so
+    /// the renderer-owned label styling survives sanitation.
+    pub fn render_child_row_labeled(
+        &self,
+        w: &dyn Writer,
+        depth: usize,
+        target: &str,
+        method: &str,
+        label: Option<&crate::output::component::StatusLabel>,
+    ) {
         if self.verbosity == Verbosity::Quiet {
             return;
         }
         let target = crate::fold_home_in_text(target);
-        let subject = cursor_safe(&target);
+        let subject = finalize_subject(&self.theme, &target, None, None, label);
         let method = self.theme.muted.apply_to(cursor_safe(method)).to_string();
         self.emit_with(w, |e| {
             let padded = e

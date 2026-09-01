@@ -483,10 +483,12 @@ pub const MODULE_STATUS_ERROR: &str = "error";
 /// (`not applied`, `pending`, `available`) — a consumer matching on any of
 /// them sees exactly what it saw before.
 ///
-/// `drifted` is the caller's LIVE scan verdict, read from the same results
-/// that fill the report's Drift section, so `Drifted` can never contradict the
-/// rows beneath it. It is deliberately not storable: a recorded "drifted"
-/// would be a claim about a machine nobody has looked at since.
+/// `drifted` is the caller's drift verdict — a live scan's findings, or the
+/// unresolved RECORDED rows the same report renders — read from the very rows
+/// that fill the report's drift slots, so `Drifted` can never contradict the
+/// findings beneath it. It is deliberately never stored as a token: the store
+/// holds the finding rows themselves, and the word is re-derived from them at
+/// every render, so resolving the last row is what clears the word.
 ///
 /// Everything the store does not recognise reads `NotApplied` — the honest
 /// answer about a module no apply has recorded. `cfgd module list`'s

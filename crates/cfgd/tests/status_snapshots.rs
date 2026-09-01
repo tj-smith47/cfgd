@@ -322,6 +322,7 @@ fn per_module_output() -> ModuleStatus {
         ],
         drift: Vec::new(),
         drift_checked_live: false,
+        env_check_error: None,
         last_scan_at: None,
     }
 }
@@ -433,6 +434,7 @@ fn per_module_scanned_output() -> ModuleStatus {
             },
         ],
         drift_checked_live: true,
+        env_check_error: None,
         last_scan_at: None,
     }
 }

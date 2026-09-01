@@ -86,6 +86,13 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
                 },
             );
         }
+        Component::ChildRow {
+            subject,
+            detail,
+            label,
+        } => {
+            renderer.render_child_row_labeled(sink, depth + 1, subject, detail, label.as_ref());
+        }
         Component::Hint { text } => {
             renderer.render_hint(sink, depth, text);
         }
