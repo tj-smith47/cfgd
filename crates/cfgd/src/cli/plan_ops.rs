@@ -185,8 +185,10 @@ pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static s
             reconciler::ModuleActionKind::Skip { .. } => "skip",
         },
         reconciler::Action::Env(ea) => match ea {
-            reconciler::EnvAction::WriteEnvFile { .. } => "write",
-            reconciler::EnvAction::InjectSourceLine { .. } => "inject",
+            reconciler::EnvAction::WriteEnvFile { .. } => cfgd_core::reconciler::ENV_VERB_WRITE,
+            reconciler::EnvAction::InjectSourceLine { .. } => {
+                cfgd_core::reconciler::ENV_VERB_INJECT
+            }
             reconciler::EnvAction::RefreshLiveSession { .. } => "refresh",
         },
         reconciler::Action::Manager(ma) => match ma {
