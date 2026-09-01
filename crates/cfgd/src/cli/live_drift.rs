@@ -9,11 +9,16 @@
 //!
 //! The recording contract, stated once: a FULL-machine live check (`diff`,
 //! `status --scan`, a fleet-wide `verify`) records every finding as its own
-//! row ([`record_full_scan_findings`]), resolves recorded rows it did not
-//! re-find (`resolve_drift_not_in` — the daemon tick's own discipline in
-//! `daemon/reconcile.rs`), and stamps `record_scan`. A SCOPED check
-//! (`--module`) records and resolves only rows whose resource ids fall in
-//! its own scope — the keys it actually re-checked
+//! row ([`record_full_scan_findings`]), resolves recorded rows it re-checked
+//! and did not re-find (`resolve_drift_not_in` — the daemon tick's own
+//! discipline in `daemon/reconcile.rs`), and stamps `record_scan`. The
+//! daemon may resolve over its plan's complement because a plan covers every
+//! action class; a live check covers only the classes it evaluates, so every
+//! recorded row it CANNOT re-find — a class outside
+//! [`FULL_CHECK_RESOLVABLE_TYPES`], an id spelled by another writer, a
+//! configurator it never probed — stays standing for its own writer to
+//! settle. A SCOPED check (`--module`) records and resolves only rows whose
+//! resource ids fall in its own scope — the keys it actually re-checked
 //! ([`record_scoped_scan_findings`]) — and leaves the machine-wide stamp
 //! alone. Stored strings are the producer's literals; display folds
 //! (`fold_home_in_text`, the env declared-value recompute) never reach the
@@ -98,43 +103,75 @@ fn record_finding(state: &cfgd_core::state::StateStore, r: &VerifyResult) {
     }
 }
 
-/// The record half of a FULL-machine live check (see the module doc): one
-/// row per finding, then `resolve_drift_not_in` over the found set, so every
-/// recorded row the check did not re-find is marked healed — an empty found
-/// set resolves them all, exactly as a clean daemon tick does.
+/// The resource types a full CLI live check evaluates end to end, and so the
+/// ONLY types its complement-resolve may clear. Everything else in
+/// `drift_events` — the daemon's `secret`, `script`, `env-session` and
+/// `manager` rows, any class a future writer mints — is a finding nothing in
+/// this check re-examined, and stands for its own writer to settle. Also the
+/// vocabulary `cli/tests.rs`'s rendered-label walk skips: a `(type, id)`
+/// tuple pushed into a checked/findings vector is a wire key, never a
+/// rendered label.
+pub(in crate::cli) const FULL_CHECK_RESOLVABLE_TYPES: &[&str] = &[
+    "file", "module", "package", "system", "env", "env-rc", "env-var", "alias",
+];
+
+/// Whether a recorded row is one THIS full check could not have re-found, so
+/// the complement-resolve must keep it standing (see the module doc).
 ///
-/// `unchecked_system` names the system configurators whose probe errored
-/// during this check: their recorded rows can be vouched for neither way, so
-/// they are folded into the keep-set instead of being resolved as healed by
-/// a check that never saw them. If the keep-set itself cannot be read, the
-/// resolve is skipped outright — recording without resolving overstates
-/// drift at worst, while resolving rows nothing checked erases real findings.
+/// Three shapes qualify: a type outside [`FULL_CHECK_RESOLVABLE_TYPES`]; a
+/// comma-batched `package` id (the daemon records an install ACTION's batch,
+/// this check records one row per package — a batch id can never match a
+/// per-package re-check); and a `system` row outside the configurators this
+/// check actually evaluated — an errored probe, a tool that has since left
+/// the host, a platform-gated module — including the daemon's own
+/// `configurator:key` spelling, which no evaluated `configurator.` prefix
+/// matches.
+fn full_check_cannot_refind(e: &cfgd_core::state::DriftEvent, evaluated_system: &[String]) -> bool {
+    if !FULL_CHECK_RESOLVABLE_TYPES.contains(&e.resource_type.as_str()) {
+        return true;
+    }
+    match e.resource_type.as_str() {
+        "package" => e.resource_id.contains(','),
+        "system" => !evaluated_system.iter().any(|c| {
+            e.resource_id
+                .strip_prefix(c.as_str())
+                .is_some_and(|rest| rest.starts_with('.'))
+        }),
+        _ => false,
+    }
+}
+
+/// The record half of a FULL-machine live check (see the module doc): one
+/// row per finding, then `resolve_drift_not_in` over the found set plus the
+/// keep-set of rows this check cannot re-find
+/// ([`full_check_cannot_refind`]), so every recorded row the check
+/// re-examined and did not re-find is marked healed — and nothing else is.
+///
+/// `evaluated_system` names the system configurators whose probe answered
+/// during this check; a recorded `system` row outside them can be vouched
+/// for neither way and stays standing. If the keep-set itself cannot be
+/// read, the resolve is skipped outright — recording without resolving
+/// overstates drift at worst, while resolving rows nothing checked erases
+/// real findings.
 pub(super) fn record_full_scan_findings<'a>(
     state: &cfgd_core::state::StateStore,
     findings: impl IntoIterator<Item = &'a VerifyResult>,
-    unchecked_system: &[String],
+    evaluated_system: &[String],
 ) {
     let mut current: Vec<(String, String)> = Vec::new();
     for r in findings {
         record_finding(state, r);
         current.push((r.resource_type.clone(), r.resource_id.clone()));
     }
-    if !unchecked_system.is_empty() {
-        match state.unresolved_drift() {
-            Ok(rows) => current.extend(
-                rows.into_iter()
-                    .filter(|e| {
-                        e.resource_type == "system"
-                            && unchecked_system
-                                .iter()
-                                .any(|c| e.resource_id.starts_with(&format!("{c}.")))
-                    })
-                    .map(|e| (e.resource_type, e.resource_id)),
-            ),
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to read recorded drift; leaving rows unresolved");
-                return;
-            }
+    match state.unresolved_drift() {
+        Ok(rows) => current.extend(
+            rows.into_iter()
+                .filter(|e| full_check_cannot_refind(e, evaluated_system))
+                .map(|e| (e.resource_type, e.resource_id)),
+        ),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read recorded drift; leaving rows unresolved");
+            return;
         }
     }
     if let Err(e) = state.resolve_drift_not_in(&current) {
@@ -403,9 +440,7 @@ fn live_drift_results_inner(
     let pkg_actions =
         packages::plan_packages(&resolved.merged, modules, &all_managers, cfgd_installed, cx)?;
     for action in &pkg_actions {
-        if let Some(result) = package_action_drift(action) {
-            drift.push(result);
-        }
+        drift.extend(package_action_drift(action));
     }
 
     // Managers: a manager the plan would provision or refuse is itself drift —
@@ -425,7 +460,7 @@ fn live_drift_results_inner(
     // map combines profile and module system config so module system tweaks
     // surface here exactly as they do on the write path.
     sp.set_message("Scanning: system");
-    let mut unchecked_system: Vec<String> = Vec::new();
+    let mut evaluated_system: Vec<String> = Vec::new();
     let system = cfgd_core::effective::effective_system_map(&resolved.merged, modules);
     for configurator in &registry.available_system_configurators() {
         if let Some(desired) = system.get(configurator.name()) {
@@ -435,23 +470,21 @@ fn live_drift_results_inner(
             // (`diff`/`verify`) reports such errors to the user. Indeterminate
             // cuts both ways: the recorder keeps this configurator's recorded
             // rows standing rather than resolving what nothing re-checked.
-            match configurator.diff(desired) {
-                Ok(drifts) => {
-                    for d in &drifts {
-                        drift.push(VerifyResult {
-                            resource_type: "system".to_string(),
-                            resource_id: cfgd_core::reconciler::system_resource_key(
-                                configurator.name(),
-                                &d.key,
-                            ),
-                            matches: false,
-                            expected: d.expected.clone(),
-                            actual: d.actual.clone(),
-                            unmanaged: false,
-                        });
-                    }
+            if let Ok(drifts) = configurator.diff(desired) {
+                evaluated_system.push(configurator.name().to_string());
+                for d in &drifts {
+                    drift.push(VerifyResult {
+                        resource_type: "system".to_string(),
+                        resource_id: cfgd_core::reconciler::system_resource_key(
+                            configurator.name(),
+                            &d.key,
+                        ),
+                        matches: false,
+                        expected: d.expected.clone(),
+                        actual: d.actual.clone(),
+                        unmanaged: false,
+                    });
                 }
-                Err(_) => unchecked_system.push(configurator.name().to_string()),
             }
         }
     }
@@ -482,37 +515,50 @@ fn live_drift_results_inner(
         .filter(|r| !r.matches),
     );
 
-    record_full_scan_findings(state, &drift, &unchecked_system);
+    record_full_scan_findings(state, &drift, &evaluated_system);
 
     Ok(drift)
 }
 
-/// Map a non-`Skip` [`PackageAction`] to a drift `VerifyResult`. Returns `None`
-/// for `Skip` (the desired/installed sets already agree). The `actual` verb is
-/// chosen to read naturally in the drift display (e.g. "not installed").
-pub(super) fn package_action_drift(action: &PackageAction) -> Option<VerifyResult> {
+/// Map a non-`Skip` [`PackageAction`] to its drift `VerifyResult` rows — ONE
+/// row per package, never the action's batch. A `package` ROW's identity is
+/// per-package (`<manager>:<name>`) everywhere it is minted: the batch id an
+/// install ACTION carries names a unit no per-package re-check (`status
+/// <module> --scan`, `diff --module`, core `verify`) can ever match, so a
+/// batch-keyed row could only be resolved by another batch of exactly the
+/// same members. Empty for `Skip` (the desired/installed sets already
+/// agree). The `actual` verb is chosen to read naturally in the drift
+/// display (e.g. "not installed").
+pub(super) fn package_action_drift(action: &PackageAction) -> Vec<VerifyResult> {
+    let row = |manager: &str, package: &String, expected: &str, actual: String| VerifyResult {
+        resource_type: "package".to_string(),
+        resource_id: super::diff::package_resource_id(manager, std::slice::from_ref(package)),
+        matches: false,
+        expected: expected.to_string(),
+        actual,
+        unmanaged: false,
+    };
     match action {
-        PackageAction::Skip { .. } => None,
+        PackageAction::Skip { .. } => Vec::new(),
         PackageAction::Install {
             manager, packages, ..
-        } => Some(VerifyResult {
-            resource_type: "package".to_string(),
-            resource_id: super::diff::package_resource_id(manager, packages),
-            matches: false,
-            expected: "installed".to_string(),
-            actual: cfgd_core::Absence::NotInstalled.to_string(),
-            unmanaged: false,
-        }),
+        } => packages
+            .iter()
+            .map(|p| {
+                row(
+                    manager,
+                    p,
+                    "installed",
+                    cfgd_core::Absence::NotInstalled.to_string(),
+                )
+            })
+            .collect(),
         PackageAction::Uninstall {
             manager, packages, ..
-        } => Some(VerifyResult {
-            resource_type: "package".to_string(),
-            resource_id: super::diff::package_resource_id(manager, packages),
-            matches: false,
-            expected: "absent".to_string(),
-            actual: "to remove".to_string(),
-            unmanaged: false,
-        }),
+        } => packages
+            .iter()
+            .map(|p| row(manager, p, "absent", "to remove".to_string()))
+            .collect(),
     }
 }
 
