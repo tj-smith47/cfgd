@@ -596,10 +596,10 @@ the flat `drift` array.
 A recorded `env-var` or `alias` row is re-read against the machine before it is
 shown. If the declared line is the line the managed env file now holds, the row
 healed since it was recorded and is not reported at all (state clears it on the
-next apply or scan). If it still differs, the human row states the terse cause
-(`missing`), and `-o json` adds `want` and `have` — the real declared line
-against what the file holds — beside the row's stored `expected` and
-`actual`. The stored pair keeps the bytes the row was written with (the opaque
+next apply or scan). If it still differs, the human row shows the real operands
+(`want: export EDITOR="vim" …, have: missing` — a reader healing drift needs
+the declared value in front of them), and `-o json` adds the same pair as
+`want` and `have` beside the row's stored `expected` and `actual`. The stored pair keeps the bytes the row was written with (the opaque
 `current` / `missing or changed` markers a keyed record describes itself by); the
 additive pair carries what the re-read found. Both additive fields are omitted
 when nothing was re-read, which includes every live `--scan` finding: those are
@@ -630,8 +630,11 @@ packages, and the env vars and aliases its chain owns (the same per-item check
 `cfgd diff --module` runs, so a scoped workflow records AND heals its own
 shell rows): it does not evaluate the module's system-config contribution
 (`effective_system_map` folds that into the profile-wide scan) or manager
-drift. `cfgd diff --module` shares the whole scope (see
-[`cfgd diff`](#cfgd-diff)).
+drift. A scoped scan whose env probe itself fails (the managed env file exists
+but cannot be read) reports the same `error checking drift` row, exits `1`
+under `--exit-code`, and its `-o json` carries the failure in `systemErrors` —
+the same `{key, error}` entries the fleet payload uses for the same fact.
+`cfgd diff --module` shares the whole scope (see [`cfgd diff`](#cfgd-diff)).
 
 The fleet report's `Managed Resources` table names an owner per row, in the same
 vocabulary the plan and apply trees head their groups with and `cfgd diff`

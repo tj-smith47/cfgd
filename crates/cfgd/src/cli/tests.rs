@@ -31034,11 +31034,14 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
 /// through the same ownership vocabulary every producer's group heading uses
 /// (`reconciler::owner_of`'s split: a module id names its module, a package
 /// is the module whose resolution declares it under the id's own manager,
-/// and everything else the profile). A drifted owner's verdict flips to
-/// `Drifted` — the RECORDED verdict, read off the same rows nested beneath
-/// it, so the word and the findings cannot disagree — and its parenthetical
-/// states the SHORTFALL (`1 of 6 files`), never the raw inventory. A
-/// non-local row keeps its `source:<name>` attribution on the nested line.
+/// then the profile when the profile's own recorded package rows hold it —
+/// and a package NOBODY declares renders loose rather than pinned on a wrong
+/// owner). A drifted owner's verdict flips to `Drifted` — the RECORDED
+/// verdict, read off the same rows nested beneath it, so the word and the
+/// findings cannot disagree — and its parenthetical states the SHORTFALL
+/// (`1 of 6 files`), never the raw inventory; a whole-module verdict has no
+/// countable noun, so its row is the bare verdict with no child. A non-local
+/// row keeps its `source:<name>` attribution on the nested line.
 #[test]
 #[serial_test::serial]
 fn component_health_nests_the_recorded_drift_under_its_owner() {
@@ -31067,6 +31070,28 @@ fn component_health_nests_the_recorded_drift_under_its_owner() {
             have: None,
         }
     };
+    // tmux carries only the daemon's whole-module verdict — the row that has
+    // no countable noun and no child of its own.
+    output.modules.push(super::status::ModuleStatusEntry {
+        name: "tmux".into(),
+        packages: 2,
+        files: 0,
+        scripts: 0,
+        status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
+        platform_skip_reason: None,
+        declared: Default::default(),
+    });
+    // The profile's own recorded package row, so `fd` has a declaration the
+    // ownership walk can find — `ripgrep` deliberately has none.
+    output
+        .managed_resources
+        .push(cfgd_core::state::ManagedResource {
+            resource_type: "package".into(),
+            resource_id: "brew:fd".into(),
+            source: "local".into(),
+            last_hash: Some("hash1".into()),
+            last_applied: Some(1_715_680_800),
+        });
     output.drift = vec![
         event(
             "module",
@@ -31075,10 +31100,25 @@ fn component_health_nests_the_recorded_drift_under_its_owner() {
             "content differs from source",
         ),
         event("package", "npm:typescript", "installed", "not installed"),
+        event("package", "brew:fd", "installed", "not installed"),
         {
             let mut e = event("package", "brew:ripgrep", "installed", "not installed");
             e.source = "team-config".into();
             e
+        },
+        // The daemon's whole-module action spelling: a bare module id,
+        // `expected` empty, recorded exactly as `reconcile_tick` writes it.
+        cfgd_core::state::DriftEvent {
+            id: 0,
+            timestamp: "2026-05-14T10:02:00Z".into(),
+            resource_type: "module".into(),
+            resource_id: "tmux".into(),
+            expected: None,
+            actual: Some("drift detected".into()),
+            resolved_by: None,
+            source: cfgd_core::config::LOCAL_LAYER.into(),
+            want: None,
+            have: None,
         },
     ];
 
@@ -31142,12 +31182,43 @@ fn component_health_nests_the_recorded_drift_under_its_owner() {
         "the package finding nests under the declaring module:\n{section}"
     );
 
-    // A package no module declares is the profile's, and a non-local row
-    // keeps its source attribution on the nested line.
+    // A package the profile's own recorded row declares is the profile's.
     let profile = row_at("profile:base");
     assert!(
         lines[profile].contains("Drifted"),
-        "an undeclared package's drift is the profile's:\n{}",
+        "a profile-declared package's drift is the profile's:\n{}",
+        lines[profile]
+    );
+    assert!(
+        lines
+            .get(profile + 1)
+            .is_some_and(|l| l.contains("fd") && l.contains("not installed")),
+        "the declared package finding nests under the profile:\n{section}"
+    );
+
+    // The daemon's whole-module verdict flips its owner with a BARE verdict —
+    // no raw-inventory parenthetical pretending everything it holds drifted —
+    // and no child row that only repeats the owner token above it.
+    let tmux = row_at("module:tmux");
+    assert!(
+        lines[tmux].contains("Drifted") && !lines[tmux].contains('('),
+        "a whole-module verdict has no countable noun, so the row is the bare \
+         verdict:\n{}",
+        lines[tmux]
+    );
+    assert_eq!(
+        lines.iter().filter(|l| l.contains("module:tmux")).count(),
+        1,
+        "no child row repeats its parent's own token:\n{section}"
+    );
+
+    // A package NOBODY declares — no module's resolution, no recorded profile
+    // row — cannot be pinned on the profile: it renders as a loose finding of
+    // its own, the profile's verdict untouched by it, and a non-local row
+    // keeps its source attribution.
+    assert!(
+        lines[profile].contains("(1 of 1 package)"),
+        "the profile's shortfall prices only what the profile declares:\n{}",
         lines[profile]
     );
     let ripgrep = lines
@@ -31157,6 +31228,10 @@ fn component_health_nests_the_recorded_drift_under_its_owner() {
     assert!(
         ripgrep.contains("source:team-config"),
         "a non-local finding keeps its source token:\n{ripgrep}"
+    );
+    assert!(
+        ripgrep.contains("not installed"),
+        "the loose row still states its cause:\n{ripgrep}"
     );
 
     // The Warn verdict carries the warning style — the deferred half of the
@@ -31224,16 +31299,36 @@ fn the_fleet_heading_annotation_states_the_checks_freshness() {
 #[test]
 fn one_stored_literal_for_a_missing_package() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let producers = [
-        "crates/cfgd-core/src/reconciler/verify.rs",
-        "crates/cfgd/src/cli/live_drift.rs",
-        "crates/cfgd/src/cli/diff.rs",
-        "crates/cfgd/src/cli/status.rs",
+    // The whole production tree, not a hand-list of known producers: the
+    // sibling walk's shape (`every_empty_drift_verdict_states_whether_a_check_ran`),
+    // so a NEW file constructing package rows trips the rule the day it
+    // lands. Dedicated test files are skipped — this test's own source
+    // quotes the needle, and a fixture may seed a legacy literal on purpose.
+    let mut files = Vec::new();
+    let mut stack = vec![
+        root.join("crates/cfgd-core/src"),
+        root.join("crates/cfgd/src"),
     ];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs")
+                || path.file_name().is_some_and(|n| n == "tests.rs")
+            {
+                continue;
+            }
+            files.push(path);
+        }
+    }
     let mut seen = 0usize;
     let mut offenders = Vec::new();
-    for file in producers {
-        let text = std::fs::read_to_string(root.join(file)).unwrap();
+    for path in files {
+        let file = cfgd_core::to_posix_string(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if !line.contains(r#"resource_type: "package""#) {
@@ -31332,6 +31427,26 @@ fn every_empty_drift_verdict_states_whether_a_check_ran() {
             "`{home}` no longer carries its verdict — move this walk's allowlist deliberately"
         );
     }
+
+    // The freshness half of the claim is a POPULATION, not a phrase:
+    // `drift_checked_note` is the one composer of "how stale is this
+    // verdict", and its production call sites are exactly the two status
+    // surfaces that render recorded verdicts — the fleet heading annotation
+    // and the per-module Drift section's scan note. A surface that renders a
+    // recorded verdict without routing its freshness through the composer
+    // re-opens the undated-"no drift" gap this pair exists to close.
+    let status_src = std::fs::read_to_string(root.join("crates/cfgd/src/cli/status.rs")).unwrap();
+    let call_sites = status_src
+        .matches("drift_checked_note(")
+        .count()
+        .saturating_sub(usize::from(status_src.contains("fn drift_checked_note(")));
+    assert_eq!(
+        call_sites, 2,
+        "`drift_checked_note`'s production call sites are the fleet heading \
+         annotation and the module Drift section's scan note; a surface \
+         added or dropped here moves the freshness population — update this \
+         count with the surface list above"
+    );
 }
 
 /// The fleet dashboard's Last Apply block leads on its verdict: `Result`,
@@ -32421,7 +32536,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         }],
         drift_checked_live: true,
         last_scan_at: None,
-        env_check_error: None,
+        system_errors: Vec::new(),
     };
     let source_show = super::output_types::SourceShowOutput {
         name: "team".into(),
@@ -33105,7 +33220,7 @@ fn diff_and_scan_agree_on_the_findings() {
 fn every_exit_code_surface_reports_an_erroring_check() {
     use clap::CommandFactory;
 
-    fn collect(cmd: &clap::Command, path: &str, out: &mut Vec<String>) {
+    fn collect(cmd: &clap::Command, path: &str, out: &mut Vec<(String, bool)>) {
         for sub in cmd.get_subcommands() {
             let sub_path = if path.is_empty() {
                 sub.get_name().to_string()
@@ -33116,7 +33231,8 @@ fn every_exit_code_surface_reports_an_erroring_check() {
                 .get_arguments()
                 .any(|a| a.get_long() == Some("exit-code"))
             {
-                out.push(sub_path.clone());
+                let scoped = sub.get_arguments().any(|a| a.get_long() == Some("module"));
+                out.push((sub_path.clone(), scoped));
             }
             collect(sub, &sub_path, out);
         }
@@ -33128,10 +33244,39 @@ fn every_exit_code_surface_reports_an_erroring_check() {
     surfaces.sort();
     assert_eq!(
         surfaces,
-        ["diff", "status", "verify"],
+        [
+            ("diff".into(), true),
+            ("status".into(), true),
+            ("verify".into(), true)
+        ],
         "a new --exit-code surface must report an erroring check as its own \
          row and exit Error ahead of DriftDetected; cover it in \
          tests/drift_exit_code.rs and docs/cli-reference.md's exit-code \
          table, then add it here"
     );
+
+    // A surface carrying both `--exit-code` and `--module` is TWO surfaces:
+    // the flag-scoped variant runs a different (module-chain) walk with its
+    // own erroring check, and the clap tree cannot show it as a subcommand —
+    // so the weld to the matrix is by spelling. `status --module` and
+    // `diff --module` each hold a cell in `SCOPED_EXIT_CODE_SURFACES`;
+    // `verify --module` deliberately evaluates no env half (a scoped run's
+    // composition is module-only config — `cli/verify.rs`), so it has no
+    // erroring-check cell to hold.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let matrix = std::fs::read_to_string(root.join("tests/drift_exit_code.rs")).unwrap();
+    for spelling in [
+        r#"&["status", "--scan", "--exit-code"]"#,
+        r#"&["diff", "--exit-code"]"#,
+        r#"&["verify", "--exit-code"]"#,
+        r#"&["status", "--module", "envmod", "--scan", "--exit-code"]"#,
+        r#"&["diff", "--module", "envmod", "--exit-code"]"#,
+    ] {
+        assert!(
+            matrix.contains(spelling),
+            "tests/drift_exit_code.rs no longer holds the `{spelling}` cell — \
+             every --exit-code surface, flag-scoped variants included, keeps \
+             its erroring-check matrix row"
+        );
+    }
 }
