@@ -586,12 +586,18 @@ fn a_withheld_resource_is_recognized_under_every_recorded_grammar() {
         crate::expand_tilde,
     );
     let cases: &[(&str, &str, bool)] = &[
-        // The daemon's file rows carry the exclusion set's own id.
+        // The daemon's file rows carry the exclusion set's own id...
         ("file", "/tmp/w/app.conf", true),
         ("file", "/tmp/w/other.conf", false),
+        // ...and the CLI's carry the `display_posix` spelling, folded before
+        // matching so a Unix target with a legal `\` keeps where it pruned.
+        ("file", r"/home/u/od\d.conf", true),
         // The CLI's module-file rows, matched on the trimmed tail...
         ("module", "dev/tmp/w/app.conf", true),
         ("module", "dev/tmp/w/other.conf", false),
+        // A bare module id carries no trace of the withheld file, so the
+        // exclusions answer false and the prune's own `resource_ids` carrier
+        // is what keeps that row.
         ("module", "dev", false),
         // ...with the tail folded the way the exclusion set folds, so a Unix
         // target carrying a legal `\` keeps exactly where it pruned.
@@ -608,16 +614,19 @@ fn a_withheld_resource_is_recognized_under_every_recorded_grammar() {
         ("package", "refuse:brew", true),
         ("package", "provision:brew-cask", true),
         ("package", "provision:cargo", false),
-        // Both system spellings; a configurator is withheld whole.
+        // All three system spellings — keyed both ways, and the bare id a
+        // pruned Skip mints, which IS the configurator name; a configurator
+        // is withheld whole.
         ("system", "gsettings.org.gnome.x key", true),
         ("system", "gsettings:org.gnome.x key", true),
         ("system", "xfconf.k", false),
-        ("system", "gsettings", false),
+        ("system", "gsettings", true),
+        ("system", "xfconf", false),
         // The env surface is withheld as a unit, every spelling under it.
         ("env-var", "EDITOR", true),
         ("alias", "ll", true),
-        ("env", "env:write:/home/u/.cfgd.env", true),
-        ("env-rc", "rc:/home/u/.zshrc", true),
+        ("env", "/home/u/.cfgd.env", true),
+        ("env-rc", "/home/u/.zshrc", true),
         ("env-session", crate::state::ENV_SESSION_RESOURCE_ID, true),
         ("a-type-no-grammar-mints", "x", false),
     ];
@@ -2108,7 +2117,7 @@ fn an_all_withheld_manager_is_withheld_with_its_packages() {
         warnings: Vec::new(),
     };
 
-    let withheld = crate::reconciler::withhold_from_plan(&mut plan, &exclusions);
+    let withheld = crate::reconciler::withhold_from_plan(&mut plan, &exclusions).actions;
 
     let nodes: Vec<String> = plan
         .phases
@@ -3945,7 +3954,7 @@ fn a_dotted_custom_manager_source_batch_is_withheld_fail_closed_with_a_warning()
         )])],
         warnings: Vec::new(),
     };
-    let pruned = crate::reconciler::withhold_from_plan(&mut plan, &exclusions);
+    let pruned = crate::reconciler::withhold_from_plan(&mut plan, &exclusions).actions;
     assert_eq!(pruned, 0, "the batch survives with one fewer entry");
     assert_eq!(
         installed_batches(&plan.phases[0]),
@@ -12714,6 +12723,15 @@ spec:
     /// declared resolves in the same tick — which is also the proof the tick
     /// really ran rather than skipping fail-closed.
     ///
+    /// The `solo` module exercises the AGGREGATE row: its only file is
+    /// withheld, so the prune empties the whole module action and the bare
+    /// `("module", "solo")` id vanishes from the plan — an id the exclusions
+    /// cannot answer for, kept only by the prune's own `resource_ids`
+    /// carrier. The closing Auto tick is the discriminator that the prune
+    /// still withholds at all: were it to stop, the auto-apply would write
+    /// the withheld targets and this test's keep assertions would stay green
+    /// for the wrong reason.
+    ///
     /// Serial: `spec.sources` makes the tick resolve the source cache through
     /// `default_cache_dir_for`, which reads the process-global
     /// `CFGD_CACHE_DIR` BEFORE the test-home override — several sibling tests
@@ -12732,23 +12750,35 @@ spec:
         std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
         std::fs::write(
             tmp.path().join("profiles").join("default.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - dev\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - dev\n    - solo\n",
         )
         .unwrap();
         let module_dir = tmp.path().join("modules").join("dev");
         std::fs::create_dir_all(&module_dir).unwrap();
         std::fs::write(module_dir.join("app.conf"), "withheld\n").unwrap();
         std::fs::write(module_dir.join("extra.conf"), "planned\n").unwrap();
-        // Neither target exists, so both files would plan a redeploy; the
-        // decision withholds one of them from that plan.
+        // None of the targets exist, so every file would plan a redeploy; the
+        // decisions withhold two of them from that plan.
         let withheld_target = tmp.path().join("deploy").join("app.conf");
         let planned_target = tmp.path().join("deploy").join("extra.conf");
+        let solo_target = tmp.path().join("deploy").join("solo.conf");
         std::fs::write(
             module_dir.join("module.yaml"),
             format!(
                 "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dev\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n    - source: extra.conf\n      target: {}\n      strategy: Copy\n",
                 crate::to_posix_string(&withheld_target),
                 crate::to_posix_string(&planned_target)
+            ),
+        )
+        .unwrap();
+        let solo_dir = tmp.path().join("modules").join("solo");
+        std::fs::create_dir_all(&solo_dir).unwrap();
+        std::fs::write(solo_dir.join("solo.conf"), "aggregate\n").unwrap();
+        std::fs::write(
+            solo_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: solo\nspec:\n  files:\n    - source: solo.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&solo_target)
             ),
         )
         .unwrap();
@@ -12773,16 +12803,25 @@ spec:
                     .record_drift("module", rid, Some("deployed"), Some("missing"), "local")
                     .unwrap();
             }
+            // The aggregate row a prior tick would have recorded for `solo`:
+            // its id carries no trace of the withheld file, so only the
+            // prune's carrier can keep it once the module's one action leaves
+            // the plan.
             store
-                .upsert_pending_decision(
-                    "acme",
-                    &format!("files.{}", crate::to_posix_string(&withheld_target)),
-                    "recommended",
-                    "install",
-                    "recommended file (from acme)",
-                    None,
-                )
+                .record_drift("module", "solo", None, Some("drift detected"), "local")
                 .unwrap();
+            for target in [&withheld_target, &solo_target] {
+                store
+                    .upsert_pending_decision(
+                        "acme",
+                        &format!("files.{}", crate::to_posix_string(target)),
+                        "recommended",
+                        "install",
+                        "recommended file (from acme)",
+                        None,
+                    )
+                    .unwrap();
+            }
         }
 
         let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
@@ -12811,10 +12850,46 @@ spec:
                 ("module", "dev"),
                 ("module", withheld_id.as_str()),
                 ("module", planned_id.as_str()),
+                ("module", "solo"),
             ],
             "the withheld file's row survives on the exclusions' say-so, the \
-             planned sibling's on the plan join, and the undeclared file's \
-             row resolves — proof the tick ran"
+             planned sibling's on the plan join, the emptied module's bare \
+             row on the prune's carrier, and the undeclared file's row \
+             resolves — proof the tick ran"
+        );
+        drop(store);
+
+        // The discriminator: a second tick that auto-applies. If the prune
+        // stopped withholding, the keep assertions above would still pass —
+        // rows the plan re-records look identical to rows the exclusions
+        // kept — but this apply would write the withheld targets. The policy
+        // goes into the config itself: a `__default__` tick reads
+        // `spec.daemon.reconcile.driftPolicy`, never the task's own fields,
+        // and the rewrite also moves the config fingerprint so the tick
+        // cache cannot hand back the first resolution.
+        std::fs::write(
+            &ctx.config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  daemon:\n    reconcile:\n      driftPolicy: Auto\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.invalid/acme.git\n",
+        )
+        .unwrap();
+        let mut auto_tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut auto_tasks)
+            .await
+            .unwrap();
+        assert!(
+            planned_target.exists(),
+            "the undecided sibling deploys — proof the Auto tick applied"
+        );
+        assert!(
+            !withheld_target.exists() && !solo_target.exists(),
+            "the targets awaiting a decision stay unwritten through an \
+             auto-applying tick"
         );
     }
 

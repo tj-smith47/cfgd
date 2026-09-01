@@ -2879,7 +2879,11 @@ fn legacy_manager_provision_rows_meet_the_package_grammar_on_open() {
     // spellings. Opening the store settles the legacy rows as ONE sweep over
     // both retyped ids: one with a standing `package` twin is the duplicate
     // and resolves, one without a twin is the only record of the finding and
-    // retypes, and history keeps the type it was recorded under.
+    // retypes, and history keeps the type it was recorded under. The rewind
+    // lands at 21 — the version real stores hold after migration 20's
+    // provision-only form ran — so the reopen drives exactly the
+    // already-migrated path migration 21 exists for, provision rows settling
+    // through its repeated predicate.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     {
@@ -2901,7 +2905,7 @@ fn legacy_manager_provision_rows_meet_the_package_grammar_on_open() {
         ] {
             store.record_drift(rtype, rid, None, None, "local").unwrap();
         }
-        rewind_schema_version(&store, 20);
+        rewind_schema_version(&store, 21);
     }
 
     let store = StateStore::open(&path).unwrap();
