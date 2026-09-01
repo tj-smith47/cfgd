@@ -56,13 +56,22 @@ where
 /// it as the worker's first statement, so blocking dispatch sites cannot
 /// forget the guard. In production the override is always `None`; the wrapper
 /// costs one thread-local read and is otherwise transparent.
+///
+/// The caller's `tracing` dispatcher rides along the same way: the closure is
+/// a continuation of the caller's work, so its events belong on the caller's
+/// subscriber. With no scoped subscriber the captured dispatcher IS the global
+/// default and installing it changes nothing; with one (a caller tracing a
+/// bounded operation), the blocking half's events land beside the async
+/// half's instead of silently falling through to the global default.
 pub fn spawn_blocking_with_test_home<F, R>(f: F) -> tokio::task::JoinHandle<R>
 where
     F: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
     let test_home = test_home_override();
+    let dispatcher = tracing::dispatcher::get_default(|d| d.clone());
     tokio::task::spawn_blocking(move || {
+        let _dispatch = tracing::dispatcher::set_default(&dispatcher);
         let _guard = test_home.as_deref().map(with_test_home_guard);
         f()
     })
