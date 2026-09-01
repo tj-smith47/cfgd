@@ -2889,8 +2889,12 @@ fn no_hints_flag_suppresses_the_hint_and_its_leading_blank_end_to_end() {
         .success();
     let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
+    // `trim_end()` would strip any number of trailing newlines, making this
+    // check pass even with a stranded blank line — compare the exact tail
+    // instead: one closing newline, never two, so a surviving blank (which
+    // would leave the string ending "planned\n\n") is falsifiable.
     assert!(
-        out.trim_end().ends_with("1 action planned"),
+        out.ends_with("1 action planned\n") && !out.ends_with("\n\n"),
         "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
     );
 }
@@ -2914,8 +2918,12 @@ fn cfgd_usage_hints_env_suppresses_the_hint_and_its_leading_blank_end_to_end() {
         .success();
     let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
+    // `trim_end()` would strip any number of trailing newlines, making this
+    // check pass even with a stranded blank line — compare the exact tail
+    // instead: one closing newline, never two, so a surviving blank (which
+    // would leave the string ending "planned\n\n") is falsifiable.
     assert!(
-        out.trim_end().ends_with("1 action planned"),
+        out.ends_with("1 action planned\n") && !out.ends_with("\n\n"),
         "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
     );
 }
@@ -2938,8 +2946,12 @@ fn spec_usage_hints_false_suppresses_the_hint_and_its_leading_blank_end_to_end()
         .success();
     let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
+    // `trim_end()` would strip any number of trailing newlines, making this
+    // check pass even with a stranded blank line — compare the exact tail
+    // instead: one closing newline, never two, so a surviving blank (which
+    // would leave the string ending "planned\n\n") is falsifiable.
     assert!(
-        out.trim_end().ends_with("1 action planned"),
+        out.ends_with("1 action planned\n") && !out.ends_with("\n\n"),
         "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
     );
 }
