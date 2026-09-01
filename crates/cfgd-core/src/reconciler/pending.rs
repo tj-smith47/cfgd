@@ -2123,6 +2123,7 @@ impl DecisionExclusions {
 
 /// What [`withhold_from_plan`] took out of a plan.
 #[derive(Debug, Default)]
+#[must_use = "a complement-resolve over the pruned plan must fold `resource_ids` into its keep set, or the withheld owners' rows are healed blind"]
 pub struct WithheldFromPlan {
     /// How many whole actions left the plan.
     pub actions: usize,

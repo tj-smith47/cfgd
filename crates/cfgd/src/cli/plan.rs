@@ -203,7 +203,9 @@ pub fn cmd_plan(
         plan_ops::DecisionWrites::ReadOnly,
         &actual_packages,
     )?;
-    reconciler::withhold_from_plan(
+    // The discard is deliberate: the CLI runs no complement-resolve over
+    // recorded drift, so the carrier's ids have no reader here.
+    let _ = reconciler::withhold_from_plan(
         &mut plan,
         &reconciler::DecisionExclusions::from_withheld(&withheld),
     );
