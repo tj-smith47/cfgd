@@ -224,6 +224,16 @@ impl FileStrategies {
         self.by_target.get(target).copied().unwrap_or(self.default)
     }
 
+    /// [`Self::for_target`] for a caller that must also know whether the
+    /// effective state still DECLARES the target at all: `None` for a target
+    /// no entry names, where the blanket lookup would answer the profile-wide
+    /// default about a file the resolution cannot speak for — a recorded row
+    /// outliving its declaration renders an absent cell, never a guess.
+    #[must_use]
+    pub fn for_declared_target(&self, target: &Path) -> Option<crate::config::FileStrategy> {
+        self.by_target.get(target).copied()
+    }
+
     /// An empty map over `default`, for a caller with no composed profile to
     /// derive one from.
     #[must_use]
@@ -630,6 +640,16 @@ mod tests {
             strategies.for_target(Path::new("/home/u/.never-declared")),
             FileStrategy::Patch,
             "a target nothing declares reads the default rather than a wrong answer"
+        );
+        assert_eq!(
+            strategies.for_declared_target(Path::new("/home/u/.gitconfig")),
+            Some(FileStrategy::Patch),
+            "a declared, strategy-less target still answers through the declared lookup"
+        );
+        assert_eq!(
+            strategies.for_declared_target(Path::new("/home/u/.never-declared")),
+            None,
+            "the declared lookup refuses a target no entry names"
         );
     }
 }

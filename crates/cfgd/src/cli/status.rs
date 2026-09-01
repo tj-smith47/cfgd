@@ -638,6 +638,7 @@ pub fn build_fleet_status_doc(
     configured_sources: &[SourceListEntry],
     now: &str,
     decision_contents: &super::DecisionContents,
+    resources: &ManagedResourceDetail,
 ) -> Doc {
     // One derivation for the whole document: the header's `Profile` row and
     // the Managed Resources Owner column name the same profile or neither does.
@@ -776,11 +777,15 @@ pub fn build_fleet_status_doc(
         "Managed Resources",
         &output.managed_resources,
         |s, items| {
-            let mut t = Table::new(["Type", "Owner", "Resource", "Source"])
+            // The Method column is declared unconditionally and filled only
+            // under `-o wide`, so the shared unfillable-column settle is what
+            // keeps it off the default table — one mechanism, not a second
+            // header list.
+            let mut t = Table::new(["Type", "Owner", "Resource", "Method", "Source"])
                 // A package list is what the reader acts on, so a narrow
                 // terminal wraps it rather than cutting names off the tail.
                 .wrapping();
-            for row in managed_resource_rows(items, &output.modules, profile) {
+            for row in managed_resource_rows(items, &output.modules, profile, resources) {
                 t = t.row(row);
             }
             s.table(t.without_unfillable_columns())
@@ -808,13 +813,49 @@ use cfgd_core::reconciler::ENV_RESOURCE_TYPE;
 /// Config Sources table renders for a version nobody has fetched.
 const NO_DETAIL: &str = cfgd_core::ABSENT;
 
-/// The Managed Resources rows, as `[Type, Owner, Resource, Source]`.
+/// What the Managed Resources table renders beyond the recorded rows
+/// themselves: whether this run is `-o wide`, and the per-file facts a wide
+/// table's rows are made of.
+///
+/// `module_files` holds each listed module's recorded file manifest — the
+/// rows the same apply wrote beside the `files:<n>` aggregate id — and
+/// `strategies` is the effective resolution a profile file's Method cell
+/// reads. Both stay empty on a surface that renders no per-file rows; the
+/// aggregate rendering degrades to the recorded count alone.
+pub struct ManagedResourceDetail {
+    pub wide: bool,
+    pub module_files: std::collections::BTreeMap<String, Vec<cfgd_core::state::ModuleFileRecord>>,
+    pub strategies: cfgd_core::effective::FileStrategies,
+}
+
+impl Default for ManagedResourceDetail {
+    fn default() -> Self {
+        Self {
+            wide: false,
+            module_files: std::collections::BTreeMap::new(),
+            strategies: cfgd_core::effective::FileStrategies::with_default(
+                cfgd_core::config::FileStrategy::default(),
+            ),
+        }
+    }
+}
+
+/// The Managed Resources rows, as `[Type, Owner, Resource, Method, Source]`.
 ///
 /// A recorded row is a state-matching key rather than a report: a `module`
 /// row's id carries the owner and the surface inside it, and a `package` row
 /// is ONE package where a reader wants the list a manager installed. Both are
 /// split out here, so the table can say whose each resource is and can render
 /// one row per manager rather than one per package.
+///
+/// `-o wide` is the fleet table at full granularity: a module's `files:<n>`
+/// aggregate blows up into one row per manifest file, and the Method column
+/// fills — a deployed file's resolved strategy in
+/// [`cfgd_core::config::FileStrategy::method_label`]'s words, an env surface's
+/// own verb from [`cfgd_core::reconciler::recorded_env_method`]. On the
+/// default table every Method cell stays [`NO_DETAIL`], and the shared
+/// unfillable-column settle drops the column whole; `-o json` carries the raw
+/// aggregate ids either way — the pinned wire contract.
 ///
 /// `profile` is what [`derivable_profile`] answered for the resolved name,
 /// which the recorded row does not carry: the Owner column reads the same
@@ -830,8 +871,9 @@ fn managed_resource_rows(
     items: &[cfgd_core::state::ManagedResource],
     modules: &[ModuleStatusEntry],
     profile: Option<&str>,
-) -> Vec<[String; 4]> {
-    let mut rows: Vec<[String; 4]> = Vec::new();
+    detail: &ManagedResourceDetail,
+) -> Vec<[String; 5]> {
+    let mut rows: Vec<[String; 5]> = Vec::new();
     let profile_owner = profile.map_or_else(
         || NO_DETAIL.to_string(),
         |p| cfgd_core::reconciler::Owner::profile(p).token(),
@@ -865,6 +907,7 @@ fn managed_resource_rows(
                 display_type(&r.resource_type).to_string(),
                 recorded_owner(r, &profile_owner),
                 resource,
+                recorded_row_method(r, detail),
                 r.source.clone(),
             ]);
             continue;
@@ -874,20 +917,42 @@ fn managed_resource_rows(
             .iter()
             .find(|m| m.name == module)
             .map(|m| &m.declared);
-        let (surface, detail) = rest.split_once(':').unwrap_or((rest, ""));
+        let (surface, item) = rest.split_once(':').unwrap_or((rest, ""));
+        let manifest = detail
+            .module_files
+            .get(module)
+            .map_or(&[][..], Vec::as_slice);
+        if surface == "files" && detail.wide && !manifest.is_empty() {
+            // Full granularity: the aggregate blows up into the manifest the
+            // same apply recorded beside it, one row per deployed file with
+            // the strategy that row itself carries.
+            for rec in manifest {
+                rows.push([
+                    display_type(surface).to_string(),
+                    owner.clone(),
+                    cfgd_core::fold_home_in_text(&rec.file_path),
+                    cfgd_core::config::FileStrategy::from_recorded(&rec.strategy)
+                        .map_or(NO_DETAIL, |s| s.method_label())
+                        .to_string(),
+                    r.source.clone(),
+                ]);
+            }
+            continue;
+        }
         let resource = match surface {
-            "files" => module_files_resource(detail, declared),
-            "packages" => module_packages_resource(detail, declared),
+            "files" => module_files_resource(item, declared, manifest),
+            "packages" => module_packages_resource(item, declared),
             "script" => declared
                 .and_then(|d| d.script_summary.clone())
                 .unwrap_or_else(|| NO_DETAIL.to_string()),
-            _ if detail.is_empty() => NO_DETAIL.to_string(),
-            _ => detail.to_string(),
+            _ if item.is_empty() => NO_DETAIL.to_string(),
+            _ => item.to_string(),
         };
         rows.push([
             display_type(surface).to_string(),
             owner,
             resource,
+            NO_DETAIL.to_string(),
             r.source.clone(),
         ]);
     }
@@ -898,6 +963,7 @@ fn managed_resource_rows(
             display_type("package").to_string(),
             profile_owner.clone(),
             format!("{manager}: {}", packages.join(", ")),
+            NO_DETAIL.to_string(),
             source.to_string(),
         ]);
     }
@@ -910,6 +976,42 @@ fn managed_resource_rows(
     let rank = |token: &String| order.iter().position(|o| o == token).unwrap_or(order.len());
     rows.sort_by(|a, b| rank(&a[1]).cmp(&rank(&b[1])).then_with(|| a.cmp(b)));
     rows
+}
+
+/// The Method cell of a recorded row that names no module — filled only under
+/// `-o wide`, so the default table's settle drops the column whole.
+///
+/// An env file's method is the verb its own apply ran (`write` / `inject`),
+/// reconstructed by [`cfgd_core::reconciler::recorded_env_method`]; the
+/// live-session row names an act, not a file, and carries none. A profile
+/// file's method is its RESOLVED strategy, asked of the one effective lookup
+/// and only for a target the effective state still declares — a recorded row
+/// outliving its declaration reads [`NO_DETAIL`] rather than a guessed
+/// default. Every other kind (a package, a script, a system setting, a
+/// secret) deploys nothing a method could name.
+fn recorded_row_method(
+    r: &cfgd_core::state::ManagedResource,
+    detail: &ManagedResourceDetail,
+) -> String {
+    if !detail.wide {
+        return NO_DETAIL.to_string();
+    }
+    if r.resource_type == ENV_RESOURCE_TYPE {
+        if is_session_env_row(r) {
+            return NO_DETAIL.to_string();
+        }
+        return cfgd_core::reconciler::recorded_env_method(&r.resource_id).to_string();
+    }
+    if r.resource_type == "file" {
+        return detail
+            .strategies
+            .for_declared_target(&cfgd_core::expand_tilde(std::path::Path::new(
+                &r.resource_id,
+            )))
+            .map_or(NO_DETAIL, |s| s.method_label())
+            .to_string();
+    }
+    NO_DETAIL.to_string()
 }
 
 /// The Owner column's token for a recorded row that names no module.
@@ -957,7 +1059,7 @@ fn owner_from_token(token: &str) -> Option<cfgd_core::reconciler::Owner> {
 /// A cell naming no owner ([`NO_DETAIL`]) is not in the returned order, so the
 /// caller's rank puts it past every named one: a row nothing can attribute
 /// sorts under the rows that can be.
-fn owner_render_order(rows: &[[String; 4]]) -> Vec<String> {
+fn owner_render_order(rows: &[[String; 5]]) -> Vec<String> {
     let mut owners: Vec<cfgd_core::reconciler::Owner> = rows
         .iter()
         .filter_map(|r| owner_from_token(&r[1]))
@@ -1017,8 +1119,19 @@ fn module_id_parts<'a>(resource_type: &str, resource_id: &'a str) -> Option<(&'a
 /// A module's file deployment: where the files land, and how many the apply
 /// that recorded the row declared. The count is the recorded fact; the root is
 /// what the current resolution says about it. Full paths are
-/// `cfgd status --module -o wide`'s job.
-fn module_files_resource(recorded_count: &str, declared: Option<&ModuleDeclared>) -> String {
+/// `cfgd status -o wide`'s job — except a manifest of ONE, where the bare
+/// folded path IS the whole deployment: a count of one is not an aggregate,
+/// and `<root> (1 file)` spends a parenthetical restating the row beside it.
+fn module_files_resource(
+    recorded_count: &str,
+    declared: Option<&ModuleDeclared>,
+    manifest: &[cfgd_core::state::ModuleFileRecord],
+) -> String {
+    if module_files_count(recorded_count) == Some(1)
+        && let [only] = manifest
+    {
+        return cfgd_core::fold_home_in_text(&only.file_path);
+    }
     let count = module_files_count(recorded_count).map(|n| cfgd_core::pluralize(n, "file"));
     let root = declared
         .and_then(|d| d.file_root.as_deref())
@@ -1764,6 +1877,39 @@ pub(super) fn cmd_status(
     // never held.
     let configured_sources = super::source::list::configured_source_entries(cfg, state);
 
+    // The per-file half of the table: each listed module's recorded manifest
+    // (read whenever a `files:<n>` row will render, because a manifest of one
+    // names the file the default table shows bare), and — only when the wide
+    // table will read them — the resolved profile-file strategies.
+    let wide = printer.is_wide();
+    let mut module_files: std::collections::BTreeMap<
+        String,
+        Vec<cfgd_core::state::ModuleFileRecord>,
+    > = std::collections::BTreeMap::new();
+    for r in &resources {
+        if let Some((module, rest)) = module_id_parts(&r.resource_type, &r.resource_id)
+            && (rest == "files" || rest.starts_with("files:"))
+            && !module_files.contains_key(module)
+        {
+            module_files.insert(module.to_string(), state.module_deployed_files(module)?);
+        }
+    }
+    let strategies = if wide {
+        cfgd_core::effective::effective_file_strategies(
+            &resolved.merged,
+            &resolved_modules,
+            &config_dir,
+            cfg.spec.file_strategy,
+        )
+    } else {
+        cfgd_core::effective::FileStrategies::with_default(cfg.spec.file_strategy)
+    };
+    let resource_detail = ManagedResourceDetail {
+        wide,
+        module_files,
+        strategies,
+    };
+
     let mut output = StatusOutput {
         last_apply,
         drift: drift_events,
@@ -1893,6 +2039,7 @@ pub(super) fn cmd_status(
         &configured_sources,
         &cfgd_core::utc_now_iso8601(),
         &decision_contents,
+        &resource_detail,
     ));
 
     if exit_code && !live_drift.is_empty() {
@@ -2350,7 +2497,7 @@ mod tests {
             None
         );
         assert_eq!(
-            module_files_resource("2", Some(&ModuleDeclared::default())),
+            module_files_resource("2", Some(&ModuleDeclared::default()), &[]),
             "2 files"
         );
     }
@@ -2388,6 +2535,7 @@ mod tests {
             ],
             &[],
             Some("base"),
+            &ManagedResourceDetail::default(),
         );
         assert_eq!(
             rows,
@@ -2396,12 +2544,14 @@ mod tests {
                     "package".to_string(),
                     "profile:base".to_string(),
                     "apt: git".to_string(),
+                    cfgd_core::ABSENT.to_string(),
                     "local".to_string()
                 ],
                 [
                     "package".to_string(),
                     "profile:base".to_string(),
                     "brew: bat, ripgrep".to_string(),
+                    cfgd_core::ABSENT.to_string(),
                     "local".to_string()
                 ],
             ]
@@ -2434,6 +2584,7 @@ mod tests {
             ],
             &[],
             Some("base"),
+            &ManagedResourceDetail::default(),
         );
 
         let mut expected = vec![
@@ -2475,12 +2626,13 @@ mod tests {
             &[recorded("package", "brew/bat"), remote],
             &[],
             Some("base"),
+            &ManagedResourceDetail::default(),
         );
         assert_eq!(rows.len(), 2, "{rows:?}");
         assert_eq!(rows[0][2], "brew: bat");
-        assert_eq!(rows[0][3], "local");
+        assert_eq!(rows[0][4], "local");
         assert_eq!(rows[1][2], "brew: fd");
-        assert_eq!(rows[1][3], "acme");
+        assert_eq!(rows[1][4], "acme");
     }
 
     /// A run that resolved no profile names one nowhere: the header leaves its
@@ -2499,6 +2651,7 @@ mod tests {
             ],
             &[],
             None,
+            &ManagedResourceDetail::default(),
         );
         let owners: Vec<&str> = rows.iter().map(|r| r[1].as_str()).collect();
         assert_eq!(
@@ -2527,6 +2680,7 @@ mod tests {
             ],
             &[nvim_entry(declared)],
             Some("base"),
+            &ManagedResourceDetail::default(),
         );
         let resources: Vec<&str> = rows.iter().map(|r| r[2].as_str()).collect();
         assert!(rows.iter().all(|r| r[1] == "module:nvim"), "{rows:?}");
@@ -2553,6 +2707,7 @@ mod tests {
             &[recorded("module", "nvim:packages:neovim,git")],
             &[nvim_entry(split)],
             Some("base"),
+            &ManagedResourceDetail::default(),
         );
         assert_eq!(rows[0][2], "git, neovim");
     }
@@ -2570,6 +2725,7 @@ mod tests {
             ],
             &[],
             Some("base"),
+            &ManagedResourceDetail::default(),
         );
         let resources: Vec<&str> = rows.iter().map(|r| r[2].as_str()).collect();
         assert_eq!(resources, vec!["4 files", "zsh", "-"]);
@@ -2589,6 +2745,7 @@ mod tests {
                 &[recorded("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID)],
                 &[],
                 Some("base"),
+                &ManagedResourceDetail::default(),
             );
             rows[0][2].clone()
         };
@@ -2628,6 +2785,7 @@ mod tests {
             ],
             &[],
             Some("base"),
+            &ManagedResourceDetail::default(),
         );
         // Owner order, so the surfaces are named in the order the tree
         // renders them: the profile's two rows, then cfgd's own env file.
@@ -3221,6 +3379,7 @@ mod tests {
             &[],
             "2026-05-12T14:30:25Z",
             &Default::default(),
+            &Default::default(),
         ));
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -3287,6 +3446,7 @@ mod tests {
                 &[],
                 // Pinned, never the wall clock: the age is a rendered value.
                 "2026-05-14T10:05:00Z",
+                &Default::default(),
                 &Default::default(),
             ));
             drop(printer);
@@ -3377,6 +3537,7 @@ mod tests {
                 },
                 &[],
                 "2026-05-14T10:05:00Z",
+                &Default::default(),
                 &Default::default(),
             ));
             drop(printer);
@@ -3552,6 +3713,7 @@ mod tests {
             &[],
             "2026-05-14T10:05:00Z",
             &Default::default(),
+            &Default::default(),
         ));
         drop(printer);
         cfgd_core::test_helpers::captured_text(&buf)
@@ -3679,7 +3841,12 @@ mod tests {
         output.managed_resources = resources.clone();
         let out = dashboard(&output);
 
-        let rows = managed_resource_rows(&resources, &output.modules, Some("base"));
+        let rows = managed_resource_rows(
+            &resources,
+            &output.modules,
+            Some("base"),
+            &ManagedResourceDetail::default(),
+        );
         let listed: usize = rows
             .iter()
             .filter(|row| row[0] == "package")
@@ -3726,7 +3893,12 @@ mod tests {
         let mut output = empty_output();
         output.managed_resources = resources.clone();
 
-        let table = managed_resource_rows(&resources, &[], Some("default"));
+        let table = managed_resource_rows(
+            &resources,
+            &[],
+            Some("default"),
+            &ManagedResourceDetail::default(),
+        );
         let rows_of =
             |owner: &str, ty: &str| table.iter().filter(|r| r[1] == owner && r[0] == ty).count();
         // A package row's Resource cell is `manager: a, b`; its unit is the
@@ -3905,6 +4077,7 @@ mod tests {
                 &[recorded("module", "nvim:packages:thing")],
                 &[nvim_entry(declared)],
                 Some("base"),
+                &ManagedResourceDetail::default(),
             );
             assert_eq!(
                 rows[0][2],
@@ -3924,6 +4097,7 @@ mod tests {
             &[recorded("module", "nvim:packages:neovim")],
             &[nvim_entry(both)],
             Some("base"),
+            &ManagedResourceDetail::default(),
         );
         assert_eq!(
             rows[0][2], "neovim",

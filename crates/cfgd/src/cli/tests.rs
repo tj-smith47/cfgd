@@ -6376,6 +6376,158 @@ fn cmd_apply_with_env_vars_windows() {
     cmd_apply_with_env_vars_for_host(false, 3 + session_refresh_targets());
 }
 
+/// `-o wide` is the fleet dashboard's full-granularity view: the Managed
+/// Resources table blows a module's `files:<n>` aggregate up into one row per
+/// deployed file and fills the Method column from what each producer recorded
+/// — the manifest's strategy for a module file, the resolved declaration for
+/// a profile file, the generated-vs-injected verb for an env target. The
+/// default table keeps the aggregates (the Method column settles away through
+/// `Table::without_unfillable_columns`), except that a count of one is no
+/// aggregate: a single-file module renders the file's own folded path. The
+/// `-o json` payload is a pinned wire contract and keeps the raw aggregate
+/// resource id either way.
+#[test]
+#[cfg(unix)]
+fn the_fleet_wide_table_lists_one_row_per_deployed_file_with_its_method() {
+    let (config_dir, state_dir) = setup_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let _probe =
+        cfgd_core::reconciler::with_env_host_probe_override_guard(declared_env_host_probe(false));
+
+    let files_dir = config_dir.path().join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join("gitconfig.txt"), "[user]\n").unwrap();
+    let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n  files:\n    managed:\n      - source: files/gitconfig.txt\n        target: ~/.gitconfig-cfgd\n        strategy: Copy\n  modules:\n    - nvim\n    - solo\n";
+    std::fs::write(
+        config_dir.path().join("profiles").join("default.yaml"),
+        profile,
+    )
+    .unwrap();
+
+    create_module_in_dir(
+        config_dir.path(),
+        "nvim",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  files:\n    - source: files/init.lua\n      target: ~/.config/nvim/init.lua\n      strategy: Copy\n    - source: files/keys.lua\n      target: ~/.config/nvim/keys.lua\n",
+    );
+    let nvim_files = config_dir.path().join("modules").join("nvim").join("files");
+    std::fs::write(nvim_files.join("init.lua"), "-- init\n").unwrap();
+    std::fs::write(nvim_files.join("keys.lua"), "-- keys\n").unwrap();
+
+    create_module_in_dir(
+        config_dir.path(),
+        "solo",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: solo\nspec:\n  files:\n    - source: files/solorc\n      target: ~/.solorc\n      strategy: Copy\n",
+    );
+    std::fs::write(
+        config_dir
+            .path()
+            .join("modules")
+            .join("solo")
+            .join("files")
+            .join("solorc"),
+        "solo\n",
+    )
+    .unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec![],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    let result = super::apply::cmd_apply(&cli, &test_printer(), &args);
+    assert!(result.is_ok(), "apply should succeed: {:?}", result.err());
+
+    // The default table keeps the aggregate — and renders a manifest of one
+    // as the file's own path, because a count of one is not an aggregate.
+    let (printer, buf) = test_printer_capture();
+    super::status::cmd_status(&cli, &printer, None, false, false, false).unwrap();
+    drop(printer);
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    let table = out
+        .split_once("Managed Resources")
+        .map(|(_, after)| after)
+        .unwrap_or_else(|| panic!("no Managed Resources section:\n{out}"));
+    assert!(
+        table.contains("(2 files)"),
+        "the default table keeps the aggregate: {out}"
+    );
+    assert!(
+        table.contains("~/.solorc"),
+        "a one-file module names its file outright: {out}"
+    );
+    assert!(
+        !table.contains("(1 file)"),
+        "a count of one is not an aggregate: {out}"
+    );
+    assert!(
+        !out.contains("Method"),
+        "the Method column settles off the default table: {out}"
+    );
+
+    // `-o wide`: one row per deployed file, the Method cell filled from what
+    // each producer recorded.
+    let mut wide_cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    wide_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
+    let (printer, cap) =
+        cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
+    super::status::cmd_status(&wide_cli, &printer, None, false, false, false).unwrap();
+    drop(printer);
+    let rendered = cfgd_core::output::strip_ansi(&cap.human());
+    // Only the table's own rows: the Component Health headline above it
+    // legitimately keeps its `(2 files)` tally.
+    let wide = rendered
+        .split_once("Managed Resources")
+        .map(|(_, after)| after)
+        .unwrap_or_else(|| panic!("no Managed Resources section:\n{rendered}"));
+    let row_of = |path: &str| -> &str {
+        wide.lines()
+            .find(|l| l.contains(path))
+            .unwrap_or_else(|| panic!("no `{path}` row in:\n{wide}"))
+    };
+    for (path, method) in [
+        ("~/.config/nvim/init.lua", "copy"),
+        ("~/.config/nvim/keys.lua", "symlink"),
+        ("~/.gitconfig-cfgd", "copy"),
+        ("~/.cfgd.env", "write"),
+        ("~/.bashrc", "inject"),
+    ] {
+        let row = row_of(path);
+        assert!(
+            row.contains(method),
+            "the `{path}` row carries method `{method}`: {row}\nin:\n{wide}"
+        );
+    }
+    assert!(
+        !wide.contains("(2 files)"),
+        "wide blows the aggregate up into per-file rows: {wide}"
+    );
+
+    // `-o json` is a pinned wire contract: the raw aggregate resource id
+    // survives untouched.
+    let mut json_cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    json_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+    let (printer, cap) =
+        cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    super::status::cmd_status(&json_cli, &printer, None, false, false, false).unwrap();
+    drop(printer);
+    let json = serde_json::to_string(&cap.json().expect("status emits json")).unwrap();
+    assert!(
+        json.contains("nvim:files:2"),
+        "json keeps the raw aggregate resource id: {json}"
+    );
+}
+
 #[test]
 fn cmd_status_with_modules() {
     let _pm_guard = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
@@ -30376,6 +30528,7 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
         &[],
         "2026-05-12T14:30:25Z",
         &Default::default(),
+        &Default::default(),
     ));
     drop(printer);
     let rendered = cfgd_core::test_helpers::captured_text(&buf);
@@ -30547,6 +30700,7 @@ fn component_health_doc(
         },
         &[],
         "2026-05-14T10:05:00Z",
+        &Default::default(),
         &Default::default(),
     )
 }
@@ -30743,6 +30897,7 @@ fn last_apply_leads_on_its_verdict() {
         },
         &[],
         "2026-05-12T14:30:25Z",
+        &Default::default(),
         &Default::default(),
     ));
     drop(printer);
@@ -31851,6 +32006,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
                 },
                 &[],
                 now,
+                &Default::default(),
                 &Default::default(),
             ),
         ),

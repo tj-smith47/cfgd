@@ -277,7 +277,7 @@ impl<'a> super::Reconciler<'a> {
             &action.module_name,
             &crate::to_posix_fs_key(target),
             &hash,
-            &format!("{:?}", strategy),
+            strategy.as_str(),
             apply_id,
         )?;
         Ok(())
