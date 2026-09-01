@@ -497,19 +497,42 @@ const MIGRATIONS: &[&str] = &[
     // that only grows, and it, the per-key resolvers and the set-based
     // resolvers' row-value `IN` all seek this index; only the complement
     // (`NOT IN`) resolver still examines every unresolved row, which is
-    // inherent to a complement. The retype: the daemon once recorded a failed
-    // provision cascade as `('manager', 'provision:<name>')` and its planned
-    // refusals as `('manager', 'refuse:<name>')`, while the CLI's live check
-    // mints both under `package` — two spellings of one finding, and nothing
-    // on a CLI-only host resolves the `manager` one. A legacy row with a
-    // standing `package` twin is the duplicate and resolves; one without a
-    // twin is the only record of the finding and is retyped so the live check
-    // and the apply can settle it. Resolved rows keep their recorded type —
-    // history describes what was written.
+    // inherent to a complement. The retype: the daemon once recorded a
+    // failed provision as `('manager', 'provision:<name>')` while the CLI's
+    // live check mints `('package', 'provision:<name>')` — two spellings of
+    // one finding, and nothing on a CLI-only host resolves the `manager`
+    // one. A legacy row with a standing `package` twin is the duplicate and
+    // resolves; one without a twin is the only record of the finding and is
+    // retyped so the live check and the apply can settle it. Resolved rows
+    // keep their recorded type — history describes what was written.
     "CREATE INDEX IF NOT EXISTS idx_drift_events_resource
          ON drift_events (resource_type, resource_id);
 
      UPDATE drift_events
+         SET resolved_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+       WHERE resource_type = 'manager'
+         AND resource_id GLOB 'provision:*'
+         AND resolved_by IS NULL AND resolved_at IS NULL
+         AND EXISTS (SELECT 1 FROM drift_events p
+                      WHERE p.resource_type = 'package'
+                        AND p.resource_id = drift_events.resource_id
+                        AND p.resolved_by IS NULL AND p.resolved_at IS NULL);
+
+     UPDATE drift_events
+         SET resource_type = 'package'
+       WHERE resource_type = 'manager'
+         AND resource_id GLOB 'provision:*'
+         AND resolved_by IS NULL AND resolved_at IS NULL;",
+    // Migration 21: migration 20's sweep for the `refuse:` twin the daemon
+    // recorded beside every failed provision cascade. A separate entry rather
+    // than a widened 20 because stores already sit at schema_version 21 —
+    // 20's provision-only form ran there, and the runner never revisits an
+    // entry a store's version says is done, so an edit to 20 would strand
+    // those stores' `refuse:` rows forever. Both predicates repeat so a store
+    // that skipped 20's sweep entirely is still settled whole; on one that
+    // ran it, the `provision:` half matches nothing. Same order for the same
+    // reason: resolve the twinned rows first, then retype the lone ones.
+    "UPDATE drift_events
          SET resolved_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
        WHERE resource_type = 'manager'
          AND (resource_id GLOB 'provision:*' OR resource_id GLOB 'refuse:*')

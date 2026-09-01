@@ -608,7 +608,12 @@ fn reconcile_tick(
     // discounting it: the tick's action count, the drift rows it records and
     // the actions an auto-apply executes then describe one set, and the header
     // cannot name a number the run disagrees with.
-    withhold_from_plan(&mut plan, &pending_exclusions);
+    // The prune also hands back the ids of every row it removed: the
+    // AGGREGATE spellings — a bare `("module", name)`, a manager node — carry
+    // no trace of the withheld resource, so the exclusions cannot re-derive
+    // them from a recorded id alone, and the keep-set below folds these in
+    // beside what `withholds_recorded_row` answers.
+    let withheld_row_ids = withhold_from_plan(&mut plan, &pending_exclusions).resource_ids;
 
     // Check drift policy to decide whether to auto-apply or just notify.
     // Per-module ticks may override the global value via their patch entry.
@@ -760,6 +765,11 @@ fn reconcile_tick(
                         || tick_cannot_refind(&e.resource_type, &e.resource_id, planned)
                 })
                 .map(|e| (e.resource_type, e.resource_id))
+                // The ids the prune itself removed from the plan: the
+                // aggregate spellings the exclusions cannot answer for. Ids
+                // no recorded row carries are harmless extra members of the
+                // keep-set — resolve_drift_not_in only spares what exists.
+                .chain(withheld_row_ids.iter().cloned())
                 .collect::<Vec<_>>(),
         ),
         Err(e) => {

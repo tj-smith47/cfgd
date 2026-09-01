@@ -63,7 +63,7 @@ pub use pending::{
     DecisionMint, DecisionScope, DecisionTargets, DecisionsTitleScope, DeliveredItems,
     MSG_ANSWER_DECISIONS, MSG_INCLUDE_DECLINED_DECISIONS, SourcePolicyReview, Subscriptions,
     TIER_LOCKED, TIER_OPTIONAL, TIER_RECOMMENDED, UndecidableBatch, WithheldDecisions,
-    answer_decisions_hint, configured_auto_apply, decision_resource_content,
+    WithheldFromPlan, answer_decisions_hint, configured_auto_apply, decision_resource_content,
     decision_row_annotation, decisions_by_source, declared_decision_fingerprints,
     declared_decision_paths, declined_decisions_title, hash_resources, local_profile,
     merged_entry_owners, mint_decisions, owns_decision_store, pending_decisions_title,

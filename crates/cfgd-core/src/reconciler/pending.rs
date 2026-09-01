@@ -2063,13 +2063,19 @@ impl DecisionExclusions {
     /// pending decision is about are resolved blind, though the tick
     /// deliberately did not judge them. Matches every id grammar a drift
     /// writer mints for the four exclusion vocabularies, both producers'
-    /// spellings per type.
+    /// spellings per type — except the AGGREGATE ids that carry no trace of
+    /// the withheld resource (a bare `("module", name)`, a manager node): the
+    /// exclusions cannot answer those from the id alone, so the prune itself
+    /// hands them back as [`WithheldFromPlan::resource_ids`].
     pub fn withholds_recorded_row(&self, resource_type: &str, resource_id: &str) -> bool {
         match resource_type {
-            // The daemon's file rows carry the same expanded, `/`-folded id
-            // the exclusion set stores (`withholds_action` compares the two
-            // directly).
-            "file" => self.files.contains(resource_id),
+            // Both producers' file rows: the daemon's carry the exclusion
+            // set's own `/`-folded id, the CLI's the `display_posix` one that
+            // keeps a Unix `\`. Folded before matching, mirroring the prune
+            // (which folds), so keep and prune answer alike either way.
+            "file" => self
+                .files
+                .contains(crate::posixify_text(resource_id).as_ref()),
             // The CLI's module-file rows: `<module>/<target>` with the
             // target's leading separator trimmed. The tail is folded
             // unconditionally before matching, the exclusion set's own
@@ -2099,11 +2105,14 @@ impl DecisionExclusions {
                     rest.split(',').any(|p| self.withholds_package(manager, p))
                 })
             }
-            // Both system grammars — the CLI's `<cfg>.<key>` and the daemon's
-            // `<cfg>:<key>`; a configurator is withheld whole.
-            "system" => resource_id
-                .split_once(['.', ':'])
-                .is_some_and(|(configurator, _)| self.system.contains(configurator)),
+            // Every system grammar — the CLI's `<cfg>.<key>`, the daemon's
+            // `<cfg>:<key>`, and the daemon's bare `<cfg>` (a planned
+            // `SystemAction::Skip`, which the prune removes whole); a
+            // configurator is withheld whole.
+            "system" => match resource_id.split_once(['.', ':']) {
+                Some((configurator, _)) => self.system.contains(configurator),
+                None => self.system.contains(resource_id),
+            },
             // The env surface is withheld as a unit, so every per-item and
             // per-file spelling under it is a row the tick did not judge.
             "env-var" | "alias" | "env" | "env-rc" | "env-session" => self.withholds_env_surface(),
@@ -2112,8 +2121,26 @@ impl DecisionExclusions {
     }
 }
 
-/// Prune every action `exclusions` withholds out of `plan`, returning how many
-/// actions left it.
+/// What [`withhold_from_plan`] took out of a plan.
+#[derive(Debug, Default)]
+pub struct WithheldFromPlan {
+    /// How many whole actions left the plan.
+    pub actions: usize,
+    /// The daemon-grammar id of every recorded row the pruned plan no longer
+    /// speaks for: each removed action's own `(resource_type, resource_id)`,
+    /// plus the pre-shrink spelling of every batch the prune reshaped. These
+    /// are the AGGREGATE rows — a bare `("module", name)`, a bare
+    /// `("system", cfg)`, a manager node, an old batch spelling — whose ids
+    /// carry no trace of the resource the decision names, so
+    /// [`DecisionExclusions::withholds_recorded_row`] cannot answer for them;
+    /// only the prune knows which owners it emptied. A complement-resolve
+    /// over the pruned plan folds these into its keep set, or the rows of the
+    /// very owners the pending decisions are about are resolved blind.
+    pub resource_ids: Vec<(String, String)>,
+}
+
+/// Prune every action `exclusions` withholds out of `plan`, returning what
+/// left it.
 ///
 /// The one prune, shared by the daemon's tick and by `cfgd plan` / `cfgd apply`:
 /// a resource awaiting a decision leaves the plan itself rather than being
@@ -2127,10 +2154,16 @@ impl DecisionExclusions {
 /// [`withholding_env_surface`](super::Reconciler::withholding_env_surface), fed
 /// from [`DecisionExclusions::withholds_env_surface`], because apply regenerates
 /// that surface from the DECLARED set after the phases run.
-pub fn withhold_from_plan(plan: &mut Plan, exclusions: &DecisionExclusions) -> usize {
+pub fn withhold_from_plan(plan: &mut Plan, exclusions: &DecisionExclusions) -> WithheldFromPlan {
     if exclusions.is_empty() {
-        return 0;
+        return WithheldFromPlan::default();
     }
+    let before_ids: Vec<(String, String)> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.actions())
+        .map(action_resource_info)
+        .collect();
     // An undecidable batch has no row to explain its absence, so the warning
     // lands on the plan itself: the run header renders `plan.warnings` and
     // the `-o json` payload carries them, which is exactly where the operator
@@ -2149,6 +2182,18 @@ pub fn withhold_from_plan(plan: &mut Plan, exclusions: &DecisionExclusions) -> u
     // last of them withholds the refresh with them, before the count is taken,
     // so the header never names a number the run disagrees with.
     super::managers::prune_to_surviving_consumers(plan);
+    let after_ids: HashSet<(String, String)> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.actions())
+        .map(action_resource_info)
+        .collect();
+    let mut resource_ids: Vec<(String, String)> = before_ids
+        .into_iter()
+        .filter(|id| !after_ids.contains(id))
+        .collect();
+    resource_ids.sort_unstable();
+    resource_ids.dedup();
     let withheld = before.saturating_sub(plan.total_actions());
     if withheld > 0 {
         tracing::debug!(
@@ -2156,7 +2201,10 @@ pub fn withhold_from_plan(plan: &mut Plan, exclusions: &DecisionExclusions) -> u
             "withheld actions whose resource awaits a source decision"
         );
     }
-    withheld
+    WithheldFromPlan {
+        actions: withheld,
+        resource_ids,
+    }
 }
 
 #[cfg(test)]
