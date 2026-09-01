@@ -1240,6 +1240,29 @@ impl ApplyResult {
     }
 }
 
+/// The ONE grammar for a `"package"` drift row's `resource_id`, workspace-wide:
+/// `<manager>:<package>` per package, `<manager>:<a>,<b>` when the row names a
+/// BATCH action rather than one package (the daemon's spelling, from
+/// `action_resource_info`). `:` rather than the tracking table's `/` because
+/// a scoped npm name (`@org/name`) legitimately carries a `/`, which `:`
+/// cannot. Every CLI live check mints one package per row (the cli crate
+/// reaches this through `cli::diff`'s re-export); the apply's healed-key loop
+/// and both `PackageAction` arms mint here too, so a healed key and the row it
+/// heals cannot spell the same package two ways. Hand-typed `format!`s
+/// agreeing only by convention are exactly how a reader and producer of the
+/// tracking grammar drifted apart.
+pub fn package_drift_resource_id(manager: &str, packages: &[String]) -> String {
+    // The keep-set split between the live and batch grammars rests on every
+    // minted id carrying its `:` with a real manager in front — a bare id
+    // would read as the daemon's Skip spelling and stand forever instead of
+    // healing.
+    debug_assert!(
+        !manager.is_empty() && packages.iter().all(|p| !p.is_empty()),
+        "a package drift id needs a manager and real package names: {manager:?} / {packages:?}"
+    );
+    format!("{}:{}", manager, packages.join(","))
+}
+
 /// The `(resource_type, resource_id)` pair a planned action is recorded under.
 ///
 /// The ONE derivation of a persisted action identity: drift rows, journal
@@ -1264,14 +1287,17 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
                 manager, packages, ..
             } => (
                 "package".to_string(),
-                format!("{}:{}", manager, packages.join(",")),
+                package_drift_resource_id(manager, packages),
             ),
             PackageAction::Uninstall {
                 manager, packages, ..
             } => (
                 "package".to_string(),
-                format!("{}:{}", manager, packages.join(",")),
+                package_drift_resource_id(manager, packages),
             ),
+            // A Skip row names the bare manager whose whole block was withheld,
+            // so a live check can never resolve it as healed.
+            // composed-id-ok: deliberately not a package id.
             PackageAction::Skip { manager, .. } => ("package".to_string(), manager.clone()),
         },
         Action::Secret(sa) => match sa {

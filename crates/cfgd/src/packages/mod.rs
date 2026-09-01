@@ -95,7 +95,8 @@ fn uninstall_for_manager(
     installed
         .iter()
         .filter(|pkg| {
-            !desired_identities.contains(*pkg) && cfgd_installed.contains(&format!("{name}/{pkg}"))
+            !desired_identities.contains(*pkg)
+                && cfgd_installed.contains(&cfgd_core::state::package_resource_id(name, pkg))
         })
         .cloned()
         .collect()
