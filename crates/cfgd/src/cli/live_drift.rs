@@ -118,12 +118,16 @@ pub(in crate::cli) const FULL_CHECK_RESOLVABLE_TYPES: &[&str] = &[
 /// Whether a recorded row is one THIS full check could not have re-found, so
 /// the complement-resolve must keep it standing (see the module doc).
 ///
-/// Three shapes qualify: a type outside [`FULL_CHECK_RESOLVABLE_TYPES`]; a
-/// comma-batched `package` id (the daemon records an install ACTION's batch,
-/// this check records one row per package — a batch id can never match a
-/// per-package re-check); and a `system` row outside the configurators this
-/// check actually evaluated — an errored probe, a tool that has since left
-/// the host, a platform-gated module — including the daemon's own
+/// Four shapes qualify: a type outside [`FULL_CHECK_RESOLVABLE_TYPES`]; a
+/// `module` or `package` id spelled only by the daemon's action grammar —
+/// every id a live check mints for those types carries its separator
+/// (`<module>/<target-or-file>`, `<manager>:<name>` and the
+/// `provision:`/`refuse:` manager rows), while the daemon also records a
+/// bare module name (a `ModuleAction`) and a bare manager name (a
+/// `PackageAction::Skip`), plus comma-batched install ACTIONS this check
+/// prices one row per package; and a `system` row outside the configurators
+/// this check actually evaluated — an errored probe, a tool that has since
+/// left the host, a platform-gated module — including the daemon's own
 /// `configurator:key` spelling, which no evaluated `configurator.` prefix
 /// matches.
 fn full_check_cannot_refind(e: &cfgd_core::state::DriftEvent, evaluated_system: &[String]) -> bool {
@@ -131,7 +135,8 @@ fn full_check_cannot_refind(e: &cfgd_core::state::DriftEvent, evaluated_system: 
         return true;
     }
     match e.resource_type.as_str() {
-        "package" => e.resource_id.contains(','),
+        "module" => !e.resource_id.contains('/'),
+        "package" => e.resource_id.contains(',') || !e.resource_id.contains(':'),
         "system" => !evaluated_system.iter().any(|c| {
             e.resource_id
                 .strip_prefix(c.as_str())
@@ -1317,6 +1322,62 @@ mod tests {
         );
     }
 
+    /// The consumer-facing row shape: two missing packages on one manager are
+    /// TWO drift rows, keyed `<manager>:<name>` each, never one batch row —
+    /// this vec is what `status --scan` renders verbatim into its Drift
+    /// section and `-o json`'s `drift[]`, so a re-batching here is a silent
+    /// display and store regression at once.
+    #[test]
+    fn two_missing_packages_on_one_manager_are_two_per_package_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = resolved_no_files();
+
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(
+            cfgd_core::test_helpers::MockPackageManager::new("npm").with_installed(&[]),
+        ));
+
+        let mut module = module_with_package("dev", "npm", "left-pad");
+        module.packages.push(cfgd_core::modules::ResolvedPackage {
+            canonical_name: "chalk".to_string(),
+            resolved_name: "chalk".to_string(),
+            manager: "npm".to_string(),
+            manager_declared: false,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: None,
+        });
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+        let drift = live_drift_results(
+            dir.path(),
+            &resolved,
+            &registry,
+            &[module],
+            &std::collections::HashSet::new(),
+            &state,
+            &cx,
+        )
+        .unwrap();
+
+        for id in ["npm:left-pad", "npm:chalk"] {
+            assert!(
+                drift
+                    .iter()
+                    .any(|r| r.resource_type == "package" && r.resource_id == id),
+                "each missing package is its own row keyed {id}: {drift:?}"
+            );
+        }
+        assert!(
+            !drift.iter().any(|r| r.resource_id.contains(',')),
+            "no batch-keyed package row may reach the display: {drift:?}"
+        );
+    }
+
     #[test]
     fn live_drift_results_includes_a_provisionable_manager() {
         // A missing manager the plan CAN self-heal must still surface as live
@@ -1435,7 +1496,8 @@ mod tests {
             let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
             let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
 
-            cfgd_core::reconciler::verify(&resolved, &registry, &state, &modules, &cx).unwrap();
+            cfgd_core::reconciler::verify(&resolved, &registry, &state, &modules, &cx, true)
+                .unwrap();
             manager_verify_results(
                 &resolved,
                 &registry,

@@ -463,6 +463,7 @@ fn verify_returns_results() {
         &state,
         &[],
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
 
@@ -513,7 +514,7 @@ fn verify_asks_each_manager_once_however_many_packages_are_declared() {
 
             let printer = test_printer();
             let cx = crate::providers::PackageContext::new(&printer, &state);
-            let results = verify(&resolved, &registry, &state, &[], &cx).unwrap();
+            let results = verify(&resolved, &registry, &state, &[], &cx, true).unwrap();
 
             (
                 results
@@ -554,7 +555,7 @@ fn one_context_spans_the_verify_walk_and_the_tracking_gc_with_one_enumeration() 
 
         let printer = test_printer();
         let cx = crate::providers::PackageContext::new(&printer, &state);
-        verify(&resolved, &registry, &state, &[], &cx).unwrap();
+        verify(&resolved, &registry, &state, &[], &cx, true).unwrap();
 
         // What `cfgd verify` and `cfgd apply` both do next: diff the tracking
         // table against the same installed state, with nothing in between that
@@ -1502,20 +1503,22 @@ fn verify_module_drift_packages() {
         &state,
         &modules,
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
 
-    // Should have a drift result for ripgrep
+    // Should have a drift result for ripgrep, under the ONE per-package key
+    // every live check spells (`<manager>:<name>`), module-declared or not.
     let drift = results
         .iter()
-        .find(|r| r.resource_type == "module" && r.resource_id == "nvim/ripgrep");
+        .find(|r| r.resource_type == "package" && r.resource_id == "brew:ripgrep");
     assert!(drift.is_some());
     assert!(!drift.unwrap().matches);
 
-    // nvim/neovim is installed → a passing per-package row (not absent, and not drift).
+    // neovim is installed → a passing per-package row (not absent, and not drift).
     let ok = results
         .iter()
-        .find(|r| r.resource_type == "module" && r.resource_id == "nvim/neovim");
+        .find(|r| r.resource_type == "package" && r.resource_id == "brew:neovim");
     assert!(
         ok.is_some(),
         "installed module package must emit a pass row"
@@ -1589,15 +1592,16 @@ fn verify_module_all_installed_emits_per_package_pass_rows() {
         &state,
         &modules,
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
 
     // All packages installed → a passing per-package row each (no blanket
     // "module healthy" row, which would contradict folded-in file-drift rows).
-    for pkg in ["nvim/neovim", "nvim/ripgrep"] {
+    for pkg in ["brew:neovim", "brew:ripgrep"] {
         let row = results
             .iter()
-            .find(|r| r.resource_type == "module" && r.resource_id == pkg);
+            .find(|r| r.resource_type == "package" && r.resource_id == pkg);
         assert!(row.is_some(), "expected pass row for {pkg}: {results:?}");
         assert!(row.unwrap().matches);
         assert_eq!(row.unwrap().expected, "installed");
@@ -1672,11 +1676,12 @@ fn verify_routes_through_package_identity_for_name_remapping_manager() {
         &state,
         &modules,
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
     let row = results
         .iter()
-        .find(|r| r.resource_type == "module" && r.resource_id == "gotools/rsc.io/2fa")
+        .find(|r| r.resource_type == "package" && r.resource_id == "go:rsc.io/2fa")
         .expect("expected a verify row for the go package");
     assert!(
         row.matches,
@@ -1731,18 +1736,15 @@ fn verify_module_script_packages_not_false_drift() {
         &state,
         &modules,
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
 
     // Script packages are skipped in verification — they produce no row at all
-    // (neither pass nor drift), so a script-only module yields no module rows.
-    let module_rows: Vec<_> = results
-        .iter()
-        .filter(|r| r.resource_type == "module")
-        .collect();
+    // (neither pass nor drift), so a script-only module yields no rows.
     assert!(
-        module_rows.is_empty(),
-        "script-only module must not produce verify rows: {module_rows:?}"
+        results.is_empty(),
+        "script-only module must not produce verify rows: {results:?}"
     );
 }
 
@@ -1765,9 +1767,11 @@ fn module_one_pkg(name: &str, manager: &str, pkg: &str) -> ResolvedModule {
 }
 
 #[test]
-fn verify_module_package_not_installed_is_module_drift() {
-    // A module-only package the host lacks must surface as a `module`
-    // non-match under `<module>/<name>`.
+fn verify_module_package_not_installed_is_package_drift() {
+    // A module-only package the host lacks must surface as a `package`
+    // non-match under the ONE `<manager>:<name>` key — the same identity
+    // `diff`/`status --scan` mint, so the two full checks heal each other's
+    // rows instead of churning them.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry.add_package_manager(Box::new(
@@ -1784,14 +1788,21 @@ fn verify_module_package_not_installed_is_module_drift() {
         &state,
         &modules,
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
 
     let row = results
         .iter()
-        .find(|r| r.resource_type == "module" && r.resource_id == "dev/ripgrep")
-        .expect("module package must emit a module row");
+        .find(|r| r.resource_type == "package" && r.resource_id == "brew:ripgrep")
+        .expect("module package must emit a per-package row");
     assert!(!row.matches, "uninstalled module package must be drift");
+    assert!(
+        !results
+            .iter()
+            .any(|r| r.resource_id.contains("dev/ripgrep")),
+        "no module-qualified package key may survive: {results:?}"
+    );
 
     // Pure compute: nothing lands in `drift_events` — recording is the
     // caller's, at the CLI seam, per its own scope.
@@ -1801,8 +1812,7 @@ fn verify_module_package_not_installed_is_module_drift() {
 #[test]
 fn verify_package_in_profile_and_module_appears_once() {
     // The same (manager, name) declared by both the profile and a module must
-    // verify once, attributed to the module (module wins), with no duplicate
-    // `package:` row for the profile scope.
+    // verify once, under the one `<manager>:<name>` key both origins share.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry.add_package_manager(Box::new(
@@ -1823,25 +1833,21 @@ fn verify_package_in_profile_and_module_appears_once() {
         &state,
         &modules,
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
 
     let rows: Vec<_> = results
         .iter()
-        .filter(|r| {
-            (r.resource_type == "module" && r.resource_id == "dev/ripgrep")
-                || (r.resource_type == "package" && r.resource_id == "brew:ripgrep")
-        })
+        .filter(|r| r.resource_id.contains("ripgrep"))
         .collect();
     assert_eq!(
         rows.len(),
         1,
         "duplicate profile+module package must verify once: {rows:?}"
     );
-    assert_eq!(
-        rows[0].resource_type, "module",
-        "module wins the dedup: {rows:?}"
-    );
+    assert_eq!(rows[0].resource_type, "package");
+    assert_eq!(rows[0].resource_id, "brew:ripgrep");
 }
 
 #[test]
@@ -1863,13 +1869,12 @@ fn verify_module_package_on_unavailable_manager_is_skipped() {
         &state,
         &modules,
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
 
     assert!(
-        !results
-            .iter()
-            .any(|r| r.resource_type == "module" && r.resource_id == "dev/ripgrep"),
+        !results.iter().any(|r| r.resource_id.contains("ripgrep")),
         "unavailable-manager module package must be skipped, not reported missing: {results:?}"
     );
     assert!(
@@ -1898,6 +1903,7 @@ fn verify_profile_package_on_unavailable_manager_is_skipped() {
         &state,
         &[],
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
 
@@ -1940,6 +1946,7 @@ fn verify_module_system_tweak_surfaces_as_system_drift() {
         &state,
         &[module],
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
 
@@ -1950,6 +1957,53 @@ fn verify_module_system_tweak_surfaces_as_system_drift() {
     assert!(!row.matches);
     assert_eq!(row.expected, "10");
     assert_eq!(row.actual, "60");
+}
+
+#[test]
+fn verify_without_machine_surfaces_skips_the_system_and_env_halves() {
+    // A module-scoped caller composes module-only config; diffed against the
+    // live configurator state or the deployed env files, that is a claim
+    // about the machine no single module can vouch for. `machine_surfaces:
+    // false` is how the scoped caller keeps both halves out of the results
+    // it renders, judges and records.
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+        vec![crate::providers::SystemDrift {
+            key: "vm.swappiness".to_string(),
+            expected: "10".to_string(),
+            actual: "60".to_string(),
+        }],
+    )));
+
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+    let mut module = make_resolved_module("dev");
+    module.packages = Vec::new();
+    module.system.insert(
+        "sysctl".to_string(),
+        serde_yaml::to_value(serde_yaml::Mapping::new()).unwrap(),
+    );
+    module.env = vec![crate::config::EnvVar {
+        name: "DEV_FLAG".to_string(),
+        value: "on".to_string(),
+        platforms: vec![],
+    }];
+
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &[module],
+        &crate::providers::PackageContext::new(&printer, &state),
+        false,
+    )
+    .unwrap();
+
+    assert!(
+        results.is_empty(),
+        "a scoped verify computes neither system nor env rows: {results:?}"
+    );
 }
 
 #[test]
@@ -12743,6 +12797,7 @@ fn verify_empty_profile_returns_no_results() {
         &state,
         &[],
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
     assert!(
@@ -12803,6 +12858,7 @@ fn verify_module_files_produce_no_reconciler_rows() {
         &state,
         &modules,
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
 
@@ -12841,6 +12897,7 @@ fn verify_multiple_packages_mixed_status() {
         &state,
         &[],
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
 
@@ -14716,6 +14773,7 @@ fn verify_system_configurator_reports_drift() {
         &state,
         &[],
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
 
@@ -14811,6 +14869,7 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
         &state,
         &[],
         &crate::providers::PackageContext::new(&printer, &state),
+        true,
     )
     .unwrap();
 
