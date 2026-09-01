@@ -1578,13 +1578,15 @@ cfgd module show my-tool --show-values  # reveal full env values
 ```
 
 The `Scripts` section lists every lifecycle hook the module declares, one row
-per entry labelled with its hook, in the order the hooks run:
+per entry labelled with its hook, in the order the hooks run. No drift engine
+ever watches a hook body, so every row is a bare declaration — hook name,
+`" — "`, condensed body — never a verdict glyph:
 
 ```
 Scripts
-  ◉ preApply: mkdir -p ~/.config/dev-tools
-  ◉ postApply: echo 'post-apply hook ran'
-  ◉ onDrift: notify-send 'dev-tools drifted'
+  preApply  — mkdir -p ~/.config/dev-tools
+  postApply — echo 'post-apply hook ran'
+  onDrift   — notify-send 'dev-tools drifted'
 ```
 
 `--show-values` renders each script's whole body instead of its condensed

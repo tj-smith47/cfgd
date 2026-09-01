@@ -181,6 +181,12 @@ fn happy_packages() -> Vec<PackageDisplay> {
 /// Every hook that declares something gets a row, labelled with the hook it
 /// runs in and ordered by when it runs — the section used to render `postApply`
 /// bodies alone, so a module's `preApply` and `onDrift` scripts were invisible.
+///
+/// No drift engine ever watches a hook body, so every row is a bare
+/// declaration through `command_list` (hook name as the key, `" — "` glue) —
+/// never a `status` row wearing a role glyph (`◉`/`✓`/…) for a check that
+/// never ran, the same doctrine `cfgd status <module>`'s Scripts section
+/// codifies (`no_declared_inventory_row_wears_a_verdict_glyph`).
 #[test]
 fn module_show_renders_every_declaring_hook_in_execution_order() {
     let output = happy_show_output();
@@ -205,12 +211,16 @@ fn module_show_renders_every_declaring_hook_in_execution_order() {
     assert_eq!(
         rows,
         vec![
-            "◉ preApply: mkdir -p ~/.config/dev-tools",
-            "◉ postApply: echo 'post-apply hook ran'",
-            "◉ postApply: systemctl --user daemon-reload",
-            "◉ onDrift: notify-send 'dev-tools drifted'",
+            "preApply  — mkdir -p ~/.config/dev-tools",
+            "postApply — echo 'post-apply hook ran'",
+            "postApply — systemctl --user daemon-reload",
+            "onDrift   — notify-send 'dev-tools drifted'",
         ],
-        "every declaring hook, in execution order: {human}"
+        "every declaring hook, in execution order, as a bare declaration: {human}"
+    );
+    assert!(
+        !rows.iter().any(|r| r.contains('◉') || r.contains('✓')),
+        "a hook body has no check standing behind it and must not wear a verdict glyph: {rows:?}"
     );
 }
 

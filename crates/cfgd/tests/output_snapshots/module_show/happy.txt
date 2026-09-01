@@ -31,7 +31,7 @@ Env
   GH_TOKEN  ***lue
 
 Scripts
-  ◉ preApply: mkdir -p ~/.config/dev-tools
-  ◉ postApply: echo 'post-apply hook ran'
-  ◉ postApply: systemctl --user daemon-reload
-  ◉ onDrift: notify-send 'dev-tools drifted'
+  preApply  — mkdir -p ~/.config/dev-tools
+  postApply — echo 'post-apply hook ran'
+  postApply — systemctl --user daemon-reload
+  onDrift   — notify-send 'dev-tools drifted'
