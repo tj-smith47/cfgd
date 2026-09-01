@@ -596,7 +596,7 @@ Module resources are first-class in compliance reporting, not profile-only. A mo
 
 ```
 Plan
-  Config   /home/you/.config/cfgd/cfgd.yaml
+  Config   ~/.config/cfgd/cfgd.yaml
   Profile  work
   Modules  nvim
   Phases   Prerequisites, Packages, Files, Post-Scripts
@@ -617,11 +617,11 @@ Phase: Packages
 
 Phase: Files
   profile:work
-    - create /home/you/.gitconfig
+    - create ~/.gitconfig
   module:nvim
     - deploy 2 files
-        /home/you/.config/nvim/init.lua      — symlink
-        /home/you/.config/nvim/lua/opts.lua  — symlink
+        ~/.config/nvim/init.lua      — symlink
+        ~/.config/nvim/lua/opts.lua  — symlink
 
 Phase: Post-Scripts
   module:nvim

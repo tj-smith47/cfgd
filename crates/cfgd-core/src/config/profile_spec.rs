@@ -838,6 +838,22 @@ impl FileStrategy {
     pub fn valid_as_global_default(self) -> bool {
         !matches!(self, FileStrategy::Patch)
     }
+
+    /// The lowercase word a report names this strategy by — a deploy row's
+    /// child method, and Task 5's Method column. Distinct from [`Self::as_str`],
+    /// the canonical PascalCase wire/schema spelling: this is the ONE display
+    /// spelling, so the two surfaces naming a resolved strategy cannot drift
+    /// on casing the way an inline `.as_str().to_lowercase()` at each call
+    /// site would invite.
+    pub fn method_label(self) -> &'static str {
+        match self {
+            FileStrategy::Symlink => "symlink",
+            FileStrategy::Copy => "copy",
+            FileStrategy::Template => "template",
+            FileStrategy::Hardlink => "hardlink",
+            FileStrategy::Patch => "patch",
+        }
+    }
 }
 
 /// File format used to interpret and re-serialize a `Patch`-strategy target.

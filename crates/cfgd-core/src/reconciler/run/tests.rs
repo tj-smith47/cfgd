@@ -900,7 +900,8 @@ fn report_align_width_spans_every_phase() {
 /// count as a BULLET's trailing detail, so the bullet has to pad to the same
 /// column a status row does — otherwise a report whose two row shapes are
 /// interleaved puts its em-dashes in two places, and neither matches the apply
-/// that settles the same actions a beat later.
+/// that settles the same actions a beat later. A deploy's per-file CHILD row
+/// is the third shape sharing this claim, extended below.
 #[test]
 fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
     let write_env = Action::Env(super::super::types::EnvAction::WriteEnvFile {
@@ -914,12 +915,28 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
         .clone();
     let detail = super::super::action_produced_detail(&write_env, None, 0, &[])
         .expect("a write of 3 vars and 3 aliases states what it produced");
-    // A far longer sibling in the SAME report, so the column the short row
-    // pads to is one its own width would never have produced.
+    let deploy = Action::Module(crate::reconciler::ModuleAction::local(
+        "app",
+        crate::reconciler::ModuleActionKind::DeployFiles {
+            files: vec![crate::modules::ResolvedFile {
+                source: PathBuf::from("/src/a.conf"),
+                target: PathBuf::from("/home/u/.config/app/a.conf"),
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+                permissions: None,
+                patch: None,
+            }],
+            declared_total: 1,
+        },
+    ));
+    // A far longer sibling in the SAME report, so the column the short rows
+    // pad to is one their own width would never have produced.
     let plan = plan_of(vec![phase(
         PhaseName::Prerequisites,
         vec![
             write_env,
+            deploy,
             install(
                 "apt",
                 &["a-very-long-package-name-indeed", "and-another-one"],
@@ -975,6 +992,69 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
         "the short subject pads out to the report column ({previewed} vs its own \
          width {}), not to its own end",
         crate::output::measure_width(&subject)
+    );
+
+    // The third row shape: a deploy's per-file child pads to the SAME claim,
+    // two depths below its parent, with no glyph of its own.
+    let deploy = plan.phases[0]
+        .actions()
+        .find(|a| {
+            matches!(
+                a,
+                Action::Module(crate::reconciler::ModuleAction {
+                    kind: crate::reconciler::ModuleActionKind::DeployFiles { .. },
+                    ..
+                })
+            )
+        })
+        .expect("the phase holds the deploy action");
+    let deploy_subject = super::action_display_subject_within(deploy, None)
+        .body
+        .clone();
+    let child_dash_column = |render: &dyn Fn(&Printer)| -> usize {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        render(&printer);
+        drop(printer);
+        let out = crate::test_helpers::captured_text(&buf);
+        let line = out
+            .lines()
+            .find(|l| l.contains("a.conf") && l.contains(" — "))
+            .unwrap_or_else(|| panic!("no child row for a.conf in:\n{out}"))
+            .to_string();
+        crate::output::measure_width(
+            line.split_once(" — ")
+                .unwrap_or_else(|| panic!("row carries the detail separator: {line:?}"))
+                .0,
+        )
+    };
+    let previewed_child = child_dash_column(&|printer| render_plan_tree(&plan, None, printer));
+    let settled_child = child_dash_column(&|printer| {
+        let _column = printer.report_column(width);
+        let phase_section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let owner = phase_section.section_owner(&OwnerLabel::new("module", "app"));
+        owner.live_column(width);
+        super::super::apply::emit_action_line(
+            printer,
+            &owner,
+            &super::super::apply::ActionOutcome::for_test_with_children(
+                &deploy_subject,
+                std::time::Duration::from_millis(1),
+                super::super::format::deploy_file_children(deploy)
+                    .expect("a DeployFiles action always enumerates its children"),
+            ),
+        );
+    });
+    assert_eq!(
+        previewed_child, settled_child,
+        "a deploy's child row must land at the report's one column on both trees"
+    );
+    assert_eq!(
+        previewed_child,
+        crate::output::printer::ACTION_ROW_DEPTH * 2
+            + crate::output::renderer::status::GLYPH_PREFIX_WIDTH
+            + width,
+        "a child row lands its method exactly where its parent's own trailer \
+         would, at the report's claimed column"
     );
 }
 
@@ -1529,13 +1609,14 @@ fn both_trees_paint_a_withheld_row_with_the_same_bytes() {
 }
 
 /// A deploy row enumerates every file it writes as its own child row, in
-/// manifest order, target then resolved method — never an inline shorthand,
-/// even for the one-file module below. The plan preview tree and the
+/// manifest order, target then resolved method. The plan preview tree and the
 /// settled apply tree paint those child rows byte-for-byte identical, at the
 /// SAME report column their parent's own trailer would have landed at, two
 /// depths below it. `deploy_file_children` is the ONE producer both trees
 /// read, so a future action changing what a deploy writes trips this walk
-/// before either tree can disagree about it.
+/// before either tree can disagree about it. The one-file `deploy 1 file`
+/// ruling — no inline shorthand even for a single file — is a separate
+/// fixture, [`a_one_file_deploy_still_enumerates_its_single_child`].
 #[test]
 fn a_deploy_row_enumerates_every_file_with_its_method_at_the_reports_column() {
     let home = PathBuf::from("/home/u");
@@ -1663,6 +1744,140 @@ fn a_deploy_row_enumerates_every_file_with_its_method_at_the_reports_column() {
         dash_at(a_row),
         dash_at(b_row),
         "every child row of the same deploy shares one column:\n{previewed}"
+    );
+}
+
+/// The user ruling this task shipped: EVERY deploy enumerates, even a module
+/// that writes a single file — `deploy 1 file` plus its one child row, never
+/// an inline `deploy ~/.config/app/a.conf` shorthand that skips the child
+/// entirely.
+#[test]
+fn a_one_file_deploy_still_enumerates_its_single_child() {
+    let deploy = Action::Module(crate::reconciler::ModuleAction::local(
+        "app",
+        crate::reconciler::ModuleActionKind::DeployFiles {
+            files: vec![crate::modules::ResolvedFile {
+                source: PathBuf::from("/src/a.conf"),
+                target: PathBuf::from("/home/u/.config/app/a.conf"),
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+                permissions: None,
+                patch: None,
+            }],
+            declared_total: 1,
+        },
+    ));
+    let subject = super::action_display_subject_within(&deploy, None)
+        .body
+        .clone();
+    assert_eq!(
+        subject, "deploy 1 file",
+        "a one-file deploy still states a count, never the bare target"
+    );
+
+    let plan = plan_of(vec![phase(PhaseName::Prerequisites, vec![deploy])]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    render_plan_tree(&plan, None, &printer);
+    drop(printer);
+    let shown = crate::test_helpers::captured_text(&buf);
+
+    assert!(
+        shown.contains("- deploy 1 file"),
+        "no inline single-file shorthand replaces the count subject:\n{shown}"
+    );
+    let child = shown
+        .lines()
+        .find(|l| l.contains("a.conf"))
+        .unwrap_or_else(|| panic!("the single file still enumerates as a child row:\n{shown}"));
+    assert!(
+        !is_row_head(child),
+        "the single child carries no glyph or bullet of its own: {child:?}"
+    );
+    assert!(
+        child.trim_end().ends_with("— symlink"),
+        "the single child names its resolved method: {child:?}"
+    );
+}
+
+/// The narrow-terminal case `report_align_width` has to survive: a files-only
+/// plan (no long package-install sibling to accidentally set the claim) with
+/// one deploy child whose target is far too long for the line budget. Folding
+/// every child's effective width into the claim does not mean dragging the
+/// claim out to fit ANY child: an over-budget target is excluded from the
+/// claim (it word-wraps like an over-wide subject already does, through the
+/// same `push_line` machinery every row shares), and that must not cost the
+/// report's other rows their shared column.
+#[test]
+fn a_deploy_child_too_long_for_the_line_budget_glues_without_costing_the_report_its_column() {
+    let home = PathBuf::from("/home/u");
+    let file = |module: &str, name: &str| crate::modules::ResolvedFile {
+        source: PathBuf::from("/src").join(name),
+        target: home.join(".config").join(module).join(name),
+        is_git_source: false,
+        strategy: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    let short = Action::Module(crate::reconciler::ModuleAction::local(
+        "app",
+        crate::reconciler::ModuleActionKind::DeployFiles {
+            files: vec![file("app", "a.conf")],
+            declared_total: 1,
+        },
+    ));
+    let long_name = "an-extremely-long-configuration-file-name-that-cannot-fit-on-one-narrow-terminal-line.conf";
+    let long = Action::Module(crate::reconciler::ModuleAction::local(
+        "wide",
+        crate::reconciler::ModuleActionKind::DeployFiles {
+            files: vec![file("wide", long_name)],
+            declared_total: 1,
+        },
+    ));
+    let plan = plan_of(vec![phase(PhaseName::Files, vec![short, long])]);
+    let (printer, screen) = Printer::for_test_live_terminal(40, 80);
+    let budget = report_subject_budget(&plan, None, &printer);
+    let width = report_align_width(&plan, None, budget);
+    render_plan_tree(&plan, None, &printer);
+    drop(printer);
+    let shown = screen.contents();
+
+    // The over-long target is excluded from widening the claim: the claim
+    // stays far short of what fitting it would require.
+    assert!(
+        width < crate::output::measure_width(long_name),
+        "the claim must not widen to fit an over-budget child (width={width}):\n{shown}"
+    );
+
+    // The short child still lands at the SAME claimed column despite the
+    // over-long sibling sharing the report.
+    let short_row = shown
+        .lines()
+        .find(|l| l.contains("a.conf") && l.contains(" — "))
+        .expect("the short deploy child renders");
+    assert!(
+        !is_row_head(short_row),
+        "a child row carries no glyph: {short_row:?}"
+    );
+    let short_indent = short_row.len() - short_row.trim_start().len();
+    let short_at = crate::output::measure_width(short_row.split_once(" — ").map_or("", |(h, _)| h));
+    assert_eq!(
+        short_at,
+        short_indent + width - crate::output::renderer::status::CHILD_ROW_INDENT_DELTA,
+        "the short child keeps the claimed column despite its over-long sibling:\n{shown}"
+    );
+
+    // The over-long child still renders in full rather than vanishing: too
+    // wide for the claim, it word-wraps like an over-wide subject already
+    // does, each continuation hanging under the same indent as its own first
+    // physical line — so the full name survives once that indent is folded
+    // out of the join.
+    let hang = " ".repeat(short_indent);
+    let joined = shown.replace(&format!("\n{hang}"), "");
+    assert!(
+        joined.contains(long_name),
+        "the over-long child still renders in full, wrapping rather than vanishing:\n{shown}"
     );
 }
 
@@ -2158,10 +2373,14 @@ fn row_prefix_width(line: &str) -> usize {
 }
 
 /// Whether a rendered line OPENS a row: only a head carries the bullet or the
-/// role glyph, and only a head can land its trailing content in the report's
-/// column. A wrapped subject's continuation rows hang under the first word of
-/// the row they belong to and carry their detail inline, exactly as an
-/// unwrapped row too wide for the column does.
+/// role glyph. A wrapped subject's continuation rows hang under the first
+/// word of the row they belong to and carry their detail inline, exactly as
+/// an unwrapped row too wide for the column does. A deploy's per-file child
+/// row also lands its trailing content at the report's column without being
+/// a head — it carries neither bullet nor glyph, by design — so this
+/// predicate is never a proxy for "lands at the column"; see
+/// `row_prefix_width`, which assumes a head's glyph and is wrong for a
+/// child's own indent.
 fn is_row_head(line: &str) -> bool {
     let trimmed = line.trim_start();
     if trimmed.starts_with("- ") {
@@ -2652,6 +2871,57 @@ fn the_reports_column_is_claimed_and_its_subjects_bounded_at_every_width() {
                 "{cols} cols: every row within the claim lands its em-dash at {column}:\n{shown}\n{line}"
             );
         }
+        // The third row shape: every deploy child names its target and, when
+        // its own width leaves room under the claim, lands its method at the
+        // SAME x every row-head above shares — from a deeper indent with no
+        // glyph to give back, per `Emitting::child_row_column`.
+        let deploy_children = [
+            "init.lua",
+            "lazy-lock.json",
+            "lua/plugins.lua",
+            "lua/keys.lua",
+            "lua/opts.lua",
+            "ftplugin/rust.lua",
+            "after/ftplugin/markdown.lua",
+            "after/ftplugin/python.lua",
+            "snippets/all.json",
+        ];
+        let child_delta = crate::output::renderer::status::CHILD_ROW_INDENT_DELTA;
+        let mut children_within = 0usize;
+        for name in deploy_children {
+            let line = shown
+                .lines()
+                .find(|l| l.contains(name) && l.contains(" — "))
+                .unwrap_or_else(|| {
+                    panic!("{cols} cols: deploy child {name} renders on screen:\n{shown}")
+                });
+            assert!(
+                !is_row_head(line),
+                "{cols} cols: a child row carries no glyph: {line:?}"
+            );
+            let indent = line.len() - line.trim_start().len();
+            let content = line
+                .split_once(" — ")
+                .map_or("", |(head, _)| head.trim_start());
+            if crate::output::measure_width(content) + child_delta > column {
+                // Too wide for this width's claim: glues, like an over-budget
+                // subject does, and is excluded from the shared-column check
+                // for the same reason `within` excludes a wrapped row.
+                continue;
+            }
+            children_within += 1;
+            let at = crate::output::measure_width(line.split_once(" — ").map_or("", |(h, _)| h));
+            assert_eq!(
+                at,
+                indent + column - child_delta,
+                "{cols} cols: child row {name} lands its method at the claimed \
+                 column {column}:\n{shown}\n{line}"
+            );
+        }
+        assert!(
+            children_within > 0,
+            "{cols} cols: at least one deploy child renders within the claim:\n{shown}"
+        );
         assert!(
             !shown.contains("/home/tj/"),
             "{cols} cols: every path folds home:\n{shown}"
