@@ -500,6 +500,7 @@ fn status_clean_human() {
         &[],
         NOW,
         &Default::default(),
+        &Default::default(),
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/clean.txt");
@@ -520,6 +521,7 @@ fn status_clean_json() {
         },
         &[],
         NOW,
+        &Default::default(),
         &Default::default(),
     ));
     drop(printer);
@@ -549,6 +551,7 @@ fn status_drift_human() {
         &sources,
         NOW,
         &Default::default(),
+        &Default::default(),
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/drift.txt");
@@ -570,6 +573,7 @@ fn status_drift_json() {
         },
         &sources,
         NOW,
+        &Default::default(),
         &Default::default(),
     ));
     drop(printer);

@@ -840,11 +840,11 @@ impl FileStrategy {
     }
 
     /// The lowercase word a report names this strategy by — a deploy row's
-    /// child method, and Task 5's Method column. Distinct from [`Self::as_str`],
-    /// the canonical PascalCase wire/schema spelling: this is the ONE display
-    /// spelling, so the two surfaces naming a resolved strategy cannot drift
-    /// on casing the way an inline `.as_str().to_lowercase()` at each call
-    /// site would invite.
+    /// child method, and the status table's Method column. Distinct from
+    /// [`Self::as_str`], the canonical PascalCase wire/schema spelling: this
+    /// is the ONE display spelling, so the two surfaces naming a resolved
+    /// strategy cannot drift on casing the way an inline
+    /// `.as_str().to_lowercase()` at each call site would invite.
     pub fn method_label(self) -> &'static str {
         match self {
             FileStrategy::Symlink => "symlink",
@@ -853,6 +853,17 @@ impl FileStrategy {
             FileStrategy::Hardlink => "hardlink",
             FileStrategy::Patch => "patch",
         }
+    }
+
+    /// The strategy a `module_file_manifest.strategy` column records, read
+    /// back — the inverse of [`Self::as_str`], which is what the manifest
+    /// writer persists. `None` for a value no variant spells, so a corrupt
+    /// column degrades to an absent cell rather than a guessed method.
+    pub fn from_recorded(recorded: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|s| recorded.eq_ignore_ascii_case(s.as_str()))
     }
 }
 
@@ -1598,6 +1609,20 @@ mod tests {
                 .unwrap_or_else(|e| panic!("`{token}` should parse: {e}"));
             assert_eq!(parsed, expected, "token {token}");
         }
+    }
+
+    /// The manifest column round-trips: what `record_module_file` persists
+    /// (`as_str`, and historically the identical `Debug` spelling) reads back
+    /// as the variant that wrote it, and a value no variant spells reads back
+    /// as nothing rather than as a guessed strategy.
+    #[test]
+    fn file_strategy_reads_back_what_the_manifest_records() {
+        for s in FileStrategy::ALL.iter().copied() {
+            assert_eq!(FileStrategy::from_recorded(s.as_str()), Some(s));
+            assert_eq!(FileStrategy::from_recorded(&format!("{s:?}")), Some(s));
+        }
+        assert_eq!(FileStrategy::from_recorded("Sideload"), None);
+        assert_eq!(FileStrategy::from_recorded(""), None);
     }
 
     #[test]

@@ -46,7 +46,7 @@ pub use env::recorded_manager_path_dirs;
 pub use env_engine::{
     EnvHostProbeOverride, EnvHostProbeOverrideGuard, with_env_host_probe_override_guard,
 };
-pub use env_engine::{ManagerPathDir, launchd_env_plist};
+pub use env_engine::{ManagerPathDir, launchd_env_plist, recorded_env_method};
 pub use files::{LinkDeployedDigest, RefreshedHashes, link_deployed_digest};
 pub(crate) use format::debug_assert_system_key_undoubled;
 pub use format::{

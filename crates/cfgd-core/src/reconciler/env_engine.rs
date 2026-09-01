@@ -663,6 +663,31 @@ pub(super) fn primary_env_file_path(home: &Path, platform: EnvPlatform) -> PathB
     }
 }
 
+/// The verb a recorded `env` resource id was applied under, reconstructed
+/// from the id alone: `write` for a file this engine generates whole, `inject`
+/// for a user-owned rc file it plants a source line in.
+///
+/// The recorded id keeps the target path and drops the `env:write:` /
+/// `env:inject:` verb (see `parse_resource_from_description`), so a display
+/// surface wanting the method back answers it here, from the one fact that
+/// survives: every file the engine writes whole carries a cfgd-authored name,
+/// and every inject target is a shell's own rc file. The name list lives
+/// beside the target builders that spell those paths, and
+/// `every_env_target_classifies_under_the_verb_that_produced_it` walks the
+/// builders' real output so a sixth generated file cannot land as `inject`.
+///
+/// Not for the live-session id (`refresh`), which names an act rather than a
+/// file — its caller holds that row back before asking.
+pub fn recorded_env_method(resource_id: &str) -> &'static str {
+    let name = resource_id.rsplit('/').next().unwrap_or(resource_id);
+    match name {
+        ".cfgd.env" | ".cfgd-env.ps1" | "cfgd-env.fish" | "cfgd.conf" | MACOS_USER_PLIST_NAME => {
+            "write"
+        }
+        _ => "inject",
+    }
+}
+
 fn unix_targets(
     content: EnvContent<'_>,
     scope: EnvScope,
@@ -1205,6 +1230,82 @@ mod tests {
         assert!(
             files_seen >= 6,
             "the walk no longer reaches every dialect — it read {files_seen} files"
+        );
+    }
+
+    /// [`recorded_env_method`] answers off a recorded id's file name alone,
+    /// while the engine decides write-vs-inject by which target arm it builds
+    /// — two vocabularies that would drift the first time a new generated
+    /// file or rc target lands in [`env_targets`]. This walk classifies every
+    /// target the builders really push, on every platform, under two probe
+    /// shapes (bash_profile and bash_login hosts), so a new member lands here
+    /// before its status row can claim the wrong verb.
+    #[test]
+    fn every_env_target_classifies_under_the_verb_that_produced_it() {
+        let cases = [
+            (EnvPlatform::Linux, Path::new("/home/tj")),
+            (EnvPlatform::MacOs, Path::new("/Users/tj")),
+            (EnvPlatform::FreeBsd, Path::new("/home/tj")),
+            (EnvPlatform::Windows, Path::new("C:/Users/tj")),
+        ];
+        let probes = [
+            EnvHostProbe {
+                shell: "/bin/zsh".to_string(),
+                fish_present: true,
+                bash_profile_exists: true,
+                bash_login_exists: false,
+                git_bash_present: true,
+                zsh_present: true,
+            },
+            EnvHostProbe {
+                shell: "/bin/bash".to_string(),
+                fish_present: false,
+                bash_profile_exists: false,
+                bash_login_exists: true,
+                git_bash_present: false,
+                zsh_present: false,
+            },
+        ];
+        let mut writes = 0;
+        let mut injects = 0;
+        for (platform, home) in cases {
+            for probe in &probes {
+                let separator = path_separator(platform);
+                let env = vec![ev("PATH", &format!("$HOME/.cargo/bin{separator}$PATH"))];
+                let dirs = dirs(&crate::to_posix_string(home));
+                let origins = EnvOrigins::default();
+                for target in env_targets(
+                    EnvContent::new(&env, &[], &dirs, &origins),
+                    EnvScope::All,
+                    home,
+                    probe,
+                    platform,
+                ) {
+                    // The recorded id is `to_posix_string(path)` for both verbs
+                    // (`format_action_description`'s env arms), so the walk
+                    // folds the same way before asking.
+                    let (id, expected) = match &target {
+                        EnvTarget::ManagedFile { path, .. } => {
+                            writes += 1;
+                            (crate::to_posix_string(path), "write")
+                        }
+                        EnvTarget::SourceLine { rc_path, .. } => {
+                            injects += 1;
+                            (crate::to_posix_string(rc_path), "inject")
+                        }
+                        EnvTarget::LiveSession { .. } => continue,
+                    };
+                    assert_eq!(
+                        recorded_env_method(&id),
+                        expected,
+                        "{id} classifies under the verb that produced it"
+                    );
+                }
+            }
+        }
+        assert!(
+            writes >= 6 && injects >= 6,
+            "the walk no longer reaches both verbs' members ({writes} writes, {injects} injects)"
         );
     }
 
