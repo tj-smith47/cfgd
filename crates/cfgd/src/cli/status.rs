@@ -2704,6 +2704,16 @@ pub(super) fn cmd_status_module(
                 // so a manager is enumerated once however many packages name
                 // it (`PackageContext::installed_for`'s memo).
                 let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+                // The declared-floor pass over this chain's own packages,
+                // through the ONE engine the full walk reads: this surface
+                // RESOLVES version rows, so it evaluates them.
+                let (version_rows, package_check_errors) = super::live_drift::scoped_version_drift(
+                    &resolved,
+                    &resolved_modules,
+                    registry,
+                    &pkg_cx,
+                )?;
+                system_errors.extend(package_check_errors.iter().cloned());
                 for resolved_module in &resolved_modules {
                     for pkg in &resolved_module.packages {
                         // A `script` package and a manager this host has not
@@ -2755,6 +2765,26 @@ pub(super) fn cmd_status_module(
                             });
                             ModulePackagePresence::NotInstalled
                         } else {
+                            // Present, but the declared floor is a second
+                            // question: a package the machine holds below it
+                            // is drift, under the same id its presence row
+                            // would carry.
+                            let id = super::diff::package_drift_resource_id(
+                                &pkg.manager,
+                                std::slice::from_ref(&pkg.resolved_name),
+                            );
+                            if let Some(row) = version_rows.iter().find(|r| r.resource_id == id) {
+                                findings.push(row.clone());
+                                drift.push(ModuleDrift {
+                                    event: super::live_drift::drift_event_from(
+                                        row,
+                                        &merged_env_items,
+                                    ),
+                                    owner: resolved_module.name.clone(),
+                                    surface: SURFACE_PACKAGES,
+                                    item: pkg.resolved_name.clone(),
+                                });
+                            }
                             ModulePackagePresence::Installed
                         };
                         // Drift is collected for the dependency modules this
@@ -2825,7 +2855,12 @@ pub(super) fn cmd_status_module(
                 }
                 system_errors.extend(env_check.check_error);
 
-                super::live_drift::record_scoped_scan_findings(state, &checked, &findings);
+                super::live_drift::record_scoped_scan_findings(
+                    state,
+                    &checked,
+                    &findings,
+                    &system_errors,
+                );
                 Ok(())
             },
         )?;

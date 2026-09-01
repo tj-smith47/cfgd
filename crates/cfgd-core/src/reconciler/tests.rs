@@ -1933,6 +1933,104 @@ fn a_pinned_package_whose_version_the_manager_cannot_state_is_a_check_error() {
         "an errored check contributes no drift verdict of its own: {:?}",
         report.results
     );
+    // The floor is what could not be judged; presence was answered, so the
+    // ledger keeps that verdict rather than losing the package entirely.
+    let presence = report
+        .results
+        .iter()
+        .find(|r| r.resource_type == "package" && r.resource_id == "brew:ripgrep")
+        .unwrap_or_else(|| panic!("the presence verdict stands: {:?}", report.results));
+    assert!(presence.matches, "the package IS installed: {presence:?}");
+}
+
+/// The other half of the same rule: a version the manager DID state but whose
+/// scheme its comparator cannot judge is a check that could not run, not a
+/// missed floor. A `false` from a comparator that could not parse its input is
+/// an artifact, and `VersionFloor::Below`'s operands promise two comparable
+/// versions — a terse report reads them as `version mismatch`.
+#[test]
+fn a_pinned_package_whose_version_nothing_can_compare_is_a_check_error() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("brew").with_installed_at("ripgrep", "git-20240101"),
+    ));
+
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+    let modules = vec![module_one_pinned_pkg("dev", "brew", "ripgrep", "2")];
+
+    let report = verify(
+        &resolved,
+        &registry,
+        &state,
+        &modules,
+        &crate::providers::PackageContext::new(&printer, &state),
+        true,
+    )
+    .unwrap();
+
+    let err = report
+        .check_errors
+        .iter()
+        .find(|e| e.key == "brew:ripgrep")
+        .unwrap_or_else(|| {
+            panic!(
+                "an uncomparable version is a check error, not drift: {:?} / {:?}",
+                report.check_errors, report.results
+            )
+        });
+    assert!(
+        err.error.contains("git-20240101"),
+        "the detail names what the manager stated: {}",
+        err.error
+    );
+    assert!(
+        !report
+            .results
+            .iter()
+            .any(|r| r.resource_type == "package" && !r.matches),
+        "no drift verdict is invented from an unparseable operand: {:?}",
+        report.results
+    );
+}
+
+/// Two modules declaring one package, only one of them pinning a floor: the
+/// claim rule ("earlier module wins") settles who INSTALLS it, but a floor is a
+/// constraint the planner enforces per module, so the strictest one survives
+/// the dedup. Without this the live check is blind to a floor `cfgd apply`
+/// still acts on.
+#[test]
+fn the_strictest_declared_floor_survives_the_effective_dedup() {
+    let resolved = make_empty_resolved();
+    let bare = module_one_pkg("base", "brew", "ripgrep");
+    let pinned = module_one_pinned_pkg("dev", "brew", "ripgrep", "2");
+    let stricter = module_one_pinned_pkg("strict", "brew", "ripgrep", "3");
+
+    let effective = crate::effective::effective_desired_packages(
+        &resolved.merged,
+        &[bare, pinned.clone(), stricter],
+    );
+    assert_eq!(effective.len(), 1, "one entry per package: {effective:?}");
+    assert_eq!(
+        effective[0].min_version.as_deref(),
+        Some("3"),
+        "the strictest floor any module declared survives: {effective:?}"
+    );
+
+    let unpinned_last = crate::effective::effective_desired_packages(
+        &resolved.merged,
+        &[pinned, {
+            let mut m = module_one_pkg("base", "brew", "ripgrep");
+            m.name = "later".to_string();
+            m
+        }],
+    );
+    assert_eq!(
+        unpinned_last[0].min_version.as_deref(),
+        Some("2"),
+        "a later module declaring no floor does not drop one: {unpinned_last:?}"
+    );
 }
 
 #[test]

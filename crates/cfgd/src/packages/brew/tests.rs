@@ -488,11 +488,11 @@ mod brew_shim {
             err.to_string().contains("no such formula"),
             "single-package failure must surface the tool's real error: {err}"
         );
+        let argv = shim.argv_log();
         assert_eq!(
-            shim.invocation_count(),
+            argv.lines().filter(|l| l.contains("install jira")).count(),
             1,
-            "a single-package batch has nothing to isolate; it must not be retried: {}",
-            shim.argv_log()
+            "a single-package batch has nothing to isolate; it must not be retried: {argv}"
         );
     }
 
@@ -574,6 +574,39 @@ mod brew_shim {
         assert!(
             msg.contains("brew") && msg.contains("install"),
             "error must be tagged as a brew install failure: {msg}"
+        );
+    }
+
+    /// A package the machine already holds reaches `install` only because the
+    /// plan kept it — it sits below a declared `minVersion` — and `brew
+    /// install` is a no-op on a formula that is present. The already-held half
+    /// of the batch therefore goes through `brew upgrade`, or the run reports
+    /// an action that raised nothing and the floor is still unmet on the next
+    /// scan.
+    #[test]
+    #[serial]
+    fn brew_raises_an_already_installed_package_instead_of_reinstalling_it() {
+        // The shim answers every invocation with the same listing, so
+        // `brew list --formulae -1` reports `git` installed and `vim` not.
+        let shim = ToolShim::install(SHIM_ENV, 0, "git\n", "");
+        let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        BrewManager
+            .install(&["git".into(), "vim".into()], &cx)
+            .expect("install Ok");
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("upgrade git"),
+            "a held package is raised, not re-installed: {argv}"
+        );
+        assert!(
+            argv.contains("install vim"),
+            "a package the machine lacks is still installed: {argv}"
+        );
+        assert!(
+            !argv.contains("install git"),
+            "a held package is never handed to install: {argv}"
         );
     }
 
@@ -1172,11 +1205,14 @@ mod bridge {
         // back through the context's NoteSink instead of printing here — the
         // reconciler renders them attached to the action's own status line.
         // Caveat body must be a single line — renderer forbids embedded newlines.
+        // No line of this body parses as `<formula> <version>` naming `git`:
+        // the shim answers the pre-install listing with the same bytes, and a
+        // formula the listing claims is RAISED rather than installed.
         let caveat_stdout = "==> Installing git\n\
             ==> Caveats\n\
             Run xcode-select --install to complete setup.\n\
             ==> Summary\n\
-            git installed.\n";
+            Installation complete.\n";
         let _shim = ToolShim::install(SHIM_ENV, 0, caveat_stdout, "");
 
         let (printer, cap) = Printer::for_test_doc();

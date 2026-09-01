@@ -50,11 +50,12 @@ pub fn verify(
     // `<manager>:<name>` id, and a second row under it would answer the same
     // key twice — `installed` beside `want: 2, have: 1.0.0`.
     let (mut results, mut check_errors) = package_version_drift(&effective, registry, cx)?;
-    let versioned: std::collections::HashSet<String> = results
-        .iter()
-        .map(|r| r.resource_id.clone())
-        .chain(check_errors.iter().map(|e| e.key.clone()))
-        .collect();
+    // Only the ids the floor pass gave a VERDICT for. A package whose floor
+    // could not be read has no verdict, so its presence — which this run did
+    // answer — stands beside the error row rather than disappearing from the
+    // ledger with it.
+    let versioned: std::collections::HashSet<String> =
+        results.iter().map(|r| r.resource_id.clone()).collect();
     for ep in &effective {
         // A `prefer: [script]` package has no queryable installed-state: a custom
         // install script can put anything anywhere, so there is no
@@ -274,6 +275,18 @@ pub fn package_version_floor(
             detail: format!(
                 "{} reports no version for {package}, so the declared minVersion {floor} \
                  can be neither met nor missed",
+                mgr.name()
+            ),
+        };
+    }
+    if !mgr.version_comparable(reported) {
+        // The manager stated something its own comparator cannot judge, so its
+        // `false` would be an artifact of the parse rather than a verdict —
+        // and `Below`'s operands promise two comparable versions.
+        return VersionFloor::Unreadable {
+            detail: format!(
+                "{} reports {package} at {reported}, which is not a version the declared \
+                 minVersion {floor} can be compared against",
                 mgr.name()
             ),
         };

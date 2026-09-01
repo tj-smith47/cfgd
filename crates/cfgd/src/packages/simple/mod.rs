@@ -22,9 +22,10 @@ use super::shared::{
 };
 use super::versions::{
     APK_BIN_ENV, APT_CACHE_BIN_ENV, DNF_BIN_ENV, DPKG_QUERY_BIN_ENV, PACMAN_BIN_ENV, PKG_BIN_ENV,
-    RPM_BIN_ENV, YUM_BIN_ENV, ZYPPER_BIN_ENV, apt_aliases, dnf_aliases, list_apt_with_versions,
-    list_dnf_with_versions, pkg_version_meets_minimum, query_version_apk, query_version_apt,
-    query_version_info, query_version_pkg,
+    RPM_BIN_ENV, YUM_BIN_ENV, ZYPPER_BIN_ENV, apt_aliases, distro_comparable,
+    distro_version_meets_minimum, dnf_aliases, list_apt_with_versions, list_dnf_with_versions,
+    pkg_version_meets_minimum, query_version_apk, query_version_apt, query_version_info,
+    query_version_pkg,
 };
 
 pub(super) const APT_GET_BIN_ENV: &str = "CFGD_APT_GET_BIN";
@@ -278,8 +279,17 @@ impl PackageManager for SimpleManager {
             // behavior on an unresolved version.
             pkg_version_meets_minimum(available, min_version).unwrap_or(false)
         } else {
-            cfgd_core::version_satisfies(available, &format!(">={min_version}"))
+            // Every other manager reaching this type is a distro family
+            // (apt/dnf/yum/apk/pacman/zypper), whose listings carry the
+            // packaging's epoch and revision around the upstream version.
+            distro_version_meets_minimum(available, min_version)
         }
+    }
+
+    fn version_comparable(&self, version: &str) -> bool {
+        // `pkg version -t` understands FreeBSD's own scheme, so nothing this
+        // manager lists is uncomparable to it.
+        self.mgr_name == "pkg" || distro_comparable(version)
     }
 }
 

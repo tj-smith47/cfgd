@@ -206,15 +206,40 @@ pub(super) fn record_full_scan_findings<'a>(
     }
 }
 
+/// The declared-floor pass over a SCOPED (`--module`) run's own modules.
+///
+/// The same engine the full-machine walk runs, over the isolate's own
+/// composition: a scoped surface RESOLVES the version rows it re-checks, so one
+/// that did not evaluate the floors would mark a standing version finding
+/// healed while the machine is still below it. `resolved` is the scoped run's
+/// empty profile, so the effective set is exactly this chain's packages.
+pub(super) fn scoped_version_drift(
+    resolved: &cfgd_core::config::ResolvedProfile,
+    modules: &[cfgd_core::modules::ResolvedModule],
+    registry: &cfgd_core::providers::ProviderRegistry,
+    cx: &cfgd_core::providers::PackageContext<'_>,
+) -> cfgd_core::errors::Result<(
+    Vec<VerifyResult>,
+    Vec<super::output_types::SystemCheckError>,
+)> {
+    let effective = cfgd_core::effective::effective_desired_packages(&resolved.merged, modules);
+    cfgd_core::reconciler::package_version_drift(&effective, registry, cx)
+}
+
 /// The record half of a SCOPED (`--module`) live check (see the module doc):
 /// one row per finding, then `resolve_drift_in` over `checked` minus the
 /// found set — the keys the check re-checked and proved clean. Nothing
 /// outside `checked` is touched, and the machine-wide scan stamp is the
 /// caller's to NOT write.
+///
+/// `check_errors` names the keys this run could not answer for. They are
+/// withheld from the resolve on the full walk's rule: a check that errored
+/// vouches for nothing, so its recorded rows stand.
 pub(super) fn record_scoped_scan_findings<'a>(
     state: &cfgd_core::state::StateStore,
     checked: &[(String, String)],
     findings: impl IntoIterator<Item = &'a VerifyResult>,
+    check_errors: &[super::output_types::SystemCheckError],
 ) {
     // One transaction over the batch, for the same WAL-write economy as the
     // full scan's; per-row failures stay warnings.
@@ -227,6 +252,7 @@ pub(super) fn record_scoped_scan_findings<'a>(
         let healed: Vec<(String, String)> = checked
             .iter()
             .filter(|(rtype, rid)| !found.contains(&(rtype.as_str(), rid.as_str())))
+            .filter(|(_, rid)| !check_errors.iter().any(|c| &c.key == rid))
             .cloned()
             .collect();
         if let Err(e) = state.resolve_drift_in(&healed) {

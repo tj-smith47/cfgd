@@ -10,9 +10,9 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     MediatedArms, bootstrap_via_brew_then_system, brew_then_system_arms, detect_brew_system_method,
-    pip_user_scripts_dir, pkg_run, planned_method_failed, planned_method_unavailable,
-    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, run_pkg_query,
-    tool_cmd_with_resolver,
+    partition_already_installed, pip_user_scripts_dir, pkg_run, planned_method_failed,
+    planned_method_unavailable, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
+    run_pkg_query, tool_cmd_with_resolver, upgrade_each,
 };
 
 pub struct PipxManager;
@@ -214,7 +214,11 @@ impl PackageManager for PipxManager {
         packages: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
-        for pkg in packages {
+        if packages.is_empty() {
+            return Ok(());
+        }
+        let (held, fresh) = partition_already_installed(self, packages, cx);
+        for pkg in &fresh {
             let label = format!("pipx install {}", pkg);
             run_pkg_cmd_live(
                 cx,
@@ -224,6 +228,11 @@ impl PackageManager for PipxManager {
                 "install",
             )?;
         }
+        upgrade_each(cx, "pipx", &held, "pipx upgrade", |pkg| {
+            let mut cmd = pipx_cmd();
+            cmd.args(["upgrade", pkg]);
+            cmd
+        })?;
         Ok(())
     }
 
@@ -743,7 +752,10 @@ mod tests {
             PipxManager
                 .install(&["black".into(), "ruff".into()], &cx)
                 .expect("Ok");
-            assert_eq!(s.invocation_count(), 2, "one pipx invocation per pkg");
+            // One listing (which packages does pipx already hold, so a held
+            // one is raised rather than re-installed) plus one install per
+            // package.
+            assert_eq!(s.invocation_count(), 3, "one pipx invocation per pkg");
             let argv = s.argv_log();
             assert!(argv.contains("install black"));
             assert!(argv.contains("install ruff"));

@@ -330,6 +330,137 @@ fn a_pinned_package_below_its_floor_exits_drift_detected_on_every_surface() {
     }
 }
 
+/// The scoped variants of the two version cells above. A `--module` surface
+/// RESOLVES the rows it re-checks, so it must evaluate the same floors: one
+/// that checked presence alone would both miss the drift and mark a standing
+/// version row healed while the machine is still below its floor.
+const SCOPED_PINNED_SURFACES: [&[&str]; 2] = [
+    &["status", "--module", "pinned", "--scan", "--exit-code"],
+    &["diff", "--module", "pinned", "--exit-code"],
+];
+
+#[test]
+fn a_pinned_package_below_its_floor_is_drift_on_both_scoped_surfaces() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    write_pinned_package_config(config_tmp.path(), "dnf");
+    let (dnf, rpm) = below_floor_dnf(config_tmp.path());
+
+    for args in SCOPED_PINNED_SURFACES {
+        let state_tmp = tempfile::tempdir().unwrap();
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let out = cmd
+            .args(args)
+            .arg("--config")
+            .arg(config_tmp.path().join("cfgd.yaml"))
+            .arg("--state-dir")
+            .arg(state_tmp.path())
+            .env("HOME", home_tmp.path())
+            .env("CFGD_DNF_BIN", &dnf)
+            .env("CFGD_RPM_BIN", &rpm)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(5),
+            "cfgd {args:?}: a scoped surface checks the floors it resolves, got: {text}"
+        );
+        assert!(
+            text.contains("demo"),
+            "cfgd {args:?}: the finding names its package, got: {text}"
+        );
+    }
+}
+
+#[test]
+fn a_pinned_package_whose_version_cannot_be_read_escalates_on_both_scoped_surfaces() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    write_pinned_package_config(config_tmp.path(), "apk");
+    let apk = versionless_apk(config_tmp.path());
+
+    for args in SCOPED_PINNED_SURFACES {
+        let state_tmp = tempfile::tempdir().unwrap();
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let out = cmd
+            .args(args)
+            .arg("--config")
+            .arg(config_tmp.path().join("cfgd.yaml"))
+            .arg("--state-dir")
+            .arg(state_tmp.path())
+            .env("HOME", home_tmp.path())
+            .env("CFGD_APK_BIN", &apk)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "cfgd {args:?}: an unanswerable floor exits Error on a scoped surface too, got: {text}"
+        );
+        assert!(
+            text.contains("error checking drift"),
+            "cfgd {args:?}: the unanswerable check renders as its own row, got: {text}"
+        );
+    }
+}
+
+/// The erasure guard: a scoped run resolves every key it re-checked and did not
+/// re-find. A standing version-drift row therefore survives a `--module` run
+/// over the very module that declared it — the machine is still below the
+/// floor, and the scoped surface says so rather than healing it.
+#[test]
+fn a_scoped_run_does_not_heal_a_version_row_the_machine_still_holds() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    let state_tmp = tempfile::tempdir().unwrap();
+    write_pinned_package_config(config_tmp.path(), "dnf");
+    let (dnf, rpm) = below_floor_dnf(config_tmp.path());
+
+    let run_one = |args: &[&str]| {
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let out = cmd
+            .args(args)
+            .arg("--config")
+            .arg(config_tmp.path().join("cfgd.yaml"))
+            .arg("--state-dir")
+            .arg(state_tmp.path())
+            .env("HOME", home_tmp.path())
+            .env("CFGD_DNF_BIN", &dnf)
+            .env("CFGD_RPM_BIN", &rpm)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.code(), text)
+    };
+
+    let (code, text) = run_one(&["diff", "--exit-code"]);
+    assert_eq!(code, Some(5), "the full walk records the row: {text}");
+    let (code, text) = run_one(&["diff", "--module", "pinned", "--exit-code"]);
+    assert_eq!(code, Some(5), "the scoped run re-finds it: {text}");
+    // The RECORDED read: no `--scan`, so this reports what the two runs above
+    // left in the store.
+    let (code, text) = run_one(&["status", "--exit-code"]);
+    assert_eq!(
+        code,
+        Some(5),
+        "the recorded row survived the scoped run: {text}"
+    );
+}
+
 /// One module declaring an env var, so a scoped run's merged env is
 /// non-empty and the env probe actually runs.
 fn write_module_config(dir: &Path) {

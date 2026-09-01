@@ -13,8 +13,8 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     brew_available, brew_cmd, brew_path_dirs, command_failure_reason,
-    install_batch_then_per_package, pkg_run, run_pkg_cmd, run_pkg_cmd_live, run_pkg_cmd_msg,
-    run_pkg_query,
+    install_batch_then_per_package, partition_already_installed, pkg_run, run_pkg_cmd,
+    run_pkg_cmd_live, run_pkg_cmd_msg, run_pkg_query, upgrade_each,
 };
 
 pub struct BrewManager;
@@ -260,9 +260,18 @@ impl PackageManager for BrewCaskManager {
         casks: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
-        install_batch_then_per_package(cx, "brew-cask", casks, |pkgs| {
+        if casks.is_empty() {
+            return Ok(());
+        }
+        let (held, fresh) = partition_already_installed(self, casks, cx);
+        install_batch_then_per_package(cx, "brew-cask", &fresh, |pkgs| {
             let mut cmd = brew_cmd();
             cmd.arg("install").arg("--cask").args(pkgs);
+            cmd
+        })?;
+        upgrade_each(cx, "brew-cask", &held, "brew upgrade --cask", |pkg| {
+            let mut cmd = brew_cmd();
+            cmd.arg("upgrade").arg("--cask").arg(pkg);
             cmd
         })?;
         Ok(())
@@ -432,9 +441,18 @@ impl PackageManager for BrewManager {
         packages: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
-        install_batch_then_per_package(cx, "brew", packages, |pkgs| {
+        if packages.is_empty() {
+            return Ok(());
+        }
+        let (held, fresh) = partition_already_installed(self, packages, cx);
+        install_batch_then_per_package(cx, "brew", &fresh, |pkgs| {
             let mut cmd = brew_cmd();
             cmd.arg("install").args(pkgs);
+            cmd
+        })?;
+        upgrade_each(cx, "brew", &held, "brew upgrade", |pkg| {
+            let mut cmd = brew_cmd();
+            cmd.arg("upgrade").arg(pkg);
             cmd
         })?;
         Ok(())

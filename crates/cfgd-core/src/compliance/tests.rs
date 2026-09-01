@@ -608,6 +608,79 @@ fn collect_package_checks_routes_through_package_identity_for_case_insensitive_m
     );
 }
 
+/// A snapshot is what an auditor reads when nobody is at the terminal, so a
+/// package installed BELOW its declared floor cannot read `installed` there
+/// while `cfgd verify` calls the same machine drifted. The floor verdict comes
+/// from the one engine (`package_version_floor`); only the vocabulary is
+/// compliance's own — a missed floor is a Violation naming both operands, an
+/// unjudgeable one a Warning, because a check that could not run is not a
+/// finding against the host.
+#[test]
+fn a_package_below_its_declared_floor_is_a_compliance_violation() {
+    use crate::config::MergedProfile;
+    use crate::modules::ResolvedPackage;
+    use crate::providers::StubPackageManager;
+
+    let pinned = |pkg: &str, min: &str| {
+        let mut m = crate::test_helpers::make_resolved_module("dev");
+        m.packages = vec![ResolvedPackage {
+            canonical_name: pkg.to_string(),
+            resolved_name: pkg.to_string(),
+            manager: "pipx".to_string(),
+            manager_declared: false,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: Some(min.to_string()),
+        }];
+        m
+    };
+
+    let registry = |mgr: StubPackageManager| {
+        let mut r = ProviderRegistry::new();
+        r.add_package_manager(Box::new(mgr));
+        r
+    };
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+
+    let below = registry(StubPackageManager::new("pipx").with_installed_at("ripgrep", "1.0.0"));
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+    let checks = collect_package_checks(
+        &MergedProfile::default(),
+        &[pinned("ripgrep", "2")],
+        &below,
+        &cx,
+    )
+    .unwrap();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(checks[0].status, ComplianceStatus::Violation, "{checks:?}");
+    let detail = checks[0].detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.contains("1.0.0") && detail.contains('2'),
+        "the detail states both operands: {detail}"
+    );
+
+    let unjudgeable =
+        registry(StubPackageManager::new("pipx").with_installed_at("ripgrep", "git-20240101"));
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+    let checks = collect_package_checks(
+        &MergedProfile::default(),
+        &[pinned("ripgrep", "2")],
+        &unjudgeable,
+        &cx,
+    )
+    .unwrap();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(
+        checks[0].status,
+        ComplianceStatus::Warning,
+        "an unjudgeable version is a check that could not run: {checks:?}"
+    );
+}
+
 #[test]
 fn collect_package_checks_missing_package_violation() {
     use crate::config::MergedProfile;

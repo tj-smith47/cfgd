@@ -529,6 +529,13 @@ pub fn collect_file_checks(
 /// host is skipped (consistent with the verify path), and a manager that cannot
 /// be queried yields a single per-manager warning. Module packages now appear,
 /// attributed to their module in the check detail.
+///
+/// An installed package's declared `minVersion` floor is judged by the same
+/// engine every live surface reads
+/// ([`package_version_floor`](crate::reconciler::package_version_floor)); only
+/// the VOCABULARY is compliance's own — a missed floor is a violation naming
+/// both operands, and a version nothing can compare is a warning rather than a
+/// finding against the host.
 pub fn collect_package_checks(
     profile: &MergedProfile,
     modules: &[ResolvedModule],
@@ -540,12 +547,12 @@ pub fn collect_package_checks(
     let mut checks = Vec::new();
 
     // Group desired packages by manager, preserving origin for attribution.
-    let mut by_manager: HashMap<String, Vec<(String, Origin)>> = HashMap::new();
+    let mut by_manager: HashMap<String, Vec<(String, Origin, Option<String>)>> = HashMap::new();
     for ep in crate::effective::effective_desired_packages(profile, modules) {
         by_manager
             .entry(ep.manager)
             .or_default()
-            .push((ep.name, ep.origin));
+            .push((ep.name, ep.origin, ep.min_version));
     }
 
     for pm in registry.available_package_managers() {
@@ -571,17 +578,34 @@ pub fn collect_package_checks(
             }
         };
 
-        for (pkg, origin) in desired {
+        for (pkg, origin, min_version) in desired {
             let suffix = origin_suffix(origin);
             // package_identity: match case-insensitive managers (choco/scoop/winget)
             // and name-remapping ones (go) like with like against installed_packages.
             if installed.contains(&pm.package_identity(pkg)) {
+                let (status, detail) = match crate::reconciler::package_version_floor(
+                    pm,
+                    &installed,
+                    pkg,
+                    min_version.as_deref(),
+                ) {
+                    crate::reconciler::VersionFloor::Met => {
+                        (ComplianceStatus::Compliant, format!("installed{}", suffix))
+                    }
+                    crate::reconciler::VersionFloor::Below { floor, installed } => (
+                        ComplianceStatus::Violation,
+                        format!("installed {installed}, below minVersion {floor}{suffix}"),
+                    ),
+                    crate::reconciler::VersionFloor::Unreadable { detail } => {
+                        (ComplianceStatus::Warning, format!("{detail}{suffix}"))
+                    }
+                };
                 checks.push(ComplianceCheck {
                     category: "package".into(),
                     name: Some(pkg.clone()),
                     manager: Some(pm.name().to_owned()),
-                    status: ComplianceStatus::Compliant,
-                    detail: Some(format!("installed{}", suffix)),
+                    status,
+                    detail: Some(detail),
                     ..Default::default()
                 });
             } else {

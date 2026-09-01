@@ -856,3 +856,48 @@ mod shim_tests {
         );
     }
 }
+
+/// A distro package version names its upstream release, then the packaging's
+/// own fields — a leading `<epoch>:` and a trailing `-<revision>`. Only the
+/// upstream part is what a `minVersion` declaration is written against, so it
+/// is the only part the floor is compared on.
+#[test]
+fn a_distro_version_compares_on_its_upstream_part() {
+    // The shapes `dpkg-query ${Version}`, `pacman -Q` and `apk list` really
+    // print. Each satisfies the floor its upstream part clears.
+    for (installed, floor) in [
+        ("1:2.34-0ubuntu3.4", "2"),
+        ("8.2.3995-1ubuntu2", "8"),
+        ("1.2.3-2", "1.2"),
+        ("3.0.0-r0", "2"),
+        ("1.2.3", "1.2.3"),
+    ] {
+        assert!(
+            distro_version_meets_minimum(installed, floor),
+            "{installed} clears a minVersion of {floor}"
+        );
+    }
+    assert!(
+        !distro_version_meets_minimum("1.2.3-2", "2"),
+        "the upstream part is still what decides: 1.2.3 is below 2"
+    );
+    assert!(
+        distro_comparable("1:2.34-0ubuntu3.4"),
+        "an epoch-and-revision version is comparable, not unreadable"
+    );
+    assert!(
+        !distro_comparable("git-20240101"),
+        "a version with no numeric upstream part cannot be compared"
+    );
+}
+
+/// The must-not-regress half: the shared loose-semver comparator keeps
+/// PRERELEASE semantics, because a semver-native manager's `-rc1` really is
+/// below its release. Only the distro families read the suffix as packaging.
+#[test]
+fn a_prerelease_still_loses_to_its_release_under_the_shared_comparator() {
+    assert!(
+        !cfgd_core::version_satisfies("1.2.3-rc1", ">=1.2.3"),
+        "a prerelease is below its own release under semver"
+    );
+}

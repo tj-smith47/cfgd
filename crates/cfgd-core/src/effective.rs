@@ -118,6 +118,23 @@ pub fn effective_system_map(profile: &MergedProfile, modules: &[ResolvedModule])
     system
 }
 
+/// The stricter of two declared floors: `None` loses to `Some`, and between two
+/// floors the winner is the one the OTHER does not satisfy — which is also how
+/// a floor nothing can compare resolves, since it satisfies nothing.
+fn stricter_floor(claimed: &Option<String>, candidate: &Option<String>) -> Option<String> {
+    match (claimed, candidate) {
+        (_, None) => claimed.clone(),
+        (None, Some(_)) => candidate.clone(),
+        (Some(a), Some(b)) => {
+            if crate::version_satisfies(a, &format!(">={b}")) {
+                Some(a.clone())
+            } else {
+                Some(b.clone())
+            }
+        }
+    }
+}
+
 /// Build the effective desired package set: the profile's packages combined with
 /// every module's packages, cross-scope deduplicated by the shared
 /// [`PackageClaim`] rules (a `(manager, name)` declared in both a module and the
@@ -149,6 +166,17 @@ pub fn effective_desired_packages(
                     origin: Origin::Module(module.name.clone()),
                     min_version: pkg.min_version.clone(),
                 });
+            } else if let Some(claimed) = packages
+                .iter_mut()
+                .find(|e| e.manager == pkg.manager && e.name == pkg.resolved_name)
+            {
+                // "Earlier module wins" settles WHO installs the package; a
+                // floor is a CONSTRAINT, and the planner enforces every
+                // module's own (`plan_modules` walks each module's packages
+                // through `package_survives_elision`). The strictest one
+                // therefore survives the dedup, or the live check would be
+                // blind to a floor the apply still acts on.
+                claimed.min_version = stricter_floor(&claimed.min_version, &pkg.min_version);
             }
         }
     }

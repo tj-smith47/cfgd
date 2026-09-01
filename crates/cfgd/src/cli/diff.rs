@@ -574,6 +574,11 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         }
     }
 
+    // The declared-floor pass over this chain's own packages, through the ONE
+    // engine the full walk reads: a scoped surface resolves the version rows it
+    // re-checks, so it evaluates what it resolves.
+    let (version_rows, package_check_errors) =
+        super::live_drift::scoped_version_drift(&resolved, &resolved_modules, registry, &pkg_cx)?;
     {
         let pkg_sec = printer.section_or_collapse("Packages");
         for module in modules_by_name(&resolved_modules) {
@@ -612,6 +617,24 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                         .qualifier(cfgd_core::Absence::NotInstalled.as_str())
                         .detail(pkg.resolved_name.clone());
                     diff_payload.packages.push(drift);
+                    continue;
+                }
+                let id = package_drift_resource_id(
+                    &pkg.manager,
+                    std::slice::from_ref(&pkg.resolved_name),
+                );
+                if let Some(row) = version_rows.iter().find(|r| r.resource_id == id) {
+                    has_pkg_drift = true;
+                    findings.push(row.clone());
+                    group
+                        .status(Role::Warn, row.resource_id.clone())
+                        .drift(&row.expected, &row.actual);
+                    diff_payload.packages.push(version_package_drift(row));
+                } else if let Some(err) = package_check_errors.iter().find(|e| e.key == id) {
+                    group
+                        .status(Role::Warn, err.key.clone())
+                        .qualifier("error checking drift")
+                        .detail(&err.error);
                 }
             }
         }
@@ -748,15 +771,24 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
 
     // The scoped record: this run's own module rows, and nothing beyond
     // them — no machine-wide stamp, unlike the full-machine path above.
-    super::live_drift::record_scoped_scan_findings(state, &checked, &findings);
+    super::live_drift::record_scoped_scan_findings(
+        state,
+        &checked,
+        &findings,
+        &package_check_errors,
+    );
 
+    let package_check_failed = !package_check_errors.is_empty();
+    diff_payload.system_errors = package_check_errors;
     diff_payload.summary = DiffSummary {
         has_file_drift: has_file_diff,
         has_pkg_drift,
         // A single module's diff evaluates no system configurator, so the
         // system verdict is neither drifted nor undetermined here.
         has_system_drift: false,
-        system_check_failed: false,
+        // …but a floor it could not read is still a check that did not run,
+        // and the exit gate ranks that above the drift it did find.
+        system_check_failed: package_check_failed,
         has_env_drift,
         env_check_failed,
     };
@@ -965,21 +997,10 @@ pub(super) fn print_package_drift(
             }
         }
         for row in version_rows {
-            let (manager, packages) =
-                cfgd_core::reconciler::split_package_drift_resource_id(&row.resource_id)
-                    .unwrap_or((row.resource_id.as_str(), Vec::new()));
             group
                 .status(Role::Warn, row.resource_id.clone())
                 .drift(&row.expected, &row.actual);
-            payload.packages.push(PackageDrift {
-                manager: manager.to_string(),
-                shape: "outdated".to_string(),
-                packages: packages.iter().map(|p| (*p).to_string()).collect(),
-                bootstrap_method: None,
-                reason: None,
-                expected: Some(row.expected.clone()),
-                actual: Some(row.actual.clone()),
-            });
+            payload.packages.push(version_package_drift(row));
         }
         // A floor nothing could answer for is rendered exactly as every other
         // unanswerable check is, under the package it names. Its payload row
@@ -993,6 +1014,26 @@ pub(super) fn print_package_drift(
         }
     }
     has_drift
+}
+
+/// The `-o json` entry a version-drift row serializes as: the `outdated` shape,
+/// with the declared floor and the version the machine holds in `expected` /
+/// `actual`. The ONE composition, read by the full walk and by `--module`, so a
+/// consumer cannot meet two spellings of one finding; the manager and package
+/// halves come back from the id's own splitter.
+pub(super) fn version_package_drift(row: &cfgd_core::reconciler::VerifyResult) -> PackageDrift {
+    let (manager, packages) =
+        cfgd_core::reconciler::split_package_drift_resource_id(&row.resource_id)
+            .unwrap_or((row.resource_id.as_str(), Vec::new()));
+    PackageDrift {
+        manager: manager.to_string(),
+        shape: "outdated".to_string(),
+        packages: packages.iter().map(|p| (*p).to_string()).collect(),
+        bootstrap_method: None,
+        reason: None,
+        expected: Some(row.expected.clone()),
+        actual: Some(row.actual.clone()),
+    }
 }
 
 /// How much of the machine a diff run looked at.
@@ -2265,6 +2306,72 @@ mod tests {
         // Two Skips + one Install — only the Install lands in payload.packages.
         assert_eq!(payload.packages.len(), 1);
         assert_eq!(payload.packages[0].manager, "cargo");
+    }
+
+    /// The wire contract of a version finding: the `outdated` shape carries the
+    /// declared floor and the installed version, and the row a reader sees
+    /// states the same pair. A PRESENCE row serializes neither key, so a
+    /// consumer can tell the two findings apart by shape alone.
+    #[test]
+    fn a_version_row_renders_and_serializes_its_two_operands() {
+        let (printer, cap) = Printer::for_test_doc();
+        let mut payload = DiffOutput::default();
+        let (floor, installed) = ("2".to_string(), "1.0.0".to_string());
+        let row = cfgd_core::reconciler::VerifyResult {
+            resource_type: "package".to_string(),
+            resource_id: "dnf:demo".to_string(),
+            matches: false,
+            expected: floor,
+            actual: installed,
+            unmanaged: false,
+        };
+        let missing = vec![PackageAction::Install {
+            manager: "cargo".into(),
+            packages: vec!["ripgrep".into()],
+            origin: "profile".into(),
+        }];
+        {
+            let section = printer.section_or_collapse("Packages");
+            let has_drift = print_package_drift(
+                &missing,
+                &[],
+                &[&row],
+                &[],
+                &section,
+                &Owner::profile("tiny"),
+                &mut payload,
+            );
+            assert!(has_drift, "a version row is drift");
+        }
+        drop(printer);
+
+        let output = strip_ansi(&cap.human());
+        assert!(
+            output.contains("dnf:demo")
+                && output.contains("want: 2")
+                && output.contains("have: 1.0.0"),
+            "the row states both operands, got: {output}"
+        );
+
+        let json = serde_json::to_value(&payload).expect("payload serializes");
+        let entries = json["packages"].as_array().expect("packages array");
+        let outdated = entries
+            .iter()
+            .find(|e| e["shape"] == "outdated")
+            .unwrap_or_else(|| panic!("the version finding carries the outdated shape: {json}"));
+        assert_eq!(outdated["manager"], "dnf");
+        assert_eq!(outdated["packages"], serde_json::json!(["demo"]));
+        assert_eq!(outdated["expected"], "2");
+        assert_eq!(outdated["actual"], "1.0.0");
+
+        let presence = entries
+            .iter()
+            .find(|e| e["shape"] == "missing")
+            .unwrap_or_else(|| panic!("the presence finding keeps its own shape: {json}"));
+        assert!(
+            presence.get("expected").is_none() && presence.get("actual").is_none(),
+            "a presence finding serializes no version operands: {presence}"
+        );
     }
 
     #[test]
