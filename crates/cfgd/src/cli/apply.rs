@@ -428,7 +428,9 @@ pub fn run_apply(
     // plan: a module is converged only when the RECONCILER found nothing to
     // do, never when a filter emptied a plan that still held real work.
     let plan_was_converged = plan.is_empty();
-    reconciler::withhold_from_plan(&mut plan, &exclusions);
+    // The discard is deliberate: the CLI runs no complement-resolve over
+    // recorded drift, so the carrier's ids have no reader here.
+    let _ = reconciler::withhold_from_plan(&mut plan, &exclusions);
 
     // Snapshot scope before --skip/--only prune the plan, so a zero-action
     // outcome distinguishes "in sync" from "a filter excluded pending work".
