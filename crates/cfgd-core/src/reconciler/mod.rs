@@ -87,11 +87,12 @@ pub use types::{
     ENV_RESOURCE_TYPE, EnvAction, MANAGERS_GROUP, ManagerAction, ModuleAction, ModuleActionKind,
     Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext,
     RollbackResult, SESSION_GROUP, ScriptAction, ScriptPhase, SystemAction, Tier, attempted_count,
-    package_drift_resource_id,
+    package_drift_resource_id, split_package_drift_resource_id,
 };
 pub use verify::{
-    EnvItemCheck, MergedEnvItems, SystemCheckError, VerifyReport, VerifyResult,
-    env_item_verify_results, env_verify_results, verify,
+    EnvItemCheck, MergedEnvItems, SystemCheckError, VerifyReport, VerifyResult, VersionFloor,
+    env_item_verify_results, env_verify_results, package_version_drift, package_version_floor,
+    verify,
 };
 
 pub(crate) use env::all_recorded_path_dirs;

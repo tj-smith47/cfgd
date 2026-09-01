@@ -192,6 +192,7 @@ pub fn cmd_verify(
             state,
             results.iter().filter(|r| !r.matches),
             &evaluated_system,
+            &check_errors,
         );
     } else {
         // A scoped run computes ONLY its own module's files and packages —

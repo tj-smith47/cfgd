@@ -68,6 +68,16 @@ pub struct PackageInfo {
     pub version: String,
 }
 
+/// What [`PackageManager::installed_packages_with_versions`] reports for a
+/// package whose manager cannot state a version — the trait default's answer
+/// for every manager that does not override the listing.
+///
+/// One spelling, because it is a SENTINEL two readers judge on: the planner's
+/// pinned-source gate (`known_version`) and the live `minVersion` check
+/// (`reconciler::package_version_floor`), which must both read it as "the
+/// manager did not say" rather than as a version string that failed to parse.
+pub const UNKNOWN_PACKAGE_VERSION: &str = "unknown";
+
 /// The per-run context every state-touching `PackageManager` method receives:
 /// the printer for user-facing output, plus the reconciler's already-open
 /// `StateStore` connection. Threading `state` here — instead of a manager
@@ -805,7 +815,8 @@ pub trait PackageManager: Send + Sync {
     }
 
     /// List all installed packages with their installed versions.
-    /// Default implementation wraps `installed_packages()` with version "unknown".
+    /// Default implementation wraps `installed_packages()` with
+    /// [`UNKNOWN_PACKAGE_VERSION`].
     fn installed_packages_with_versions(
         &self,
         cx: &PackageContext<'_>,
@@ -815,7 +826,7 @@ pub trait PackageManager: Send + Sync {
             .into_iter()
             .map(|name| PackageInfo {
                 name,
-                version: "unknown".into(),
+                version: UNKNOWN_PACKAGE_VERSION.into(),
             })
             .collect())
     }
@@ -1856,7 +1867,7 @@ impl PackageManager for StubPackageManager {
                     .installed_versions
                     .get(&name)
                     .cloned()
-                    .unwrap_or_else(|| "unknown".into()),
+                    .unwrap_or_else(|| UNKNOWN_PACKAGE_VERSION.into()),
                 name,
             })
             .collect())

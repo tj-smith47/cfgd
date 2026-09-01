@@ -2439,8 +2439,8 @@ pub(super) fn cmd_status(
             &pkg_cx,
             &fm,
         )?;
+        output.system_errors = report.all_check_errors();
         let drift = report.findings;
-        output.system_errors = report.check_errors;
         // The payload's `lastScanAt` must describe the scan that PRODUCED it,
         // or a consumer pairing it with `driftCheckedLive: true` reads
         // "scanned live, last scanned two hours ago". A refused write leaves

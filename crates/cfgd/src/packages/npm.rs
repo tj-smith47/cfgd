@@ -783,7 +783,7 @@ pub(super) fn parse_npm_list_versions(
             let version = info
                 .get("version")
                 .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
+                .unwrap_or(cfgd_core::providers::UNKNOWN_PACKAGE_VERSION)
                 .to_string();
             packages.push(cfgd_core::providers::PackageInfo {
                 name: name.clone(),

@@ -44,6 +44,15 @@ pub struct EffectivePackage {
     pub name: String,
     /// Whether the package came from the profile or a specific module.
     pub origin: Origin,
+    /// The `minVersion` floor the declaration pins, where it pins one.
+    ///
+    /// Carried on the deduplicated entry rather than re-read off the modules,
+    /// because the live version check
+    /// ([`reconciler::package_version_drift`](crate::reconciler::package_version_drift))
+    /// must judge exactly the set the presence check judges: a walk back over
+    /// `module.packages` would re-report a `(manager, name)` the profile also
+    /// declares, under a second row for one package.
+    pub min_version: Option<String>,
 }
 
 /// A single managed file after the profile and its modules are combined.
@@ -138,6 +147,7 @@ pub fn effective_desired_packages(
                     manager: pkg.manager.clone(),
                     name: pkg.resolved_name.clone(),
                     origin: Origin::Module(module.name.clone()),
+                    min_version: pkg.min_version.clone(),
                 });
             }
         }
@@ -149,6 +159,9 @@ pub fn effective_desired_packages(
                 packages.push(EffectivePackage {
                     manager: manager.clone(),
                     name,
+                    // `spec.packages` entries are bare names: only a module
+                    // entry carries a `minVersion`.
+                    min_version: None,
                     origin: Origin::Profile,
                 });
             }

@@ -343,6 +343,8 @@ packages:
 
 cfgd picks the first available manager that satisfies the version constraint, using `aliases` to map package names where they differ.
 
+A `minVersion` is a standing declaration, not a one-time resolution check: every drift surface (`cfgd diff`, `cfgd status --scan`, `cfgd verify`) compares the version the manager reports INSTALLED against the floor, so a package that ages out of its constraint is drift rather than convergence. A manager that cannot state an installed version (apk, pacman, zypper and FreeBSD `pkg` list names only) makes that floor unanswerable: the surfaces report it as a check that could not run and exit `1`, never as clean.
+
 ## Declarative removal
 
 cfgd tracks the packages it installs. When a package leaves the desired set (you remove it from a profile, or remove the last module that required it) the next full `cfgd apply` (and the daemon's reconcile loop) uninstalls it through the owning manager.

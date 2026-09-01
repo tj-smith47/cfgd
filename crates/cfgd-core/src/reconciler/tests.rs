@@ -1773,6 +1773,168 @@ fn module_one_pkg(name: &str, manager: &str, pkg: &str) -> ResolvedModule {
     m
 }
 
+/// [`module_one_pkg`] with the entry's declared `minVersion` floor.
+fn module_one_pinned_pkg(
+    name: &str,
+    manager: &str,
+    pkg: &str,
+    min_version: &str,
+) -> ResolvedModule {
+    let mut m = module_one_pkg(name, manager, pkg);
+    m.packages[0].min_version = Some(min_version.to_string());
+    m
+}
+
+/// A declaration that pins a version is checked against the version the
+/// machine HOLDS, not against presence alone: a host carrying `ripgrep 1.0.0`
+/// under a module declaring `minVersion: 2` is drifted, and the row states
+/// both operands (`want: 2, have: 1.0.0`) so the reader can see the gap
+/// without a second command.
+///
+/// The row keeps the SAME `<manager>:<name>` id the presence row mints — the
+/// version fact lives in the operands — or the resolve/keep machinery, which
+/// matches on the recorded id, would strand it the moment the machine
+/// converged.
+#[test]
+fn a_pinned_package_below_its_bound_is_version_drift() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("brew").with_installed_at("ripgrep", "1.0.0"),
+    ));
+
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+    let modules = vec![module_one_pinned_pkg("dev", "brew", "ripgrep", "2")];
+
+    let report = verify(
+        &resolved,
+        &registry,
+        &state,
+        &modules,
+        &crate::providers::PackageContext::new(&printer, &state),
+        true,
+    )
+    .unwrap();
+
+    let rows: Vec<_> = report
+        .results
+        .iter()
+        .filter(|r| r.resource_type == "package" && r.resource_id == "brew:ripgrep")
+        .collect();
+    let drifted = rows
+        .iter()
+        .find(|r| !r.matches)
+        .unwrap_or_else(|| panic!("a package below its floor must be drift: {rows:?}"));
+    assert_eq!(drifted.expected, "2", "the row states the declared floor");
+    assert_eq!(
+        drifted.actual, "1.0.0",
+        "the row states the version the machine holds"
+    );
+    assert_eq!(
+        crate::output::drift_terse_cause("package", &drifted.expected, &drifted.actual),
+        "version mismatch",
+        "two comparable versions read as a version mismatch"
+    );
+    assert!(
+        report.check_errors.is_empty(),
+        "a version the manager stated is not a check error: {:?}",
+        report.check_errors
+    );
+}
+
+/// The complement: a declaration that pins nothing asks nothing about
+/// versions. A host holding an old copy of an UNPINNED package is converged —
+/// the declaration never said otherwise — so presence stays the whole
+/// question and no second row appears under the package's one id.
+#[test]
+fn an_unpinned_package_stays_a_presence_only_check() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("brew").with_installed_at("ripgrep", "1.0.0"),
+    ));
+
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+    let modules = vec![module_one_pkg("dev", "brew", "ripgrep")];
+
+    let report = verify(
+        &resolved,
+        &registry,
+        &state,
+        &modules,
+        &crate::providers::PackageContext::new(&printer, &state),
+        true,
+    )
+    .unwrap();
+
+    let rows: Vec<_> = report
+        .results
+        .iter()
+        .filter(|r| r.resource_type == "package")
+        .collect();
+    assert_eq!(rows.len(), 1, "one row per declared package: {rows:?}");
+    assert!(rows[0].matches, "an installed unpinned package is clean");
+    assert!(report.check_errors.is_empty());
+}
+
+/// A pinned package whose manager states no version is a check that could not
+/// RUN, never a silent pass: the floor is neither met nor missed, so the scan
+/// reports an erroring check (which every `--exit-code` surface escalates to
+/// `Error`) and contributes NO package row — the same discipline an erroring
+/// system configurator follows, so its recorded rows stand instead of being
+/// healed by a check that never answered.
+#[test]
+fn a_pinned_package_whose_version_the_manager_cannot_state_is_a_check_error() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    // No `with_installed_version`: the trait default lists every name at
+    // `UNKNOWN_PACKAGE_VERSION`, which is what a manager that cannot state a
+    // version answers.
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("brew").with_installed(&["ripgrep"]),
+    ));
+
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+    let modules = vec![module_one_pinned_pkg("dev", "brew", "ripgrep", "2")];
+
+    let report = verify(
+        &resolved,
+        &registry,
+        &state,
+        &modules,
+        &crate::providers::PackageContext::new(&printer, &state),
+        true,
+    )
+    .unwrap();
+
+    let err = report
+        .check_errors
+        .iter()
+        .find(|e| e.key == "brew:ripgrep")
+        .unwrap_or_else(|| {
+            panic!(
+                "an unreadable version is a check error: {report:?}",
+                report = report.check_errors
+            )
+        });
+    assert!(
+        err.error.contains("2"),
+        "the detail names the floor it could not judge: {}",
+        err.error
+    );
+    assert!(
+        !report
+            .results
+            .iter()
+            .any(|r| r.resource_type == "package" && !r.matches),
+        "an errored check contributes no drift verdict of its own: {:?}",
+        report.results
+    );
+}
+
 #[test]
 fn verify_module_package_not_installed_is_package_drift() {
     // A module-only package the host lacks must surface as a `package`

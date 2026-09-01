@@ -74,7 +74,7 @@ fn parse_scoop_export_versions(output: &str) -> Vec<PackageInfo> {
                     let version = app
                         .get("Version")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
+                        .unwrap_or(cfgd_core::providers::UNKNOWN_PACKAGE_VERSION);
                     Some(PackageInfo {
                         name: name.to_string(),
                         version: version.to_string(),

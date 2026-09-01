@@ -192,6 +192,10 @@ pub fn cmd_diff(
     // same split `status --scan` observes.
     state.record_scan();
 
+    // Every check that could not run, whichever pass reported it: the payload
+    // and the exit gate read one list, and only the RENDER files them by
+    // section.
+    let all_check_errors = report.all_check_errors();
     let drifted_ids: std::collections::HashSet<&str> = report
         .findings
         .iter()
@@ -257,11 +261,25 @@ pub fn cmd_diff(
 
     let has_pkg_drift = {
         let pkg_sec = printer.section_or_collapse("Packages");
+        // A version finding is a package row: the plan below diffs NAMES, and
+        // the floor half of the same walk answers for the copies the machine
+        // holds. Sorted by id so one machine reads the same however the
+        // effective walk reached it.
+        let mut version_rows: Vec<&cfgd_core::reconciler::VerifyResult> = report
+            .findings
+            .iter()
+            .filter(|r| {
+                r.resource_type == "package" && !super::live_drift::is_presence_package_row(r)
+            })
+            .collect();
+        version_rows.sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
         // The report carries the scan's own package plan, so this section
         // prices exactly what the recorder wrote instead of planning again.
         print_package_drift(
             &report.pkg_actions,
             &report.manager_actions,
+            &version_rows,
+            &report.package_check_errors,
             &pkg_sec,
             &profile_owner,
             &mut diff_payload,
@@ -344,7 +362,11 @@ pub fn cmd_diff(
             .filter(|r| r.resource_type == "system")
             .collect();
         sys_rows.sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
-        let mut check_errors = report.check_errors;
+        // System rows only: a package's unanswerable floor rendered under this
+        // heading would file it beside the configurator probes it has nothing
+        // to do with. The PAYLOAD still carries every check error (below), so
+        // the exit gate and every structured consumer see one list.
+        let mut check_errors = report.check_errors.clone();
         check_errors.sort_by(|a, b| a.key.cmp(&b.key));
 
         let mut errors = check_errors.iter().peekable();
@@ -379,7 +401,7 @@ pub fn cmd_diff(
                 .qualifier("error checking drift")
                 .detail(&err.error);
         }
-        diff_payload.system_errors = check_errors;
+        diff_payload.system_errors = all_check_errors;
         !sys_rows.is_empty()
     };
 
@@ -792,6 +814,8 @@ pub(super) fn package_missing_drift(
         packages: vec![pkg.resolved_name.clone()],
         bootstrap_method: None,
         reason: None,
+        expected: None,
+        actual: None,
     })
 }
 
@@ -804,9 +828,16 @@ pub(super) fn package_missing_drift(
 /// plan that fixes it. `RefreshIndex`/`Prerequisite` nodes are not drift (an
 /// index refresh and a tool install are not something the user declared and
 /// can be missing) and never reach this function's caller.
+/// `version_rows` are the declared-floor half of the same walk (a package the
+/// machine holds whose installed copy is below its `minVersion`), and
+/// `check_errors` the floors it could not answer for at all. Both name a
+/// PACKAGE, so both read under the package owner rather than beside the
+/// system probes.
 pub(super) fn print_package_drift(
     pkg_actions: &[PackageAction],
     manager_actions: &[ManagerAction],
+    version_rows: &[&cfgd_core::reconciler::VerifyResult],
+    check_errors: &[SystemCheckError],
     section: &SectionGuard<'_>,
     profile: &Owner,
     payload: &mut DiffOutput,
@@ -826,13 +857,14 @@ pub(super) fn print_package_drift(
         } => (manager.clone(), packages.join(", ")),
         PackageAction::Skip { manager, .. } => (manager.clone(), String::new()),
     });
-    let has_drift = !pkg_diffs.is_empty() || !manager_actions.is_empty();
-    if !has_drift {
+    let has_drift =
+        !pkg_diffs.is_empty() || !manager_actions.is_empty() || !version_rows.is_empty();
+    if !has_drift && check_errors.is_empty() {
         return false;
     }
     let managers_owner = Owner::cfgd(MANAGERS_GROUP);
     let mut owners: Vec<Owner> = Vec::new();
-    if !pkg_diffs.is_empty() {
+    if !pkg_diffs.is_empty() || !version_rows.is_empty() || !check_errors.is_empty() {
         owners.push(profile.clone());
     }
     if !manager_actions.is_empty() {
@@ -865,6 +897,8 @@ pub(super) fn print_package_drift(
                                 packages: Vec::new(),
                                 bootstrap_method: Some(via.clone()),
                                 reason: None,
+                                expected: None,
+                                actual: None,
                             });
                         }
                     }
@@ -879,6 +913,8 @@ pub(super) fn print_package_drift(
                             packages: Vec::new(),
                             bootstrap_method: None,
                             reason: Some(reason.clone()),
+                            expected: None,
+                            actual: None,
                         });
                     }
                     ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => {}
@@ -904,6 +940,8 @@ pub(super) fn print_package_drift(
                         packages: packages.clone(),
                         bootstrap_method: None,
                         reason: None,
+                        expected: None,
+                        actual: None,
                     });
                 }
                 PackageAction::Uninstall {
@@ -919,10 +957,39 @@ pub(super) fn print_package_drift(
                         packages: packages.clone(),
                         bootstrap_method: None,
                         reason: None,
+                        expected: None,
+                        actual: None,
                     });
                 }
                 PackageAction::Skip { .. } => {}
             }
+        }
+        for row in version_rows {
+            let (manager, packages) =
+                cfgd_core::reconciler::split_package_drift_resource_id(&row.resource_id)
+                    .unwrap_or((row.resource_id.as_str(), Vec::new()));
+            group
+                .status(Role::Warn, row.resource_id.clone())
+                .drift(&row.expected, &row.actual);
+            payload.packages.push(PackageDrift {
+                manager: manager.to_string(),
+                shape: "outdated".to_string(),
+                packages: packages.iter().map(|p| (*p).to_string()).collect(),
+                bootstrap_method: None,
+                reason: None,
+                expected: Some(row.expected.clone()),
+                actual: Some(row.actual.clone()),
+            });
+        }
+        // A floor nothing could answer for is rendered exactly as every other
+        // unanswerable check is, under the package it names. Its payload row
+        // stays in `systemErrors` with the rest, which is what the exit gate
+        // and every structured consumer read.
+        for err in check_errors {
+            group
+                .status(Role::Warn, err.key.clone())
+                .qualifier("error checking drift")
+                .detail(&err.error);
         }
     }
     has_drift
@@ -1024,7 +1091,10 @@ pub fn build_diff_doc(output: &DiffOutput, scope: DiffScope<'_>) -> Doc {
     };
     let mut reasons = Vec::new();
     if output.summary.system_check_failed {
-        reasons.push("a system check could not run".to_string());
+        // Not "a system check": the same slot now carries a package's
+        // unanswerable version floor, and the verdict may not name a category
+        // the failed check did not come from.
+        reasons.push("a drift check could not run".to_string());
     }
     if output.summary.env_check_failed {
         reasons.push("the shell check could not run".to_string());
@@ -1910,6 +1980,8 @@ mod tests {
             let has_drift = print_package_drift(
                 &actions,
                 &[],
+                &[],
+                &[],
                 &section,
                 &Owner::profile("tiny"),
                 &mut payload,
@@ -2181,6 +2253,8 @@ mod tests {
             let has_drift = print_package_drift(
                 &actions,
                 &[],
+                &[],
+                &[],
                 &section,
                 &Owner::profile("tiny"),
                 &mut payload,
@@ -2213,6 +2287,8 @@ mod tests {
             let section = printer.section_or_collapse("Packages");
             let has_drift = print_package_drift(
                 &actions,
+                &[],
+                &[],
                 &[],
                 &section,
                 &Owner::profile("tiny"),
@@ -2270,6 +2346,8 @@ mod tests {
             let has_drift = print_package_drift(
                 &pkg_actions,
                 &manager_actions,
+                &[],
+                &[],
                 &section,
                 &Owner::profile("tiny"),
                 &mut payload,
