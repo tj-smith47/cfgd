@@ -611,7 +611,8 @@ interactive dashboard refresh.
 `status --module <name> --scan` scans that module's own files and missing
 packages only: it does not evaluate the module's system-config contribution
 (`effective_system_map` folds that into the profile-wide scan) or manager
-drift, matching the scope of `cfgd diff --module`.
+drift. `cfgd diff --module` shares the files-and-packages scope and adds the
+module's own declared env vars and aliases (see [`cfgd diff`](#cfgd-diff)).
 
 The fleet report's `Managed Resources` table names an owner per row, in the same
 vocabulary the plan and apply trees head their groups with and `cfgd diff`
@@ -663,6 +664,17 @@ Drift
   ⚠ module:nvim:files ~/.config/nvim/stylua.toml — content differs
   ⚠ module:nvim:packages ripgrep                        — version mismatch
 ```
+
+Without `--scan`, the module Drift section is the recorded read the fleet
+dashboard performs, filtered to this module's chain (the module and its
+transitive `depends`): recorded module-file rows whose owner is in the chain,
+and recorded package rows whose packages the chain declares under the recorded
+manager. The verdict carries the same freshness qualifier the fleet verdict
+does (`No drift recorded — drift never checked`, or `checked 2h ago` when a
+scan is on record), and the module `-o json` payload carries the same
+`lastScanAt` the fleet payload does. A `--scan` replaces the recorded rows
+with what the live check found; the payload's `lastScanAt` still names the
+recorded stamp, because a single module's scan never writes one.
 
 `-o json` carries the same breakdown as `scriptCounts`, an ARRAY in execution
 order rather than an object (a JSON object is a sorted map on the way out, and
@@ -862,9 +874,15 @@ check could not run`). A run with nothing to report is a single line:
 ✓ No drift detected
 ```
 
-`--module <name>` scopes the run to one module. The heading carries it, the header
-names the config and the module the way `apply --module` does, and the closing line
-never calls `system` clean, because a module run evaluates no system configurator:
+`--module <name>` scopes the run to one module: its files, its declared
+packages, and its own declared env vars and aliases (checked against the same
+managed env files the machine-wide Shell surface reads, attributed by the
+declaring module). The heading carries it, and the header names the config and
+the module the way `apply --module` does. The closing line never calls
+`system` clean (a module run evaluates no system configurator), and never
+calls `shell` clean either: the run checked only the entries its own modules
+declare, not the whole surface. A profile-owned entry that has drifted is
+invisible to a module run by design; `cfgd diff` reports it:
 
 ```
 Diff: nvim
@@ -877,7 +895,7 @@ Files
     -# not mine
     +indent_type = "Spaces"
 
-⚠ Drift detected — 1 file (packages, shell clean)
+⚠ Drift detected — 1 file (packages clean)
 ```
 
 An isolated run still reads `cfgd.yaml`: the `Sources` row names what the config

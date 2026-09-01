@@ -13,6 +13,6 @@ Status: dev-tools
   Dependencies  base
 
 Drift
-  ◉ No drift recorded
+  ◉ No drift recorded — drift never checked
 
 → `cfgd diff` checks the live machine for drift

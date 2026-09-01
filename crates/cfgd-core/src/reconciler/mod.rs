@@ -89,7 +89,8 @@ pub use types::{
     RollbackResult, SESSION_GROUP, ScriptAction, ScriptPhase, SystemAction, Tier, attempted_count,
 };
 pub use verify::{
-    MergedEnvItems, SystemCheckError, VerifyReport, VerifyResult, env_verify_results, verify,
+    EnvItemCheck, MergedEnvItems, SystemCheckError, VerifyReport, VerifyResult,
+    env_item_verify_results, env_verify_results, verify,
 };
 
 pub(crate) use env::all_recorded_path_dirs;

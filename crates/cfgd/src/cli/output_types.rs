@@ -209,12 +209,11 @@ pub struct DiffOutput {
     /// declares — the same per-item check `cfgd verify` persists as drift,
     /// run here read-only.
     pub env: Vec<EnvDriftOutput>,
-    /// Set only by `diff --module`: the env check there resolves the whole
-    /// active profile (not just the named module), and that resolution is a
-    /// single all-or-nothing call rather than a per-item one — an unrelated
-    /// module's resolution failure lands here instead of aborting a diff
-    /// whose Files/Packages phases already succeeded for the module asked
-    /// about.
+    /// Set only by `diff --module`: the scoped env check reads the primary
+    /// managed env file once for every entry the module's chain owns, so a
+    /// file that exists but cannot be read fails the whole check — the
+    /// failure lands here instead of aborting a diff whose Files/Packages
+    /// phases already succeeded for the module asked about.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env_check_error: Option<String>,
     pub summary: DiffSummary,
