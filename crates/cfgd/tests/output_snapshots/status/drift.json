@@ -9,7 +9,7 @@
       "resourceId": "~/.zshrc",
       "resourceType": "file",
       "source": "local",
-      "timestamp": "2026-05-14T12:00:00Z"
+      "timestamp": "2026-05-14T09:58:00Z"
     },
     {
       "actual": "13.0.0",
@@ -19,7 +19,7 @@
       "resourceId": "ripgrep",
       "resourceType": "package",
       "source": "team-config",
-      "timestamp": "2026-05-14T12:01:00Z"
+      "timestamp": "2026-05-14T09:59:00Z"
     }
   ],
   "driftCheckedLive": false,

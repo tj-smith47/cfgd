@@ -570,12 +570,15 @@ claim about the machine right now:
 }
 ```
 
-The recorded dashboard's header carries a `Last Scan` row: how long ago the shown
-state was last checked against the machine (`never` when it never has been). Once
-that age passes the daemon's default reconcile interval the header adds a hint
-pointing at `--scan`, so a stale dashboard says so rather than reading as a clean
-machine. `-o json` carries the same fact as `lastScanAt` (an ISO 8601 timestamp,
-absent when there has been no scan).
+The recorded dashboard dates itself on the verdicts the date qualifies: the
+Drift verdict and the Component Health heading both carry `checked 6m ago` (or
+`drift never checked`), the freshest of the machine-wide scan stamp and the
+recorded rows' own timestamps, since a scoped scan records rows without moving
+the stamp. Once that freshest evidence passes the daemon's default reconcile
+interval the report closes on a hint pointing at `cfgd diff`, so a stale
+dashboard says so rather than reading as a clean machine. `-o json` carries the
+stamp itself as `lastScanAt` (an ISO 8601 timestamp, absent when there has been
+no machine-wide scan) and each row's `timestamp` beside it.
 
 A recorded `env-var` or `alias` row is re-read against the machine before it is
 shown. If the declared line is the line the managed env file now holds, the row
@@ -667,14 +670,20 @@ Drift
 
 Without `--scan`, the module Drift section is the recorded read the fleet
 dashboard performs, filtered to this module's chain (the module and its
-transitive `depends`): recorded module-file rows whose owner is in the chain,
-and recorded package rows whose packages the chain declares under the recorded
-manager. The verdict carries the same freshness qualifier the fleet verdict
-does (`No drift recorded — drift never checked`, or `checked 2h ago` when a
-scan is on record), and the module `-o json` payload carries the same
-`lastScanAt` the fleet payload does. A `--scan` replaces the recorded rows
-with what the live check found; the payload's `lastScanAt` still names the
-recorded stamp, because a single module's scan never writes one.
+transitive `depends`, minus platform-gated members), covering every
+producer's recorded grammar: module-file rows whose owner is in the chain, the
+daemon's whole-module rows (a bare `module:<name>` verdict with no file
+granularity), package rows whose packages the chain declares under the
+recorded manager, and `env-var`/`alias` rows attributed to the last chain
+module declaring the name (the merge's own winner). The verdict carries the
+same freshness qualifier the fleet verdict does — `checked 2h ago`, dated by
+the freshest of the machine-wide stamp and the rows' own timestamps, or `No
+drift recorded — drift never checked` when there is neither — and the module
+`-o json` payload carries the same `lastScanAt` the fleet payload does. A
+recorded module-file finding also marks its Deployed Files row `drifted`
+rather than `not scanned`. A `--scan` replaces the recorded rows with what
+the live check found; the payload's `lastScanAt` still names the recorded
+stamp, because a single module's scan never writes one.
 
 `-o json` carries the same breakdown as `scriptCounts`, an ARRAY in execution
 order rather than an object (a JSON object is a sorted map on the way out, and
@@ -875,13 +884,17 @@ check could not run`). A run with nothing to report is a single line:
 ```
 
 `--module <name>` scopes the run to one module: its files, its declared
-packages, and its own declared env vars and aliases (checked against the same
-managed env files the machine-wide Shell surface reads, attributed by the
+packages, and its own declared env vars and aliases (checked against the
+primary managed env file the machine-wide Shell surface reads — the rc lines
+and platform siblings stay the machine-wide walk's — attributed by the
 declaring module). The heading carries it, and the header names the config and
 the module the way `apply --module` does. The closing line never calls
 `system` clean (a module run evaluates no system configurator), and never
 calls `shell` clean either: the run checked only the entries its own modules
-declare, not the whole surface. A profile-owned entry that has drifted is
+declare, not the whole surface. A scoped run records the env findings it can
+vouch for but never heals a recorded env row: the deployed line is
+machine-wide (a module outside this chain can own it), so only the
+machine-wide check clears one. A profile-owned entry that has drifted is
 invisible to a module run by design; `cfgd diff` reports it:
 
 ```

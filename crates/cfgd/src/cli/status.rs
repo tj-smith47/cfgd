@@ -298,19 +298,25 @@ pub struct ModuleDrift {
     /// dependencies its resolution pulled in.
     #[serde(skip)]
     pub owner: String,
-    /// Which declared surface it was found on: [`SURFACE_FILES`] or
-    /// [`SURFACE_PACKAGES`].
+    /// Which declared surface it was found on: one of the `SURFACE_*` keys,
+    /// or `""` for a recorded whole-module verdict with no surface of its own
+    /// (the daemon's bare-name spelling).
     #[serde(skip)]
     pub surface: &'static str,
-    /// The thing itself — a deployed path, or the package name(s).
+    /// The thing itself — a deployed path, the package name(s), or an
+    /// env/alias name. Empty for a whole-module verdict.
     #[serde(skip)]
     pub item: String,
 }
 
-/// The two surfaces a per-module live scan looks at, spelled as the module
-/// document's own `spec` keys so a drift row names the block the reader edits.
+/// The surfaces a per-module drift row can name, spelled as the module
+/// document's own `spec` keys so a drift row names the block the reader
+/// edits. A live scan mints the first two; the recorded fallback also
+/// attributes the machine-scope env/alias rows a scoped diff records.
 pub const SURFACE_FILES: &str = "files";
 pub const SURFACE_PACKAGES: &str = "packages";
+pub const SURFACE_ALIASES: &str = "aliases";
+pub const SURFACE_ENV: &str = "env";
 
 /// What a manager reports about one declared package.
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -561,8 +567,16 @@ fn surface_rank(surface: &str) -> usize {
         .unwrap_or(SURFACE_ORDER.len())
 }
 
-/// The surface grouping of the per-module Drift section, in render order.
-const SURFACE_ORDER: [&str; 2] = [SURFACE_FILES, SURFACE_PACKAGES];
+/// The surface grouping of the per-module Drift section, in render order:
+/// the two scanned surfaces, then the shell pair with aliases leading env
+/// vars, as on every surface naming that pair. A whole-module verdict
+/// (`surface == ""`) ranks off the end, closing the section.
+const SURFACE_ORDER: [&str; 4] = [
+    SURFACE_FILES,
+    SURFACE_PACKAGES,
+    SURFACE_ALIASES,
+    SURFACE_ENV,
+];
 
 /// Render the per-module "Drift" section: one row per finding, named by the
 /// owner and surface it was found on rather than by the id it is stored under
@@ -594,12 +608,18 @@ fn render_module_drift_section(
         verified,
         scan_note,
         |s, d| {
-            let subject = format!(
-                "{}:{} {}",
-                cfgd_core::reconciler::Owner::module(&d.owner).token(),
-                d.surface,
-                cfgd_core::fold_home_in_text(&d.item)
-            );
+            // A whole-module verdict has no surface or item to name: the
+            // subject is the owner token alone and the recorded cause speaks.
+            let subject = if d.surface.is_empty() {
+                cfgd_core::reconciler::Owner::module(&d.owner).token()
+            } else {
+                format!(
+                    "{}:{} {}",
+                    cfgd_core::reconciler::Owner::module(&d.owner).token(),
+                    d.surface,
+                    cfgd_core::fold_home_in_text(&d.item)
+                )
+            };
             let cause = cfgd_core::output::drift_terse_cause(
                 &d.event.resource_type,
                 d.event.expected.as_deref().unwrap_or_default(),
@@ -702,17 +722,16 @@ pub fn build_fleet_status_doc(
     // The date rides the Drift verdict it qualifies, and the hint it earns is
     // emitted ONCE at the foot of the report: a header row, a line inside
     // Drift and a closing hint were three spellings of one suggestion.
+    let freshest = freshest_check_stamp(
+        output.last_scan_at.as_deref(),
+        output.drift.iter().map(|d| d.timestamp.as_str()),
+    );
     let (stale, note) = if output.drift_checked_live {
         (false, None)
     } else {
-        let stale = output
-            .last_scan_at
-            .as_deref()
-            .is_none_or(|ts| cfgd_core::is_stale_since(ts, now, SCAN_STALENESS_SECS));
-        (
-            stale,
-            Some(drift_checked_note(output.last_scan_at.as_deref(), now)),
-        )
+        let stale =
+            freshest.is_none_or(|ts| cfgd_core::is_stale_since(ts, now, SCAN_STALENESS_SECS));
+        (stale, Some(drift_checked_note(freshest, now)))
     };
 
     match &output.last_apply {
@@ -794,7 +813,7 @@ pub fn build_fleet_status_doc(
     if !health.is_empty() {
         doc = doc.section_annotated(
             COMPONENT_HEALTH_SECTION,
-            drift_checked_note(output.last_scan_at.as_deref(), now),
+            drift_checked_note(freshest, now),
             |s| {
                 health.into_iter().fold(s, |s, row| {
                     // Subject is the owner token, exactly as the tree that
@@ -1335,6 +1354,20 @@ fn drift_checked_note(last_scan_at: Option<&str>, now: &str) -> String {
     }
 }
 
+/// The most recent instant a check stands behind a recorded report: the
+/// machine-wide scan stamp, or a recorded drift row minted after it — a
+/// scoped scan records rows but deliberately never moves the stamp, so its
+/// findings are the only date it leaves, and `drift never checked` under
+/// rows a check just produced dates the report falsely. Both recorded
+/// surfaces feed their freshness note and staleness gate from this one fold.
+/// ISO 8601 UTC stamps from [`cfgd_core::utc_now_iso8601`] compare lexically.
+fn freshest_check_stamp<'a>(
+    last_scan_at: Option<&'a str>,
+    row_stamps: impl Iterator<Item = &'a str>,
+) -> Option<&'a str> {
+    row_stamps.chain(last_scan_at).max()
+}
+
 /// One Component Health row: the owner the run's trees head their groups
 /// with, the verdict word and role from the workspace's one module-state
 /// vocabulary, and the nonzero inventory counts as one joined clause.
@@ -1557,15 +1590,20 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
     doc = match view {
         ModuleStatusView::Compact => {
             // Same split as the fleet dashboard: only the recorded branch
-            // dates its Drift section, and the recorded machine-wide stamp is
-            // a check that stands behind an empty section — the full walk it
+            // dates its Drift section, freshest of the machine-wide stamp
+            // and the recorded rows' own timestamps. The stamp alone stays
+            // the empty section's `verified` claim — only the full walk it
             // dates covered this module's files and packages too.
+            let freshest = freshest_check_stamp(
+                output.last_scan_at.as_deref(),
+                output.drift.iter().map(|d| d.event.timestamp.as_str()),
+            );
             let (verified, note) = if output.drift_checked_live {
                 (true, None)
             } else {
                 (
                     output.last_scan_at.is_some(),
-                    Some(drift_checked_note(output.last_scan_at.as_deref(), now)),
+                    Some(drift_checked_note(freshest, now)),
                 )
             };
             let doc = render_module_drift_section(
@@ -1575,18 +1613,22 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
                 verified,
                 note.as_deref(),
             );
-            // Same rule as the fleet report: a recorded view — rows or not —
-            // closes on the ONE invitation to check the machine, and only a
-            // live scan that FOUND drift earns the heal hint (the looking has
-            // been done).
-            if !output.drift_checked_live {
-                doc.hint(SCAN_HINT)
-            } else if output.drift.is_empty() {
-                doc
-            } else {
+            // Same rule as the fleet report, same staleness gate: a scan that
+            // FOUND drift earns the heal hint (the looking has been done),
+            // and a recorded view invites a check only once its freshest
+            // evidence has gone stale — a fresh record re-invited the look
+            // it was just handed.
+            let stale = !output.drift_checked_live
+                && freshest
+                    .is_none_or(|ts| cfgd_core::is_stale_since(ts, now, SCAN_STALENESS_SECS));
+            if !output.drift.is_empty() && output.drift_checked_live {
                 // The scan found drift, so the report closes on the command
                 // that heals it, scoped to the module the report is about.
                 doc.hint(super::heal_drift_hint(Some(&output.name)))
+            } else if stale {
+                doc.hint(SCAN_HINT)
+            } else {
+                doc
             }
         }
         // No Drift section: every finding is already an inline verdict on the
@@ -2412,34 +2454,94 @@ pub(super) fn cmd_status_module(
         // rows for this module may not render an empty section over them —
         // exactly the fleet dashboard's recorded read, filtered to this
         // module's chain. A row is attributed by its id alone (no manager or
-        // profile resolution on the recorded path): a module-file id names
-        // its owner outright, and a package id is matched against the chain's
-        // DECLARED names under the id's own manager. An id in neither grammar
-        // (a whole-machine surface, a daemon action spelling with no manager
-        // prefix) is a row this module cannot vouch for and stays off the
-        // report.
+        // profile resolution on the recorded path), one arm per producer
+        // grammar: a `<module>/<path>` file id names its owner outright, a
+        // BARE module id is the daemon's whole-module action spelling, a
+        // package id is matched against the chain's DECLARED names under the
+        // id's own manager, and a machine-scope `env-var`/`alias` id is
+        // attributed to the LAST chain module declaring the name — the
+        // merge's own fold order, so the recorded owner and the scoped
+        // diff's group agree. An id in no grammar the chain can vouch for
+        // stays off the report.
         //
         // The chain degrades to the named module alone when the depends graph
         // cannot resolve: this is a READ, and the graph error belongs to the
         // surfaces that would act on it (`apply`/`plan` refuse it loudly).
-        let chain =
+        // Platform-gated members are dropped as `resolve_modules` drops them:
+        // a gated-off module is not part of this host's desired state, so it
+        // cannot vouch for a row here either.
+        let platform = cfgd_core::platform::Platform::current();
+        let chain: Vec<String> =
             cfgd_core::modules::resolve_dependency_order(&[mod_name.to_string()], &all_modules)
-                .unwrap_or_else(|_| vec![mod_name.to_string()]);
+                .unwrap_or_else(|_| vec![mod_name.to_string()])
+                .into_iter()
+                .filter(|name| {
+                    all_modules.get(name).is_none_or(|m| {
+                        cfgd_core::platform::PlatformGated::applies_to(&m.spec, platform)
+                    })
+                })
+                .collect();
         for event in state.unresolved_drift()? {
             match event.resource_type.as_str() {
                 "module" => {
-                    let Some((owner, item)) =
-                        super::live_drift::split_module_file_resource_id(&event.resource_id)
+                    match super::live_drift::split_module_file_resource_id(&event.resource_id) {
+                        Some((owner, item)) => {
+                            if !chain.iter().any(|m| m == owner) {
+                                continue;
+                            }
+                            drifted_ids.insert(event.resource_id.clone());
+                            drift.push(ModuleDrift {
+                                owner: owner.to_string(),
+                                surface: SURFACE_FILES,
+                                item,
+                                event,
+                            });
+                        }
+                        // No separator: the daemon's action spelling, a
+                        // whole-module verdict with no file granularity.
+                        None => {
+                            if !chain.contains(&event.resource_id) {
+                                continue;
+                            }
+                            drift.push(ModuleDrift {
+                                owner: event.resource_id.clone(),
+                                surface: "",
+                                item: String::new(),
+                                event,
+                            });
+                        }
+                    }
+                }
+                "env-var" | "alias" => {
+                    let is_alias = event.resource_type == "alias";
+                    let declared_by = |m: &cfgd_core::modules::LoadedModule| {
+                        if is_alias {
+                            m.spec.aliases.iter().any(|a| {
+                                a.name == event.resource_id
+                                    && cfgd_core::platform::PlatformGated::applies_to(a, platform)
+                            })
+                        } else {
+                            m.spec.env.iter().any(|e| {
+                                e.name == event.resource_id
+                                    && cfgd_core::platform::PlatformGated::applies_to(e, platform)
+                            })
+                        }
+                    };
+                    let Some(owner) = chain
+                        .iter()
+                        .rev()
+                        .find(|name| all_modules.get(*name).is_some_and(&declared_by))
                     else {
                         continue;
                     };
-                    if !chain.iter().any(|m| m == owner) {
-                        continue;
-                    }
                     drift.push(ModuleDrift {
-                        owner: owner.to_string(),
-                        surface: SURFACE_FILES,
-                        item,
+                        owner: owner.clone(),
+                        surface: if is_alias {
+                            SURFACE_ALIASES
+                        } else {
+                            SURFACE_ENV
+                        },
+                        item: event.resource_id.clone(),
                         event,
                     });
                 }
@@ -2491,18 +2593,22 @@ pub(super) fn cmd_status_module(
         .into_iter()
         .map(|f| {
             // Absence is definite whether or not a scan ran; presence is not.
-            // Without a live check the honest verdict on a file that is THERE
-            // is that nothing looked inside it — `Path::exists` cannot tell a
+            // A drifted verdict outranks the not-scanned honesty: the live
+            // scan fills `drifted_ids` directly and the recorded fallback
+            // seeds it from the stored module-file rows, so a file some
+            // check DID look inside never claims nothing looked while the
+            // same report's Drift section carries its finding. A file no
+            // row names keeps `NotScanned` — `Path::exists` cannot tell a
             // converged file from a tampered one.
             let state = if !std::path::Path::new(&f.file_path).exists() {
                 ModuleFilePresence::Missing
-            } else if !do_scan {
-                ModuleFilePresence::NotScanned
             } else if drifted_ids.contains(&super::live_drift::module_file_resource_id(
                 mod_name,
                 &f.file_path,
             )) {
                 ModuleFilePresence::Drifted
+            } else if !do_scan {
+                ModuleFilePresence::NotScanned
             } else {
                 ModuleFilePresence::Deployed
             };
@@ -6605,9 +6711,14 @@ mod tests {
     /// diff`, a scoped scan — renders in a plain `status --module` (no
     /// `--scan`), with the recorded wording and the recorded-scan freshness
     /// note, instead of `No drift recorded` over rows the store already
-    /// holds. Rows outside the module's chain stay off the report, and the
-    /// presence-only Deployed Files rows keep their not-scanned honesty:
-    /// only the Drift section reads the record.
+    /// holds. Every producer's id grammar is covered: the scoped scans'
+    /// `<module>/<path>` file rows, the daemon's BARE module name (a
+    /// whole-module verdict with no file granularity), the `manager:pkgs`
+    /// package rows, and the machine-scope `env-var`/`alias` rows a scoped
+    /// diff records, attributed by the declared name. Rows outside the
+    /// module's chain stay off the report, and the Deployed Files rows read
+    /// the recorded file verdict instead of a `not scanned` the same
+    /// invocation's `-o json` contradicts.
     #[test]
     #[serial_test::serial]
     fn a_module_status_shows_its_recorded_drift_without_a_scan() {
@@ -6622,7 +6733,16 @@ mod tests {
         std::fs::write(profiles_dir.join("default.yaml"), PROFILE_WITH_MODULE_YAML).unwrap();
         let mod_dir = config_dir.path().join("modules").join("test-mod");
         std::fs::create_dir_all(&mod_dir).unwrap();
-        std::fs::write(mod_dir.join("module.yaml"), MODULE_YAML).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\n\
+             kind: Module\n\
+             metadata:\n  name: test-mod\n\
+             spec:\n  packages:\n    - name: ripgrep\n\
+             \x20 env:\n    - name: EDITOR\n      value: vim\n\
+             \x20 aliases:\n    - name: ll\n      command: ls -l\n",
+        )
+        .unwrap();
 
         let module_target = cfgd_core::to_posix_string(tmp_home.path().join("mod-file.txt"));
         {
@@ -6649,13 +6769,52 @@ mod tests {
                     "local",
                 )
                 .unwrap();
-            // Rows OUTSIDE the module's chain: neither may reach the report.
+            // The daemon's whole-module spelling: the BARE module name, no
+            // file path, minted from the planned action's resource info.
+            store
+                .record_drift("module", "test-mod", None, Some("drift detected"), "local")
+                .unwrap();
+            // A scoped diff's env rows: machine-scope ids, attributed here by
+            // the name the module's chain declares.
+            store
+                .record_drift(
+                    "env-var",
+                    "EDITOR",
+                    Some("current"),
+                    Some("missing or changed"),
+                    "local",
+                )
+                .unwrap();
+            store
+                .record_drift(
+                    "alias",
+                    "ll",
+                    Some("current"),
+                    Some("missing or changed"),
+                    "local",
+                )
+                .unwrap();
+            // Rows OUTSIDE the module's chain: none may reach the report —
+            // another module's file, a bare name that is no chain member, an
+            // env var nothing in the chain declares, a machine-wide file row.
             store
                 .record_drift(
                     "module",
                     "other-mod/etc/other.conf",
                     None,
                     Some("x"),
+                    "local",
+                )
+                .unwrap();
+            store
+                .record_drift("module", "stray-mod", None, Some("x"), "local")
+                .unwrap();
+            store
+                .record_drift(
+                    "env-var",
+                    "PAGER",
+                    Some("current"),
+                    Some("missing or changed"),
                     "local",
                 )
                 .unwrap();
@@ -6691,16 +6850,127 @@ mod tests {
             "the recorded package finding renders: {out}"
         );
         assert!(
-            out.contains("drift never checked"),
-            "the recorded fallback dates itself with the recorded-scan freshness note: {out}"
+            !out.contains("drift never checked") && out.contains("checked"),
+            "the report dates itself from its freshest evidence — the rows \
+             just recorded — never `drift never checked` over dated rows: {out}"
         );
         assert!(
-            !out.contains("other-mod") && !out.contains("/etc/hosts"),
+            out.lines().any(|l| l.contains("module:test-mod")
+                && l.contains("drift detected")
+                && !l.contains(":files")),
+            "the daemon's bare-name row renders as a whole-module verdict: {out}"
+        );
+        assert!(
+            out.contains("module:test-mod:env EDITOR"),
+            "a recorded env row renders under the declaring module: {out}"
+        );
+        assert!(
+            out.contains("module:test-mod:aliases ll"),
+            "a recorded alias row renders under the declaring module: {out}"
+        );
+        assert!(
+            out.find("module:test-mod:aliases ll").unwrap()
+                < out.find("module:test-mod:env EDITOR").unwrap(),
+            "aliases lead env vars, as on every surface naming the pair: {out}"
+        );
+        assert!(
+            !out.contains("other-mod")
+                && !out.contains("stray-mod")
+                && !out.contains("PAGER")
+                && !out.contains("/etc/hosts"),
             "rows outside the module's chain stay off a module report: {out}"
         );
         assert!(
             !out.contains("No drift detected"),
             "an unscanned report may not claim a live verdict: {out}"
+        );
+        assert!(
+            !out.contains(SCAN_HINT),
+            "fresh recorded evidence does not re-invite the look it was just \
+             handed — the scan hint is stale-gated, as on the fleet report: {out}"
+        );
+    }
+
+    /// The recorded module-file verdict and the Deployed Files inventory come
+    /// from one invocation, so the file's row may not read `not scanned`
+    /// while the Drift section (and `-o json`'s `drift`) carries its recorded
+    /// finding: the recorded verdict seeds the same `drifted_ids` set a live
+    /// scan fills.
+    #[test]
+    #[serial_test::serial]
+    fn a_recorded_file_finding_marks_its_deployed_files_row_drifted() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_WITH_MODULE_YAML).unwrap();
+        let mod_dir = config_dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(mod_dir.join("module.yaml"), MODULE_YAML).unwrap();
+
+        let target = tmp_home.path().join("mod-file.txt");
+        std::fs::write(&target, "deployed\n").unwrap();
+        let module_target = cfgd_core::to_posix_string(&target);
+        {
+            let store =
+                cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
+            let apply_id = store
+                .record_apply(
+                    "default",
+                    "hash",
+                    cfgd_core::state::ApplyStatus::Success,
+                    None,
+                )
+                .unwrap();
+            store
+                .upsert_module_file(
+                    "test-mod",
+                    &module_target,
+                    "sha256:x",
+                    cfgd_core::config::FileStrategy::Copy.as_str(),
+                    apply_id,
+                )
+                .unwrap();
+            store
+                .record_drift(
+                    "module",
+                    &super::super::live_drift::module_file_resource_id("test-mod", &module_target),
+                    Some("content matches source"),
+                    Some("content differs from source"),
+                    "local",
+                )
+                .unwrap();
+        }
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let (printer, buf) = test_printers();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            false,
+            ModuleStatusView::Inventory { show_values: false },
+        )
+        .unwrap();
+        drop(printer);
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+
+        let file_line = out
+            .lines()
+            .find(|l| l.contains("mod-file.txt"))
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            !file_line.contains("not scanned"),
+            "a file with a recorded finding may not claim nothing looked: {out}"
+        );
+        assert!(
+            file_line.contains("drifted") || file_line.contains("content differs"),
+            "the recorded verdict lands on the inventory row: {out}"
         );
     }
 }
