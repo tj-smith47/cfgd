@@ -162,24 +162,33 @@ pub(super) fn record_full_scan_findings<'a>(
     findings: impl IntoIterator<Item = &'a VerifyResult>,
     evaluated_system: &[String],
 ) {
-    let mut current: Vec<(String, String)> = Vec::new();
-    for r in findings {
-        record_finding(state, r);
-        current.push((r.resource_type.clone(), r.resource_id.clone()));
-    }
-    match state.unresolved_drift() {
-        Ok(rows) => current.extend(
-            rows.into_iter()
-                .filter(|e| full_check_cannot_refind(e, evaluated_system))
-                .map(|e| (e.resource_type, e.resource_id)),
-        ),
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to read recorded drift; leaving rows unresolved");
-            return;
+    // One transaction over the whole record-and-resolve batch: each upsert is
+    // two scans of an append-only table, and a per-row implicit commit is its
+    // own WAL write. Per-row failures stay warnings — one refused row must
+    // not roll back the rest of the scan's findings.
+    if let Err(e) = state.in_transaction(|| {
+        let mut current: Vec<(String, String)> = Vec::new();
+        for r in findings {
+            record_finding(state, r);
+            current.push((r.resource_type.clone(), r.resource_id.clone()));
         }
-    }
-    if let Err(e) = state.resolve_drift_not_in(&current) {
-        tracing::warn!(error = %e, "failed to resolve healed drift rows");
+        match state.unresolved_drift() {
+            Ok(rows) => current.extend(
+                rows.into_iter()
+                    .filter(|e| full_check_cannot_refind(e, evaluated_system))
+                    .map(|e| (e.resource_type, e.resource_id)),
+            ),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read recorded drift; leaving rows unresolved");
+                return Ok(());
+            }
+        }
+        if let Err(e) = state.resolve_drift_not_in(&current) {
+            tracing::warn!(error = %e, "failed to resolve healed drift rows");
+        }
+        Ok(())
+    }) {
+        tracing::warn!(error = %e, "failed to commit the drift scan");
     }
 }
 
@@ -193,18 +202,25 @@ pub(super) fn record_scoped_scan_findings<'a>(
     checked: &[(String, String)],
     findings: impl IntoIterator<Item = &'a VerifyResult>,
 ) {
-    let mut found: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
-    for r in findings {
-        record_finding(state, r);
-        found.insert((r.resource_type.as_str(), r.resource_id.as_str()));
-    }
-    let healed: Vec<(String, String)> = checked
-        .iter()
-        .filter(|(rtype, rid)| !found.contains(&(rtype.as_str(), rid.as_str())))
-        .cloned()
-        .collect();
-    if let Err(e) = state.resolve_drift_in(&healed) {
-        tracing::warn!(error = %e, "failed to resolve healed drift rows");
+    // One transaction over the batch, for the same WAL-write economy as the
+    // full scan's; per-row failures stay warnings.
+    if let Err(e) = state.in_transaction(|| {
+        let mut found: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
+        for r in findings {
+            record_finding(state, r);
+            found.insert((r.resource_type.as_str(), r.resource_id.as_str()));
+        }
+        let healed: Vec<(String, String)> = checked
+            .iter()
+            .filter(|(rtype, rid)| !found.contains(&(rtype.as_str(), rid.as_str())))
+            .cloned()
+            .collect();
+        if let Err(e) = state.resolve_drift_in(&healed) {
+            tracing::warn!(error = %e, "failed to resolve healed drift rows");
+        }
+        Ok(())
+    }) {
+        tracing::warn!(error = %e, "failed to commit the drift scan");
     }
 }
 

@@ -8637,6 +8637,10 @@ fn every_error_only_arm_of_the_reconcile_tick_is_classified() {
     let classified = [
         ("watcher.watch", "Ok(())"),
         ("store.resolve_all_drift", "Ok(())"),
+        (
+            "store.in_transaction",
+            "Ok(()) — the drift-snapshot batch commit",
+        ),
         ("store.record_drift", "a row id, not a count"),
         ("store.resolve_drift_not_in", "Ok(())"),
         ("store.remove_managed_resource", "Ok(())"),
@@ -12219,11 +12223,105 @@ spec:
     /// proves healed resolves, and one the tick cannot judge at all stands.
     /// The daemon's own spellings answer `false` — their standing rows are in
     /// the current set by identity before the predicate is consulted.
+    ///
+    /// The module and system actions come from a real `Reconciler::plan` over
+    /// declared inputs: a module file plans as `ModuleActionKind::DeployFiles`
+    /// and a gated module as `Skip`, so a hand-built action here would pin
+    /// the predicate to a shape the planner never emits. The install,
+    /// provision and env-file actions stay hand-built — they are planner
+    /// inputs or single-constructor shapes the plan carries verbatim.
     #[test]
     fn tick_cannot_refind_judges_each_grammar_from_the_recorded_rows_side() {
         use super::reconcile::tick_cannot_refind;
-        use crate::providers::{FileAction, PackageAction};
-        use crate::reconciler::{Action, EnvAction, ManagerAction, SystemAction};
+        use crate::providers::{PackageAction, ProviderRegistry, SystemDrift};
+        use crate::reconciler::{
+            Action, EnvAction, ManagerAction, ModuleActionKind, ReconcileContext, Reconciler,
+            SystemAction,
+        };
+        use crate::test_helpers::{
+            MockSystemConfigurator, make_empty_resolved, make_resolved_module, test_state,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("dev.conf");
+        std::fs::write(&source, "conf").unwrap();
+        let mut dev = make_resolved_module("dev");
+        dev.packages.clear();
+        dev.files = vec![crate::modules::ResolvedFile {
+            source,
+            target: std::path::PathBuf::from("/home/u/.conf"),
+            is_git_source: false,
+            strategy: None,
+            encryption: None,
+            permissions: None,
+            patch: None,
+        }];
+        let mut gated = make_resolved_module("gated");
+        gated.packages.clear();
+        gated.platform_skip_reason = Some("linux only".to_string());
+
+        let mut resolved = make_empty_resolved();
+        resolved
+            .merged
+            .system
+            .insert("gsettings".to_string(), serde_yaml::from_str("{}").unwrap());
+        resolved.merged.system.insert(
+            "systemdUnits".to_string(),
+            serde_yaml::from_str("[{name: x.service, enabled: true}]").unwrap(),
+        );
+
+        let store = test_state();
+        let mut registry = ProviderRegistry::new();
+        registry.add_system_configurator(Box::new(
+            MockSystemConfigurator::new("gsettings").with_drift(vec![SystemDrift {
+                key: "org.gnome.x key".to_string(),
+                expected: "1".to_string(),
+                actual: "0".to_string(),
+            }]),
+        ));
+        registry.add_system_configurator(Box::new(
+            MockSystemConfigurator::new("systemdUnits").unavailable(),
+        ));
+        let reconciler = Reconciler::new(&registry, &store);
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                vec![dev, gated],
+                ReconcileContext::Reconcile,
+            )
+            .unwrap();
+        let mut planned: Vec<&Action> = plan.phases.iter().flat_map(|p| p.actions()).collect();
+
+        // Guard the fixture before consulting the predicate: the plan really
+        // holds the four planner-emitted shapes the table joins against, so a
+        // planner change that stops emitting one fails HERE, not as a
+        // mysteriously inverted verdict below.
+        assert!(
+            planned.iter().any(|a| matches!(a, Action::Module(ma)
+                if ma.module_name == "dev"
+                    && matches!(ma.kind, ModuleActionKind::DeployFiles { .. }))),
+            "fixture must plan a DeployFiles for module dev"
+        );
+        assert!(
+            planned.iter().any(|a| matches!(a, Action::Module(ma)
+                if ma.module_name == "gated"
+                    && matches!(ma.kind, ModuleActionKind::Skip { .. }))),
+            "fixture must plan a Skip for the gated module"
+        );
+        assert!(
+            planned.iter().any(|a| matches!(a,
+                Action::System(SystemAction::SetValue { configurator, .. })
+                    if configurator == "gsettings")),
+            "fixture must plan a SetValue for the drifted configurator"
+        );
+        assert!(
+            planned.iter().any(|a| matches!(a,
+                Action::System(SystemAction::Skip { configurator, .. })
+                    if configurator == "systemdUnits")),
+            "fixture must plan a Skip for the unavailable configurator"
+        );
 
         let install = Action::Package(PackageAction::Install {
             manager: "brew".to_string(),
@@ -12237,24 +12335,15 @@ spec:
             batched: vec!["npm".to_string()],
             depends_on: vec![],
         });
-        let file = Action::File(FileAction::Delete {
-            target: std::path::PathBuf::from("/home/u/.conf"),
-            origin: "module".to_string(),
-        });
         let env = Action::Env(EnvAction::WriteEnvFile {
             path: std::path::PathBuf::from("/home/u/.cfgd.env"),
             content: String::new(),
             vars: 1,
             aliases: 0,
         });
-        let system = Action::System(SystemAction::SetValue {
-            configurator: "gsettings".to_string(),
-            key: "org.gnome.x key".to_string(),
-            desired: "1".to_string(),
-            current: "0".to_string(),
-            origin: "profile".to_string(),
-        });
-        let planned: Vec<&Action> = vec![&install, &provision, &file, &env, &system];
+        planned.push(&install);
+        planned.push(&provision);
+        planned.push(&env);
         let none: Vec<&Action> = vec![];
 
         let cases: &[(&str, &str, bool, bool)] = &[
@@ -12266,13 +12355,22 @@ spec:
             ("package", "provision:npm", true, false),
             ("package", "provision:pip", true, false),
             ("package", "refuse:ghost", false, false),
+            // A planned redeploy re-finds exactly the file it will write...
             ("module", "dev/home/u/.conf", true, false),
+            // ...and vouches nothing for a file the module no longer declares.
             ("module", "dev/home/u/.other", false, false),
+            // A module the plan carries only as a Skip was never probed.
+            ("module", "gated/etc/app.conf", true, false),
             ("module", "dev", false, false),
+            ("module", "gated", false, false),
             ("env-var", "EDITOR", true, false),
             ("alias", "ll", true, false),
             ("system", "gsettings.org.gnome.x key", true, false),
             ("system", "gsettings.other key", false, false),
+            // An unavailable configurator's whole namespace is unprobed...
+            ("system", "systemdUnits.x.service enabled", true, false),
+            // ...but only ITS namespace: prefix exactness, dot included.
+            ("system", "systemdUnitsX.key", false, false),
             ("system", "gsettings:org.gnome.x key", false, false),
             ("file", "/home/u/.conf", false, false),
             ("a-type-no-grammar-mints", "x", true, true),
@@ -12418,6 +12516,91 @@ spec:
                 ("package", "brew:jq"),
             ],
             "only the ticked module's own re-checked row may heal"
+        );
+    }
+
+    /// A recorded module-file row — the CLI's `<module>/<target>` spelling —
+    /// survives the tick that PLANS its redeploy: the machine still shows the
+    /// finding until the deploy actually runs, and the planner spells that
+    /// redeploy as a `DeployFiles` under the owning module, never as a file
+    /// action. A row for a file the module no longer declares resolves in the
+    /// same tick — the plan's own file list is the join, exact on both sides,
+    /// end to end through a real tick over a real config tree.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tick_that_plans_a_redeploy_keeps_the_planned_files_recorded_row() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - dev\n",
+        )
+        .unwrap();
+        let module_dir = tmp.path().join("modules").join("dev");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(module_dir.join("app.conf"), "from the module\n").unwrap();
+        // The target does not exist, so the tick plans the redeploy.
+        let target = tmp.path().join("deploy").join("app.conf");
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dev\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&target)
+            ),
+        )
+        .unwrap();
+
+        // The declared file's row in the CLI's spelling, and a sibling row
+        // for a file the module does not declare.
+        let declared_id = format!(
+            "dev/{}",
+            crate::to_posix_string(&target).trim_start_matches('/')
+        );
+        let undeclared_id = format!(
+            "dev/{}",
+            crate::to_posix_string(tmp.path().join("deploy").join("gone.conf"))
+                .trim_start_matches('/')
+        );
+        {
+            let store = StateStore::open_in_dir(tmp.path()).unwrap();
+            for rid in [&declared_id, &undeclared_id] {
+                store
+                    .record_drift("module", rid, Some("deployed"), Some("missing"), "local")
+                    .unwrap();
+            }
+        }
+
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        let mut standing: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|e| (e.resource_type.as_str(), e.resource_id.as_str()))
+            .collect();
+        standing.sort_unstable();
+        assert_eq!(
+            standing,
+            vec![("module", "dev"), ("module", declared_id.as_str()),],
+            "the tick records its own bare-module row, keeps the planned \
+             file's row, and resolves the undeclared file's row"
         );
     }
 

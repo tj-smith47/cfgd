@@ -302,6 +302,14 @@ impl ManagerAction {
         provision_id(manager)
     }
 
+    /// The recorded id of the refusal to provision `manager` — the twin of
+    /// [`ManagerAction::provision_resource_id`], for a caller settling the
+    /// `("package", "refuse:<manager>")` drift row without holding a
+    /// [`ManagerAction::Refuse`] to ask.
+    pub fn refuse_resource_id(manager: &str) -> String {
+        refuse_id(manager)
+    }
+
     /// The DAG id of the prerequisite installing `tool`.
     pub fn prereq_node(tool: &str) -> String {
         node_of(&prereq_id(tool))

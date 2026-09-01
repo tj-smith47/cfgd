@@ -2035,6 +2035,22 @@ impl<'a> super::Reconciler<'a> {
             // install adds a tracking row per package, uninstall deletes it.
             if let Some((manager, verb, packages)) = parse_package_description(&result.description)
             {
+                // The drift writers spell a package finding `<mgr>:<pkg>` (the
+                // CLI's live check, one row per package) or `<mgr>:<a>,<b>`
+                // (the daemon's batch action) — never the `<mgr>/<pkg>` this
+                // table tracks under — so the rows this action healed resolve
+                // under THAT grammar, per package plus the batch spelling.
+                let mut healed: Vec<(String, String)> = packages
+                    .iter()
+                    .map(|pkg| ("package".to_string(), format!("{manager}:{pkg}")))
+                    .collect();
+                if packages.len() > 1 {
+                    healed.push((
+                        "package".to_string(),
+                        format!("{manager}:{}", packages.join(",")),
+                    ));
+                }
+                self.state.resolve_drift_keys(apply_id, &healed)?;
                 for pkg in &packages {
                     let rid = format!("{manager}/{pkg}");
                     match verb.as_str() {
@@ -2054,11 +2070,9 @@ impl<'a> super::Reconciler<'a> {
                                 Some(apply_id),
                                 uninstall_cmd.as_deref(),
                             )?;
-                            self.state.resolve_drift(apply_id, "package", &rid)?;
                         }
                         "uninstall" => {
                             self.state.remove_managed_resource("package", &rid)?;
-                            self.state.resolve_drift(apply_id, "package", &rid)?;
                         }
                         _ => {}
                     }
@@ -2072,8 +2086,31 @@ impl<'a> super::Reconciler<'a> {
             // user declared: a refreshed index, a provisioned manager and a
             // tool a cascade shelled out to are none of them things cfgd
             // prunes, restores or reports under `cfgd status`. The journal
-            // still records the work; `managed_resources` does not.
+            // still records the work; `managed_resources` does not. A landed
+            // provision still settles its drift rows first — both producers
+            // record the missing-tooling finding under
+            // ("package", "provision:<mgr>") / ("package", "refuse:<mgr>"),
+            // and this apply is the event that heals them. The description
+            // names only the batch's leader, so the members ride in on
+            // `result.versions`; a successful Refuse resolves nothing — the
+            // manager it names is exactly as missing as before.
             if rtype == MANAGER_RESOURCE_TYPE {
+                if let Some(leader) = rid.strip_prefix("provision:") {
+                    let mut healed: Vec<(String, String)> = Vec::new();
+                    for manager in
+                        std::iter::once(leader).chain(result.versions.keys().map(String::as_str))
+                    {
+                        healed.push((
+                            "package".to_string(),
+                            ManagerAction::provision_resource_id(manager),
+                        ));
+                        healed.push((
+                            "package".to_string(),
+                            ManagerAction::refuse_resource_id(manager),
+                        ));
+                    }
+                    self.state.resolve_drift_keys(apply_id, &healed)?;
+                }
                 continue;
             }
             self.state

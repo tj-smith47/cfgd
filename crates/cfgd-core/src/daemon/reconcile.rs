@@ -789,33 +789,44 @@ fn reconcile_tick(
 
         // The plan's action set is the exact current drift set. Record each
         // diverging resource (UPSERT — no duplicate rows across ticks)...
-        let mut current_drift: Vec<(String, String)> = Vec::new();
-        let mut planned: Vec<&crate::reconciler::Action> = Vec::new();
-        for phase in &plan.phases {
-            for action in phase.actions() {
-                let (rtype, rid) = action_resource_info(action);
-                if let Err(e) = store.record_drift(
-                    &rtype,
-                    &rid,
-                    None,
-                    Some("drift detected"),
-                    config::LOCAL_LAYER,
-                ) {
-                    tracing::warn!(error = %e, "reconcile: failed to record drift");
+        // One transaction over the whole record-and-resolve batch: each
+        // upsert is two scans of an append-only table, and a per-row implicit
+        // commit is its own WAL write every interval for the life of the
+        // daemon. Per-row failures stay warnings — one refused row must not
+        // roll back the rest of the snapshot.
+        let mut planned: Vec<&crate::reconciler::Action> =
+            Vec::with_capacity(plan.phases.iter().map(|p| p.action_count()).sum());
+        if let Err(e) = store.in_transaction(|| {
+            let mut current_drift: Vec<(String, String)> = Vec::new();
+            for phase in &plan.phases {
+                for action in phase.actions() {
+                    let (rtype, rid) = action_resource_info(action);
+                    if let Err(e) = store.record_drift(
+                        &rtype,
+                        &rid,
+                        None,
+                        Some("drift detected"),
+                        config::LOCAL_LAYER,
+                    ) {
+                        tracing::warn!(error = %e, "reconcile: failed to record drift");
+                    }
+                    current_drift.push((rtype, rid));
+                    planned.push(action);
                 }
-                current_drift.push((rtype, rid));
-                planned.push(action);
             }
-        }
-        // ...then resolve any still-unresolved rows NOT in the current set —
-        // they healed since the last tick — where "current" also carries every
-        // recorded row this tick's plan re-finds under another producer's
-        // spelling or cannot judge at all.
-        if let Some(keep) = kept_rows(&planned) {
-            current_drift.extend(keep);
-            if let Err(e) = store.resolve_drift_not_in(&current_drift) {
-                tracing::warn!(error = %e, "reconcile: failed to resolve healed drift rows");
+            // ...then resolve any still-unresolved rows NOT in the current
+            // set — they healed since the last tick — where "current" also
+            // carries every recorded row this tick's plan re-finds under
+            // another producer's spelling or cannot judge at all.
+            if let Some(keep) = kept_rows(&planned) {
+                current_drift.extend(keep);
+                if let Err(e) = store.resolve_drift_not_in(&current_drift) {
+                    tracing::warn!(error = %e, "reconcile: failed to resolve healed drift rows");
+                }
             }
+            Ok(())
+        }) {
+            tracing::warn!(error = %e, "reconcile: failed to commit the drift snapshot");
         }
 
         // The onDrift hooks of the profile and of every drifted module, as one
@@ -1315,13 +1326,20 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
 ///   manager node that speaks for the manager — batch members included,
 ///   whose one planned node carries only its leader's id.
 /// * `module` `<module>/<target>` — the CLI's module-file spelling
-///   (`module_file_resource_id`, whose composition is the planned target with
-///   its leading separator trimmed, after the module name). Re-found when a
-///   planned file action names the same target; the plan's file actions do
-///   not carry a module owner, so the target alone is the join.
+///   (`module_file_resource_id`: the posix-folded target with its leading
+///   separator trimmed, after the module name). The planner spells a module
+///   file's redeploy as `ModuleActionKind::DeployFiles`, never as an
+///   `Action::File` — so the join is the owning module's own planned file
+///   list, exact on both halves. A module the plan carries only as a
+///   `ModuleActionKind::Skip` was never probed at all, so its rows are kept
+///   the way the CLI keeps an unevaluated configurator's.
 /// * `system` `<configurator>.<key>` — the CLI's spelling
 ///   ([`crate::reconciler::system_resource_key`]); the tick's own `SetValue`
-///   spells the identical fact `<configurator>:<key>`.
+///   spells the identical fact `<configurator>:<key>`. A planned
+///   `SystemAction::Skip` names a configurator this tick never probed (a
+///   registered tool that left the host, a platform gate), and every row
+///   under it is kept — the tick's twin of the CLI's `evaluated_system`
+///   discipline.
 /// * Every type the tick's own grammar mints resolves by row identity — a
 ///   standing daemon row is already in the current set before this predicate
 ///   is consulted.
@@ -1329,15 +1347,18 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
 ///   nothing about: keep.
 ///
 /// A row a planned action covers stands even while this very tick's
-/// auto-apply may heal it — fail-safe overstatement for at most one interval,
-/// against wrongly healing a finding the machine still shows.
+/// auto-apply may heal it — fail-safe overstatement against wrongly healing a
+/// finding the machine still shows. The ceiling is "until the plan stops
+/// covering it": one interval under auto-apply, and under `NotifyOnly` until
+/// the operator applies (for the per-item `env-var`/`alias` rows, until the
+/// whole env file converges, since a planned rewrite says nothing per-item).
 pub(super) fn tick_cannot_refind(
     resource_type: &str,
     resource_id: &str,
     planned: &[&crate::reconciler::Action],
 ) -> bool {
     use crate::providers::PackageAction;
-    use crate::reconciler::{Action, EnvAction, SystemAction};
+    use crate::reconciler::{Action, EnvAction, ModuleActionKind, SystemAction};
     match resource_type {
         "env-var" | "alias" => planned
             .iter()
@@ -1382,15 +1403,34 @@ pub(super) fn tick_cannot_refind(
         "module" => match resource_id.split_once('/') {
             // The daemon's own bare module-name spelling: identity governs.
             None => false,
-            Some((_, tail)) => planned.iter().any(|a| {
-                matches!(action_resource_info(a),
-                    (t, target) if t == "file" && target.trim_start_matches('/') == tail)
+            Some((module, tail)) => planned.iter().any(|a| match a {
+                Action::Module(ma) if ma.module_name == module => match &ma.kind {
+                    // A module file plans as DeployFiles, never Action::File,
+                    // so the join is the owning module's own planned file
+                    // list — the tick that plans a redeploy re-finds exactly
+                    // the file it will write.
+                    ModuleActionKind::DeployFiles { files, .. } => files
+                        .iter()
+                        .any(|f| crate::to_posix_string(&f.target).trim_start_matches('/') == tail),
+                    // A skipped module was never probed: its rows are vouched
+                    // for neither way.
+                    ModuleActionKind::Skip { .. } => true,
+                    ModuleActionKind::InstallPackages { .. }
+                    | ModuleActionKind::RunScript { .. } => false,
+                },
+                _ => false,
             }),
         },
         "system" if !resource_id.contains(':') => planned.iter().any(|a| match a {
             Action::System(SystemAction::SetValue {
                 configurator, key, ..
             }) => crate::reconciler::system_resource_key(configurator, key) == resource_id,
+            // A registered-but-unavailable configurator plans Skip and probes
+            // nothing, so a row under its namespace is vouched for neither
+            // way — the tick's twin of the CLI's `evaluated_system` keep.
+            Action::System(SystemAction::Skip { configurator, .. }) => resource_id
+                .strip_prefix(configurator.as_str())
+                .is_some_and(|rest| rest.starts_with('.')),
             _ => false,
         }),
         "file" | "system" | "secret" | "script" | "env" | "env-rc" | "env-session" | "manager" => {
