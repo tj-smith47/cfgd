@@ -101,6 +101,7 @@ impl<'p> LiveRow<'p> {
                 target: fields.target,
                 subject_style: fields.subject_style.clone(),
                 detail_style: fields.detail_style.clone(),
+                verdict: None,
             }),
             None => self.renderer.compose_status_split(fields),
         };
@@ -219,6 +220,7 @@ impl<'p> LiveRow<'p> {
                     status.detail_muted,
                 ) && status.detail.is_some())
                 .then(|| theme.muted.clone()),
+                verdict: None,
             },
             column,
         );
@@ -414,6 +416,7 @@ mod tests {
             target: None,
             subject_style: None,
             detail_style: None,
+            verdict: None,
         }
     }
 

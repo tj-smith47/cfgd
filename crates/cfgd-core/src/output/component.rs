@@ -81,6 +81,14 @@ pub enum Component {
         /// nested ANSI styling requires.
         #[serde(skip_serializing_if = "Option::is_none")]
         label: Option<StatusLabel>,
+        /// The health word a verdict-led detail opens on (`Synced`). The
+        /// renderer paints it with the row's own role and renders `detail`
+        /// as the muted parenthetical after it (`— Synced (24 packages)`),
+        /// so the one word a reader scans a column of components for is the
+        /// one styled span on the line. Same `-o json` caveat as
+        /// `qualifier`: every current call site carries `with_data`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        verdict: Option<String>,
     },
     Hint {
         text: String,
@@ -122,6 +130,13 @@ pub enum Component {
         /// the human render.
         #[serde(skip)]
         owner: bool,
+        /// A muted trailing annotation on the heading itself
+        /// (`Component Health (checked 3m ago)`) — a fact ABOUT the rows the
+        /// section holds, dated where the reader's eye already is rather than
+        /// spent on a row of its own. Never serialized, like `owner`: the
+        /// instant it renders stays a field of the command's own payload.
+        #[serde(skip)]
+        annotation: Option<String>,
         children: Vec<Component>,
     },
 }
@@ -562,6 +577,7 @@ mod tests {
             target: None,
             qualifier: None,
             label: None,
+            verdict: None,
         };
         let json = serde_json::to_value(&c).unwrap();
         assert!(json.get("detail").is_none());
@@ -585,6 +601,7 @@ mod tests {
                 role: Role::Secondary,
                 text: "[team-config]".into(),
             }),
+            verdict: None,
         };
         let json = serde_json::to_value(&c).unwrap();
         let label = json.get("label").expect("label must serialize when set");
@@ -602,6 +619,7 @@ mod tests {
             target: None,
             qualifier: Some("missing".into()),
             label: None,
+            verdict: None,
         };
         let json = serde_json::to_value(&c).unwrap();
         assert_eq!(json["qualifier"], "missing");
@@ -614,6 +632,7 @@ mod tests {
             keep_when_empty: true,
             empty_state: None,
             owner: false,
+            annotation: None,
             children: vec![],
         };
         let collapse = Component::Section {
@@ -621,6 +640,7 @@ mod tests {
             keep_when_empty: false,
             empty_state: None,
             owner: false,
+            annotation: None,
             children: vec![],
         };
         let p = serde_json::to_value(&plain).unwrap();

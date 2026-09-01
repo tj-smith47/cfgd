@@ -17,6 +17,7 @@ pub(crate) struct BufferedStatus {
     pub depth: usize,
     pub subject_style: Option<ThemedStyle>,
     pub detail_style: Option<ThemedStyle>,
+    pub verdict: Option<String>,
 }
 
 impl BufferedStatus {
@@ -26,6 +27,7 @@ impl BufferedStatus {
             self.detail.as_deref(),
             self.duration,
             self.target.as_deref(),
+            self.verdict.as_deref(),
         )
     }
 }
@@ -37,6 +39,10 @@ pub(crate) struct SectionFrame {
     /// `name` through `theme.header`; `Some` is a header the caller composed
     /// from more than one theme slot (an owner token).
     pub styled_name: Option<String>,
+    /// A muted trailing annotation the header line carries after the name
+    /// (`(checked 3m ago)`) — the renderer owns the parentheses and the coat,
+    /// composed at header emit so it takes the same theme the name does.
+    pub annotation: Option<String>,
     pub keep_when_empty: bool,
     pub empty_state: Option<String>,
     /// True when the parent section's depth + this section's contents have
@@ -69,16 +75,18 @@ impl Renderer {
     /// Open a section: pushes a frame, increments indent. Header is NOT emitted
     /// yet — first child emit triggers it.
     pub(crate) fn render_section_open(&self, name: &str, keep_when_empty: bool) {
-        self.render_section_open_styled(name, None, keep_when_empty);
+        self.render_section_open_styled(name, None, None, keep_when_empty);
     }
 
     /// Open a section whose header line is `styled_name` rather than `name`
     /// painted with `theme.header`. `name` remains the plain form the
-    /// colour-disabled and structured paths render.
+    /// colour-disabled and structured paths render. `annotation` is the muted
+    /// trailing fact [`header_line`] appends after either form.
     pub(crate) fn render_section_open_styled(
         &self,
         name: &str,
         styled_name: Option<String>,
+        annotation: Option<String>,
         keep_when_empty: bool,
     ) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -90,6 +98,7 @@ impl Renderer {
             // the renderer's own SGR.
             name: cursor_safe(name),
             styled_name,
+            annotation: annotation.as_deref().map(cursor_safe),
             keep_when_empty,
             empty_state: None,
             children_emitted: false,
@@ -328,6 +337,7 @@ impl super::Emitting<'_> {
                 target: s.target.as_deref(),
                 subject_style: s.subject_style.clone(),
                 detail_style: s.detail_style.clone(),
+                verdict: s.verdict.as_deref(),
             }
         }
         let column = super::status::group_column(
@@ -436,10 +446,14 @@ impl super::Emitting<'_> {
 /// reads visually apart from the section that owns it rather than repeating
 /// its exact heading style one indent level deeper.
 pub(crate) fn header_line(theme: &crate::output::Theme, frame: &SectionFrame) -> String {
-    match &frame.styled_name {
+    let name = match &frame.styled_name {
         Some(styled) => styled.clone(),
         None if frame.header_depth == 0 => theme.header.apply_to(&frame.name).to_string(),
         None => theme.secondary.apply_to(&frame.name).to_string(),
+    };
+    match &frame.annotation {
+        Some(annotation) => format!("{name}{}", theme.muted.apply_to(format!(" ({annotation})"))),
+        None => name,
     }
 }
 
@@ -886,6 +900,7 @@ mod alignment_group_tests {
                     target: None,
                     subject_style: None,
                     detail_style: None,
+                    verdict: None,
                 },
             );
         }

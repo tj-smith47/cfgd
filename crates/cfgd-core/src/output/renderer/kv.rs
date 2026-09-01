@@ -471,6 +471,7 @@ mod tests {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
         r.render_kv_block(&sink, 0, &[KvPair::new("Digest", "sha256:abc")]);
@@ -984,6 +985,7 @@ mod tests {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
         r.render_section_close(&sink);
@@ -1030,6 +1032,7 @@ mod tests {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
         r.render_section_close(&sink);

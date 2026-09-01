@@ -197,6 +197,7 @@ impl Drop for StatusBuilder<'_> {
                 target,
                 subject_style: self.subject_style.clone(),
                 detail_style: self.detail_style.clone(),
+                verdict: None,
             },
         );
     }
