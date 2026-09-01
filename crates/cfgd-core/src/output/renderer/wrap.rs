@@ -147,26 +147,32 @@ fn marker_width(visible: &str) -> usize {
 }
 
 /// Split a whole message body into the physical lines that render it, hanging
-/// every continuation under the first word after the leading glyph.
+/// every continuation — whether it came from an embedded newline or from
+/// soft-wrapping — at `hang`. A logical line's OWN leading indent stacks on
+/// top of `hang` for the rows that line wraps onto, so a sub-item keeps its
+/// column all the way down. A caveat's second sentence and the tail of a
+/// wrapped sentence are the same thing to a reader, so they belong in the
+/// same column; splitting on `\n` alone left the second sentence at column 0,
+/// reading as an unrelated unmarked line.
 ///
-/// The hang is computed once, from the first logical line, and governs every
-/// line after it — whether that line came from an embedded newline or from
-/// soft-wrapping. A line's OWN leading indent stacks on top of it for the
-/// rows that line wraps onto, so a sub-item keeps its column all the way
-/// down (`wrap_body_with_trailer` inherits this, wrapping through here). A caveat's second sentence and the tail of a wrapped
-/// sentence are the same thing to a reader, so they belong in the same column;
-/// splitting on `\n` alone left the second sentence at column 0, reading as an
-/// unrelated unmarked line.
+/// The shared half of [`wrap_body`] (which derives `hang` from a leading
+/// glyph) and [`super::Emitting::render_command_list`] (whose hang is the
+/// description column its caller already knows — a shape with no glyph to
+/// derive one from).
 ///
 /// `cols` is `None` for a sink that never hard-wraps. The hang still applies
 /// there: indentation is a layout decision, so a redirected run has the same
 /// shape as a terminal one.
-pub(crate) fn wrap_body(body: &str, prefix: &str, cols: Option<usize>) -> Vec<String> {
+pub(crate) fn wrap_body_at_hang(
+    body: &str,
+    first_prefix: &str,
+    hang: &str,
+    cols: Option<usize>,
+) -> Vec<String> {
     let mut logical = body.split('\n');
     let Some(first) = logical.next() else {
         return Vec::new();
     };
-    let hang = " ".repeat(display_width(prefix) + marker_width(&super::super::strip_ansi(first)));
     // A logical line's own leading indent (a bulleted sub-item, a code block
     // inside a caveat) is part of what it says, so the rows it wraps onto
     // carry it under the hang rather than sliding back to the marker column.
@@ -174,17 +180,32 @@ pub(crate) fn wrap_body(body: &str, prefix: &str, cols: Option<usize>) -> Vec<St
         let indent: String = line.chars().take_while(|c| *c == ' ').collect();
         format!("{hang}{indent}")
     };
-    let mut out = wrap_segment(first, prefix, &own_indent(first), cols);
+    let mut out = wrap_segment(first, first_prefix, &own_indent(first), cols);
     for line in logical {
         // A blank line inside the body separates paragraphs; indenting it
         // would leave trailing whitespace with nothing under it.
         if line.trim().is_empty() {
             out.push(String::new());
         } else {
-            out.extend(wrap_segment(line, &hang, &own_indent(line), cols));
+            out.extend(wrap_segment(line, hang, &own_indent(line), cols));
         }
     }
     out
+}
+
+/// Split a whole message body into the physical lines that render it, hanging
+/// every continuation under the first word after the leading glyph.
+///
+/// The hang is computed once, from the first logical line, and governs every
+/// line after it (`wrap_body_with_trailer` inherits this, wrapping through
+/// here). See [`wrap_body_at_hang`] for the shared layout once the hang is
+/// known.
+pub(crate) fn wrap_body(body: &str, prefix: &str, cols: Option<usize>) -> Vec<String> {
+    let Some(first) = body.split('\n').next() else {
+        return Vec::new();
+    };
+    let hang = " ".repeat(display_width(prefix) + marker_width(&super::super::strip_ansi(first)));
+    wrap_body_at_hang(body, prefix, &hang, cols)
 }
 
 /// Lay out one logical line: `first_prefix` on its first physical line,
