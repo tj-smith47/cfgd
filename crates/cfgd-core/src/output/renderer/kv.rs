@@ -372,7 +372,11 @@ impl Emitting<'_> {
             // `key_col` columns by construction, and the glue is space +
             // em-dash + space.
             let hang = " ".repeat(UnicodeWidthStr::width(prefix.as_str()) + key_col + 3);
-            for physical in super::wrap::wrap_segment(v, &opening, &hang, self.wrap_cols) {
+            // A value carrying its own `\n` (a `--show-values` script body)
+            // hangs every embedded line at the description column exactly as
+            // a soft-wrapped one does, rather than landing flush left with no
+            // prefix at all.
+            for physical in super::wrap::wrap_body_at_hang(v, &opening, &hang, self.wrap_cols) {
                 self.out.push(physical);
             }
         }
@@ -536,6 +540,32 @@ mod tests {
                 "continuation is not flush with the description column: {line:?}"
             );
         }
+    }
+
+    /// A value carrying its own `\n` (a `--show-values` script body) hangs
+    /// the embedded line at the description column exactly as a soft-wrapped
+    /// one does — not flush left with no prefix, which is what a bare
+    /// `wrap_segment` over the whole value produced before `render_command_list`
+    /// routed through `wrap_body_at_hang`.
+    #[test]
+    fn an_embedded_newline_in_a_value_hangs_at_the_description_column() {
+        let (r, sink, buf) = capture();
+        r.render_command_list(
+            &sink,
+            0,
+            &[cp("preApply", "set -euo pipefail\nmkdir -p ~/.config/nvim")],
+        );
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2, "got: {out:?}");
+        assert_eq!(lines[0], "preApply — set -euo pipefail");
+        // "preApply" (8) + " — " (3) = 11.
+        assert_eq!(
+            lines[1],
+            format!("{}mkdir -p ~/.config/nvim", " ".repeat(11)),
+            "the embedded line must hang at the description column: {:?}",
+            lines[1]
+        );
     }
 
     /// The hang is the width of the padded key column, not of this row's own

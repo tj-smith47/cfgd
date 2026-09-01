@@ -19,7 +19,7 @@ Shell
     ✓ PAGER="less -R"
 
 Scripts
-  ✓ preApply: set -euo pipefail
-    mkdir -p ~/.config/nvim
-  ✓ postApply: nvim --headless '+Lazy! sync' +qa
-  ✓ postApply: echo done
+  preApply  — set -euo pipefail
+              mkdir -p ~/.config/nvim
+  postApply — nvim --headless '+Lazy! sync' +qa
+  postApply — echo done

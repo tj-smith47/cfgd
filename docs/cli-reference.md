@@ -732,9 +732,11 @@ section rather than reordering it by whatever the scan reached first.
 `✓ No drift detected` is claimed only after `--scan`; without one the row says
 nothing was checked.
 
-`-o wide` replaces the counts with the inventories, each row carrying its own
-verdict, and drops the `Drift` section: every finding is already inline on the
-row for the thing it was found on:
+`-o wide` replaces the counts with the inventories, each row backed by a check
+carrying its own verdict, and drops the `Drift` section: every finding is
+already inline on the row for the thing it was found on. A row with no check
+behind it (a Scripts hook, or a Shell alias/env var without `--scan`) renders
+as a bare declaration instead — a name, never a verdict it never earned:
 
 ```
 Status: nvim
@@ -759,12 +761,14 @@ Shell
     ✓ PAGER
 
 Scripts
-  ✓ preApply: set -euo pipefail …
-  ✓ postApply: nvim --headless '+Lazy! sync' +qa
+  preApply  — set -euo pipefail …
+  postApply — nvim --headless '+Lazy! sync' +qa
 ```
 
 Packages, files, aliases and env vars list alphabetically; scripts stay in
-execution order, because that order is the fact. Aliases precede env vars
+execution order, because that order is the fact. No drift engine ever watches
+a hook body, so a Scripts row is always a bare declaration — name and
+condensed body, no verdict glyph — regardless of `--scan`. Aliases precede env vars
 wherever the pair is named — the counts, these inventories, `cfgd module
 show`'s sections, the profile inventory `cfgd profile show`, `cfgd source show`
 and `cfgd source add` render, and `-o json`'s field order alike. `--show-values` renders the

@@ -2035,11 +2035,21 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
         // unknown: the item rows degrade to `not scanned` instead of a green
         // the scan never reached.
         let probe_errored = !output.system_errors.is_empty();
+        // A live scan (`do_scan`) is a real check standing behind an item
+        // with no cause: absence of a finding there means "checked and
+        // clean", the same as a converged `Deployed Files` row. Without a
+        // scan there is no such check — only the recorded findings above
+        // caught anything — so a name with none is a bare declaration, not
+        // a verdict, and renders through the declaration-shaped composer
+        // instead of borrowing the ✓ a scan would have earned.
+        let checked_live = output.drift_checked_live;
         let clean_row = move |s: SectionBuilder, subject: String| {
             if probe_errored {
                 s.status_with(Role::Info, subject, |f| f.detail(NOT_SCANNED))
-            } else {
+            } else if checked_live {
                 s.status(Role::Ok, subject)
+            } else {
+                s.command_list([(subject, String::new())])
             }
         };
         doc = doc.section("Shell", |s| {
@@ -2091,25 +2101,27 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
 
     // Execution order, never alphabetical: the order is the fact — a
     // `postApply` that runs after a `preApply` is the only thing the list says
-    // about when either one happens.
+    // about when either one happens. Nothing here is ever checked (no drift
+    // engine watches a hook body), so every row is a declaration — the hook
+    // name and its body, `command_list`'s "name — description" shape, never
+    // a `status` row borrowing a verdict no check gave it.
     doc.section_if_nonempty("Scripts", &output.declared.scripts, |s, hooks| {
-        hooks.iter().fold(s, |s, hook| {
-            hook.bodies.iter().fold(s, |s, body| {
-                // The whole body under `--show-values`, line breaks intact:
-                // the renderer lays a multi-line subject out as continuations
-                // indented to its own marker column, so the body stays part of
-                // the row that names the hook it runs in.
-                let subject = if show_values {
-                    cfgd_core::reconciler::DisplaySubject {
-                        marker: Some(hook.hook.to_string()),
-                        body: body.clone(),
-                    }
+        let pairs: Vec<(String, String)> = hooks
+            .iter()
+            .flat_map(|hook| hook.bodies.iter().map(move |body| (hook.hook, body)))
+            .map(|(hook, body)| {
+                // The whole body under `--show-values`, line breaks intact;
+                // otherwise the condensed one-line label `hook_script_subject`
+                // used to compose into its marker.
+                let value = if show_values {
+                    body.clone()
                 } else {
-                    cfgd_core::reconciler::hook_script_subject(hook.hook, body)
+                    cfgd_core::output::condense_script_label(body)
                 };
-                s.status(Role::Ok, subject.to_string())
+                (hook.to_string(), value)
             })
-        })
+            .collect();
+        s.command_list(pairs)
     })
 }
 
@@ -6712,6 +6724,62 @@ mod tests {
         assert!(
             row.contains(NOT_SCANNED) && !row.contains('✓'),
             "an unscanned package must not read installed: {row}"
+        );
+    }
+
+    /// A declared alias, env var and script hook with no check standing
+    /// behind them: `Installed Packages` and `Deployed Files` already
+    /// degrade an unchecked declaration to `not scanned` (the two pins
+    /// above), but `Shell` and `Scripts` rendered every row `Role::Ok`
+    /// regardless — the same doctrine
+    /// (`no_recorded_verdict_claims_a_check_that_never_ran`) extended to
+    /// every inventory row: a row reporting a bare declaration renders as a
+    /// declaration, never a verdict it never earned.
+    #[test]
+    fn no_declared_inventory_row_wears_a_verdict_glyph() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let (config_dir, state_dir, config_path) = setup_env_with_module();
+        std::fs::write(
+            config_dir
+                .path()
+                .join("modules")
+                .join("test-mod")
+                .join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\n\
+             spec:\n  env:\n    - name: EDITOR\n      value: nvim\n  aliases:\n    \
+             - name: ll\n      command: ls -la\n  scripts:\n    postApply:\n      \
+             - echo hello\n",
+        )
+        .unwrap();
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let (printer, buf) = test_printers();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            false,
+            ModuleStatusView::Inventory { show_values: false },
+        )
+        .unwrap();
+        drop(printer);
+
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        let shell_onward = out
+            .split_once("\nShell\n")
+            .unwrap_or_else(|| panic!("no Shell section: {out}"))
+            .1;
+        assert!(
+            shell_onward.contains("EDITOR")
+                && shell_onward.contains("ll")
+                && shell_onward.contains("postApply"),
+            "every declared item must still be named: {shell_onward}"
+        );
+        assert!(
+            !shell_onward.contains('✓'),
+            "a declared-only row with nothing checked must not wear a verdict \
+             glyph: {shell_onward}"
         );
     }
 

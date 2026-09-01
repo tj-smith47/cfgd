@@ -19,6 +19,6 @@ Shell
     ✓ PAGER
 
 Scripts
-  ✓ preApply: set -euo pipefail …
-  ✓ postApply: nvim --headless '+Lazy! sync' +qa
-  ✓ postApply: echo done
+  preApply  — set -euo pipefail …
+  postApply — nvim --headless '+Lazy! sync' +qa
+  postApply — echo done
