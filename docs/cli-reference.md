@@ -376,11 +376,15 @@ therefore sees that a module was gated out on one of them.
 ```
 
 An action that produces a count carries it as `detail`, the same string the
-tree hangs off the row after the em-dash (`- deploy a — 5 already deployed`,
-`- write ~/.cfgd.env — 3 vars, 1 alias`); `description` names the subject
-alone and never folds the count in. A `Files` deploy of only the entries
-that changed counts them against the module's declared set; a full deploy
-carries no count, its subject already naming every target.
+tree hangs off the row after the em-dash (`- deploy 6 files — 5 already
+deployed`, `- write ~/.cfgd.env — 3 vars, 1 alias`); `description` names the
+subject alone and never folds the count in. A `Files` deploy's subject is
+always a count of the files it writes, never their names — each target
+enumerates as its own child row beneath the action, `<target> — <method>`,
+naming the resolved `symlink`/`copy`/`template`/`hardlink`/`patch` strategy.
+A subset counts against the module's declared set (`5 already deployed`); a
+full deploy carries no count at all, its subject already stating how many it
+writes.
 
 A `Prerequisites` action carries a structured `manager` sub-object beside its
 `description`, so a consumer classifies a manager's state without parsing the
