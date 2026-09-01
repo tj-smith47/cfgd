@@ -140,6 +140,11 @@ pub(crate) struct ReconcileCtx<'a> {
     /// from the scope default. Store ownership is judged on this bit, exactly
     /// as the CLI judges `cli.state_dir.is_some()`.
     pub explicit_state_dir: bool,
+    /// The `--cache-dir` override; threaded to `compose_daemon_desired_state`
+    /// and `resolve_daemon_modules` so a tick reads the SAME source/module
+    /// cache every non-daemon verb honors, instead of silently falling back to
+    /// the scope default. See `DaemonLoopContext::cache_dir_override`.
+    pub cache_dir_override: Option<&'a Path>,
     pub printer: &'a crate::output::Printer,
     /// When set, restrict reconcile to actions targeting this module name.
     /// Used by per-module reconcile ticks fired from `ReconcilePatch` entries;
@@ -251,6 +256,7 @@ fn reconcile_tick(
         hooks,
         state_dir_override,
         explicit_state_dir,
+        cache_dir_override,
         printer,
         module_filter,
         auto_apply_override,
@@ -337,8 +343,13 @@ fn reconcile_tick(
         // early-return, leaving the prior desired state (and last_reconcile) intact.
         // A benign never-synced cache-miss is warn+skip inside the resolver, not an
         // Err, so cache-miss still reconciles local-only.
-        let composed =
-            match super::compose_daemon_desired_state(&cfg, &local_resolved, printer, scope) {
+        let composed = match super::compose_daemon_desired_state(
+            &cfg,
+            &local_resolved,
+            printer,
+            scope,
+            cache_dir_override,
+        ) {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!(
@@ -570,6 +581,7 @@ fn reconcile_tick(
             Some(&pkg_cx),
             printer,
             scope,
+            cache_dir_override,
         );
         // The tick plans and (under auto-apply) applies, so its action descriptions
         // and recorded packages hash carry the version the read paths never ask for.

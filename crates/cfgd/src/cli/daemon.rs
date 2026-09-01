@@ -625,10 +625,12 @@ mod tests {
         let both_dirs = cfgd_core::daemon::DaemonDirOverrides {
             state_dir: Some(std::path::PathBuf::from("C:/cfgd-state")),
             runtime_dir: Some(std::path::PathBuf::from("C:/cfgd-run")),
+            ..Default::default()
         };
         let state_only = cfgd_core::daemon::DaemonDirOverrides {
             state_dir: Some(std::path::PathBuf::from("C:/cfgd-state")),
             runtime_dir: None,
+            ..Default::default()
         };
         let cases = [
             (None, false, cfgd_core::Scope::User, &no_dirs),

@@ -98,6 +98,13 @@ pub(super) struct DaemonLoopContext {
     /// `state_dir_override.is_some()` instead made every production tick an
     /// owner of whatever store the scope default resolved.
     pub explicit_state_dir: bool,
+    /// The `--cache-dir` override, threaded to every source/module cache
+    /// resolution a tick makes (`compose_daemon_desired_state`,
+    /// `resolve_daemon_modules`, the startup source-cache scan). `None` falls
+    /// through to `resolve_cache_dir`'s own `CFGD_CACHE_DIR`-then-scope-default
+    /// resolution at each call site, unlike `state_dir_override` this is never
+    /// pre-materialized — every reader already handles `None` uniformly.
+    pub cache_dir_override: Option<PathBuf>,
     /// Managed file targets the profile declares. A file-watch event records
     /// drift only when its path is one of these; config/source/`.git` paths
     /// trigger a reconcile but are not drift.
@@ -298,6 +305,7 @@ pub(super) async fn handle_file_change_tick(
         let hk = Arc::clone(&ctx.hooks);
         let state_dir = ctx.state_dir_override.clone();
         let explicit = ctx.explicit_state_dir;
+        let cache_dir = ctx.cache_dir_override.clone();
         let printer = Arc::clone(&ctx.printer);
         let scope = ctx.scope;
         let abort = Arc::clone(&ctx.abort);
@@ -313,6 +321,7 @@ pub(super) async fn handle_file_change_tick(
                     hooks: &*hk,
                     state_dir_override: state_dir.as_deref(),
                     explicit_state_dir: explicit,
+                    cache_dir_override: cache_dir.as_deref(),
                     printer: &printer,
                     module_filter: None,
                     auto_apply_override: None,
@@ -358,6 +367,7 @@ pub(super) async fn handle_reconcile_tick(
             let hk = Arc::clone(&ctx.hooks);
             let state_dir = ctx.state_dir_override.clone();
             let explicit = ctx.explicit_state_dir;
+            let cache_dir = ctx.cache_dir_override.clone();
             let printer = Arc::clone(&ctx.printer);
             let scope = ctx.scope;
             let abort = Arc::clone(&ctx.abort);
@@ -373,6 +383,7 @@ pub(super) async fn handle_reconcile_tick(
                         hooks: &*hk,
                         state_dir_override: state_dir.as_deref(),
                         explicit_state_dir: explicit,
+                        cache_dir_override: cache_dir.as_deref(),
                         printer: &printer,
                         module_filter: None,
                         auto_apply_override: None,
@@ -406,6 +417,7 @@ pub(super) async fn handle_reconcile_tick(
             let hk = Arc::clone(&ctx.hooks);
             let state_dir = ctx.state_dir_override.clone();
             let explicit = ctx.explicit_state_dir;
+            let cache_dir = ctx.cache_dir_override.clone();
             let printer = Arc::clone(&ctx.printer);
             let module_name = entity_name.clone();
             let scope = ctx.scope;
@@ -422,6 +434,7 @@ pub(super) async fn handle_reconcile_tick(
                         hooks: &*hk,
                         state_dir_override: state_dir.as_deref(),
                         explicit_state_dir: explicit,
+                        cache_dir_override: cache_dir.as_deref(),
                         printer: &printer,
                         module_filter: Some(&module_name),
                         auto_apply_override: Some(task_auto_apply),
@@ -513,6 +526,7 @@ pub(super) async fn handle_sync_tick(
         let hk = Arc::clone(&ctx.hooks);
         let state_dir = ctx.state_dir_override.clone();
         let explicit = ctx.explicit_state_dir;
+        let cache_dir = ctx.cache_dir_override.clone();
         let printer = Arc::clone(&ctx.printer);
         let scope = ctx.scope;
         let abort = Arc::clone(&ctx.abort);
@@ -528,6 +542,7 @@ pub(super) async fn handle_sync_tick(
                     hooks: &*hk,
                     state_dir_override: state_dir.as_deref(),
                     explicit_state_dir: explicit,
+                    cache_dir_override: cache_dir.as_deref(),
                     printer: &printer,
                     module_filter: None,
                     auto_apply_override: None,
@@ -575,6 +590,7 @@ fn refresh_backup_timers(
         &ctx.printer,
         ctx.scope,
         ctx.state_dir_override.as_deref(),
+        ctx.cache_dir_override.as_deref(),
         now,
     ) {
         Ok(resolved) => {
@@ -718,6 +734,7 @@ pub(super) async fn handle_compliance_tick(ctx: &DaemonLoopContext) -> Result<()
         let hk = Arc::clone(&ctx.hooks);
         let cc2 = cc.clone();
         let sd = ctx.state_dir_override.clone();
+        let cd = ctx.cache_dir_override.clone();
         let scope = ctx.scope;
         let printer = Arc::clone(&ctx.printer);
         crate::spawn_blocking_with_test_home(move || {
@@ -727,6 +744,7 @@ pub(super) async fn handle_compliance_tick(ctx: &DaemonLoopContext) -> Result<()
                 &*hk,
                 &cc2,
                 sd.as_deref(),
+                cd.as_deref(),
                 scope,
                 &printer,
             );

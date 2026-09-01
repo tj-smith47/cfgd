@@ -115,6 +115,7 @@ fn quiet_reconcile_ctx<'a>(
         hooks,
         state_dir_override: Some(state_dir),
         explicit_state_dir: true,
+        cache_dir_override: None,
         printer,
         module_filter: None,
         auto_apply_override: None,
@@ -1698,6 +1699,7 @@ async fn tick_against_default_store(config_path: PathBuf) {
                 hooks: &crate::test_helpers::NoopDaemonHooks,
                 state_dir_override: Some(&materialized),
                 explicit_state_dir: false,
+                cache_dir_override: None,
                 printer: &printer,
                 module_filter: None,
                 auto_apply_override: None,
@@ -9383,6 +9385,7 @@ async fn handle_reconcile_auto_apply_honors_a_raised_abort_flag() {
                 hooks: &hooks,
                 state_dir_override: Some(&sd),
                 explicit_state_dir: true,
+                cache_dir_override: None,
                 printer: &printer,
                 module_filter: None,
                 auto_apply_override: None,
@@ -11715,6 +11718,7 @@ mod harness {
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             explicit_state_dir: true,
+            cache_dir_override: None,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -13430,6 +13434,7 @@ spec:
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             explicit_state_dir: true,
+            cache_dir_override: None,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -13517,6 +13522,7 @@ spec:
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             explicit_state_dir: true,
+            cache_dir_override: None,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -13771,6 +13777,7 @@ spec:
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             explicit_state_dir: true,
+            cache_dir_override: None,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -13848,6 +13855,7 @@ spec:
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             explicit_state_dir: true,
+            cache_dir_override: None,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -13910,6 +13918,7 @@ spec:
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             explicit_state_dir: true,
+            cache_dir_override: None,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -14638,6 +14647,7 @@ spec:
             crate::Scope::User,
             &Printer::for_test().0,
             None,
+            None,
         )
     }
 
@@ -14722,6 +14732,7 @@ spec: {}
             crate::Scope::User,
             &printer,
             None,
+            None,
         )
         .expect("setup with a deprecated theme key still succeeds");
 
@@ -14753,6 +14764,70 @@ spec: {}
 
         assert!(setup.compliance_config.is_some());
         assert_eq!(setup.compliance_interval, Some(Duration::from_secs(1800)));
+    }
+
+    #[test]
+    fn build_pre_loop_setup_resolves_the_source_cache_under_the_callers_cache_dir_override() {
+        // Regression: `build_pre_loop_setup` used to resolve its source cache
+        // from `default_cache_dir_for(scope)` unconditionally, ignoring any
+        // `--cache-dir` the caller passed in. `build_sync_tasks` only adds a
+        // source's sync task when `source_cache_dir.join(name)` exists on
+        // disk, so an ignored override silently dropped every source sync
+        // task — the daemon never synced or reconciled a source whose cached
+        // checkout lived under the named cache dir.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: team-config\n      origin:\n        type: Git\n        url: https://example.test/team-config.git\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+
+        // The source's cached checkout lives ONLY under the caller-named
+        // cache dir; the scope default (unset here) stays empty, so a task
+        // only appears if the override actually reached the resolution.
+        let named_cache_dir = tmp.path().join("named-cache");
+        std::fs::create_dir_all(named_cache_dir.join("sources").join("team-config")).unwrap();
+
+        let setup = build_pre_loop_setup(
+            &config_path,
+            None,
+            &NoopHooks,
+            crate::Scope::User,
+            &Printer::for_test().0,
+            None,
+            Some(&named_cache_dir),
+        )
+        .expect("setup with a cache-dir override");
+
+        assert_eq!(
+            setup.sync_tasks.len(),
+            2,
+            "the source's sync task must be picked up from the NAMED cache dir, \
+             not the ignored scope default: {:?}",
+            setup
+                .sync_tasks
+                .iter()
+                .map(|t| &t.source_name)
+                .collect::<Vec<_>>()
+        );
+        let source_task = setup
+            .sync_tasks
+            .iter()
+            .find(|t| t.source_name == "team-config")
+            .expect("team-config sync task must be present");
+        assert_eq!(
+            source_task.repo_path,
+            named_cache_dir.join("sources").join("team-config"),
+            "the source's repo_path must resolve under the caller's --cache-dir, not the default"
+        );
     }
 
     #[test]
@@ -14942,6 +15017,7 @@ spec: {}
             &hooks,
             &compliance_cfg,
             Some(&state_dir),
+            None,
             crate::Scope::User,
             &crate::test_helpers::test_printer(),
         );
@@ -14980,6 +15056,7 @@ spec: {}
             &hooks,
             &compliance_cfg,
             Some(&state_dir),
+            None,
             crate::Scope::User,
             &crate::test_helpers::test_printer(),
         );
@@ -15024,6 +15101,7 @@ spec: {}
             &hooks,
             &compliance_cfg,
             Some(&state_dir),
+            None,
             crate::Scope::User,
             &crate::test_helpers::test_printer(),
         );
@@ -15068,6 +15146,7 @@ spec: {}
             &hooks,
             &compliance_cfg,
             Some(&state_dir),
+            None,
             crate::Scope::User,
             &crate::test_helpers::test_printer(),
         );
@@ -15935,6 +16014,7 @@ spec: {}
         super::super::DaemonRunOverrides {
             ipc_path: Some(tmp.path().join("daemon-test.sock")),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            cache_dir_override: None,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -16233,6 +16313,7 @@ spec: {}
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            cache_dir_override: None,
             skip_health_server: false,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -16292,6 +16373,7 @@ spec: {}
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            cache_dir_override: None,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -16576,6 +16658,7 @@ spec: {}
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            cache_dir_override: None,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: None,
@@ -16807,6 +16890,7 @@ spec: {}
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            cache_dir_override: None,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -16872,6 +16956,7 @@ spec: {}
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            cache_dir_override: None,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -18554,6 +18639,7 @@ mod handle_reconcile_extra_branches {
                     hooks: &NoopHooks,
                     state_dir_override: Some(&sd),
                     explicit_state_dir: true,
+                    cache_dir_override: None,
                     printer: &printer,
                     module_filter: None,
                     auto_apply_override: Some(true),
@@ -18611,6 +18697,7 @@ mod handle_reconcile_extra_branches {
                     hooks: &NoopHooks,
                     state_dir_override: Some(&sd),
                     explicit_state_dir: true,
+                    cache_dir_override: None,
                     printer: &printer,
                     module_filter: Some("dev-tools"),
                     auto_apply_override: Some(false),
@@ -18867,10 +18954,12 @@ mod tests_run_daemon_wrapper {
         let _unset_override = crate::test_helpers::EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
         let state = PathBuf::from("/srv/cfgd-state");
         let runtime = PathBuf::from("/srv/cfgd-run");
+        let cache = PathBuf::from("/srv/cfgd-cache");
         let over = cli_run_overrides(
             DaemonDirOverrides {
                 runtime_dir: Some(runtime.clone()),
                 state_dir: Some(state.clone()),
+                cache_dir: Some(cache.clone()),
             },
             crate::Scope::User,
         );
@@ -18878,6 +18967,11 @@ mod tests_run_daemon_wrapper {
             over.state_dir_override.as_deref(),
             Some(state.as_path()),
             "--state-dir must reach the loop, or the daemon's drift events, backups, and apply lock land where the CLI never looks"
+        );
+        assert_eq!(
+            over.cache_dir_override.as_deref(),
+            Some(cache.as_path()),
+            "--cache-dir must reach the loop, or the daemon composes sources from the default cache while every other verb reads the caller-named one"
         );
         let ipc = over.ipc_path.expect("runtime dir resolves an ipc path");
         // The endpoint's SHAPE is the one thing that genuinely differs by OS: a
@@ -18908,6 +19002,10 @@ mod tests_run_daemon_wrapper {
         assert!(
             over.state_dir_override.is_none(),
             "no flag → fall through to CFGD_STATE_DIR / the scope default"
+        );
+        assert!(
+            over.cache_dir_override.is_none(),
+            "no flag → fall through to CFGD_CACHE_DIR / the scope default"
         );
     }
 
@@ -19572,6 +19670,7 @@ mod backup_timers {
             &printer,
             crate::Scope::User,
             Some(&state_dir),
+            None,
             now,
         )
         .expect("a valid profile resolves");
@@ -19607,6 +19706,7 @@ mod backup_timers {
                 None,
                 &printer,
                 crate::Scope::User,
+                None,
                 None,
                 Instant::now(),
             )
@@ -20695,6 +20795,7 @@ async fn drive_cached_tick_printing(
                 hooks: &*hooks,
                 state_dir_override: Some(&sd),
                 explicit_state_dir: true,
+                cache_dir_override: None,
                 printer,
                 module_filter: None,
                 auto_apply_override: None,
@@ -21173,6 +21274,7 @@ mod log_dialect {
                     hooks: &NoopHooks,
                     state_dir_override: Some(&sd),
                     explicit_state_dir: true,
+                    cache_dir_override: None,
                     printer: &printer,
                     module_filter,
                     auto_apply_override: Some(true),

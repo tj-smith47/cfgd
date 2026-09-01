@@ -510,6 +510,7 @@ impl BackupTimers {
 /// cannot damage source-delivered state the way the pruning reconcile could.
 /// The `degraded` flag is what stops that softness from becoming permanent —
 /// see [`BackupTimers`].
+#[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_backup_tasks(
     cfg: &CfgdConfig,
     config_path: &Path,
@@ -517,13 +518,16 @@ pub(super) fn resolve_backup_tasks(
     printer: &Printer,
     scope: crate::Scope,
     state_dir: Option<&Path>,
+    cache_dir: Option<&Path>,
     now: Instant,
 ) -> Result<ResolvedBackupTasks> {
     let (profiles_dir, profile_name) = super::profile_context(config_path, cfg, profile_override);
 
     let local = config::resolve_profile(profile_name, &profiles_dir)?;
 
-    let (specs, degraded) = match super::compose_daemon_desired_state(cfg, &local, printer, scope) {
+    let (specs, degraded) = match super::compose_daemon_desired_state(
+        cfg, &local, printer, scope, cache_dir,
+    ) {
         Ok(composed) => (composed.resolved.merged.backups, None),
         Err(e) => {
             tracing::warn!(
