@@ -2175,7 +2175,7 @@ fn cmd_module_show_scripts() {
         "should have a scripts section, got: {output}"
     );
     assert!(
-        output.contains("postApply: echo setup"),
+        output.contains("postApply — echo setup"),
         "each row names the hook it runs under, got: {output}"
     );
     assert!(

@@ -259,24 +259,27 @@ pub fn build_module_show_doc(
 
     // Every hook the module declares, in execution order — read through the
     // one tally so this section and `cfgd status <module>`'s cannot disagree
-    // about what the module declares.
+    // about what the module declares. No drift engine ever watches a hook
+    // body, so this is always a bare declaration, the same `command_list`
+    // shape `cfgd status <module>`'s Scripts section uses: the hook name is
+    // the key, never a `status` row borrowing a verdict no check gave it.
     let declared = cfgd_core::modules::ModuleSurfaces::of(&output.spec);
     doc = doc.section_if_nonempty("Scripts", &declared.scripts, |s, hooks| {
-        hooks.iter().fold(s, |s, hook| {
-            hook.bodies.iter().fold(s, |s, body| {
+        let pairs: Vec<(String, String)> = hooks
+            .iter()
+            .flat_map(|hook| hook.bodies.iter().map(move |body| (hook.hook, body)))
+            .map(|(hook, body)| {
                 // `--show-values` is the only way to read a whole body; the
                 // default row condenses it, exactly as the status inventory does.
-                let subject = if show_values {
-                    cfgd_core::reconciler::DisplaySubject {
-                        marker: Some(hook.hook.to_string()),
-                        body: body.clone(),
-                    }
+                let value = if show_values {
+                    body.clone()
                 } else {
-                    cfgd_core::reconciler::hook_script_subject(hook.hook, body)
+                    cfgd_core::output::condense_script_label(body)
                 };
-                s.status(Role::Info, subject.to_string())
+                (hook.to_string(), value)
             })
-        })
+            .collect();
+        s.command_list(pairs)
     });
 
     doc.with_data(output)
