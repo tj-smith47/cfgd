@@ -330,8 +330,8 @@ fn diff_module_dependency_header_human() {
 
 /// `--module <name>` branch of `cmd_diff` — the heading carries the module
 /// (`Diff: diff-mod`), the one drifted file renders under its owner group,
-/// and the closing line calls `packages` and `env` clean without claiming
-/// anything about `system`, which a module run never checks.
+/// and the closing line calls `packages` clean without claiming anything
+/// about `system` or the shell, which a module run never checks.
 #[test]
 fn diff_module_only_human() {
     let (config_dir, state_dir) = module_only_setup();

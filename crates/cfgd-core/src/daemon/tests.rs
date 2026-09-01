@@ -3011,7 +3011,9 @@ fn action_resource_info_manager_provision() {
         depends_on: vec![],
     });
     let (rtype, rid) = action_resource_info(&action);
-    assert_eq!(rtype, "manager");
+    // The drift-row type is "package": one stored identity per provision
+    // finding, shared with the CLI live check's `manager_action_drift` rows.
+    assert_eq!(rtype, "package");
     assert_eq!(rid, "provision:brew");
 }
 
@@ -12212,6 +12214,213 @@ spec:
         assert!(st.module_last_reconcile.contains_key("my-module"));
     }
 
+    /// The tick's keep predicate, one row shape per line: a recorded row the
+    /// plan re-finds under another producer's spelling stands, one the plan
+    /// proves healed resolves, and one the tick cannot judge at all stands.
+    /// The daemon's own spellings answer `false` — their standing rows are in
+    /// the current set by identity before the predicate is consulted.
+    #[test]
+    fn tick_cannot_refind_judges_each_grammar_from_the_recorded_rows_side() {
+        use super::reconcile::tick_cannot_refind;
+        use crate::providers::{FileAction, PackageAction};
+        use crate::reconciler::{Action, EnvAction, ManagerAction, SystemAction};
+
+        let install = Action::Package(PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: vec!["jq".to_string(), "rg".to_string()],
+            origin: "profile".to_string(),
+        });
+        let provision = Action::Manager(ManagerAction::Provision {
+            manager: "pip".to_string(),
+            via: "apt".to_string(),
+            declared: None,
+            batched: vec!["npm".to_string()],
+            depends_on: vec![],
+        });
+        let file = Action::File(FileAction::Delete {
+            target: std::path::PathBuf::from("/home/u/.conf"),
+            origin: "module".to_string(),
+        });
+        let env = Action::Env(EnvAction::WriteEnvFile {
+            path: std::path::PathBuf::from("/home/u/.cfgd.env"),
+            content: String::new(),
+            vars: 1,
+            aliases: 0,
+        });
+        let system = Action::System(SystemAction::SetValue {
+            configurator: "gsettings".to_string(),
+            key: "org.gnome.x key".to_string(),
+            desired: "1".to_string(),
+            current: "0".to_string(),
+            origin: "profile".to_string(),
+        });
+        let planned: Vec<&Action> = vec![&install, &provision, &file, &env, &system];
+        let none: Vec<&Action> = vec![];
+
+        let cases: &[(&str, &str, bool, bool)] = &[
+            // (type, id, kept under `planned`, kept under an empty plan)
+            ("package", "brew:jq", true, false),
+            ("package", "brew:absent", false, false),
+            ("package", "brew:jq,rg", false, false),
+            ("package", "brew", false, false),
+            ("package", "provision:npm", true, false),
+            ("package", "provision:pip", true, false),
+            ("package", "refuse:ghost", false, false),
+            ("module", "dev/home/u/.conf", true, false),
+            ("module", "dev/home/u/.other", false, false),
+            ("module", "dev", false, false),
+            ("env-var", "EDITOR", true, false),
+            ("alias", "ll", true, false),
+            ("system", "gsettings.org.gnome.x key", true, false),
+            ("system", "gsettings.other key", false, false),
+            ("system", "gsettings:org.gnome.x key", false, false),
+            ("file", "/home/u/.conf", false, false),
+            ("a-type-no-grammar-mints", "x", true, true),
+        ];
+        for (rtype, rid, with_plan, without_plan) in cases {
+            assert_eq!(
+                tick_cannot_refind(rtype, rid, &planned),
+                *with_plan,
+                "wrong verdict for {rtype}/{rid} against the plan"
+            );
+            assert_eq!(
+                tick_cannot_refind(rtype, rid, &none),
+                *without_plan,
+                "wrong verdict for {rtype}/{rid} against a clean tick"
+            );
+        }
+    }
+
+    /// A clean profile-wide tick is ground truth only for what it PROBED: the
+    /// CLI's per-package row heals (a converged machine re-found it clean),
+    /// while a row of a type no grammar this tick knows can mint stands — and
+    /// the in-memory count follows the store instead of assuming 0.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_clean_tick_heals_only_the_rows_it_can_refind() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        {
+            let store = StateStore::open_in_dir(tmp.path()).unwrap();
+            store
+                .record_drift(
+                    "package",
+                    "brew:ghost-tool",
+                    Some("installed"),
+                    Some("missing"),
+                    "local",
+                )
+                .unwrap();
+            store
+                .record_drift("future-scanner", "some-fact", None, None, "local")
+                .unwrap();
+        }
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        let standing: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|e| (e.resource_type.as_str(), e.resource_id.as_str()))
+            .collect();
+        assert_eq!(
+            standing,
+            vec![("future-scanner", "some-fact")],
+            "the per-package row healed, the foreign-typed row stands"
+        );
+        let st = state.lock().await;
+        assert_eq!(
+            st.drift_count, 1,
+            "the count follows the store, not a hardcoded clean-tick 0"
+        );
+    }
+
+    /// A per-module tick probes one module, so it may heal only rows it can
+    /// attribute to that module by identity — its own module-file rows —
+    /// never another module's, the machine-wide surfaces, or per-package
+    /// rows nothing attributes to a module.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_per_module_tick_never_heals_rows_outside_its_module() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        {
+            let store = StateStore::open_in_dir(tmp.path()).unwrap();
+            for (rtype, rid) in [
+                ("module", "ghost-mod/etc/app.conf"),
+                ("module", "other-mod/etc/other.conf"),
+                ("file", "/etc/hosts"),
+                ("package", "brew:jq"),
+            ] {
+                store
+                    .record_drift(rtype, rid, None, Some("drift detected"), "local")
+                    .unwrap();
+            }
+        }
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "ghost-mod".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        let mut standing: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|e| (e.resource_type.as_str(), e.resource_id.as_str()))
+            .collect();
+        standing.sort_unstable();
+        assert_eq!(
+            standing,
+            vec![
+                ("file", "/etc/hosts"),
+                ("module", "other-mod/etc/other.conf"),
+                ("package", "brew:jq"),
+            ],
+            "only the ticked module's own re-checked row may heal"
+        );
+    }
+
     /// A per-module tick refreshes the subscriptions the status wire carries.
     ///
     /// They are the CONFIG's, not the resolution's, so the arm that resolved a
@@ -12219,7 +12428,14 @@ spec:
     /// rewrites `spec.sources`, a daemon ticking per-module would otherwise
     /// keep answering `daemon status` with the old ones until the next
     /// profile-wide tick.
+    ///
+    /// Serial: `spec.sources` makes the tick resolve the source cache through
+    /// `default_cache_dir_for`, which reads the process-global `CFGD_CACHE_DIR`
+    /// BEFORE the test-home override — several sibling tests set that env under
+    /// the unnamed serial lock, and reading a foreign cache mid-mutation fails
+    /// composition (a torn manifest), skipping the tick fail-closed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
     async fn a_per_module_tick_refreshes_the_subscriptions_the_config_declares() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -12244,9 +12460,15 @@ spec:
             drift_policy: config::DriftPolicy::NotifyOnly,
             last_reconciled: None,
         }];
-        runner::handle_reconcile_tick(&ctx, &mut tasks)
-            .await
-            .unwrap();
+        // A tick that bails early leaves `composed_sources` empty with its
+        // reason only on the journal, so the capture is what turns a bare
+        // `[] != ["team"]` into a diagnosable failure.
+        let logs = super::capture_run_logs_async(async {
+            runner::handle_reconcile_tick(&ctx, &mut tasks)
+                .await
+                .unwrap();
+        })
+        .await;
 
         let st = state.lock().await;
         let named: Vec<&str> = st
@@ -12258,7 +12480,7 @@ spec:
             named,
             vec!["team"],
             "the arm that resolved one module still read the config that \
-             declares the subscriptions"
+             declares the subscriptions; tick logs: {logs}"
         );
         assert!(
             st.profile.is_none() && st.modules.is_empty(),
@@ -16539,7 +16761,12 @@ async fn handle_reconcile_resolves_non_empty_modules_when_module_dir_exists() {
     );
 }
 
+// Serial: `spec.sources` makes the reconcile resolve the source cache through
+// `default_cache_dir_for`, which reads the process-global `CFGD_CACHE_DIR`
+// before any test override — a sibling test setting it under the unnamed
+// serial lock would hand this tick a foreign cache mid-mutation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
 async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolves_removed() {
     // Drives reconcile.rs:200-243 — the `auto_apply && !sources.is_empty()`
     // branch. Pre-stages two sources in the config + a state-store row for

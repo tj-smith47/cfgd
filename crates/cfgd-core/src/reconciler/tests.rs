@@ -6701,13 +6701,147 @@ fn a_manager_nodes_description_parses_back_to_the_id_it_is_recorded_under() {
         let desc = super::format_action_description(action);
         // The journal writes one of these and the restore path reads the
         // other; a manager node whose description parsed back to a different
-        // id would be recorded under a row nothing can find again.
+        // id would be recorded under a row nothing can find again. The ID
+        // half agrees for every variant. The TYPE half deliberately splits
+        // for a provision (and a refusal): its journal row stays "manager" —
+        // cfgd's own scaffolding, which `record_managed_resources` refuses —
+        // while its DRIFT row is typed "package", the same identity the CLI's
+        // live check mints, so either producer's next check heals the
+        // other's finding.
+        let (drift_type, drift_id) = action_resource_info(action);
+        let (journal_type, journal_id) = super::parse_resource_from_description(&desc);
         assert_eq!(
-            action_resource_info(action),
-            super::parse_resource_from_description(&desc),
+            drift_id, journal_id,
             "the recorded id and the id parsed back out of {desc:?} must agree"
         );
+        let expects_package = matches!(
+            action,
+            Action::Manager(ManagerAction::Provision { .. } | ManagerAction::Refuse { .. })
+        );
+        assert_eq!(
+            journal_type, "manager",
+            "the journal side stays scaffolding"
+        );
+        assert_eq!(
+            drift_type,
+            if expects_package {
+                "package"
+            } else {
+                "manager"
+            },
+            "wrong drift type for {desc:?}"
+        );
     }
+}
+
+/// One stored identity per provision finding, whichever producer minted it:
+/// the daemon tick records a planned provision (or its refusal) through
+/// `action_resource_info`, the CLI's live check through
+/// `ManagerAction::provision_resource_id` under the literal `package` type
+/// (`manager_action_drift`, `crates/cfgd/src/cli/live_drift.rs`) — and both
+/// must land on the same `(resource_type, resource_id)` row, or the two
+/// producers stack a second permanent row on one fact and neither check can
+/// heal the other's.
+#[test]
+fn both_producers_mint_one_identity_for_a_provision_finding() {
+    use super::types::{ManagerAction, action_resource_info};
+
+    let provision = Action::Manager(ManagerAction::Provision {
+        manager: "npm".to_string(),
+        via: "brew".to_string(),
+        declared: None,
+        batched: vec![],
+        depends_on: vec![],
+    });
+    assert_eq!(
+        action_resource_info(&provision),
+        (
+            "package".to_string(),
+            ManagerAction::provision_resource_id("npm")
+        ),
+        "the tick's provision row must be the CLI live check's row"
+    );
+
+    let refuse = Action::Manager(ManagerAction::Refuse {
+        manager: "npm".to_string(),
+        reason: "provision failed".to_string(),
+    });
+    let (rtype, rid) = action_resource_info(&refuse);
+    assert_eq!((rtype.as_str(), rid.as_str()), ("package", "refuse:npm"));
+}
+
+/// The id-shape invariant both keep predicates rest on, walked over the
+/// daemon's action grammar: a daemon `module` row is the bare module name
+/// (never a `/`, which the CLI's `module_file_resource_id` always carries),
+/// and a daemon `package` Skip row is the bare manager name (never a `:`,
+/// which every CLI-minted package id carries). The exhaustive match is the
+/// trip-wire: a new `Action` variant fails this test's compile until its
+/// recorded shape is judged against the two live grammars here.
+#[test]
+fn no_daemon_action_row_wears_the_live_checks_separator() {
+    use super::types::{ModuleAction, ModuleActionKind, action_resource_info};
+
+    fn every_variant_judged(a: &Action) {
+        match a {
+            Action::File(_)
+            | Action::Package(_)
+            | Action::Secret(_)
+            | Action::System(_)
+            | Action::Script(_)
+            | Action::Module(_)
+            | Action::Env(_)
+            | Action::Manager(_) => {}
+        }
+    }
+
+    let module = Action::Module(ModuleAction::local(
+        "nvim",
+        ModuleActionKind::DeployFiles {
+            files: vec![],
+            declared_total: 0,
+        },
+    ));
+    let (rtype, rid) = action_resource_info(&module);
+    every_variant_judged(&module);
+    assert_eq!(rtype, "module");
+    assert!(
+        !rid.contains('/'),
+        "a daemon module row is the bare name, got {rid:?}"
+    );
+
+    let skip = Action::Package(crate::providers::PackageAction::Skip {
+        manager: "brew".to_string(),
+        reason: "up to date".to_string(),
+        origin: "profile".to_string(),
+    });
+    let (rtype, rid) = action_resource_info(&skip);
+    assert_eq!(rtype, "package");
+    assert!(
+        !rid.contains(':'),
+        "a daemon Skip row is the bare manager, got {rid:?}"
+    );
+
+    // The one shape BOTH grammars mint: a single-package batch spells
+    // `<manager>:<name>` exactly as the CLI's per-package row does, so the
+    // same fact recorded by either producer is one row; a multi-package
+    // batch carries the `,` that keeps it out of the CLI's keep-resolve.
+    let install = |packages: &[&str]| {
+        Action::Package(crate::providers::PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: packages.iter().map(|s| s.to_string()).collect(),
+            origin: "profile".to_string(),
+        })
+    };
+    assert_eq!(
+        action_resource_info(&install(&["jq"])).1,
+        "brew:jq",
+        "a single-package batch is the shared per-package spelling"
+    );
+    assert!(
+        action_resource_info(&install(&["jq", "rg"]))
+            .1
+            .contains(',')
+    );
 }
 
 #[test]

@@ -221,9 +221,11 @@ pub struct DeclaredProvision {
     pub package: String,
 }
 
-/// The `resource_type` half of every [`ManagerAction`]'s persisted identity.
-/// Also the one value `record_managed_resources` refuses to write a row for:
-/// cfgd's own scaffolding is journalled, never managed.
+/// The `resource_type` half of a scaffolding [`ManagerAction`]'s persisted
+/// identity (an index refresh, a prerequisite install). Also the one value
+/// `record_managed_resources` refuses to write a row for: cfgd's own
+/// scaffolding is journalled, never managed. A provision/refusal drift row is
+/// typed `package` instead — see [`action_resource_info`]'s Manager arm.
 pub(super) const MANAGER_RESOURCE_TYPE: &str = "manager";
 
 /// The `resource_type` every surface cfgd authors on its OWN behalf is
@@ -1306,7 +1308,21 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
                 }
             }
         }
-        Action::Manager(ma) => (MANAGER_RESOURCE_TYPE.to_string(), ma.resource_id()),
+        // A provision (and its refusal) is a PACKAGE fact — this manager's
+        // tooling is missing from the machine — and the CLI's live check
+        // records the same finding as ("package", "provision:<manager>") /
+        // ("package", "refuse:<manager>"). One stored identity is what lets
+        // either producer's next check heal the other's row; a refresh or a
+        // prerequisite is cfgd's own scaffolding and keeps the "manager"
+        // type, which `record_managed_resources` refuses to manage.
+        Action::Manager(ma) => match ma {
+            ManagerAction::Provision { .. } | ManagerAction::Refuse { .. } => {
+                ("package".to_string(), ma.resource_id())
+            }
+            ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => {
+                (MANAGER_RESOURCE_TYPE.to_string(), ma.resource_id())
+            }
+        },
     }
 }
 

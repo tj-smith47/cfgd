@@ -7,6 +7,6 @@ Files
     ◉ <CONFIG_DIR>/mod-out/conf (new file)
     module content
 
-⚠ Drift detected — 1 file (packages, shell clean)
+⚠ Drift detected — 1 file (packages clean)
 
 → Run `cfgd apply --module diff-mod` to reconcile

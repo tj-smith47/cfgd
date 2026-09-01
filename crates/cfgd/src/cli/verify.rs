@@ -838,14 +838,24 @@ mod tests {
                 "a foreign row must stand: {rtype}/{rid}, got: {rows:?}"
             );
         }
-        let out_of_scope: Vec<_> = rows
+        // Exact population, not a filter: the store holds the two foreign rows
+        // plus the scoped run's own finding and NOTHING else (the machine-wide
+        // env/system halves included) — a filter shaped around today's row
+        // types goes vacuous the moment a new producer mints a new shape.
+        let mut standing: Vec<(&str, &str)> = rows
             .iter()
-            .filter(|e| e.resource_type != "module" && e.resource_id != "/etc/hosts")
+            .map(|e| (e.resource_type.as_str(), e.resource_id.as_str()))
             .collect();
-        assert!(
-            out_of_scope.is_empty(),
-            "a scoped verify writes no row outside its module's scope (the \
-             machine-wide env/system halves included), got: {out_of_scope:?}"
+        standing.sort_unstable();
+        let mut expected_rows = vec![
+            ("file", "/etc/hosts"),
+            ("module", "other-mod/etc/other.conf"),
+            ("module", missing_id.as_str()),
+        ];
+        expected_rows.sort_unstable();
+        assert_eq!(
+            standing, expected_rows,
+            "a scoped verify writes no row outside its module's scope"
         );
         for e in &rows {
             for op in [&e.expected, &e.actual] {
