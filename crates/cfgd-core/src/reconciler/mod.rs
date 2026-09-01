@@ -42,11 +42,13 @@ pub use apply::{
     action_matches_phase_filter, action_produced_detail, render_caveats, widest_produced_detail,
 };
 pub use env::recorded_manager_path_dirs;
+pub use env_engine::{
+    ENV_VERB_INJECT, ENV_VERB_WRITE, ManagerPathDir, launchd_env_plist, recorded_env_method,
+};
 #[cfg(any(test, feature = "test-helpers"))]
 pub use env_engine::{
     EnvHostProbeOverride, EnvHostProbeOverrideGuard, with_env_host_probe_override_guard,
 };
-pub use env_engine::{ManagerPathDir, launchd_env_plist, recorded_env_method};
 pub use files::{LinkDeployedDigest, RefreshedHashes, link_deployed_digest};
 pub(crate) use format::debug_assert_system_key_undoubled;
 pub use format::{

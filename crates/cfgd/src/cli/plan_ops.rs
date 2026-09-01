@@ -63,14 +63,16 @@ fn shell_env_reminder_note(
 ) -> Option<cfgd_core::providers::ActionNote> {
     let mut wrote_env = false;
     let mut candidates: Vec<&str> = Vec::new();
+    let write_prefix = format!("env:{}:", cfgd_core::reconciler::ENV_VERB_WRITE);
+    let inject_prefix = format!("env:{}:", cfgd_core::reconciler::ENV_VERB_INJECT);
     for action in &result.action_results {
         if !action.success || action.description.ends_with(":skipped") {
             continue;
         }
         let desc = action.description.as_str();
         let Some(path) = desc
-            .strip_prefix("env:write:")
-            .or_else(|| desc.strip_prefix("env:inject:"))
+            .strip_prefix(&write_prefix)
+            .or_else(|| desc.strip_prefix(&inject_prefix))
         else {
             continue;
         };

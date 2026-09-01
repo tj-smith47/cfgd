@@ -475,6 +475,23 @@ impl<'a> super::Reconciler<'a> {
                     self.record_module_file(action, &target, strategy, apply_id)?;
                 }
 
+                // The manifest mirrors the LAST-APPLIED declared set. Upserts
+                // alone never remove a row, so a dropped `files:` declaration
+                // would otherwise linger and inflate every surface that counts
+                // or lists the manifest. Pruned here — the one place both the
+                // declaration and the store are in hand — so the `files:<n>`
+                // aggregate this apply records and the manifest it leaves
+                // agree by construction.
+                if let Some(m) = resolved_mod {
+                    let declared: Vec<String> = m
+                        .files
+                        .iter()
+                        .map(|f| crate::to_posix_fs_key(expand_tilde(&f.target)))
+                        .collect();
+                    self.state
+                        .prune_module_files_except(&action.module_name, &declared)?;
+                }
+
                 Ok(super::apply::ActionRun::new(
                     super::format::module_files_description(&action.module_name, *declared_total),
                     deployed_any,

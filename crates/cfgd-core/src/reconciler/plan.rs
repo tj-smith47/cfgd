@@ -863,19 +863,29 @@ impl<'a> super::Reconciler<'a> {
                     let files: Vec<crate::modules::ResolvedFile> = module
                         .files
                         .iter()
-                        .filter(|file| {
+                        .filter_map(|file| {
                             let target = expand_tilde(&file.target);
                             let strategy =
                                 file.strategy.unwrap_or(self.registry.default_file_strategy);
-                            !(recorded.contains(&crate::to_posix_fs_key(&target))
+                            (!(recorded.contains(&crate::to_posix_fs_key(&target))
                                 && super::modules::planned_file_converged(
                                     file,
                                     &target,
                                     strategy,
                                     binding.as_ref(),
-                                ))
+                                )))
+                            .then(|| {
+                                // Settle the configured default INTO the action:
+                                // the executor, the manifest and the plan tree's
+                                // child rows all read the action, and a reader
+                                // resolving a strategy-less entry for itself is
+                                // how the tree once said `symlink` for a file a
+                                // `fileStrategy: Copy` run copied.
+                                let mut file = file.clone();
+                                file.strategy = Some(strategy);
+                                file
+                            })
                         })
-                        .cloned()
                         .collect();
                     if !files.is_empty() {
                         work += 1;

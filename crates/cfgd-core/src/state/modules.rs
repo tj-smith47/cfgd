@@ -169,4 +169,33 @@ impl StateStore {
         )?;
         Ok(())
     }
+
+    /// Drop every manifest row of `module_name` whose `file_path` is not in
+    /// `declared` (the [`crate::to_posix_fs_key`] forms of the module's
+    /// currently declared targets).
+    ///
+    /// [`Self::upsert_module_file`] alone never removes a row, so without this
+    /// the manifest answers "every file the module has EVER deployed" — and a
+    /// dropped `files:` declaration leaves a stale row that inflates every
+    /// surface counting or listing the manifest. Called from the deploy path,
+    /// where the declaration is in hand, so the manifest mirrors the
+    /// last-applied declared set.
+    pub fn prune_module_files_except(&self, module_name: &str, declared: &[String]) -> Result<()> {
+        if declared.is_empty() {
+            return self.delete_module_files(module_name);
+        }
+        let placeholders = std::iter::repeat_n("?", declared.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.conn.execute(
+            &format!(
+                "DELETE FROM module_file_manifest
+                 WHERE module_name = ? AND file_path NOT IN ({placeholders})"
+            ),
+            rusqlite::params_from_iter(
+                std::iter::once(module_name).chain(declared.iter().map(String::as_str)),
+            ),
+        )?;
+        Ok(())
+    }
 }
