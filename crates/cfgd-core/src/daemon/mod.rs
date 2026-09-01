@@ -789,7 +789,6 @@ pub(super) struct PreLoopSetup {
 /// helpers from `daemon_config`, `checkin`, and `reconcile` submodules. No
 /// sockets, no spawned tasks, no network. Production callers use this from
 /// `run_daemon`; tests use it to exercise the SETUP arms directly.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn build_pre_loop_setup(
     config_path: &Path,
     profile_override: Option<&str>,

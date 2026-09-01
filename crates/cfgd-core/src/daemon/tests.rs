@@ -14842,6 +14842,94 @@ spec: {}
     }
 
     #[test]
+    #[serial_test::serial]
+    fn resolve_daemon_modules_resolves_the_module_cache_under_the_callers_cache_dir_override() {
+        // The module-cache sibling of the pin above: `resolve_daemon_modules`
+        // resolves a git-sourced module file through `crate::resolve_cache_dir`
+        // exactly like `build_pre_loop_setup` resolves a source's checkout. A
+        // module whose file lives at a git URL must be fetched under the
+        // CALLER's `--cache-dir`, never the ignored scope default.
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+
+        // A real local git repo standing in for the module's file source —
+        // `file://` transport only, no network involved.
+        let fixture_repo = tmp.path().join("fixture-repo");
+        std::fs::create_dir_all(&fixture_repo).unwrap();
+        let repo = git2::Repository::init(&fixture_repo).unwrap();
+        std::fs::write(fixture_repo.join("app.conf"), "from the fixture repo\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("app.conf")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        let repo_url = crate::test_helpers::file_url(&fixture_repo);
+
+        let config_dir = tmp.path().join("config");
+        let module_dir = config_dir.join("modules").join("gitmod");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: gitmod\nspec:\n  files:\n    - source: {repo_url}\n      target: /does-not-matter/app.conf\n      strategy: Copy\n"
+            ),
+        )
+        .unwrap();
+
+        let resolved = ResolvedProfile {
+            layers: vec![],
+            merged: MergedProfile {
+                modules: vec!["gitmod".into()],
+                ..Default::default()
+            },
+        };
+
+        // The scope default (unset here, under the test-home guard) stays
+        // empty; the module's file is only reachable from the NAMED cache dir.
+        let named_cache_dir = tmp.path().join("named-cache");
+
+        let registry = ProviderRegistry::new();
+        let resolved_modules = resolve_daemon_modules(
+            &registry,
+            &resolved,
+            &config_dir,
+            &[],
+            None,
+            &Printer::for_test().0,
+            crate::Scope::User,
+            Some(&named_cache_dir),
+        );
+
+        assert_eq!(resolved_modules.len(), 1, "gitmod must resolve");
+        let gitmod = &resolved_modules[0];
+        assert!(
+            gitmod.platform_skip_reason.is_none(),
+            "gitmod must not be platform-gated: {:?}",
+            gitmod.platform_skip_reason
+        );
+        assert_eq!(
+            gitmod.files.len(),
+            1,
+            "gitmod's one git-sourced file must resolve"
+        );
+        let resolved_file = &gitmod.files[0];
+        assert!(
+            resolved_file.source.starts_with(&named_cache_dir),
+            "the module's git-sourced file must be fetched under the caller's \
+             --cache-dir ({named_cache_dir:?}), not the ignored scope default: {:?}",
+            resolved_file.source
+        );
+        assert!(
+            resolved_file.source.join("app.conf").exists(),
+            "the fetched checkout must contain the file the fixture repo committed"
+        );
+    }
+
+    #[test]
     fn build_pre_loop_setup_skips_compliance_interval_when_disabled() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -16118,7 +16206,7 @@ spec: {}
         }
         senders.shutdown_tx.send(()).unwrap();
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down in time")
             .expect("daemon join");
@@ -16164,7 +16252,7 @@ spec: {}
         tokio::time::sleep(StdDuration::from_millis(60)).await;
         senders.shutdown_tx.send(()).unwrap();
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down in time")
             .expect("daemon join");
@@ -16219,7 +16307,7 @@ spec: {}
         wait_for_daemon_log("daemon: reloading configuration", DAEMON_LOG_WAIT_CEILING).await;
         senders.shutdown_tx.send(()).unwrap();
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down in time")
             .expect("daemon join");
@@ -16264,7 +16352,7 @@ spec: {}
         tokio::time::sleep(StdDuration::from_millis(80)).await;
         senders.shutdown_tx.send(()).unwrap();
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down in time")
             .expect("daemon join");
@@ -16299,7 +16387,7 @@ spec: {}
         tokio::time::sleep(StdDuration::from_millis(80)).await;
         senders.shutdown_tx.send(()).unwrap();
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down in time")
             .expect("daemon join");
@@ -16354,7 +16442,7 @@ spec: {}
         );
 
         senders.shutdown_tx.send(()).unwrap();
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down in time")
             .expect("daemon join");
@@ -16700,7 +16788,7 @@ spec: {}
             libc::kill(libc::getpid(), libc::SIGTERM);
         }
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down on SIGTERM")
             .expect("daemon join");
@@ -16987,7 +17075,7 @@ spec: {}
         wait_for_daemon_log("watch: ", DAEMON_LOG_WAIT_CEILING).await;
         senders.shutdown_tx.send(()).unwrap();
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down in time")
             .expect("daemon join");
