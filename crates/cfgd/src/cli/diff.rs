@@ -1,5 +1,6 @@
 use super::*;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, TitleLabel, section_guard::SectionGuard};
 use cfgd_core::reconciler::{MANAGERS_GROUP, ManagerAction, Owner};
 
@@ -148,7 +149,7 @@ pub fn cmd_diff(
     // `build_registry_with_profile` of the same spec is the config-derived
     // secret backend and default file strategy, neither of which any check
     // below reads.
-    let registry = desired.take_registry(cfg);
+    let mut registry = desired.take_registry(cfg);
     let composed_sources = desired.sources;
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
@@ -167,25 +168,52 @@ pub fn cmd_diff(
     ));
 
     ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
+    // The engine probes system configurators, some of which resolve
+    // config-relative paths; `status`/`verify`/`plan`/`apply` all hand the
+    // config dir over, and the one scan `diff` consumes must see the same
+    // configurator set they do.
+    registry.set_system_config_dir(config_dir);
 
     let mut diff_payload = DiffOutput::default();
-    // Every non-matching result this walk produces, in its producer's own
-    // literals — the rows the drift recorder writes below — and the system
-    // configurators whose probe answered, whose recorded rows the resolve
-    // below may therefore judge.
-    let mut findings: Vec<cfgd_core::reconciler::VerifyResult> = Vec::new();
-    let mut evaluated_system: Vec<String> = Vec::new();
-    let mut has_system_drift = false;
 
-    let file_state = ctx.state()?;
+    let state = ctx.state()?;
+    let cfgd_installed = cfgd_installed_packages(state)?;
+    let fm = CfgdFileManager::new(config_dir, &resolved)?;
+    // ONE walk: the shared live-drift engine finds and records every drift row
+    // (and the checks that could not run), exactly as `status --scan` and
+    // `verify` do — so no surface can disagree about what drifted. Everything
+    // below is presentation over its report; the inline hunks are re-rendered
+    // only for the entries the engine already found drifted.
+    let report = {
+        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+        super::live_drift::live_drift_results(
+            config_dir,
+            &resolved,
+            &registry,
+            &resolved_modules,
+            &cfgd_installed,
+            state,
+            &pkg_cx,
+            &fm,
+        )?
+    };
+    // The engine recorded its findings; the scan stamp is the caller's, the
+    // same split `status --scan` observes.
+    state.record_scan();
+
+    let drifted_ids: std::collections::HashSet<&str> = report
+        .findings
+        .iter()
+        .filter(|r| matches!(r.resource_type.as_str(), "file" | "module"))
+        .map(|r| r.resource_id.as_str())
+        .collect();
+
     let has_file_drift = {
         let files_phase = printer.section_or_collapse("Files");
         // The file renderers take a bare `&Printer` and know nothing of the
         // tree; depth inheritance is what lands their per-file lines inside
         // the owner group opened around them.
         let _inherit = printer.depth_inheritance();
-        let fm = CfgdFileManager::new(config_dir, &resolved)?;
-        let mut drift = false;
         // A finding names its target and nothing else, and whether an unmanaged
         // target is a conflict at all turns on the entry's RESOLVED strategy —
         // the profile-wide default applied once, here, so the profile fold, the
@@ -197,21 +225,21 @@ pub fn cmd_diff(
             config_dir,
             registry.default_file_strategy,
         );
+        let mut drift = false;
         {
             let _group = files_phase.section_owner_or_collapse(&profile_owner.label());
-            for record in fm.diff(&resolved.merged, printer)? {
-                let strategy = strategies.for_target(&cfgd_core::expand_tilde(
-                    std::path::Path::new(&record.target),
-                ));
-                let rid = record.target.clone();
-                if let Some(f) =
-                    record_file_drift(&mut diff_payload, record, strategy, config_dir, file_state)
+            // Target order, as `fm.diff` sorted: two runs finding the same
+            // drift read the same, whatever the declaration order was.
+            for managed in crate::files::CfgdFileManager::sorted_managed_specs(&resolved.merged) {
+                let rid = cfgd_core::expand_tilde(&managed.target).display_posix();
+                if !drifted_ids.contains(rid.as_str()) {
+                    continue;
+                }
+                let record = fm.diff_managed_one(managed, printer)?;
+                let strategy = strategies.for_target(&cfgd_core::expand_tilde(&managed.target));
+                if record_file_drift(&mut diff_payload, record, strategy, config_dir, state)
+                    .is_some()
                 {
-                    findings.push(cfgd_core::reconciler::VerifyResult {
-                        resource_type: "file".to_string(),
-                        resource_id: rid,
-                        ..f
-                    });
                     drift = true;
                 }
             }
@@ -222,19 +250,17 @@ pub fn cmd_diff(
             let _group =
                 files_phase.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
             for file in files_by_target(module) {
+                let rid = super::live_drift::module_file_spec_resource_id(&module.name, file);
+                if !drifted_ids.contains(rid.as_str()) {
+                    continue;
+                }
                 let strategy = strategies
                     .for_target(&cfgd_core::expand_tilde(std::path::Path::new(&file.target)));
                 let record =
                     diff_module_file(&fm, &resolved, module, file, config_dir, strategy, printer)?;
-                let rid = super::live_drift::module_file_resource_id(&module.name, &record.target);
-                if let Some(f) =
-                    record_file_drift(&mut diff_payload, record, strategy, config_dir, file_state)
+                if record_file_drift(&mut diff_payload, record, strategy, config_dir, state)
+                    .is_some()
                 {
-                    findings.push(cfgd_core::reconciler::VerifyResult {
-                        resource_type: "module".to_string(),
-                        resource_id: rid,
-                        ..f
-                    });
                     drift = true;
                 }
             }
@@ -244,45 +270,11 @@ pub fn cmd_diff(
 
     let has_pkg_drift = {
         let pkg_sec = printer.section_or_collapse("Packages");
-        let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-            .package_managers()
-            .iter()
-            .map(|m| m.as_ref())
-            .collect();
-        // Tracked-but-dropped packages must surface as drift here, so read the
-        // cfgd-installed set from state to bound prune the same way apply does.
-        let state = ctx.state()?;
-        let cfgd_installed = cfgd_installed_packages(state)?;
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
-        let pkg_actions = packages::plan_packages(
-            &resolved.merged,
-            &resolved_modules,
-            &all_managers,
-            &cfgd_installed,
-            &pkg_cx,
-        )?;
-        // Same planner the Prerequisites phase runs, so a manager `diff` calls
-        // out as drift is exactly the one `apply` would provision or refuse —
-        // and the same predicate `verify`/`status --scan` share via
-        // `manager_drift_actions`, so no second membership rule can drift out
-        // of sync with the reconciler's.
-        let manager_actions: Vec<ManagerAction> = super::live_drift::manager_drift_actions(
-            cfgd_core::reconciler::plan_managers(&registry, &pkg_actions, &[]),
-        );
-        // The recorder's rows come from the same mapping `verify` and
-        // `status --scan` fold into their own results, so one missing
-        // package is one spelling wherever the record was written from.
-        findings.extend(
-            pkg_actions
-                .iter()
-                .flat_map(super::live_drift::package_action_drift),
-        );
-        for ma in &manager_actions {
-            findings.extend(super::live_drift::manager_action_drift(ma));
-        }
+        // The report carries the scan's own package plan, so this section
+        // prices exactly what the recorder wrote instead of planning again.
         print_package_drift(
-            &pkg_actions,
-            &manager_actions,
+            &report.pkg_actions,
+            &report.manager_actions,
             &pkg_sec,
             &profile_owner,
             &mut diff_payload,
@@ -294,30 +286,14 @@ pub fn cmd_diff(
         let mut drift = false;
         {
             let env_group = env_sec.section_owner_or_collapse(&profile_owner.label());
-            // Must match the recorded bootstrap PATH dirs `cfgd verify` passes: the
-            // whole-file check `env_verify_results` bundles in compares against a
-            // freshly generated file, and the file cfgd actually wrote carries the
-            // bootstrapped PATH export line as its first line. An empty path_dirs
-            // here reports permanent, unfixable drift on a machine that bootstrapped
-            // any manager.
-            let path_dirs = ctx
-                .state_opt()
-                .map(|state| {
-                    cfgd_core::reconciler::recorded_manager_path_dirs(
-                        state,
-                        &resolved.merged,
-                        &resolved_modules,
-                    )
-                })
-                .unwrap_or_default();
-            let results = env_drift_ordered(cfgd_core::reconciler::env_verify_results(
-                &resolved.merged.env,
-                &resolved.merged.aliases,
-                &resolved.merged.entry_owners,
-                resolved.merged.env_scope,
-                &resolved_modules,
-                &path_dirs,
-            ));
+            let results = env_drift_ordered(
+                report
+                    .findings
+                    .iter()
+                    .filter(|r| cfgd_core::output::is_shell_drift_kind(&r.resource_type))
+                    .cloned()
+                    .collect(),
+            );
             let drop_env_file_row = cfgd_core::output::env_file_row_is_redundant(
                 results.iter().map(|r| r.resource_type.as_str()),
             );
@@ -326,18 +302,14 @@ pub fn cmd_diff(
                 &resolved.merged.aliases,
                 &resolved.merged.entry_owners,
                 &resolved_modules,
-                &path_dirs,
+                &report.path_dirs,
             );
             for r in results {
                 drift = true;
-                // Recorded BEFORE the display recompute below: the stored row
-                // keeps the check's own opaque markers, never the declared
-                // value the recompute words the terminal rows with.
-                findings.push(r.clone());
                 // An env-var/alias row's `expected`/`actual` are opaque markers —
                 // neither real value ever flows into a persisted or gateway-shipped
                 // drift record — so recompute both here, for this terminal/`-o json`
-                // display only.
+                // display only. The recorder already stored the markers.
                 let (expected, actual) = merged_env_items
                     .display_values(&r.resource_type, &r.resource_id)
                     .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
@@ -364,74 +336,61 @@ pub fn cmd_diff(
         drift
     };
 
-    {
+    let has_system_drift = {
         let sys_sec = printer.section_or_collapse("System");
         // Every system key resolves against the merged profile ⊕ module view,
         // which is what puts a system action under the profile owner in the
         // plan too (`owner_of`'s fall-through arm).
-        {
-            let sys_group = sys_sec.section_owner_or_collapse(&profile_owner.label());
-            let mut available_configurators = registry.available_system_configurators();
-            available_configurators.sort_by_key(|c| c.name());
-            // Combine profile and module system config so module system tweaks
-            // surface in `diff` exactly as they do on the write path.
-            let system =
-                cfgd_core::effective::effective_system_map(&resolved.merged, &resolved_modules);
-            for configurator in &available_configurators {
-                let key = configurator.name();
-                let desired = match system.get(key) {
-                    Some(v) => v,
-                    None => continue,
-                };
-                match configurator.diff(desired) {
-                    Ok(mut drifts) => {
-                        evaluated_system.push(key.to_string());
-                        has_system_drift |= !drifts.is_empty();
-                        drifts.sort_by(|a, b| a.key.cmp(&b.key));
-                        for drift in &drifts {
-                            findings.push(cfgd_core::reconciler::VerifyResult {
-                                resource_type: "system".to_string(),
-                                resource_id: cfgd_core::reconciler::system_resource_key(
-                                    key, &drift.key,
-                                ),
-                                matches: false,
-                                expected: drift.expected.clone(),
-                                actual: drift.actual.clone(),
-                                unmanaged: false,
-                            });
-                            // A configurator that found no setting at all hands
-                            // back an empty `actual`; the fold states the
-                            // absence instead of rendering `have: `.
-                            let (expected, actual) = cfgd_core::output::drift_operands(
-                                "system",
-                                &drift.expected,
-                                &drift.actual,
-                            );
-                            sys_group
-                                .status(Role::Warn, format!("{}.{}", key, drift.key))
-                                .drift(&expected, &actual);
-                            diff_payload.system.push(SystemDriftOutput {
-                                key: format!("{}.{}", key, drift.key),
-                                expected: drift.expected.clone(),
-                                actual: drift.actual.clone(),
-                            });
-                        }
-                    }
-                    Err(e) => {
-                        let error = cfgd_core::output::collapse_to_subject_line(e);
-                        sys_group
-                            .status(Role::Warn, key.to_string())
-                            .qualifier("error checking drift")
-                            .detail(&error);
-                        diff_payload.system_errors.push(SystemCheckError {
-                            key: key.to_string(),
-                            error,
-                        });
-                    }
+        let sys_group = sys_sec.section_owner_or_collapse(&profile_owner.label());
+        // The engine answered in registration order; this surface reads by
+        // key, so sort at the render (and in the payload) only. A drift row's
+        // id is `<configurator>.<key>` and an error row's is the bare
+        // configurator name, so one string sort interleaves the two the way
+        // the old per-configurator walk did.
+        let mut sys_rows: Vec<&cfgd_core::reconciler::VerifyResult> = report
+            .findings
+            .iter()
+            .filter(|r| r.resource_type == "system")
+            .collect();
+        sys_rows.sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
+        let mut check_errors = report.check_errors;
+        check_errors.sort_by(|a, b| a.key.cmp(&b.key));
+
+        let mut errors = check_errors.iter().peekable();
+        for row in &sys_rows {
+            while let Some(err) = errors.peek() {
+                if err.key.as_str() > row.resource_id.as_str() {
+                    break;
                 }
+                sys_group
+                    .status(Role::Warn, err.key.clone())
+                    .qualifier("error checking drift")
+                    .detail(&err.error);
+                errors.next();
             }
+            // A configurator that found no setting at all hands back an empty
+            // `actual`; the fold states the absence instead of rendering
+            // `have: `.
+            let (expected, actual) =
+                cfgd_core::output::drift_operands("system", &row.expected, &row.actual);
+            sys_group
+                .status(Role::Warn, row.resource_id.clone())
+                .drift(&expected, &actual);
+            diff_payload.system.push(SystemDriftOutput {
+                key: row.resource_id.clone(),
+                expected: row.expected.clone(),
+                actual: row.actual.clone(),
+            });
         }
-    }
+        for err in errors {
+            sys_group
+                .status(Role::Warn, err.key.clone())
+                .qualifier("error checking drift")
+                .detail(&err.error);
+        }
+        diff_payload.system_errors = check_errors;
+        !sys_rows.is_empty()
+    };
 
     diff_payload.summary = DiffSummary {
         has_file_drift,
@@ -440,23 +399,11 @@ pub fn cmd_diff(
         system_check_failed: !diff_payload.system_errors.is_empty(),
         has_env_drift,
         // The full desired state this path needs for every phase was already
-        // resolved above (line ~95) before any section opened; a failure
-        // there aborts the whole command via `?`, so this path never reaches
-        // here with the env check unresolved.
+        // resolved above (before any section opened); a failure there aborts
+        // the whole command via `?`, so this path never reaches here with the
+        // env check unresolved.
         env_check_failed: false,
     };
-
-    // This command just checked the machine itself, whatever it found — the
-    // record keeps every finding and resolves what this check re-checked and
-    // did not re-find, the recorded-state `status` header dates its display
-    // from here, and a scan that finds nothing is exactly the one a clean
-    // host has no other record of. A configurator outside `evaluated_system`
-    // (an errored probe among them) is indeterminate, so its recorded rows
-    // stay standing.
-    if let Ok(state) = ctx.state() {
-        super::live_drift::record_full_scan_findings(state, &findings, &evaluated_system);
-        state.record_scan();
-    }
 
     printer.emit(build_diff_doc(&diff_payload, DiffScope::Machine));
 

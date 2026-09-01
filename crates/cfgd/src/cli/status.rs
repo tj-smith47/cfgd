@@ -50,6 +50,14 @@ pub struct StatusOutput {
     /// non-scanning branch, where the two values are the same.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_scan_at: Option<String>,
+    /// System configurators whose live drift probe itself errored during a
+    /// `--scan`. "Could not check" is an unknown verdict, not a clean one:
+    /// each renders as its own Drift-section row and `--exit-code` escalates
+    /// to the Error exit ahead of `DriftDetected` — the same split `diff`
+    /// carries. Empty (and absent from `-o json`) on the recorded-state
+    /// branch, which probes nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub system_errors: Vec<super::output_types::SystemCheckError>,
 }
 
 #[derive(Serialize)]
@@ -406,13 +414,14 @@ pub struct ModuleFileStatus {
 fn drift_section<T>(
     doc: Doc,
     drift: &[T],
+    check_errors: &[super::output_types::SystemCheckError],
     checked_live: bool,
     verified: bool,
     scan_note: Option<&str>,
     row: impl Fn(SectionBuilder, &T) -> SectionBuilder,
 ) -> Doc {
     doc.section("Drift", |s| {
-        if drift.is_empty() {
+        if drift.is_empty() && check_errors.is_empty() {
             let role = if verified { Role::Ok } else { Role::Info };
             // Only the live scan may claim a detection. The recorded dashboard
             // has asked nothing of the machine, and "No drift detected" over a
@@ -443,7 +452,16 @@ fn drift_section<T>(
                 Some(note) => s.status(Role::Secondary, note),
                 None => s,
             };
-            drift.iter().fold(s, &row)
+            let s = drift.iter().fold(s, &row);
+            // A check that could not run is a finding of its own — never
+            // silence, never a drift row: exactly the row `diff` renders for
+            // the same failed probe, worded the same way so the two surfaces
+            // read as one report.
+            check_errors.iter().fold(s, |s, err| {
+                s.status_with(Role::Warn, err.key.clone(), |f| {
+                    f.qualifier("error checking drift").detail(&err.error)
+                })
+            })
         }
     })
 }
@@ -453,6 +471,7 @@ fn drift_section<T>(
 fn render_drift_section(
     doc: Doc,
     drift: &[cfgd_core::state::DriftEvent],
+    check_errors: &[super::output_types::SystemCheckError],
     checked_live: bool,
     verified: bool,
     scan_note: Option<&str>,
@@ -464,56 +483,64 @@ fn render_drift_section(
         .iter()
         .filter(|e| !(drop_env_file_row && e.resource_type == "env"))
         .collect();
-    drift_section(doc, &rows, checked_live, verified, scan_note, |s, event| {
-        // A "script" / "Running script" resource_id is the raw run_str body
-        // (preserved byte-identical for UPSERT matching against prior drift
-        // rows) — condense only here, at the point it enters a status subject,
-        // so a multi-line inline script never lands raw. Two type strings exist
-        // because two producers persist script actions: `apply_script_action`
-        // (main pre/post-apply phase scripts, format.rs's
-        // `format_action_description`) stamps "script"; `execute_script`
-        // (onChange / module-onChange scripts, reconciler/scripts.rs) stamps
-        // "Running script: {body}" — both must condense here.
-        // Folded to `~/` like every other display slot of the report; the
-        // recorded id and the `-o json` payload keep the absolute path.
-        let display_id =
-            if event.resource_type == "script" || event.resource_type == "Running script" {
-                condense_script_label(&event.resource_id)
+    drift_section(
+        doc,
+        &rows,
+        check_errors,
+        checked_live,
+        verified,
+        scan_note,
+        |s, event| {
+            // A "script" / "Running script" resource_id is the raw run_str body
+            // (preserved byte-identical for UPSERT matching against prior drift
+            // rows) — condense only here, at the point it enters a status subject,
+            // so a multi-line inline script never lands raw. Two type strings exist
+            // because two producers persist script actions: `apply_script_action`
+            // (main pre/post-apply phase scripts, format.rs's
+            // `format_action_description`) stamps "script"; `execute_script`
+            // (onChange / module-onChange scripts, reconciler/scripts.rs) stamps
+            // "Running script: {body}" — both must condense here.
+            // Folded to `~/` like every other display slot of the report; the
+            // recorded id and the `-o json` payload keep the absolute path.
+            let display_id =
+                if event.resource_type == "script" || event.resource_type == "Running script" {
+                    condense_script_label(&event.resource_id)
+                } else {
+                    cfgd_core::fold_home_in_text(&event.resource_id)
+                };
+            let subject = cfgd_core::output::drift_item_subject(&event.resource_type, &display_id);
+            // The recomputed pair when a surface could read one off the machine,
+            // the stored pair otherwise — the human row states today's truth while
+            // the payload keeps the bytes the row was stored with.
+            let (expected, actual) = cfgd_core::output::drift_operands(
+                &event.resource_type,
+                event
+                    .want
+                    .as_deref()
+                    .or(event.expected.as_deref())
+                    .unwrap_or("?"),
+                event
+                    .have
+                    .as_deref()
+                    .or(event.actual.as_deref())
+                    .unwrap_or("?"),
+            );
+            if event.source != LOCAL_LAYER {
+                // Source attribution renders in `secondary` (pink/magenta) at
+                // end-of-subject; the StatusBuilder API guarantees the label lands
+                // last so the inner SGR reset is never followed by outer-role-styled
+                // text. The token is the vocabulary `cfgd sync` and `cfgd source *`
+                // head their groups with, so a reader carries one spelling across
+                // the three surfaces that name a source.
+                let label_text = cfgd_core::reconciler::Owner::source(&event.source).token();
+                s.status_with(Role::Warn, subject, |f| {
+                    f.drift(expected, actual).label(Role::Secondary, label_text)
+                })
             } else {
-                cfgd_core::fold_home_in_text(&event.resource_id)
-            };
-        let subject = cfgd_core::output::drift_item_subject(&event.resource_type, &display_id);
-        // The recomputed pair when a surface could read one off the machine,
-        // the stored pair otherwise — the human row states today's truth while
-        // the payload keeps the bytes the row was stored with.
-        let (expected, actual) = cfgd_core::output::drift_operands(
-            &event.resource_type,
-            event
-                .want
-                .as_deref()
-                .or(event.expected.as_deref())
-                .unwrap_or("?"),
-            event
-                .have
-                .as_deref()
-                .or(event.actual.as_deref())
-                .unwrap_or("?"),
-        );
-        if event.source != LOCAL_LAYER {
-            // Source attribution renders in `secondary` (pink/magenta) at
-            // end-of-subject; the StatusBuilder API guarantees the label lands
-            // last so the inner SGR reset is never followed by outer-role-styled
-            // text. The token is the vocabulary `cfgd sync` and `cfgd source *`
-            // head their groups with, so a reader carries one spelling across
-            // the three surfaces that name a source.
-            let label_text = cfgd_core::reconciler::Owner::source(&event.source).token();
-            s.status_with(Role::Warn, subject, |f| {
-                f.drift(expected, actual).label(Role::Secondary, label_text)
-            })
-        } else {
-            s.status_with(Role::Warn, subject, |f| f.drift(expected, actual))
-        }
-    })
+                s.status_with(Role::Warn, subject, |f| f.drift(expected, actual))
+            }
+        },
+    )
 }
 
 /// The order a drift row's surface sorts in: the `spec` blocks in the order
@@ -546,20 +573,28 @@ fn render_module_drift_section(doc: Doc, drift: &[ModuleDrift], checked_live: bo
     });
     // No scan stamp reaches this surface, so the only check that can stand
     // behind an empty section is the one this run made.
-    drift_section(doc, &ordered, checked_live, checked_live, None, |s, d| {
-        let subject = format!(
-            "{}:{} {}",
-            cfgd_core::reconciler::Owner::module(&d.owner).token(),
-            d.surface,
-            cfgd_core::fold_home_in_text(&d.item)
-        );
-        let cause = cfgd_core::output::drift_terse_cause(
-            &d.event.resource_type,
-            d.event.expected.as_deref().unwrap_or_default(),
-            d.event.actual.as_deref().unwrap_or_default(),
-        );
-        s.status_with(Role::Warn, subject, |f| f.detail(cause))
-    })
+    drift_section(
+        doc,
+        &ordered,
+        &[],
+        checked_live,
+        checked_live,
+        None,
+        |s, d| {
+            let subject = format!(
+                "{}:{} {}",
+                cfgd_core::reconciler::Owner::module(&d.owner).token(),
+                d.surface,
+                cfgd_core::fold_home_in_text(&d.item)
+            );
+            let cause = cfgd_core::output::drift_terse_cause(
+                &d.event.resource_type,
+                d.event.expected.as_deref().unwrap_or_default(),
+                d.event.actual.as_deref().unwrap_or_default(),
+            );
+            s.status_with(Role::Warn, subject, |f| f.detail(cause))
+        },
+    )
 }
 
 /// The profile name a `Profile` row may state, or `None` when there is none to
@@ -710,6 +745,7 @@ pub fn build_fleet_status_doc(
     doc = render_drift_section(
         doc,
         &output.drift,
+        &output.system_errors,
         output.drift_checked_live,
         output.drift_checked_live || output.last_scan_at.is_some(),
         note.as_deref(),
@@ -1931,6 +1967,7 @@ pub(super) fn cmd_status(
         classification_degraded_reason: classification_degraded.map(|(_, r)| r),
         drift_checked_live: do_scan,
         last_scan_at,
+        system_errors: Vec::new(),
     };
 
     // A RECORDED env-var/alias row holds the opaque markers `verify_env_items`
@@ -1992,7 +2029,8 @@ pub(super) fn cmd_status(
         registry.set_system_config_dir(&config_dir);
         let cfgd_installed = cfgd_installed_packages(state)?;
         let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
-        let drift = super::live_drift::live_drift_results(
+        let fm = crate::files::CfgdFileManager::new(&config_dir, &resolved)?;
+        let report = super::live_drift::live_drift_results(
             &config_dir,
             &resolved,
             &registry,
@@ -2000,7 +2038,10 @@ pub(super) fn cmd_status(
             &cfgd_installed,
             state,
             &pkg_cx,
+            &fm,
         )?;
+        let drift = report.findings;
+        output.system_errors = report.check_errors;
         // The payload's `lastScanAt` must describe the scan that PRODUCED it,
         // or a consumer pairing it with `driftCheckedLive: true` reads
         // "scanned live, last scanned two hours ago". A refused write leaves
@@ -2050,8 +2091,17 @@ pub(super) fn cmd_status(
         &resource_detail,
     ));
 
-    if exit_code && !live_drift.is_empty() {
-        cfgd_core::exit::ExitCode::DriftDetected.exit();
+    if exit_code {
+        // A check that could not run outranks drift it might have found:
+        // exiting 5 (or 0) on an errored probe would report a verdict the
+        // scan never actually reached — the same split `diff --exit-code`
+        // resolves in `diff_exit_code`.
+        if !output.system_errors.is_empty() {
+            cfgd_core::exit::ExitCode::Error.exit();
+        }
+        if !live_drift.is_empty() {
+            cfgd_core::exit::ExitCode::DriftDetected.exit();
+        }
     }
 
     Ok(())
@@ -2428,6 +2478,7 @@ mod tests {
             classification_degraded_reason: None,
             drift_checked_live: false,
             last_scan_at: None,
+            system_errors: Vec::new(),
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["lastApply"]["status"], serde_json::json!("inProgress"));
@@ -3372,6 +3423,7 @@ mod tests {
             classification_degraded_reason: None,
             drift_checked_live: false,
             last_scan_at: None,
+            system_errors: Vec::new(),
         };
 
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -3440,6 +3492,7 @@ mod tests {
                 classification_degraded_reason: None,
                 drift_checked_live: checked_live,
                 last_scan_at: last_scan_at.map(str::to_string),
+                system_errors: Vec::new(),
             };
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             printer.emit(build_fleet_status_doc(
@@ -3532,6 +3585,7 @@ mod tests {
                 classification_degraded_reason: None,
                 drift_checked_live: checked_live,
                 last_scan_at: last_scan_at.map(str::to_string),
+                system_errors: Vec::new(),
             };
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             printer.emit(build_fleet_status_doc(
@@ -3673,6 +3727,7 @@ mod tests {
             classification_degraded_reason: None,
             drift_checked_live: false,
             last_scan_at: Some("2026-05-14T08:00:00Z".to_string()),
+            system_errors: Vec::new(),
         };
 
         let out = dashboard(&output);
@@ -3743,6 +3798,7 @@ mod tests {
             // Old enough for the scan hint to be earned; the fresh case sets
             // its own stamp.
             last_scan_at: Some("2026-05-14T08:00:00Z".to_string()),
+            system_errors: Vec::new(),
         }
     }
 
@@ -4187,6 +4243,7 @@ mod tests {
             ),
             drift_checked_live: false,
             last_scan_at: None,
+            system_errors: Vec::new(),
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["classificationDegraded"], serde_json::json!(true));

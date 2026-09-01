@@ -393,6 +393,7 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
         classification_degraded_reason: None,
         drift_checked_live: false,
         last_scan_at: None,
+        system_errors: Vec::new(),
     };
 
     let (status_printer, status_cap) = Printer::for_test_doc();

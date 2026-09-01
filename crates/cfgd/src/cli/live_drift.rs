@@ -24,6 +24,7 @@
 //! (`fold_home_in_text`, the env declared-value recompute) never reach the
 //! store.
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::config::ResolvedProfile;
 use cfgd_core::modules::ResolvedModule;
 use cfgd_core::providers::{PackageAction, ProviderRegistry};
@@ -301,6 +302,24 @@ pub(super) fn module_file_resource_id(module: &str, target: &str) -> String {
     format!("{}/{}", module, target.trim_start_matches('/'))
 }
 
+/// The id [`module_file_verify_results`] mints for one DECLARED module file,
+/// answered from the spec alone — kept beside the producer because a
+/// presenting caller probes a drifted-id set with it before the check's own
+/// record exists, and two derivations of the target half (a `Patch` target
+/// stays unexpanded; every other strategy's is `~`-expanded) would let the
+/// probe and the finding spell one file two ways.
+pub(super) fn module_file_spec_resource_id(
+    module: &str,
+    file: &cfgd_core::modules::ResolvedFile,
+) -> String {
+    let target = if file.patch.is_some() {
+        file.target.display_posix()
+    } else {
+        cfgd_core::expand_tilde(&file.target).display_posix()
+    };
+    module_file_resource_id(module, &target)
+}
+
 /// The inverse of [`module_file_resource_id`]: the module a finding belongs to
 /// and the deployed path it names.
 ///
@@ -377,6 +396,28 @@ pub(super) fn module_file_verify_results(
     Ok(results)
 }
 
+/// Everything one FULL-machine live check learned in one visit: the findings,
+/// the checks that could not run, and the raw planner material a presenting
+/// caller renders its own sections from without a second walk.
+pub(super) struct LiveDriftReport {
+    /// Every non-matching result across the six passes, in its producer's own
+    /// literals — the rows the recorder wrote.
+    pub findings: Vec<VerifyResult>,
+    /// System configurators whose drift probe itself errored: first-class
+    /// findings, never silently dropped. "Could not check" is an unknown
+    /// verdict rather than a clean one, so every `--exit-code` surface
+    /// escalates these to the Error exit ahead of `DriftDetected`.
+    pub check_errors: Vec<super::output_types::SystemCheckError>,
+    /// The package plan the package/manager findings were priced from, so
+    /// `diff` renders its Packages section from the scan's own plan instead
+    /// of planning a second time.
+    pub pkg_actions: Vec<PackageAction>,
+    pub manager_actions: Vec<ManagerAction>,
+    /// The recorded bootstrap PATH dirs the env check compared against, for a
+    /// caller recomputing an env row's display values over the same inputs.
+    pub path_dirs: Vec<cfgd_core::reconciler::ManagerPathDir>,
+}
+
 /// Non-matching live verify results across every category the live scan covers
 /// (profile files, module files, packages, system, declared env vars and
 /// aliases). This is a FULL-machine check, so it also writes the record the
@@ -385,10 +426,15 @@ pub(super) fn module_file_verify_results(
 /// ([`record_full_scan_findings`]) — the `record_scan` stamp stays the
 /// caller's, which reads the pre-scan value first for its own header.
 ///
-/// Only divergent results are returned — the caller treats a non-empty vector as
-/// "drift detected" and renders each entry. This is the single source of truth
-/// for both `status --scan`'s rendered Drift section and the `-e` exit gate, so
-/// the human verdict can never contradict the exit code.
+/// Only divergent results are returned — the caller treats a non-empty findings
+/// vector as "drift detected" and renders each entry. This is the single source
+/// of truth for `diff`, `status --scan`'s rendered Drift section and both `-e`
+/// exit gates, so the human verdict can never contradict the exit code.
+///
+/// `fm` is the caller's: `diff` re-renders inline hunks through the same
+/// manager after the scan, and a second construction rebuilds the template
+/// context and the whole secret-provider set.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn live_drift_results(
     config_dir: &std::path::Path,
     resolved: &ResolvedProfile,
@@ -397,7 +443,8 @@ pub(super) fn live_drift_results(
     cfgd_installed: &std::collections::HashSet<String>,
     state: &cfgd_core::state::StateStore,
     cx: &cfgd_core::providers::PackageContext<'_>,
-) -> anyhow::Result<Vec<VerifyResult>> {
+    fm: &CfgdFileManager,
+) -> anyhow::Result<LiveDriftReport> {
     // One spinner across the whole scan, narrated per pass via `set_message`.
     cx.printer.narrate("Scanning: profile files", |sp| {
         live_drift_results_inner(
@@ -408,6 +455,7 @@ pub(super) fn live_drift_results(
             cfgd_installed,
             state,
             cx,
+            fm,
             sp,
         )
     })
@@ -422,17 +470,15 @@ fn live_drift_results_inner(
     cfgd_installed: &std::collections::HashSet<String>,
     state: &cfgd_core::state::StateStore,
     cx: &cfgd_core::providers::PackageContext<'_>,
+    fm: &CfgdFileManager,
     sp: &mut cfgd_core::output::Spinner<'_>,
-) -> anyhow::Result<Vec<VerifyResult>> {
+) -> anyhow::Result<LiveDriftReport> {
     let mut drift = Vec::new();
-
-    // One file manager for both file halves of the scan.
-    let fm = CfgdFileManager::new(config_dir, resolved)?;
 
     // Files: content-aware comparison via the file manager.
     drift.extend(
         file_verify_results(
-            &fm,
+            fm,
             config_dir,
             resolved,
             modules,
@@ -447,7 +493,7 @@ fn live_drift_results_inner(
     sp.set_message("Scanning: module files");
     drift.extend(
         module_file_verify_results(
-            &fm,
+            fm,
             config_dir,
             resolved,
             modules,
@@ -476,12 +522,13 @@ fn live_drift_results_inner(
     // planner, so `verify`/`status --scan` cannot disagree with `diff` about
     // whether a missing manager is live drift.
     sp.set_message("Scanning: managers");
-    for ma in manager_drift_actions(cfgd_core::reconciler::plan_managers(
+    let manager_actions = manager_drift_actions(cfgd_core::reconciler::plan_managers(
         registry,
         &pkg_actions,
         &[],
-    )) {
-        drift.extend(manager_action_drift(&ma));
+    ));
+    for ma in &manager_actions {
+        drift.extend(manager_action_drift(ma));
     }
 
     // System: any configurator reporting a non-empty diff is drift. The desired
@@ -489,30 +536,37 @@ fn live_drift_results_inner(
     // surface here exactly as they do on the write path.
     sp.set_message("Scanning: system");
     let mut evaluated_system: Vec<String> = Vec::new();
+    let mut check_errors: Vec<super::output_types::SystemCheckError> = Vec::new();
     let system = cfgd_core::effective::effective_system_map(&resolved.merged, modules);
     for configurator in &registry.available_system_configurators() {
         if let Some(desired) = system.get(configurator.name()) {
-            // A configurator that errors while probing is treated as
-            // indeterminate, not drift — surfacing it as drift here would make a
-            // transient probe failure flip the exit code. The display path
-            // (`diff`/`verify`) reports such errors to the user. Indeterminate
-            // cuts both ways: the recorder keeps this configurator's recorded
-            // rows standing rather than resolving what nothing re-checked.
-            if let Ok(drifts) = configurator.diff(desired) {
-                evaluated_system.push(configurator.name().to_string());
-                for d in &drifts {
-                    drift.push(VerifyResult {
-                        resource_type: "system".to_string(),
-                        resource_id: cfgd_core::reconciler::system_resource_key(
-                            configurator.name(),
-                            &d.key,
-                        ),
-                        matches: false,
-                        expected: d.expected.clone(),
-                        actual: d.actual.clone(),
-                        unmanaged: false,
-                    });
+            match configurator.diff(desired) {
+                Ok(drifts) => {
+                    evaluated_system.push(configurator.name().to_string());
+                    for d in &drifts {
+                        drift.push(VerifyResult {
+                            resource_type: "system".to_string(),
+                            resource_id: cfgd_core::reconciler::system_resource_key(
+                                configurator.name(),
+                                &d.key,
+                            ),
+                            matches: false,
+                            expected: d.expected.clone(),
+                            actual: d.actual.clone(),
+                            unmanaged: false,
+                        });
+                    }
                 }
+                // A configurator that errors while probing is a first-class
+                // check error, not drift and not silence: it renders its own
+                // row and outranks `DriftDetected` at every `--exit-code`
+                // gate. Indeterminate cuts both ways for the record: the
+                // recorder keeps this configurator's recorded rows standing
+                // rather than resolving what nothing re-checked.
+                Err(e) => check_errors.push(super::output_types::SystemCheckError {
+                    key: configurator.name().to_string(),
+                    error: cfgd_core::output::collapse_to_subject_line(e),
+                }),
             }
         }
     }
@@ -545,7 +599,13 @@ fn live_drift_results_inner(
 
     record_full_scan_findings(state, &drift, &evaluated_system);
 
-    Ok(drift)
+    Ok(LiveDriftReport {
+        findings: drift,
+        check_errors,
+        pkg_actions,
+        manager_actions,
+        path_dirs,
+    })
 }
 
 /// Map a non-`Skip` [`PackageAction`] to its drift `VerifyResult` rows — ONE
@@ -883,8 +943,10 @@ mod tests {
             &std::collections::HashSet::new(),
             &state,
             &cx,
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .findings;
         assert!(
             !drift.is_empty(),
             "content drift on a managed file must register as live drift: {drift:?}"
@@ -911,8 +973,10 @@ mod tests {
             &std::collections::HashSet::new(),
             &state,
             &cx,
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .findings;
         assert!(
             drift.is_empty(),
             "matching file + empty packages/system must be no-drift: {drift:?}"
@@ -982,8 +1046,10 @@ mod tests {
             &std::collections::HashSet::new(),
             &state,
             &cx,
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .findings;
         let alias_row = drift
             .iter()
             .find(|r| r.resource_type == "alias" && r.resource_id == "ll")
@@ -1254,8 +1320,10 @@ mod tests {
             &std::collections::HashSet::new(),
             &state,
             &cx,
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .findings;
         assert_eq!(drift.len(), 1, "only the module file drifts: {drift:?}");
         assert_eq!(drift[0].resource_type, "module");
     }
@@ -1334,8 +1402,10 @@ mod tests {
             &std::collections::HashSet::new(),
             &state,
             &cx,
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .findings;
 
         assert!(
             drift
@@ -1384,8 +1454,10 @@ mod tests {
             &std::collections::HashSet::new(),
             &state,
             &cx,
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .findings;
 
         for id in ["npm:left-pad", "npm:chalk"] {
             assert!(
@@ -1453,8 +1525,10 @@ mod tests {
             &std::collections::HashSet::new(),
             &state,
             &cx,
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .findings;
         findings.push(VerifyResult {
             resource_type: "module".to_string(),
             resource_id: module_file_resource_id("dev", "/home/u/.conf"),
@@ -1507,8 +1581,10 @@ mod tests {
             &std::collections::HashSet::new(),
             &state,
             &cx,
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .findings;
 
         let manager_row = drift
             .iter()
@@ -1548,8 +1624,10 @@ mod tests {
             &std::collections::HashSet::new(),
             &state,
             &cx,
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .findings;
 
         let manager_row = drift
             .iter()
@@ -1782,8 +1860,10 @@ mod tests {
             &std::collections::HashSet::new(),
             &state,
             &cx,
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .findings;
 
         assert!(
             drift
@@ -1819,8 +1899,10 @@ mod tests {
             &std::collections::HashSet::new(),
             &state,
             &cx,
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .findings;
         assert!(
             drift.is_empty(),
             "clean module file must not drift: {drift:?}"
@@ -1847,5 +1929,66 @@ mod tests {
         assert_eq!(split_module_file_resource_id("nvim"), None);
         assert_eq!(split_module_file_resource_id("nvim/"), None);
         assert_eq!(split_module_file_resource_id("/home/user/x"), None);
+    }
+
+    /// The engine used to drop an erroring configurator on the floor
+    /// (`if let Ok(drifts) = configurator.diff(...)`), so `status --scan`
+    /// exited clean over a machine whose check never ran while `diff`'s own
+    /// walk reported the same failure. The error is a first-class report
+    /// entry: never a drift finding, never silence — and the recorder keeps
+    /// the configurator's standing rows, since nothing re-checked them.
+    #[test]
+    fn an_erroring_configurator_is_a_check_error_not_silence() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut resolved = resolved_with_file(dir.path().join("unused.txt"));
+        std::fs::write(dir.path().join("managed.txt"), "x\n").unwrap();
+        std::fs::write(dir.path().join("unused.txt"), "x\n").unwrap();
+        resolved.merged.system.insert(
+            "mock".to_string(),
+            serde_yaml::Value::String("desired".to_string()),
+        );
+
+        let mut registry = crate::cli::build_registry_with_profile(&resolved.merged.packages);
+        registry.add_system_configurator(Box::new(
+            cfgd_core::test_helpers::MockSystemConfigurator::new("mock").failing(),
+        ));
+
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        state
+            .record_drift("system", "mock.key", Some("a"), Some("b"), "local")
+            .unwrap();
+        let (printer, _cap) = Printer::for_test_doc();
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+        let report = live_drift_results(
+            dir.path(),
+            &resolved,
+            &registry,
+            &[],
+            &std::collections::HashSet::new(),
+            &state,
+            &cx,
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.check_errors.len(),
+            1,
+            "the failed probe is its own entry: {:?}",
+            report.check_errors
+        );
+        assert_eq!(report.check_errors[0].key, "mock");
+        assert!(
+            !report.findings.iter().any(|r| r.resource_type == "system"),
+            "a check that could not run found nothing: {:?}",
+            report.findings
+        );
+        let standing = state.unresolved_drift().unwrap();
+        assert!(
+            standing
+                .iter()
+                .any(|e| e.resource_type == "system" && e.resource_id == "mock.key"),
+            "an indeterminate check resolves none of its recorded rows: {standing:?}"
+        );
     }
 }

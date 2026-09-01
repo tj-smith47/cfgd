@@ -447,31 +447,48 @@ impl super::CfgdFileManager {
     pub fn diff(&self, profile: &MergedProfile, printer: &Printer) -> Result<Vec<FileDriftResult>> {
         let mut results = Vec::new();
 
-        // Declaration order says nothing about the machine: two profiles that
-        // deploy the same files report the same drift, in target order, so a
-        // reader compares two runs rather than two spellings of one config.
-        let mut managed_files: Vec<&_> = profile.files.managed.iter().collect();
-        managed_files.sort_by(|a, b| a.target.cmp(&b.target));
-
-        for managed in managed_files {
-            if managed.strategy == Some(FileStrategy::Patch) {
-                let target_path = expand_tilde(&managed.target);
-                let evaluated = self.evaluate(managed, &target_path, ReconcileContext::Reconcile);
-                results.push(render_patch_diff(&target_path, evaluated, printer));
-                continue;
-            }
-
-            let source_path = self.resolve_source_path(&managed.source)?;
-            results.push(self.diff_one(
-                &source_path,
-                &managed.target,
-                managed.origin.as_deref(),
-                managed.strategy,
-                printer,
-            )?);
+        for managed in Self::sorted_managed_specs(profile) {
+            results.push(self.diff_managed_one(managed, printer)?);
         }
 
         Ok(results)
+    }
+
+    /// The profile's managed entries in target order — the ONE ordering every
+    /// diff render walks. Declaration order says nothing about the machine:
+    /// two profiles that deploy the same files report the same drift, in
+    /// target order, so a reader compares two runs rather than two spellings
+    /// of one config. Crate-public so a caller re-rendering a drifted subset
+    /// reads the same list in the same order.
+    pub(crate) fn sorted_managed_specs(profile: &MergedProfile) -> Vec<&ManagedFileSpec> {
+        let mut managed_files: Vec<&_> = profile.files.managed.iter().collect();
+        managed_files.sort_by(|a, b| a.target.cmp(&b.target));
+        managed_files
+    }
+
+    /// Render one managed entry's inline diff and return its drift record —
+    /// the per-entry body of [`Self::diff`], public to the crate so a caller
+    /// that already knows WHICH entries drifted (a non-printing check ran
+    /// first) re-renders only those instead of re-comparing every file.
+    pub(crate) fn diff_managed_one(
+        &self,
+        managed: &ManagedFileSpec,
+        printer: &Printer,
+    ) -> Result<FileDriftResult> {
+        if managed.strategy == Some(FileStrategy::Patch) {
+            let target_path = expand_tilde(&managed.target);
+            let evaluated = self.evaluate(managed, &target_path, ReconcileContext::Reconcile);
+            return Ok(render_patch_diff(&target_path, evaluated, printer));
+        }
+
+        let source_path = self.resolve_source_path(&managed.source)?;
+        self.diff_one(
+            &source_path,
+            &managed.target,
+            managed.origin.as_deref(),
+            managed.strategy,
+            printer,
+        )
     }
 
     /// Render the inline content diff for a single source/target pair and
