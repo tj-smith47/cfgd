@@ -1178,17 +1178,16 @@ fn session_env_resource() -> String {
     }
 }
 
-/// The `(manager, package)` halves of a `package` row's `<manager>/<package>`
-/// id. `None` for every other resource type, and for an id missing either
-/// half — an id cfgd cannot read is rendered as it stands rather than
-/// half-parsed into a row claiming a manager it never named.
+/// The `(manager, package)` halves of a `package` row's id, read through the
+/// producer's own [`cfgd_core::state::split_package_resource_id`]. `None` for
+/// every other resource type, and for an id the split cannot read — such a
+/// row is rendered as it stands rather than half-parsed into a row claiming a
+/// manager it never named.
 fn package_id_parts<'a>(resource_type: &str, resource_id: &'a str) -> Option<(&'a str, &'a str)> {
     if resource_type != "package" {
         return None;
     }
-    resource_id
-        .split_once('/')
-        .filter(|(manager, package)| !manager.is_empty() && !package.is_empty())
+    cfgd_core::state::split_package_resource_id(resource_id)
 }
 
 /// The `(module, remainder)` halves of a `module` row's `<name>:<surface>[…]`
@@ -1510,16 +1509,14 @@ fn finding_owner(
                         .is_some_and(|managers| managers.contains(manager))
                 })
             });
-            // The profile's declaration is its own recorded package rows —
-            // `<manager>:<names>` ids with no module owner, exactly as the
-            // apply that declared them wrote them.
+            // The profile's declaration is its own recorded package rows,
+            // read back through the same split their producer's composer is
+            // pinned against — a hand-guessed separator here is how a
+            // declared package rendered loose while the profile read Synced.
             let profile_declares = || {
                 output.managed_resources.iter().any(|r| {
-                    r.resource_type == "package"
-                        && module_id_parts(&r.resource_type, &r.resource_id).is_none()
-                        && r.resource_id
-                            .split_once(':')
-                            .is_some_and(|(m, declared)| m == manager && names_match(declared))
+                    package_id_parts(&r.resource_type, &r.resource_id)
+                        .is_some_and(|(m, declared)| m == manager && names_match(declared))
                 })
             };
             match declaring {
@@ -2720,7 +2717,7 @@ pub(super) fn cmd_status_module(
                         if scannable {
                             checked.push((
                                 "package".to_string(),
-                                super::diff::package_resource_id(
+                                super::diff::package_drift_resource_id(
                                     &pkg.manager,
                                     std::slice::from_ref(&pkg.resolved_name),
                                 ),
@@ -2733,7 +2730,7 @@ pub(super) fn cmd_status_module(
                         {
                             let finding = cfgd_core::reconciler::VerifyResult {
                                 resource_type: "package".to_string(),
-                                resource_id: super::diff::package_resource_id(
+                                resource_id: super::diff::package_drift_resource_id(
                                     &pd.manager,
                                     &pd.packages,
                                 ),

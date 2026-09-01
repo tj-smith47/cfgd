@@ -477,7 +477,7 @@ pub(in crate::cli) fn cfgd_installed_packages(
     Ok(state
         .managed_package_ids()?
         .into_iter()
-        .map(|(mgr, pkg)| format!("{mgr}/{pkg}"))
+        .map(|(mgr, pkg)| cfgd_core::state::package_resource_id(&mgr, &pkg))
         .collect())
 }
 

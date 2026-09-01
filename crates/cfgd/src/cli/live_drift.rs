@@ -620,7 +620,7 @@ fn live_drift_results_inner(
 pub(super) fn package_action_drift(action: &PackageAction) -> Vec<VerifyResult> {
     let row = |manager: &str, package: &String, expected: &str, actual: String| VerifyResult {
         resource_type: "package".to_string(),
-        resource_id: super::diff::package_resource_id(manager, std::slice::from_ref(package)),
+        resource_id: super::diff::package_drift_resource_id(manager, std::slice::from_ref(package)),
         matches: false,
         expected: expected.to_string(),
         actual,

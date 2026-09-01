@@ -904,7 +904,7 @@ fn gc_stale_package_tracking(
     match cfgd_core::reconciler::stale_tracked_packages(managers, &tracked, cx) {
         Ok(stale) => {
             for (mgr, id) in stale {
-                let rid = format!("{mgr}/{id}");
+                let rid = cfgd_core::state::package_resource_id(&mgr, &id);
                 if let Err(e) = state.remove_managed_resource("package", &rid) {
                     tracing::warn!(resource = %rid, error = %e, "failed to GC stale package tracking row");
                 }
@@ -936,7 +936,7 @@ fn gc_orphaned_custom_packages(
     }
     let cx = cfgd_core::providers::PackageContext::new(printer, state);
     for (mgr, pkg) in packages::prune_orphaned_packages(&orphans, &cx) {
-        let rid = format!("{mgr}/{pkg}");
+        let rid = cfgd_core::state::package_resource_id(&mgr, &pkg);
         if let Err(e) = state.remove_managed_resource("package", &rid) {
             tracing::warn!(resource = %rid, error = %e, "failed to GC orphaned package tracking row");
         }

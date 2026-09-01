@@ -29706,7 +29706,7 @@ fn every_merged_env_view_is_built_once_per_command() {
 
 /// Every live-minted drift identity comes from its type's ONE composer: a
 /// `module` id from `live_drift::module_file_resource_id`, a `package` id
-/// from `diff::package_resource_id` (or the journal's own
+/// from `diff::package_drift_resource_id` (or the journal's own
 /// `provision:`/`refuse:` spelling for a manager node), a `system` id from
 /// `reconciler::system_resource_key`. The live producers (`diff`, the shared
 /// scanners in `live_drift`, `status <module> --scan`) mint `(type, id)` rows
@@ -29731,7 +29731,7 @@ fn every_live_minted_drift_id_comes_from_its_composer() {
         (
             "package",
             &[
-                "package_resource_id(",
+                "package_drift_resource_id(",
                 "provision_resource_id(",
                 ".resource_id()",
             ],
@@ -31082,12 +31082,14 @@ fn component_health_nests_the_recorded_drift_under_its_owner() {
         declared: Default::default(),
     });
     // The profile's own recorded package row, so `fd` has a declaration the
-    // ownership walk can find — `ripgrep` deliberately has none.
+    // ownership walk can find — `ripgrep` deliberately has none. The id is
+    // minted through the producer's own composer, so this fixture holds the
+    // grammar `upsert_package_resource` really writes.
     output
         .managed_resources
         .push(cfgd_core::state::ManagedResource {
             resource_type: "package".into(),
-            resource_id: "brew:fd".into(),
+            resource_id: cfgd_core::state::package_resource_id("brew", "fd"),
             source: "local".into(),
             last_hash: Some("hash1".into()),
             last_applied: Some(1_715_680_800),

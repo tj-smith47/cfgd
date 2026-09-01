@@ -15,7 +15,7 @@ mod decisions;
 mod drift;
 mod journal;
 mod managed;
-pub use managed::HashRefresh;
+pub use managed::{HashRefresh, package_resource_id, split_package_resource_id};
 mod modules;
 mod package_prefix;
 mod pending_config;
