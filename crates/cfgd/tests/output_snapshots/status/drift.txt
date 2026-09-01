@@ -9,7 +9,7 @@ Last Apply
   Age      35m
 
 Drift
-  scanned 2h ago
+  checked 2h ago
   ⚠ file ~/.zshrc                      — want: hash-desired, have: hash-actual
   ⚠ package ripgrep source:team-config — want: 14.1.0, have: 13.0.0
 

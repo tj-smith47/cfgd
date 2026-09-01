@@ -10,7 +10,7 @@ Last Apply
   Age      5m
 
 Drift
-  ✓ No drift recorded — scanned 5m ago
+  ✓ No drift recorded — checked 5m ago
 
 Component Health (checked 5m ago)
   ✓ profile:default  — Synced (2 packages, 1 file)

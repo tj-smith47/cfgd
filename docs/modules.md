@@ -546,21 +546,26 @@ spec:
 
 ## Module Status and Drift
 
-`cfgd status` includes a per-module health section:
+`cfgd status` includes a `Component Health` section with one row per owner
+holding managed state, modules among them:
 
 ```
-Modules
-  ✓ module:nvim — Synced (3 packages, 12 files, 2 scripts)
-  ✓ module:tmux — Synced (1 package, 1 file, 0 scripts)
-  ○ module:git  — NotApplied (0 packages, 0 files, 0 scripts)
+Component Health (checked 3m ago)
+  ✓ profile:work — Synced (2 packages, 1 file)
+  ✓ cfgd:env     — Synced (1 env file)
+  ✓ module:nvim  — Synced (3 packages, 12 files, 2 scripts)
+  ○ module:git   — NotApplied
 ```
 
-The counts are one slot per module-owned kind the `Managed Resources` table
-below lists (`package`, `file`, `script`), taken from the rows that table
-paints rather than from the module's declaration, so the summary line and the
-rows under it cannot disagree. The verdict leads and the counts are its
-parenthetical: a `Failed` or `Drifted` module reads as one at the head of the
-line rather than behind three numbers a healthy module carries too.
+The heading's annotation dates the recorded drift verdicts: how long ago the
+machine was last checked, or `(drift never checked)` when no scan has ever
+run. The counts are taken from the rows the `Managed Resources` table below
+paints rather than from any declaration, so a health line and the rows under
+it cannot disagree; a kind an owner holds none of is dropped rather than
+rendered as `0`, and an owner holding nothing reads its bare verdict. The
+verdict leads and the counts are its parenthetical: a `Failed` or `Drifted`
+module reads as one at the head of the line rather than behind three numbers
+a healthy module carries too.
 
 Each line is headed by the module's owner token: the same `module:<name>` the
 plan and apply trees head that module's group with.

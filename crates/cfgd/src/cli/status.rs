@@ -448,20 +448,6 @@ fn drift_section<T>(
     })
 }
 
-/// How a recorded-state dashboard dates its drift: the scan's age, or that no
-/// scan has ever run. `None` is the LIVE branch — a `--scan` run just asked the
-/// machine, so its findings need no timestamp — and every surface holding no
-/// scan stamp at all.
-fn scan_note(last_scan_at: Option<&str>, now: &str) -> String {
-    match last_scan_at {
-        Some(ts) => {
-            let age = cfgd_core::humanize_age_since(ts, now).unwrap_or_else(|| ts.to_string());
-            format!("scanned {age}")
-        }
-        None => "never scanned".to_string(),
-    }
-}
-
 /// Render the fleet-wide "Drift" section: one row per recorded event, named by
 /// the resource type and id the event was stored under.
 fn render_drift_section(
@@ -674,7 +660,10 @@ pub fn build_fleet_status_doc(
             .last_scan_at
             .as_deref()
             .is_none_or(|ts| cfgd_core::is_stale_since(ts, now, SCAN_STALENESS_SECS));
-        (stale, Some(scan_note(output.last_scan_at.as_deref(), now)))
+        (
+            stale,
+            Some(drift_checked_note(output.last_scan_at.as_deref(), now)),
+        )
     };
 
     match &output.last_apply {
@@ -682,26 +671,34 @@ pub fn build_fleet_status_doc(
             doc = doc.section("Last Apply", |s| {
                 // The verdict leads: a reader scanning the dashboard needs to
                 // know whether the apply succeeded before they need to know
-                // what it was scoped to or how stale it is.
-                let mut s = s.kv("Result", last.status.human_str());
+                // what it was scoped to or how stale it is. One `kv_rows`
+                // block: the Result row needs a role-tinted value, which only
+                // a `KvPair` can carry, and `kv_rows` does not coalesce with
+                // a preceding `kv` block.
+                let (result_word, result_role) = last.status.human_display();
+                let mut rows = vec![KvPair::role_valued("Result", result_word, result_role)];
                 // decision-summary-ok: the `applies` record's own summary column, not a pending decision's
                 if let Some(summary) = &last.summary {
                     // Prose, never the stored column: the wire shape is what
                     // `-o json` carries, and a human row reading
                     // `{"failed":0,"succeeded":22,"total":22}` makes the reader
                     // parse JSON to learn the apply went fine.
-                    s = s.kv("Summary", cfgd_core::state::ApplySummary::prose(summary));
+                    rows.push(KvPair::new(
+                        "Summary",
+                        cfgd_core::state::ApplySummary::prose(summary),
+                    ));
                 }
                 if let Some((key, value)) = recorded_scope_row(&last.profile) {
-                    s = s.kv(key, value);
+                    rows.push(KvPair::new(key, value));
                 }
                 // `Age`, not the stored instant: `-o json`'s `lastApply.timestamp`
                 // is where an exact moment is read from, and the dashboard row
                 // is answering how stale the machine's last apply is.
-                s.kv(
+                rows.push(KvPair::new(
                     "Age",
                     cfgd_core::humanize_age_magnitude_cell(Some(&last.timestamp), now),
-                )
+                ));
+                s.kv_rows(rows)
             });
         }
         None => {
@@ -757,9 +754,15 @@ pub fn build_fleet_status_doc(
                     // `Synced` read as a fourth inventory item, and `Failed` —
                     // the one word the reader is scanning for — landed last
                     // and least prominent behind three counts.
-                    s.status_with(row.role, row.owner.token(), |f| {
-                        let f = f.verdict(row.verdict);
-                        match &row.counts {
+                    let HealthRow {
+                        owner,
+                        verdict,
+                        role,
+                        counts,
+                    } = row;
+                    s.status_with(role, owner.token(), |f| {
+                        let f = f.verdict(verdict);
+                        match counts {
                             Some(counts) => f.detail(counts),
                             None => f,
                         }
@@ -859,7 +862,7 @@ fn managed_resource_rows(
                 cfgd_core::fold_home_in_text(&r.resource_id)
             };
             rows.push([
-                display_type(&r.resource_type),
+                display_type(&r.resource_type).to_string(),
                 recorded_owner(r, &profile_owner),
                 resource,
                 r.source.clone(),
@@ -881,13 +884,18 @@ fn managed_resource_rows(
             _ if detail.is_empty() => NO_DETAIL.to_string(),
             _ => detail.to_string(),
         };
-        rows.push([display_type(surface), owner, resource, r.source.clone()]);
+        rows.push([
+            display_type(surface).to_string(),
+            owner,
+            resource,
+            r.source.clone(),
+        ]);
     }
 
     for ((manager, source), mut packages) in own_packages {
         packages.sort_unstable();
         rows.push([
-            display_type("package"),
+            display_type("package").to_string(),
             profile_owner.clone(),
             format!("{manager}: {}", packages.join(", ")),
             source.to_string(),
@@ -1143,16 +1151,19 @@ pub(super) fn recorded_module_tallies(
 /// row per component with its verdict leading.
 const COMPONENT_HEALTH_SECTION: &str = "Component Health";
 
-/// The Component Health heading's drift-freshness annotation: how old the
-/// recorded scan stamp is, or that no scan has ever run. The fact rides the
-/// heading as a muted annotation rather than a section of its own; the ISO
-/// instant stays in `-o json`'s `lastScanAt`.
+/// The ONE human rendering of the recorded drift-scan freshness: how old the
+/// scan stamp is (`checked 3m ago`), or that no scan has ever run (`drift
+/// never checked`). Both surfaces dating the recorded verdicts read it — the
+/// Component Health heading's muted annotation and the Drift verdict's
+/// qualifier — so one screen cannot date one fact in two vocabularies. The
+/// age and its unsubtractable-stamp fallback come from
+/// [`cfgd_core::humanize_age_cell`], the same degradation every other age
+/// slot takes; the ISO instant stays in `-o json`'s `lastScanAt`. `None` here
+/// is a host no scan ever stamped — a `--scan` run's caller suppresses the
+/// note instead, its findings needing no date.
 fn drift_checked_note(last_scan_at: Option<&str>, now: &str) -> String {
     match last_scan_at {
-        Some(ts) => format!(
-            "checked {}",
-            cfgd_core::humanize_age_since(ts, now).unwrap_or_else(|| ts.to_string())
-        ),
+        Some(ts) => format!("checked {}", cfgd_core::humanize_age_cell(Some(ts), now)),
         None => "drift never checked".to_string(),
     }
 }
@@ -1184,19 +1195,17 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Vec<He
     // Per-owner, per-noun counts of the recorded non-module rows. Keyed by
     // the rendered token because `Owner` carries no ordering of its own here;
     // `owner_from_token` reads each key back for the comparator below.
-    let mut recorded: std::collections::BTreeMap<
-        String,
-        std::collections::BTreeMap<String, usize>,
-    > = std::collections::BTreeMap::new();
+    let mut recorded: std::collections::BTreeMap<String, std::collections::BTreeMap<&str, usize>> =
+        std::collections::BTreeMap::new();
     for r in &output.managed_resources {
         if module_id_parts(&r.resource_type, &r.resource_id).is_some() {
             continue;
         }
         let noun = if r.resource_type == ENV_RESOURCE_TYPE {
             if is_session_env_row(r) {
-                "session env".to_string()
+                "session env"
             } else {
-                "env file".to_string()
+                "env file"
             }
         } else {
             // A profile-declared row with no derivable profile has no owner a
@@ -1210,11 +1219,9 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Vec<He
         *recorded.entry(token).or_default().entry(noun).or_default() += 1;
     }
 
-    let mut owners: Vec<Owner> = recorded
-        .keys()
-        .filter_map(|token| owner_from_token(token))
-        .chain(output.modules.iter().map(|m| Owner::module(&m.name)))
-        .collect();
+    let mut owners: Vec<Owner> = Vec::with_capacity(recorded.len() + output.modules.len());
+    owners.extend(recorded.keys().filter_map(|token| owner_from_token(token)));
+    owners.extend(output.modules.iter().map(|m| Owner::module(&m.name)));
     Owner::order(&mut owners);
 
     let (installed_word, installed_role) =
@@ -1272,17 +1279,17 @@ fn health_counts<'a>(kinds: impl Iterator<Item = (&'a str, usize)>) -> Option<St
 /// A recorded owner's kind counts in render order: the three nouns every
 /// module row also leads with, then anything else in the map's own
 /// alphabetical order.
-fn ordered_kind_counts(
-    kinds: &std::collections::BTreeMap<String, usize>,
-) -> impl Iterator<Item = (&str, usize)> {
+fn ordered_kind_counts<'a>(
+    kinds: &'a std::collections::BTreeMap<&'a str, usize>,
+) -> impl Iterator<Item = (&'a str, usize)> {
     const LEAD: [&str; 3] = ["package", "file", "script"];
     LEAD.iter()
         .filter_map(|noun| kinds.get(*noun).map(|n| (*noun, *n)))
         .chain(
             kinds
                 .iter()
-                .filter(|(noun, _)| !LEAD.contains(&noun.as_str()))
-                .map(|(noun, n)| (noun.as_str(), *n)),
+                .filter(|(noun, _)| !LEAD.contains(noun))
+                .map(|(noun, n)| (*noun, *n)),
         )
 }
 
@@ -1294,14 +1301,13 @@ fn ordered_kind_counts(
 /// `kubectl get` does — the Resource column beside it already carries the
 /// count, so a plural here only made one table spell one kind two ways
 /// depending on which producer recorded the row.
-fn display_type(kind: &str) -> String {
+fn display_type(kind: &str) -> &str {
     match kind {
         "file" | "files" => "file",
         "package" | "packages" => "package",
         "script" | "Running script" => "script",
         other => other,
     }
-    .to_string()
 }
 
 /// Build the per-module `cfgd status <module>` Doc.
@@ -3306,28 +3312,28 @@ mod tests {
             "the date rides the verdict, it is not a header row: {fresh}"
         );
         assert!(
-            verdict(&fresh).contains("scanned 5m ago"),
+            verdict(&fresh).contains("checked 5m ago"),
             "wrong age rendered: {fresh}"
         );
         assert!(!fresh.contains(hint), "a fresh scan must not hint: {fresh}");
 
         let stale = header(Some("2026-05-14T08:00:00Z"), false);
         assert!(
-            verdict(&stale).contains("scanned 2h ago"),
+            verdict(&stale).contains("checked 2h ago"),
             "wrong age rendered: {stale}"
         );
         assert!(stale.contains(hint), "a stale scan must hint: {stale}");
 
         let never = header(None, false);
         assert!(
-            verdict(&never).contains("never scanned"),
+            verdict(&never).contains("drift never checked"),
             "an unscanned host says so on the verdict: {never}"
         );
         assert!(never.contains(hint), "an unscanned host must hint: {never}");
 
         let scanned = header(Some("2026-05-14T08:00:00Z"), true);
         assert!(
-            !scanned.contains("scanned ") && !scanned.contains(hint),
+            !scanned.contains("checked ") && !scanned.contains(hint),
             "a run that just scanned must not date or hint at itself: {scanned}"
         );
         assert!(
@@ -3386,7 +3392,7 @@ mod tests {
 
         let never = verdict(&fleet(None, false));
         assert!(
-            never.contains("never scanned") && !never.starts_with(&tick),
+            never.contains("drift never checked") && !never.starts_with(&tick),
             "no check ran, so no tick: {never}"
         );
         let recorded = verdict(&fleet(Some("2026-05-14T10:00:00Z"), false));
@@ -3502,7 +3508,7 @@ mod tests {
 
         let out = dashboard(&output);
         assert!(
-            out.contains("scanned 2h ago"),
+            out.contains("checked 2h ago"),
             "findings are dated too, not only the empty verdict: {out}"
         );
         assert!(
@@ -3517,7 +3523,7 @@ mod tests {
         };
         let live_out = dashboard(&live);
         assert!(
-            !live_out.contains("scanned "),
+            !live_out.contains("checked "),
             "a run that just scanned does not date its own findings"
         );
         assert!(
@@ -3696,6 +3702,96 @@ mod tests {
         );
     }
 
+    /// The non-module Component Health rows count what the Managed Resources
+    /// table lists — the profile/`cfgd` twin of
+    /// `the_module_headline_counts_what_the_table_lists`, minted for the same defect: the two are
+    /// separate walks over one recorded slice, sharing only their
+    /// classifiers, so an edit to either branch's owner attribution or a new
+    /// resource kind reintroduces the 28-vs-24 disagreement with nothing to
+    /// catch it. The expected counts are DERIVED from the table's own rows (a
+    /// grouped package row counts its names; every other kind is one row
+    /// each), never restated as literals beside them.
+    #[test]
+    fn the_component_health_counts_what_the_table_lists() {
+        let resources = vec![
+            recorded("file", "~/.bashrc"),
+            recorded("file", "~/.vimrc"),
+            recorded("package", "brew/ripgrep"),
+            recorded("package", "brew/bat"),
+            recorded("package", "apt/git"),
+            recorded("env", "/home/user/.cfgd.env"),
+            recorded("env", "/home/user/.config/fish/conf.d/cfgd.fish"),
+            recorded("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
+        ];
+        let mut output = empty_output();
+        output.managed_resources = resources.clone();
+
+        let table = managed_resource_rows(&resources, &[], Some("default"));
+        let rows_of =
+            |owner: &str, ty: &str| table.iter().filter(|r| r[1] == owner && r[0] == ty).count();
+        // A package row's Resource cell is `manager: a, b`; its unit is the
+        // NAMES, which is what the health row counts.
+        let names_of = |owner: &str| -> usize {
+            table
+                .iter()
+                .filter(|r| r[1] == owner && r[0] == "package")
+                .map(|r| {
+                    r[2].rsplit(": ")
+                        .next()
+                        .map_or(0, |n| n.split(", ").count())
+                })
+                .sum()
+        };
+        let (packages, files) = (
+            names_of("profile:default"),
+            rows_of("profile:default", "file"),
+        );
+        let (env_files, sessions) = (rows_of("cfgd:env", "env"), rows_of("cfgd:session", "env"));
+        // Grounded against the fixture, so a classifier change dropping rows
+        // from BOTH derivations cannot agree its way past this pin.
+        assert_eq!(
+            (packages, files, env_files, sessions),
+            (3, 2, 2, 1),
+            "the table no longer lists the fixture's rows:\n{table:?}"
+        );
+
+        let out = dashboard(&output);
+        let expectations = [
+            (
+                "profile:default",
+                format!(
+                    "({}, {})",
+                    cfgd_core::pluralize(packages, "package"),
+                    cfgd_core::pluralize(files, "file")
+                ),
+            ),
+            (
+                "cfgd:env",
+                format!("({})", cfgd_core::pluralize(env_files, "env file")),
+            ),
+            (
+                "cfgd:session",
+                format!("({})", cfgd_core::pluralize(sessions, "session env")),
+            ),
+        ];
+        // Only the health section's own rows: the table below carries the
+        // same owner tokens with different cell shapes.
+        let section = out
+            .split_once("Component Health")
+            .map(|(_, after)| after.split("Managed Resources").next().unwrap_or(after))
+            .unwrap_or_else(|| panic!("no Component Health section:\n{out}"));
+        for (owner, counts) in expectations {
+            let line = section
+                .lines()
+                .find(|l| l.contains(owner))
+                .unwrap_or_else(|| panic!("no `{owner}` health row in:\n{section}"));
+            assert!(
+                line.contains(&counts),
+                "`{owner}`'s health counts disagree with the table's rows, want `{counts}` in:\n{line}"
+            );
+        }
+    }
+
     /// Every kind the Managed Resources table can call a module's has a slot in
     /// the headline three lines above it.
     ///
@@ -3778,7 +3874,7 @@ mod tests {
         let end = body.find("\n}\n").expect("the fn's closing brace");
         let mut words: Vec<String> = string_literals(&body[..end])
             .into_iter()
-            .map(|token| display_type(&token))
+            .map(|token| display_type(&token).to_string())
             .collect();
         words.sort();
         words.dedup();
