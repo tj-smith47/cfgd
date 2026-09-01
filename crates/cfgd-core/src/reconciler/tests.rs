@@ -11045,6 +11045,13 @@ fn every_manager_node_states_what_it_produced() {
 /// the row already spells out, because `— 7 of 9 packages` puts two numbers
 /// over one set on one row.
 ///
+/// `DeployFiles` states its total a different way — a bare count in the
+/// subject (`deploy 5 files`), never the operand names — but the same rule
+/// holds: the total is already on the row, so `deploy_files_summary` reads
+/// only the action's own `files`/`declared_total` fields, never the
+/// executor's re-read, and this fixture's full deploy (nothing left to state
+/// a complement over) produces no detail on either pass.
+///
 /// The provision arm is deliberately not a complement arm: its shortfall is
 /// a failure to deliver rather than a set already in place, so `1 of 2
 /// managers` is exactly what it has to say. The env write names no operands
@@ -11124,10 +11131,24 @@ fn no_produced_detail_restates_a_total_the_subject_already_gives() {
             continue;
         }
         let subject = super::format::action_display_subject(action).to_string();
-        assert!(
-            names.iter().all(|name| subject.contains(name.as_str())),
-            "the subject names every operand, which is what makes the total its own: {subject}"
+        let is_deploy = matches!(
+            action,
+            Action::Module(ModuleAction {
+                kind: ModuleActionKind::DeployFiles { .. },
+                ..
+            })
         );
+        if is_deploy {
+            assert!(
+                total_word.is_match(&subject),
+                "a deploy's subject already states the total as a count: {subject}"
+            );
+        } else {
+            assert!(
+                names.iter().all(|name| subject.contains(name.as_str())),
+                "the subject names every operand, which is what makes the total its own: {subject}"
+            );
+        }
         walked += 1;
         for landed in [total, total - 2] {
             let detail = super::action_produced_detail(action, Some(landed), 0, &[]);

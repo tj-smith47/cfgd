@@ -215,6 +215,18 @@ pub(crate) fn compose_status_split(
 /// decision.
 pub(crate) const GLYPH_PREFIX_WIDTH: usize = 2;
 
+/// Depths below its parent action row a deploy row's per-file child renders
+/// at — two, not one, so an enumerated file list reads apart from one more
+/// owner group nested under the action.
+pub(crate) const CHILD_ROW_DEPTH_OFFSET: usize = 2;
+
+/// The columns [`Emitting::child_row_column`] subtracts from the parent's
+/// claimed width: [`CHILD_ROW_DEPTH_OFFSET`] depths of extra indent (2
+/// columns each) minus the glyph a child never opens on
+/// ([`GLYPH_PREFIX_WIDTH`]) — the net a child gives up so its trailing
+/// `— method` still lands where its parent's trailer did.
+pub(crate) const CHILD_ROW_INDENT_DELTA: usize = CHILD_ROW_DEPTH_OFFSET * 2 - GLYPH_PREFIX_WIDTH;
+
 /// The columns a wait row spends between its own subject and the OTHER
 /// subject it names: ` — queued behind `, the wider of the two hold
 /// wordings. What `Printer::subject_budget` subtracts before it halves the
@@ -323,6 +335,30 @@ impl Emitting<'_> {
         // `- ` is exactly as wide as a glyph and its space, so a bullet's
         // allowance is the status row's.
         let column = live_group_column(self.wrap_cols, depth, top.live_column?);
+        (column > 0).then_some(column)
+    }
+
+    /// The column a deploy row's per-file CHILD pads its target to, so its
+    /// trailing `— method` lands on the same x its parent's `— detail`/`(time)`
+    /// did.
+    ///
+    /// A child renders [`CHILD_ROW_DEPTH_OFFSET`] depths below its parent
+    /// action row (an extra indent, so an enumerated file list reads apart
+    /// from one more owner group) and opens with no glyph at all — two
+    /// changes that cancel everywhere but the padded width itself, which is
+    /// why [`CHILD_ROW_INDENT_DELTA`] is subtracted here rather than folded
+    /// into the depth's indent or a glyph reservation the way `bullet_column`
+    /// folds `GLYPH_PREFIX_WIDTH` into its own claim. `depth` is the CHILD's
+    /// own render depth, and the wrap clamp is judged at it too, so a target
+    /// too long for a narrow terminal glues rather than pushing the claim
+    /// off the line.
+    pub(crate) fn child_row_column(&self, depth: usize) -> Option<usize> {
+        let top = self.state.section_stack.last()?;
+        if depth <= top.header_depth {
+            return None;
+        }
+        let requested = top.live_column?.checked_sub(CHILD_ROW_INDENT_DELTA)?;
+        let column = group_column(self.wrap_cols, depth, requested, 0);
         (column > 0).then_some(column)
     }
 

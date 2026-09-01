@@ -58,6 +58,20 @@ impl<'p> SectionGuard<'p> {
         self
     }
 
+    /// A deploy row's per-file child: `target — method`, two depths below
+    /// this section, no glyph. See [`crate::output::renderer::Renderer::render_child_row`]
+    /// for why the extra depth and the missing glyph still land the trailing
+    /// method at this section's claimed column.
+    pub fn child_row(&self, target: impl Into<String>, method: impl Into<String>) -> &Self {
+        self.renderer.render_child_row(
+            self.sink.as_ref(),
+            self.depth + super::renderer::status::CHILD_ROW_DEPTH_OFFSET,
+            &target.into(),
+            &method.into(),
+        );
+        self
+    }
+
     pub fn kv(&self, key: impl Into<String>, value: impl Into<String>) -> &Self {
         // Defer to the buffer so consecutive kvs at this depth coalesce.
         self.renderer.render_kv(&key.into(), &value.into());

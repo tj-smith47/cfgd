@@ -1001,10 +1001,24 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
                     // step produces is stated beside the subject, never
                     // baked into it.
                     owner_section.bullet_detail(subject.body.clone(), detail);
+                    render_deploy_children(&owner_section, action);
                 } else {
                     owner_section.bullet(subject.body.clone());
+                    render_deploy_children(&owner_section, action);
                 }
             }
+        }
+    }
+}
+
+/// Every file a `DeployFiles` action writes, as the child rows beneath its own
+/// row — the plan-tree half of the one seam `apply::emit_action_line` settles
+/// on the apply side, so a preview and its settled row enumerate one list.
+/// A no-op for any other action kind.
+fn render_deploy_children(owner_section: &SectionGuard<'_>, action: &Action) {
+    if let Some(children) = super::format::deploy_file_children(action) {
+        for (target, method) in children {
+            owner_section.child_row(target, method);
         }
     }
 }

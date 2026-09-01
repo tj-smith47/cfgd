@@ -371,6 +371,18 @@ pub fn action_display_subject_within(action: &Action, budget: Option<usize>) -> 
                 ..
             },
         ) => module_script_subject_within(script.run_str(), phase, ma.origin.as_deref(), budget),
+        // A count, not an operand list: every target this deploy writes is its
+        // own child row (`deploy_file_children`), so the subject states how
+        // many rather than naming them a second time. Unlike a package
+        // install or a script body, no width ever cuts this — the count is
+        // never wider than the budget a wait reason already reserves.
+        Action::Module(ModuleAction {
+            kind: ModuleActionKind::DeployFiles { files, .. },
+            ..
+        }) => DisplaySubject {
+            marker: None,
+            body: format!("deploy {}", crate::pluralize(files.len(), "file")),
+        },
         // The fold is the DISPLAY seam's alone: `format_plan_item` feeds the
         // `-o json` plan payload and keeps the absolute path.
         _ => DisplaySubject {
@@ -378,6 +390,38 @@ pub fn action_display_subject_within(action: &Action, budget: Option<usize>) -> 
             body: crate::fold_home_in_text(&plan_item(action)),
         },
     }
+}
+
+/// Every file a `DeployFiles` action writes, target then resolved method, in
+/// manifest order — the ONE producer both trees render as the action's child
+/// rows (`render_plan_tree`'s bullet arm and `apply::emit_action_line`'s
+/// executed row), so a preview and its settled row cannot enumerate two
+/// different lists. `None` for every other action kind. The method is the
+/// per-file [`crate::config::FileStrategy`] resolved with its own default
+/// (never `effective_file_strategies`, which resolves from a bare target
+/// path — this caller already holds the `ResolvedFile` its own strategy came
+/// from).
+pub(super) fn deploy_file_children(action: &Action) -> Option<Vec<(String, String)>> {
+    let Action::Module(ModuleAction {
+        kind: ModuleActionKind::DeployFiles { files, .. },
+        ..
+    }) = action
+    else {
+        return None;
+    };
+    Some(
+        files
+            .iter()
+            .map(|file| {
+                // Absolute here; `render_child_row` folds home the way
+                // `render_hint` folds its own text — one fold, at the
+                // renderer boundary, never at the producer.
+                let target = file.target.display_posix();
+                let method = file.strategy.unwrap_or_default().as_str().to_lowercase();
+                (target, method)
+            })
+            .collect(),
+    )
 }
 
 /// [`action_display_subject`] for a profile script, reachable from the apply
@@ -925,17 +969,14 @@ mod tests {
     /// classified before this file compiles, plus a profile's own install and
     /// uninstall and a module naming two managers — and every width a report
     /// can be rendered at, since the budget must reach no operand list.
+    ///
+    /// `DeployFiles` is deliberately absent from this walk: its subject
+    /// states a COUNT (`deploy 12 files`), never the operands themselves —
+    /// each target is its own child row instead
+    /// (`a_deploy_row_enumerates_every_file_with_its_method_at_the_reports_column`
+    /// in `reconciler::run::tests` is that population's own walk).
     #[test]
     fn every_operand_list_a_subject_renders_names_every_operand() {
-        let file = |target: &str| crate::modules::ResolvedFile {
-            source: std::path::PathBuf::from("src"),
-            target: std::path::PathBuf::from(target),
-            is_git_source: false,
-            strategy: None,
-            encryption: None,
-            permissions: None,
-            patch: None,
-        };
         let pkg = |name: &str, manager: &str| crate::modules::ResolvedPackage {
             canonical_name: name.to_string(),
             resolved_name: name.to_string(),
@@ -956,10 +997,6 @@ mod tests {
                     .map(|n| pkg(n, "brew"))
                     .chain(names.iter().map(|n| pkg(n, "apt")))
                     .collect(),
-            },
-            ModuleActionKind::DeployFiles {
-                files: names.iter().map(|n| file(n)).collect(),
-                declared_total: names.len(),
             },
             ModuleActionKind::RunScript {
                 script: crate::config::ScriptEntry::Simple(names.join(" && ")),

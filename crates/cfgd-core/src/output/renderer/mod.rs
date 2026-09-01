@@ -1089,6 +1089,37 @@ impl Renderer {
         });
     }
 
+    /// A deploy row's per-file child: a target and its resolved method,
+    /// `— method` muted after the em-dash like every other detail slot.
+    ///
+    /// Renders with no glyph, two depths below its parent (see
+    /// `Emitting::child_row_column` for why the trailing marker still lands
+    /// at the report's one claimed column), and continues the parent row's
+    /// group rather than opening one of its own —
+    /// the same shape [`Self::render_stream_line`] takes for a child process's
+    /// captured output, because a child row belongs to the action above it,
+    /// not to a block of its own.
+    pub fn render_child_row(&self, w: &dyn Writer, depth: usize, target: &str, method: &str) {
+        if self.verbosity == Verbosity::Quiet {
+            return;
+        }
+        let target = crate::fold_home_in_text(target);
+        let subject = cursor_safe(&target);
+        let method = self.theme.muted.apply_to(cursor_safe(method)).to_string();
+        self.emit_with(w, |e| {
+            let padded = e
+                .child_row_column(depth)
+                .and_then(|column| status::pad_subject(&subject, column, true));
+            let mut body = padded.unwrap_or_else(|| subject.to_string());
+            body.push_str(" — ");
+            body.push_str(&method);
+            e.flush_section_headers();
+            e.clear_blank_pending();
+            e.push_line(depth, &body);
+            e.mark_top_level_group(TopGroup::Status);
+        });
+    }
+
     /// One line of live output from a child process, rendered dim and indented.
     /// Unlike a spinner message — which repaints a fixed window in place and so
     /// erases and rewrites the lines above it — this appends, letting output

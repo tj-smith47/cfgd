@@ -9,8 +9,8 @@ use crate::to_posix_string;
 
 use super::env_engine::ManagerPathDir;
 use super::format::{
-    action_display_subject_within, condense_action_desc_for_display, format_action_description,
-    parse_package_description, parse_resource_from_description,
+    action_display_subject_within, condense_action_desc_for_display, deploy_file_children,
+    format_action_description, parse_package_description, parse_resource_from_description,
 };
 use super::restore::action_target_path;
 use super::scripts::{
@@ -44,6 +44,11 @@ pub(super) struct ActionOutcome {
     /// out beneath this line when the phase's tree is written. Always empty in
     /// a sequential phase, where the output window already showed it live.
     body: Vec<String>,
+    /// Every file a `DeployFiles` action writes, target then resolved method —
+    /// [`super::format::deploy_file_children`]'s output, carried here so
+    /// [`emit_action_line`] renders the same list [`super::render_plan_tree`]
+    /// previewed. Empty for every other action kind.
+    children: Vec<(String, String)>,
 }
 
 #[cfg(test)]
@@ -59,6 +64,21 @@ impl ActionOutcome {
             duration: Some(duration),
             notes: Vec::new(),
             body: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+
+    /// [`Self::for_test`] with its child rows populated — for a test proving
+    /// the plan and apply trees enumerate a `DeployFiles` action's files
+    /// identically.
+    pub(super) fn for_test_with_children(
+        subject: &str,
+        duration: std::time::Duration,
+        children: Vec<(String, String)>,
+    ) -> Self {
+        Self {
+            children,
+            ..Self::for_test(subject, duration)
         }
     }
 
@@ -73,6 +93,7 @@ impl ActionOutcome {
             duration: None,
             notes: Vec::new(),
             body: Vec::new(),
+            children: Vec::new(),
         }
     }
 }
@@ -105,8 +126,8 @@ fn env_write_summary(action: &Action) -> Option<String> {
 ///
 /// A subset is stated against the DECLARED set, so "one file changed" and
 /// "nothing changed" (no action at all) can never render alike. A full deploy
-/// carries no count at all: the subject names every target it writes, so
-/// `deploy a, b, c, d, e, f — 6 files` stated six twice.
+/// carries no count at all: the subject already states how many it writes
+/// (`deploy 6 files`), so a detail of `6 already deployed` would restate it.
 ///
 /// The COMPLEMENT, never a ratio: the detail names only what the subject
 /// cannot. A second number over a set the subject already spells out invites
@@ -515,6 +536,9 @@ pub(super) fn emit_action_line(
             builder = builder.duration(d);
         }
         drop(builder);
+    }
+    for (target, method) in &outcome.children {
+        section.child_row(target.clone(), method.clone());
     }
     // Notes no longer attach here: every note the action produced rides in
     // `outcome.notes` to the run-wide `caveats` collector instead, and
@@ -2305,6 +2329,7 @@ impl<'a> super::Reconciler<'a> {
                 duration: ran.then_some(elapsed),
                 notes,
                 body,
+                children: deploy_file_children(action).unwrap_or_default(),
             },
             None => {
                 let noop = declared_noop_role(action);
@@ -2340,6 +2365,7 @@ impl<'a> super::Reconciler<'a> {
                     duration,
                     notes,
                     body,
+                    children: deploy_file_children(action).unwrap_or_default(),
                 }
             }
         };

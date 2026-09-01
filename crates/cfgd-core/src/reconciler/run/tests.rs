@@ -1528,6 +1528,144 @@ fn both_trees_paint_a_withheld_row_with_the_same_bytes() {
     );
 }
 
+/// A deploy row enumerates every file it writes as its own child row, in
+/// manifest order, target then resolved method — never an inline shorthand,
+/// even for the one-file module below. The plan preview tree and the
+/// settled apply tree paint those child rows byte-for-byte identical, at the
+/// SAME report column their parent's own trailer would have landed at, two
+/// depths below it. `deploy_file_children` is the ONE producer both trees
+/// read, so a future action changing what a deploy writes trips this walk
+/// before either tree can disagree about it.
+#[test]
+fn a_deploy_row_enumerates_every_file_with_its_method_at_the_reports_column() {
+    let home = PathBuf::from("/home/u");
+    let file = |name: &str, strategy: Option<FileStrategy>| crate::modules::ResolvedFile {
+        source: PathBuf::from("/src").join(name),
+        target: home.join(".config/app").join(name),
+        is_git_source: false,
+        strategy,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    let deploy = Action::Module(crate::reconciler::ModuleAction::local(
+        "app",
+        crate::reconciler::ModuleActionKind::DeployFiles {
+            files: vec![
+                file("a.conf", None),
+                file("b.conf", Some(FileStrategy::Copy)),
+            ],
+            declared_total: 2,
+        },
+    ));
+    // A far longer sibling in the SAME report, so the column the deploy row's
+    // children pad to is one the deploy row's own six-character subject
+    // would never have produced.
+    let plan = plan_of(vec![phase(
+        PhaseName::Prerequisites,
+        vec![deploy, install("apt", &["a-very-long-package-name-indeed"])],
+    )]);
+    let width = report_align_width(&plan, None, None);
+    let deploy = plan.phases[0]
+        .actions()
+        .find(|a| {
+            matches!(
+                a,
+                Action::Module(crate::reconciler::ModuleAction {
+                    kind: crate::reconciler::ModuleActionKind::DeployFiles { .. },
+                    ..
+                })
+            )
+        })
+        .expect("the phase holds the deploy action");
+    let subject = super::action_display_subject_within(deploy, None)
+        .body
+        .clone();
+    assert_eq!(
+        subject, "deploy 2 files",
+        "a two-file deploy states a count"
+    );
+
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    render_plan_tree(&plan, None, &printer);
+    drop(printer);
+    let previewed = crate::test_helpers::captured_text(&buf);
+
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    {
+        let _column = printer.report_column(width);
+        let phase_section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let owner = phase_section.section_owner(&OwnerLabel::new("module", "app"));
+        owner.live_column(width);
+        super::super::apply::emit_action_line(
+            &printer,
+            &owner,
+            &super::super::apply::ActionOutcome::for_test_with_children(
+                &subject,
+                std::time::Duration::from_millis(50),
+                super::super::format::deploy_file_children(deploy)
+                    .expect("a DeployFiles action always enumerates its children"),
+            ),
+        );
+    }
+    drop(printer);
+    let settled = crate::test_helpers::captured_text(&buf);
+
+    for target in ["a.conf", "b.conf"] {
+        let previewed_row = previewed
+            .lines()
+            .find(|l| l.contains(&format!("app/{target}")))
+            .unwrap_or_else(|| panic!("the plan tree enumerates {target}:\n{previewed}"));
+        let settled_row = settled
+            .lines()
+            .find(|l| l.contains(&format!("app/{target}")))
+            .unwrap_or_else(|| panic!("the apply tree enumerates {target}:\n{settled}"));
+        assert_eq!(
+            previewed_row, settled_row,
+            "the two trees paint {target}'s child row identically"
+        );
+        assert!(
+            !is_row_head(previewed_row),
+            "a child row carries no glyph or bullet of its own: {previewed_row:?}"
+        );
+    }
+    let a_row = previewed
+        .lines()
+        .find(|l| l.contains("app/a.conf"))
+        .expect("checked above");
+    let b_row = previewed
+        .lines()
+        .find(|l| l.contains("app/b.conf"))
+        .expect("checked above");
+    assert!(
+        a_row.trim_end().ends_with("— symlink"),
+        "a file with no declared strategy defaults to symlink: {a_row:?}"
+    );
+    assert!(
+        b_row.trim_end().ends_with("— copy"),
+        "a file's own resolved strategy names its method: {b_row:?}"
+    );
+    // The trailing method lands at the report's one claimed column, exactly
+    // where the parent row's own `— detail`/`(time)` would have — two
+    // depths of extra indent traded for the glyph column a child never opens.
+    let dash_at = |line: &str| {
+        crate::output::measure_width(line.split_once(" — ").map_or("", |(head, _)| head))
+    };
+    assert_eq!(
+        dash_at(a_row),
+        crate::output::printer::ACTION_ROW_DEPTH * 2
+            + crate::output::renderer::status::GLYPH_PREFIX_WIDTH
+            + width,
+        "a child row's method lands where its parent's own trailer would, at \
+         the report's claimed column:\n{previewed}"
+    );
+    assert_eq!(
+        dash_at(a_row),
+        dash_at(b_row),
+        "every child row of the same deploy shares one column:\n{previewed}"
+    );
+}
+
 // --- execute ---
 
 #[test]
@@ -1840,7 +1978,9 @@ fn header_omits_the_sources_row_when_nothing_composed() {
 /// `deploy a, b (6 files)` baked the count into its subject while the env
 /// write beside it said `— 3 vars, 3 aliases`; both now read the ONE producer.
 /// The deploy here writes two of five declared files, the one deploy shape
-/// that produces a count: a full deploy's subject already gives its total.
+/// that produces a count: a full deploy's subject already gives its total,
+/// its own subject the count of files it writes, never their names — those
+/// enumerate as child rows beneath it instead.
 #[test]
 fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
     let files: Vec<crate::modules::ResolvedFile> = (0..2)
@@ -1884,12 +2024,16 @@ fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        out.contains("- deploy /home/u/.f0, /home/u/.f1 — 3 already deployed"),
+        out.contains("- deploy 2 files — 3 already deployed"),
         "the count sits after the em-dash, beside the subject: {out}"
     );
     assert!(
         !out.contains("files)"),
         "no subject carries a parenthesised count: {out}"
+    );
+    assert!(
+        out.contains("/home/u/.f0 — symlink") && out.contains("/home/u/.f1 — symlink"),
+        "the two files this deploy writes enumerate as child rows beneath it: {out}"
     );
     assert!(
         out.contains("- write /home/u/.cfgd.env — 3 vars, 1 alias"),
@@ -2202,12 +2346,14 @@ fn hero_plan(home: &std::path::Path) -> Plan {
 /// path a row names is home-folded while the `-o json` payload keeps it whole.
 ///
 /// The hero's own shape on an emulated 128-column screen: a `Files` deploy
-/// row naming two long absolute home paths, three provision rows, an env
+/// row stating a count (its six targets enumerate as child rows beneath it,
+/// each naming a long absolute home path), three provision rows, an env
 /// write and two package rows filled to the budget. Priced over every action,
-/// the allowance reserved for `queued behind deploy <two paths>` — a sentence
-/// no code path emits — and the retreat refused the whole report a column,
-/// which every capture answering `wrap_columns() == None` was blind to. The
-/// counterpart of `a_wait_row_on_a_narrow_terminal_retreats_its_column_and_wraps_its_reason`,
+/// the allowance reserved for `queued behind provision brew via homebrew
+/// installer` — a sentence no code path emits — and the retreat refused the
+/// whole report a column, which every capture answering
+/// `wrap_columns() == None` was blind to. The counterpart of
+/// `a_wait_row_on_a_narrow_terminal_retreats_its_column_and_wraps_its_reason`,
 /// which pins only the retreat.
 #[test]
 fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
@@ -2313,24 +2459,41 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
         padded >= 1,
         "a narrower row is padded to the column, not glued to its own end:\n{shown}"
     );
-    // The six-file deploy names every target and so wraps: its detail is on
-    // the LAST physical row of the row it belongs to, never stranded above a
-    // continuation carrying more of the subject.
+    // The six-file deploy states a count, not an operand list, so the row
+    // carrying what it left alone never wraps; each of the six files it
+    // wrote gets its own child row beneath it instead.
     let lines: Vec<&str> = shown.lines().collect();
     let deploy_detail = lines
         .iter()
         .position(|l| l.contains("2 already deployed"))
         .unwrap_or_else(|| panic!("the deploy row states what it left alone:\n{shown}"));
     assert!(
-        !is_row_head(lines[deploy_detail]),
-        "the deploy subject names six targets and wraps:\n{shown}"
+        is_row_head(lines[deploy_detail]),
+        "the deploy subject is a count and never wraps:\n{shown}"
     );
-    assert!(
-        lines
-            .get(deploy_detail + 1)
-            .is_none_or(|next| next.trim().is_empty() || is_row_head(next)),
-        "a wrapped row's detail closes it, on its own last physical row:\n{shown}"
-    );
+    for name in [
+        "init.lua",
+        "lazy-lock.json",
+        "lua/plugins.lua",
+        "lua/keys.lua",
+        "lua/opts.lua",
+        "ftplugin/rust.lua",
+    ] {
+        let child = lines
+            .iter()
+            .find(|l| l.contains(&format!("nvim/{name}")))
+            .unwrap_or_else(|| {
+                panic!("the deploy row enumerates {name} as its own child row:\n{shown}")
+            });
+        assert!(
+            !is_row_head(child),
+            "a child row carries no glyph or bullet of its own:\n{child}"
+        );
+        assert!(
+            child.trim_end().ends_with("— symlink"),
+            "a child row states its resolved method:\n{child}"
+        );
+    }
 
     // The subject NAMES every package, at this width and at no width at all:
     // the eleven apt names are on screen across however many physical rows
@@ -2365,7 +2528,7 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
         "every path a row names spells the home directory as `~`:\n{shown}"
     );
     assert!(
-        shown.contains("~/.cfgd.env") && shown.contains("deploy ~/.config/nvim/init.lua"),
+        shown.contains("~/.cfgd.env") && shown.contains("~/.config/nvim/init.lua"),
         "the folded spelling is what the rows print:\n{shown}"
     );
     assert!(
@@ -2383,8 +2546,10 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
 /// then failed by two. Priced over the rows whose subject occupies ONE
 /// physical row, the claim is never 0 and every row within it shares one x,
 /// while the rows that wrap — the eleven-package apt install, the nine-
-/// package brew install, the two-path deploy — name every operand they hold
-/// and land their trailing content on their own last physical row.
+/// package brew install — name every operand they hold and land their
+/// trailing content on their own last physical row. The two file deploys
+/// never wrap at all: their subjects are counts, and every target they
+/// write is its own child row instead.
 #[test]
 fn the_reports_column_is_claimed_and_its_subjects_bounded_at_every_width() {
     let home = PathBuf::from("/home/tj");

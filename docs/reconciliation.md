@@ -200,7 +200,9 @@ Phase: Files
   profile:work
     - create /home/you/.gitconfig
   module:nvim
-    - deploy /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua
+    - deploy 2 files
+        /home/you/.config/nvim/init.lua      — symlink
+        /home/you/.config/nvim/lua/opts.lua  — symlink
 
 Phase: System
   profile:work
