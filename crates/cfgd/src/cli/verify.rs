@@ -207,6 +207,7 @@ pub fn cmd_verify(
             state,
             &checked,
             results.iter().filter(|r| !r.matches),
+            &check_errors,
         );
     }
     // The recording above persisted the opaque `current`/`missing or

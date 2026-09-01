@@ -780,6 +780,18 @@ pub trait PackageManager: Send + Sync {
         crate::version_satisfies(available, &format!(">={min_version}"))
     }
 
+    /// Whether [`version_meets_minimum`](Self::version_meets_minimum) can judge
+    /// this version at all. A version scheme is the manager's, so only the
+    /// manager can say that a string it listed carries no comparable version —
+    /// a date stamp, a git description. The floor pass reports such a package
+    /// as a check that could not RUN
+    /// ([`VersionFloor::Unreadable`](crate::reconciler::VersionFloor)), never as
+    /// a floor that was missed, because a `false` from a comparator that could
+    /// not parse its input is not a verdict.
+    fn version_comparable(&self, version: &str) -> bool {
+        crate::parse_loose_version(version).is_some()
+    }
+
     /// Directories to add to PATH after bootstrap. Empty for managers
     /// that are already on the system PATH (apt, dnf, etc.).
     ///

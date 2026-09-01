@@ -187,6 +187,47 @@ pub(super) fn pkg_version_meets_minimum(available: &str, min_version: &str) -> R
     ))
 }
 
+/// The UPSTREAM part of a distro package version — the part a `minVersion`
+/// declaration is written against.
+///
+/// A distro version is `[<epoch>:]<upstream>[-<revision>]`: `dpkg-query`
+/// prints `1:2.34-0ubuntu3.4`, pacman `1.2.3-2`, apk `3.0.0-r0`. Loose semver
+/// reads the revision as a PRERELEASE, which never satisfies a comparator that
+/// has none, and an epoch as an unparseable version — so every pinned apt
+/// package would be permanent drift. The packaging fields say nothing about
+/// which upstream release is installed, so the floor is judged on the upstream
+/// part alone.
+///
+/// Deliberately NOT a change to `parse_loose_version`, which is shared with the
+/// self-upgrade and release-tag paths where `-rc1` ordering is load-bearing.
+pub(super) fn distro_upstream_version(raw: &str) -> &str {
+    let after_epoch = match raw.split_once(':') {
+        Some((epoch, rest)) if !epoch.is_empty() && epoch.bytes().all(|b| b.is_ascii_digit()) => {
+            rest
+        }
+        _ => raw,
+    };
+    after_epoch
+        .rsplit_once('-')
+        .map_or(after_epoch, |(upstream, _)| upstream)
+}
+
+/// Whether a distro-family manager's `available` version clears a `min_version`
+/// floor, comparing [`distro_upstream_version`] of each.
+pub(super) fn distro_version_meets_minimum(available: &str, min_version: &str) -> bool {
+    cfgd_core::version_satisfies(
+        distro_upstream_version(available),
+        &format!(">={}", distro_upstream_version(min_version)),
+    )
+}
+
+/// Whether a distro-family version can be compared at all: a listing carrying
+/// a date stamp or a git description has no upstream version to judge, which is
+/// a check that could not run rather than a floor that was missed.
+pub(super) fn distro_comparable(raw: &str) -> bool {
+    cfgd_core::parse_loose_version(distro_upstream_version(raw)).is_some()
+}
+
 /// Parse `dpkg-query -W -f='${Package}\t${Version}\n'` output into PackageInfo.
 /// Parse tab-separated `NAME\tVERSION` output into PackageInfo.
 /// Used by both apt (dpkg-query) and rpm (rpm -qa --queryformat) parsers.

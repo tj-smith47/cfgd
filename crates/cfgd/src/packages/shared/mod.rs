@@ -617,6 +617,51 @@ pub(super) fn run_pkg_cmd_live(
     Ok(output)
 }
 
+/// Split an install batch into the packages this manager ALREADY holds and the
+/// rest.
+///
+/// A name reaching `install` is one the plan's elision kept, so an already-held
+/// one is there because it sits below a declared `minVersion`. `brew install` /
+/// `pipx install` are no-ops on a package that is present, so installing it
+/// again reports an action that raised nothing and the floor stays unmet on the
+/// next scan. The listing comes from the run's own memo, so this costs no extra
+/// spawn; an unreadable listing falls open — everything is treated as fresh,
+/// exactly as the planner fails open on a manager it cannot query.
+pub(super) fn partition_already_installed(
+    mgr: &dyn cfgd_core::providers::PackageManager,
+    packages: &[String],
+    cx: &PackageContext<'_>,
+) -> (Vec<String>, Vec<String>) {
+    let Ok(held) = cx.installed_for(mgr) else {
+        return (Vec::new(), packages.to_vec());
+    };
+    packages
+        .iter()
+        .cloned()
+        .partition(|p| held.contains(&mgr.package_identity(p)))
+}
+
+/// Raise packages the manager already holds to the version it currently offers,
+/// one invocation per package so a failure for one does not withhold the rest.
+/// `verb_label` is the command as the reader sees it (`brew upgrade --cask`),
+/// and `build_cmd` supplies the matching argv.
+pub(super) fn upgrade_each<F>(
+    cx: &PackageContext<'_>,
+    manager: &str,
+    packages: &[String],
+    verb_label: &str,
+    build_cmd: F,
+) -> std::result::Result<(), PackageError>
+where
+    F: Fn(&str) -> Command,
+{
+    for pkg in packages {
+        let label = format!("{verb_label} {pkg}");
+        run_pkg_cmd_live(cx, manager, &mut build_cmd(pkg), &label, "upgrade")?;
+    }
+    Ok(())
+}
+
 /// Install `packages` as a single batch; if the batch fails, retry each package
 /// on its own so one bad spec (e.g. a name that isn't a real formula) doesn't
 /// block the valid ones. `build_cmd` constructs the install `Command` for a

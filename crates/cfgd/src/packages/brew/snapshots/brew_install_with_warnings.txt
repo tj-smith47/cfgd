@@ -3,7 +3,7 @@
   ==> Caveats
   Run xcode-select --install to complete setup.
   ==> Summary
-  git installed.
+  Installation complete.
 ✓ brew install git
 
 ⚠ brew packages installed with notes
