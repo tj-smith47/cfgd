@@ -7,6 +7,14 @@ pub struct VerifyOutput {
     pub results: Vec<cfgd_core::reconciler::VerifyResult>,
     pub pass_count: usize,
     pub fail_count: usize,
+    /// System configurators whose drift check itself failed — neither a pass
+    /// nor a fail, because the machine's state for that key is unknown. The
+    /// same `{key, error}` entries `diff` and `status --scan` report, and
+    /// what drives `verify --exit-code` to `Error` (1) ahead of
+    /// `DriftDetected` (5). Skipped when empty so the payload every prior
+    /// consumer parsed is byte-identical.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub system_errors: Vec<cfgd_core::reconciler::SystemCheckError>,
 }
 
 pub fn cmd_verify(
@@ -92,71 +100,73 @@ pub fn cmd_verify(
     // One spinner across all four passes, renamed per pass: they run back to
     // back with no output of their own, and a package enumeration inside the
     // first can take seconds.
-    let mut results = printer.narrate("Verifying: resources", |sp| -> anyhow::Result<_> {
-        // A `--module` run passes `machine_surfaces: false`: its composition
-        // is module-only config, and the system/env halves diff that against
-        // machine-wide surfaces — a claim about the machine no single module
-        // can vouch for, so a scoped run neither computes, renders, judges
-        // nor records it.
-        let mut results = reconciler::verify(
-            &resolved,
-            &registry,
-            state,
-            &resolved_modules,
-            &pkg_cx,
-            module_filter.is_none(),
-        )?;
-        // The reconciler cannot reach the file manager (crate boundary), so it no
-        // longer checks managed files. Fold in content-aware file results here so a
-        // file whose bytes drifted out-of-band fails verification and drives
-        // `verify --exit-code` to 5. Module-filter runs (empty merged profile) have
-        // no managed files, so the profile-file fold is a no-op for them.
-        // ONE file manager for both folds: each construction rebuilds the template
-        // context and the full secret-provider set, and both halves check the same
-        // profile.
-        sp.set_message("Verifying: profile files");
-        let fm = CfgdFileManager::new(config_dir, &resolved)?;
-        results.extend(super::live_drift::file_verify_results(
-            &fm,
-            config_dir,
-            &resolved,
-            &resolved_modules,
-            registry.default_file_strategy,
-            state,
-        )?);
-        // Module files are content-aware here (not in the reconciler, which is
-        // presence-blind across the crate boundary): a byte-tampered module file
-        // fails verification for both the full and `--module` paths.
-        sp.set_message("Verifying: module files");
-        results.extend(super::live_drift::module_file_verify_results(
-            &fm,
-            config_dir,
-            &resolved,
-            &resolved_modules,
-            registry.default_file_strategy,
-            state,
-        )?);
-        // Managers: the reconciler's own `verify` only walks
-        // `available_package_managers`, so a manager the plan would provision or
-        // refuse contributes no row there — the same gap `diff` and `status --scan`
-        // close via `plan_managers`. Fold that half in here too, so `verify -e`
-        // cannot report clean on a host `diff`/`status --scan` both flag as drifted.
-        // FULL runs only: manager provisioning is a machine-wide surface, the
-        // same scope rule as the system/env halves — and the same shape as
-        // `diff --module`/`status <mod> --scan`, which plan no managers.
-        if module_filter.is_none() {
-            sp.set_message("Verifying: package managers");
-            let cfgd_installed = cfgd_installed_packages(state)?;
-            results.extend(super::live_drift::manager_verify_results(
+    let (mut results, check_errors) =
+        printer.narrate("Verifying: resources", |sp| -> anyhow::Result<_> {
+            // A `--module` run passes `machine_surfaces: false`: its composition
+            // is module-only config, and the system/env halves diff that against
+            // machine-wide surfaces — a claim about the machine no single module
+            // can vouch for, so a scoped run neither computes, renders, judges
+            // nor records it.
+            let report = reconciler::verify(
                 &resolved,
                 &registry,
+                state,
                 &resolved_modules,
-                &cfgd_installed,
                 &pkg_cx,
+                module_filter.is_none(),
+            )?;
+            let mut results = report.results;
+            // The reconciler cannot reach the file manager (crate boundary), so it no
+            // longer checks managed files. Fold in content-aware file results here so a
+            // file whose bytes drifted out-of-band fails verification and drives
+            // `verify --exit-code` to 5. Module-filter runs (empty merged profile) have
+            // no managed files, so the profile-file fold is a no-op for them.
+            // ONE file manager for both folds: each construction rebuilds the template
+            // context and the full secret-provider set, and both halves check the same
+            // profile.
+            sp.set_message("Verifying: profile files");
+            let fm = CfgdFileManager::new(config_dir, &resolved)?;
+            results.extend(super::live_drift::file_verify_results(
+                &fm,
+                config_dir,
+                &resolved,
+                &resolved_modules,
+                registry.default_file_strategy,
+                state,
             )?);
-        }
-        Ok(results)
-    })?;
+            // Module files are content-aware here (not in the reconciler, which is
+            // presence-blind across the crate boundary): a byte-tampered module file
+            // fails verification for both the full and `--module` paths.
+            sp.set_message("Verifying: module files");
+            results.extend(super::live_drift::module_file_verify_results(
+                &fm,
+                config_dir,
+                &resolved,
+                &resolved_modules,
+                registry.default_file_strategy,
+                state,
+            )?);
+            // Managers: the reconciler's own `verify` only walks
+            // `available_package_managers`, so a manager the plan would provision or
+            // refuse contributes no row there — the same gap `diff` and `status --scan`
+            // close via `plan_managers`. Fold that half in here too, so `verify -e`
+            // cannot report clean on a host `diff`/`status --scan` both flag as drifted.
+            // FULL runs only: manager provisioning is a machine-wide surface, the
+            // same scope rule as the system/env halves — and the same shape as
+            // `diff --module`/`status <mod> --scan`, which plan no managers.
+            if module_filter.is_none() {
+                sp.set_message("Verifying: package managers");
+                let cfgd_installed = cfgd_installed_packages(state)?;
+                results.extend(super::live_drift::manager_verify_results(
+                    &resolved,
+                    &registry,
+                    &resolved_modules,
+                    &cfgd_installed,
+                    &pkg_cx,
+                )?);
+            }
+            Ok((results, report.check_errors))
+        })?;
     // `reconciler::verify` is pure compute — this seam is where its results
     // become recorded rows, from the producer literals, BEFORE the display
     // recompute below rewrites env rows to their declared values
@@ -236,11 +246,20 @@ pub fn cmd_verify(
         results,
         pass_count,
         fail_count,
+        system_errors: check_errors,
     };
     printer.emit(build_verify_doc(&output, module_filter));
 
-    if exit_code && has_drift {
-        cfgd_core::exit::ExitCode::DriftDetected.exit();
+    if exit_code {
+        // A check that could not run means the answer is unknown, which
+        // outranks a known drift verdict — the same split `diff --exit-code`
+        // and `status --exit-code` report.
+        if !output.system_errors.is_empty() {
+            cfgd_core::exit::ExitCode::Error.exit();
+        }
+        if has_drift {
+            cfgd_core::exit::ExitCode::DriftDetected.exit();
+        }
     }
     Ok(())
 }
@@ -253,7 +272,7 @@ pub fn cmd_verify(
 pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
     let mut doc = Doc::new().heading("Verify");
 
-    if output.results.is_empty() {
+    if output.results.is_empty() && output.system_errors.is_empty() {
         doc = doc.status(Role::Info, "No managed resources to verify");
         return doc.with_data(output.clone());
     }
@@ -262,7 +281,7 @@ pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
     // `verify` is a ledger whose closing line counts its own rows, so a row
     // hidden from the list is a row the tally still charges for.
     doc = doc.section("Resources", |s| {
-        output.results.iter().fold(s, |s, r| {
+        let s = output.results.iter().fold(s, |s, r| {
             let subject = cfgd_core::output::drift_item_subject(&r.resource_type, &r.resource_id);
             let (expected, actual) =
                 cfgd_core::output::drift_operands(&r.resource_type, &r.expected, &r.actual);
@@ -271,10 +290,18 @@ pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
             } else {
                 s.status_with(Role::Fail, subject, |sf| sf.drift(&expected, &actual))
             }
+        });
+        // A check that could not run is a row of its own, after the answered
+        // ones — the same composition `diff` and `status --scan` render, so
+        // one failure reads identically on all three surfaces.
+        output.system_errors.iter().fold(s, |s, err| {
+            s.status_with(Role::Warn, err.key.clone(), |sf| {
+                sf.qualifier("error checking drift").detail(&err.error)
+            })
         })
     });
 
-    doc = if output.fail_count == 0 {
+    doc = if output.fail_count == 0 && output.system_errors.is_empty() {
         doc.status(
             // verdict-row-ok: a match verdict, not an act cfgd performed
             Role::Ok,
@@ -285,11 +312,21 @@ pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
             ),
         )
     } else {
-        doc.status(
-            Role::Warn,
-            format!("{} passed, {} failed", output.pass_count, output.fail_count),
-        )
-        .hint(super::heal_drift_hint(module))
+        // The tally counts only answered checks; an erroring one is its own
+        // clause, because "passed" may not absorb a verdict that never ran.
+        let mut clauses = format!("{} passed, {} failed", output.pass_count, output.fail_count);
+        if !output.system_errors.is_empty() {
+            clauses.push_str(&format!(
+                ", {} could not run",
+                cfgd_core::pluralize(output.system_errors.len(), "check")
+            ));
+        }
+        let doc = doc.status(Role::Warn, clauses);
+        if output.fail_count > 0 {
+            doc.hint(super::heal_drift_hint(module))
+        } else {
+            doc
+        }
     };
 
     doc.with_data(output.clone())
@@ -901,6 +938,7 @@ mod tests {
             results: vec![passing_result()],
             pass_count: 1,
             fail_count: 0,
+            system_errors: Vec::new(),
         };
         printer.emit(build_verify_doc(&output, None));
         drop(printer);
@@ -927,6 +965,7 @@ mod tests {
             results: vec![failing_result()],
             pass_count: 0,
             fail_count: 1,
+            system_errors: Vec::new(),
         };
         printer.emit(build_verify_doc(&output, None));
         drop(printer);
@@ -950,6 +989,43 @@ mod tests {
         assert!(
             human.contains("0 passed, 1 failed"),
             "expected summary line, got: {human}"
+        );
+    }
+
+    /// A check that could not run renders as its own row — the same
+    /// `<key>: error checking drift — <detail>` composition `diff` and
+    /// `status --scan` render — and withholds the all-match verdict: zero
+    /// failures beside one error is "unknown", never "clean". The closing
+    /// tally counts the unanswered check as its own clause, because
+    /// "passed" may not absorb a verdict that never ran.
+    #[test]
+    fn build_verify_doc_reports_an_erroring_check_and_withholds_all_match() {
+        let (printer, cap) = Printer::for_test_doc();
+        let output = VerifyOutput {
+            results: vec![passing_result()],
+            pass_count: 1,
+            fail_count: 0,
+            system_errors: vec![cfgd_core::reconciler::SystemCheckError {
+                key: "gpgKeys".into(),
+                error: "keyring unavailable".into(),
+            }],
+        };
+        printer.emit(build_verify_doc(&output, None));
+        drop(printer);
+        let human = cap.human();
+        assert!(
+            human.contains("gpgKeys")
+                && human.contains("error checking drift")
+                && human.contains("keyring unavailable"),
+            "the failed check renders as its own row, got: {human}"
+        );
+        assert!(
+            !human.contains("desired state"),
+            "an unanswered check may not read as all-match, got: {human}"
+        );
+        assert!(
+            human.contains("1 passed, 0 failed, 1 check could not run"),
+            "the tally names the unanswered check as its own clause, got: {human}"
         );
     }
 }

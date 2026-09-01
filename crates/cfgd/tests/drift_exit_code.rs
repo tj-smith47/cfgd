@@ -1,20 +1,29 @@
 #![cfg(unix)]
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
+#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation
 
-//! Exit-code contract for the two drift surfaces that take `--exit-code`.
+//! Exit-code contract for every drift surface that takes `--exit-code`
+//! (`diff`, `status`, `verify` — `every_exit_code_surface_reports_an_erroring_check`
+//! walks the clap population).
 //!
 //! An erroring check (a system configurator whose drift probe itself fails)
 //! is reported as its own row and escalates the exit to `ExitCode::Error`
-//! (1) on BOTH surfaces, outranking `DriftDetected` (5): exiting 5 — or 0 —
+//! (1) on EVERY surface, outranking `DriftDetected` (5): exiting 5 — or 0 —
 //! over a probe that never answered reports a verdict the scan never
 //! reached. Plain drift with every check answered still exits 5.
 //!
-//! These run the real binary via `assert_cmd` because both commands end in
+//! These run the real binary via `assert_cmd` because the commands end in
 //! `std::process::exit` — calling them in-process would kill the harness.
 
 use std::path::Path;
 
 use assert_cmd::Command;
+
+/// Every surface taking `--exit-code`, each spelled as the argv that arms it.
+const EXIT_CODE_SURFACES: [&[&str]; 3] = [
+    &["status", "--scan", "--exit-code"],
+    &["diff", "--exit-code"],
+    &["verify", "--exit-code"],
+];
 
 /// A gpg stand-in that always fails, so the gpgKeys configurator's own
 /// keyring probe errors (gpg exit codes other than 0/2 are probe errors).
@@ -91,10 +100,44 @@ fn an_erroring_check_is_reported_and_escalates_on_every_exit_code_surface() {
     write_config(config_tmp.path(), true, false);
     let gpg = failing_gpg(config_tmp.path());
 
-    for args in [
-        &["status", "--scan", "--exit-code"][..],
-        &["diff", "--exit-code"][..],
-    ] {
+    for args in EXIT_CODE_SURFACES {
+        let state_tmp = tempfile::tempdir().unwrap();
+        let out = run(
+            args,
+            config_tmp.path(),
+            state_tmp.path(),
+            home_tmp.path(),
+            Some(&gpg),
+        );
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "cfgd {args:?}: a check that could not run exits Error, got: {text}"
+        );
+        assert!(
+            text.contains("gpgKeys") && text.contains("error checking drift"),
+            "cfgd {args:?}: the failed check renders as its own row, got: {text}"
+        );
+    }
+}
+
+/// The cell that can tell `1` from `5`: with BOTH a failing check and real
+/// drift on the machine, every surface must pick `Error` — the unknown
+/// outranks the known. The error-only sibling above cannot distinguish the
+/// two (any ordering exits 1 there), so this is the precedence proof.
+#[test]
+fn an_erroring_check_outranks_real_drift_on_every_exit_code_surface() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    write_config(config_tmp.path(), true, true);
+    let gpg = failing_gpg(config_tmp.path());
+
+    for args in EXIT_CODE_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
         let out = run(
             args,
@@ -114,8 +157,8 @@ fn an_erroring_check_is_reported_and_escalates_on_every_exit_code_surface() {
             "cfgd {args:?}: a check that could not run outranks DriftDetected, got: {text}"
         );
         assert!(
-            text.contains("gpgKeys") && text.contains("error checking drift"),
-            "cfgd {args:?}: the failed check renders as its own row, got: {text}"
+            text.contains("error checking drift"),
+            "cfgd {args:?}: the failed check still renders beside the drift, got: {text}"
         );
     }
 }
@@ -126,10 +169,7 @@ fn drift_with_every_check_answered_still_exits_drift_detected() {
     let home_tmp = tempfile::tempdir().unwrap();
     write_config(config_tmp.path(), false, true);
 
-    for args in [
-        &["status", "--scan", "--exit-code"][..],
-        &["diff", "--exit-code"][..],
-    ] {
+    for args in EXIT_CODE_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
         let out = run(
             args,

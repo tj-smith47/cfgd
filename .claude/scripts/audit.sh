@@ -1139,6 +1139,13 @@ log_section "Effective-state routing (module↔profile coherence)"
 # does not match (the bans target the .system FIELD read, not .merged itself).
 # crates/cfgd-core/src/effective.rs is intentionally exempt — it IS the source
 # of truth and is simply not in the scanned list below.
+# crates/cfgd/src/files/plan.rs is likewise off the list BY DESIGN, not by
+# accident: CfgdFileManager owns profile-file enumeration (its
+# `sorted_managed_specs` / `file_drift_results` have always read
+# `.files.managed`) and is the sanctioned single reader the render paths
+# route through. Module files never pass through it — every read path
+# enumerates them from its own resolved modules — so that routing drops
+# nothing module-contributed.
 # The list is every command whose composition mode is `Report` in
 # output-module.md's table — the read paths — plus the two core engines they
 # share. It is enumerated rather than derived because "is this a read path?" is

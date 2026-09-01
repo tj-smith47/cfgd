@@ -37,36 +37,27 @@ fn diff_module_file(
 
 /// Keep only the records worth reporting: a converged file is the absence of
 /// a finding, and listing every one of them would bury the drifted and the
-/// unevaluable entries a consumer actually acts on. Returns the drifted
-/// record's finding — worded with the record's own post-classification
-/// literals, so the store and the payload cannot disagree — with its
-/// `resource_type`/`resource_id` left empty for the caller to key under its
-/// own grammar before handing it to the drift recorder. `None` when the
-/// record converged.
+/// unevaluable entries a consumer actually acts on. Classifies the record
+/// first (a target cfgd never wrote is a different finding whose fix is a
+/// decision rather than a re-write), pushes it into the payload, and answers
+/// whether it drifted. That answer is all the machine-wide path needs — its
+/// findings were already minted by the engine — while the scoped path reads
+/// the drifted record back off the payload's tail to word a finding with the
+/// record's own post-classification literals, so the store and the payload
+/// cannot disagree.
 fn record_file_drift(
     payload: &mut DiffOutput,
     mut record: cfgd_core::providers::FileDriftResult,
     strategy: cfgd_core::config::FileStrategy,
     config_dir: &std::path::Path,
     state: &cfgd_core::state::StateStore,
-) -> Option<cfgd_core::reconciler::VerifyResult> {
+) -> bool {
     if record.matches {
-        return None;
+        return false;
     }
-    // A target cfgd never wrote is a different finding from one that
-    // drifted out of cfgd's own content, and the fix for it is a decision
-    // rather than a re-write.
     cfgd_core::reconciler::mark_unmanaged_drift(&mut record, strategy, config_dir, state);
-    let finding = cfgd_core::reconciler::VerifyResult {
-        resource_type: String::new(),
-        resource_id: String::new(),
-        matches: false,
-        expected: record.expected.clone(),
-        actual: record.actual.clone(),
-        unmanaged: record.unmanaged,
-    };
     payload.files.push(record);
-    Some(finding)
+    true
 }
 
 /// The modules a surface walks, by name, so two runs over the same machine
@@ -237,9 +228,7 @@ pub fn cmd_diff(
                 }
                 let record = fm.diff_managed_one(managed, printer)?;
                 let strategy = strategies.for_target(&cfgd_core::expand_tilde(&managed.target));
-                if record_file_drift(&mut diff_payload, record, strategy, config_dir, state)
-                    .is_some()
-                {
+                if record_file_drift(&mut diff_payload, record, strategy, config_dir, state) {
                     drift = true;
                 }
             }
@@ -258,9 +247,7 @@ pub fn cmd_diff(
                     .for_target(&cfgd_core::expand_tilde(std::path::Path::new(&file.target)));
                 let record =
                     diff_module_file(&fm, &resolved, module, file, config_dir, strategy, printer)?;
-                if record_file_drift(&mut diff_payload, record, strategy, config_dir, state)
-                    .is_some()
-                {
+                if record_file_drift(&mut diff_payload, record, strategy, config_dir, state) {
                     drift = true;
                 }
             }
@@ -346,7 +333,11 @@ pub fn cmd_diff(
         // key, so sort at the render (and in the payload) only. A drift row's
         // id is `<configurator>.<key>` and an error row's is the bare
         // configurator name, so one string sort interleaves the two the way
-        // the old per-configurator walk did.
+        // the old per-configurator walk did — which holds because `.` (0x2E)
+        // sorts below every character of a registered configurator name (all
+        // alphanumeric), keeping one name's `<name>.<key>` rows contiguous
+        // ahead of the next name; a configurator named with a character
+        // below `.` (`-`, `+`) would silently reorder this section.
         let mut sys_rows: Vec<&cfgd_core::reconciler::VerifyResult> = report
             .findings
             .iter()
@@ -543,13 +534,16 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     diff_module_file(&fm, &resolved, module, file, config_dir, strategy, printer)?;
                 let rid = super::live_drift::module_file_resource_id(&module.name, &record.target);
                 checked.push(("module".to_string(), rid.clone()));
-                if let Some(f) =
-                    record_file_drift(&mut diff_payload, record, strategy, config_dir, state)
+                if record_file_drift(&mut diff_payload, record, strategy, config_dir, state)
+                    && let Some(rec) = diff_payload.files.last()
                 {
                     findings.push(cfgd_core::reconciler::VerifyResult {
                         resource_type: "module".to_string(),
                         resource_id: rid,
-                        ..f
+                        matches: false,
+                        expected: rec.expected.clone(),
+                        actual: rec.actual.clone(),
+                        unmanaged: rec.unmanaged,
                     });
                     has_file_diff = true;
                 }

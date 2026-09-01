@@ -465,7 +465,8 @@ fn verify_returns_results() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
 
     // ripgrep should be present, bat should be missing
     let rg = results
@@ -514,7 +515,9 @@ fn verify_asks_each_manager_once_however_many_packages_are_declared() {
 
             let printer = test_printer();
             let cx = crate::providers::PackageContext::new(&printer, &state);
-            let results = verify(&resolved, &registry, &state, &[], &cx, true).unwrap();
+            let results = verify(&resolved, &registry, &state, &[], &cx, true)
+                .unwrap()
+                .results;
 
             (
                 results
@@ -1505,7 +1508,8 @@ fn verify_module_drift_packages() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
 
     // Should have a drift result for ripgrep, under the ONE per-package key
     // every live check spells (`<manager>:<name>`), module-declared or not.
@@ -1594,7 +1598,8 @@ fn verify_module_all_installed_emits_per_package_pass_rows() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
 
     // All packages installed → a passing per-package row each (no blanket
     // "module healthy" row, which would contradict folded-in file-drift rows).
@@ -1678,7 +1683,8 @@ fn verify_routes_through_package_identity_for_name_remapping_manager() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
     let row = results
         .iter()
         .find(|r| r.resource_type == "package" && r.resource_id == "go:rsc.io/2fa")
@@ -1738,7 +1744,8 @@ fn verify_module_script_packages_not_false_drift() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
 
     // Script packages are skipped in verification — they produce no row at all
     // (neither pass nor drift), so a script-only module yields no rows.
@@ -1790,7 +1797,8 @@ fn verify_module_package_not_installed_is_package_drift() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
 
     let row = results
         .iter()
@@ -1835,7 +1843,8 @@ fn verify_package_in_profile_and_module_appears_once() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
 
     let rows: Vec<_> = results
         .iter()
@@ -1871,7 +1880,8 @@ fn verify_module_package_on_unavailable_manager_is_skipped() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
 
     assert!(
         !results.iter().any(|r| r.resource_id.contains("ripgrep")),
@@ -1905,7 +1915,8 @@ fn verify_profile_package_on_unavailable_manager_is_skipped() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
 
     assert!(
         !results
@@ -1948,7 +1959,8 @@ fn verify_module_system_tweak_surfaces_as_system_drift() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
 
     let row = results
         .iter()
@@ -1998,7 +2010,8 @@ fn verify_without_machine_surfaces_skips_the_system_and_env_halves() {
         &crate::providers::PackageContext::new(&printer, &state),
         false,
     )
-    .unwrap();
+    .unwrap()
+    .results;
 
     assert!(
         results.is_empty(),
@@ -13179,7 +13192,8 @@ fn verify_empty_profile_returns_no_results() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
     assert!(
         results.is_empty(),
         "empty profile with no modules should produce no verify results, got: {:?}",
@@ -13240,7 +13254,8 @@ fn verify_module_files_produce_no_reconciler_rows() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
 
     // No module rows: the module has no packages (the only thing the reconciler
     // now checks for modules) and module files are not its responsibility.
@@ -13279,7 +13294,8 @@ fn verify_multiple_packages_mixed_status() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
 
     let git_result = results
         .iter()
@@ -15155,7 +15171,8 @@ fn verify_system_configurator_reports_drift() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
 
     // Should have per-key drift entries with resource_type "system"
     let drift_results: Vec<_> = results
@@ -15251,7 +15268,8 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
         &crate::providers::PackageContext::new(&printer, &state),
         true,
     )
-    .unwrap();
+    .unwrap()
+    .results;
 
     let sysctl_results: Vec<_> = results
         .iter()

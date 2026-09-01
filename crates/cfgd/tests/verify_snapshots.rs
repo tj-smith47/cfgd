@@ -45,6 +45,7 @@ fn ok_fixture() -> VerifyOutput {
         results,
         pass_count,
         fail_count,
+        system_errors: Vec::new(),
     }
 }
 
@@ -59,6 +60,7 @@ fn drift_fixture() -> VerifyOutput {
         results,
         pass_count,
         fail_count,
+        system_errors: Vec::new(),
     }
 }
 
@@ -67,6 +69,7 @@ fn empty_fixture() -> VerifyOutput {
         results: Vec::new(),
         pass_count: 0,
         fail_count: 0,
+        system_errors: Vec::new(),
     }
 }
 
