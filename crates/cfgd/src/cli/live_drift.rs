@@ -1,10 +1,23 @@
-//! Shared live-drift detection for the `verify` and `status --scan` paths.
+//! Shared live-drift detection for the `verify`, `diff` and `status --scan`
+//! paths, and the record every one of those checks leaves behind.
 //!
-//! Both commands must answer "does the real machine state diverge from the
-//! resolved profile *right now*?" using the same engine the `diff` command
-//! uses. This module is the single home for that logic so the two `-e` gates
-//! cannot drift apart. Detection is strictly read-only — it never records drift
-//! events to the state DB (only the daemon and `verify`/`diff` do that).
+//! Each command must answer "does the real machine state diverge from the
+//! resolved profile *right now*?" using the same engine, so the `-e` gates
+//! cannot drift apart — and each answer is a fact the `drift_events` record
+//! keeps, so the recorded `status` dashboard reads what the last check saw
+//! rather than only what the daemon happened to notice.
+//!
+//! The recording contract, stated once: a FULL-machine live check (`diff`,
+//! `status --scan`, a fleet-wide `verify`) records every finding as its own
+//! row ([`record_full_scan_findings`]), resolves recorded rows it did not
+//! re-find (`resolve_drift_not_in` — the daemon tick's own discipline in
+//! `daemon/reconcile.rs`), and stamps `record_scan`. A SCOPED check
+//! (`--module`) records and resolves only rows whose resource ids fall in
+//! its own scope — the keys it actually re-checked
+//! ([`record_scoped_scan_findings`]) — and leaves the machine-wide stamp
+//! alone. Stored strings are the producer's literals; display folds
+//! (`fold_home_in_text`, the env declared-value recompute) never reach the
+//! store.
 
 use cfgd_core::config::ResolvedProfile;
 use cfgd_core::modules::ResolvedModule;
@@ -60,6 +73,97 @@ pub(super) fn drift_event_from(
         // keep describing the row that was stored.
         want: None,
         have: None,
+    }
+}
+
+/// Record ONE live finding as a `drift_events` row, warning instead of
+/// failing: the check that found it already has its answer, and a store that
+/// refuses the row must not fail the run that produced the finding — the
+/// same policy as core's `record_drift_or_warn`. The stored operands are the
+/// finding's own literals.
+fn record_finding(state: &cfgd_core::state::StateStore, r: &VerifyResult) {
+    if let Err(e) = state.record_drift(
+        &r.resource_type,
+        &r.resource_id,
+        Some(&r.expected),
+        Some(&r.actual),
+        cfgd_core::config::LOCAL_LAYER,
+    ) {
+        tracing::warn!(
+            error = %e,
+            resource_type = %r.resource_type,
+            resource_id = %r.resource_id,
+            "failed to record drift"
+        );
+    }
+}
+
+/// The record half of a FULL-machine live check (see the module doc): one
+/// row per finding, then `resolve_drift_not_in` over the found set, so every
+/// recorded row the check did not re-find is marked healed — an empty found
+/// set resolves them all, exactly as a clean daemon tick does.
+///
+/// `unchecked_system` names the system configurators whose probe errored
+/// during this check: their recorded rows can be vouched for neither way, so
+/// they are folded into the keep-set instead of being resolved as healed by
+/// a check that never saw them. If the keep-set itself cannot be read, the
+/// resolve is skipped outright — recording without resolving overstates
+/// drift at worst, while resolving rows nothing checked erases real findings.
+pub(super) fn record_full_scan_findings<'a>(
+    state: &cfgd_core::state::StateStore,
+    findings: impl IntoIterator<Item = &'a VerifyResult>,
+    unchecked_system: &[String],
+) {
+    let mut current: Vec<(String, String)> = Vec::new();
+    for r in findings {
+        record_finding(state, r);
+        current.push((r.resource_type.clone(), r.resource_id.clone()));
+    }
+    if !unchecked_system.is_empty() {
+        match state.unresolved_drift() {
+            Ok(rows) => current.extend(
+                rows.into_iter()
+                    .filter(|e| {
+                        e.resource_type == "system"
+                            && unchecked_system
+                                .iter()
+                                .any(|c| e.resource_id.starts_with(&format!("{c}.")))
+                    })
+                    .map(|e| (e.resource_type, e.resource_id)),
+            ),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read recorded drift; leaving rows unresolved");
+                return;
+            }
+        }
+    }
+    if let Err(e) = state.resolve_drift_not_in(&current) {
+        tracing::warn!(error = %e, "failed to resolve healed drift rows");
+    }
+}
+
+/// The record half of a SCOPED (`--module`) live check (see the module doc):
+/// one row per finding, then `resolve_drift_in` over `checked` minus the
+/// found set — the keys the check re-checked and proved clean. Nothing
+/// outside `checked` is touched, and the machine-wide scan stamp is the
+/// caller's to NOT write.
+pub(super) fn record_scoped_scan_findings<'a>(
+    state: &cfgd_core::state::StateStore,
+    checked: &[(String, String)],
+    findings: impl IntoIterator<Item = &'a VerifyResult>,
+) {
+    let mut found: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
+    for r in findings {
+        record_finding(state, r);
+        found.insert((r.resource_type.as_str(), r.resource_id.as_str()));
+    }
+    let healed: Vec<(String, String)> = checked
+        .iter()
+        .filter(|(rtype, rid)| !found.contains(&(rtype.as_str(), rid.as_str())))
+        .cloned()
+        .collect();
+    if let Err(e) = state.resolve_drift_in(&healed) {
+        tracing::warn!(error = %e, "failed to resolve healed drift rows");
     }
 }
 
@@ -210,9 +314,11 @@ pub(super) fn module_file_verify_results(
 
 /// Non-matching live verify results across every category the live scan covers
 /// (profile files, module files, packages, system, declared env vars and
-/// aliases). Read-only: this performs a live scan (the same checks `diff`
-/// runs) but never writes to the `drift_events` table, so a `status --scan`
-/// call stays a non-recording dashboard query.
+/// aliases). This is a FULL-machine check, so it also writes the record the
+/// module doc's contract demands: every finding lands as a `drift_events`
+/// row and every recorded row it did not re-find resolves as healed
+/// ([`record_full_scan_findings`]) — the `record_scan` stamp stays the
+/// caller's, which reads the pre-scan value first for its own header.
 ///
 /// Only divergent results are returned — the caller treats a non-empty vector as
 /// "drift detected" and renders each entry. This is the single source of truth
@@ -319,36 +425,42 @@ fn live_drift_results_inner(
     // map combines profile and module system config so module system tweaks
     // surface here exactly as they do on the write path.
     sp.set_message("Scanning: system");
+    let mut unchecked_system: Vec<String> = Vec::new();
     let system = cfgd_core::effective::effective_system_map(&resolved.merged, modules);
     for configurator in &registry.available_system_configurators() {
         if let Some(desired) = system.get(configurator.name()) {
             // A configurator that errors while probing is treated as
             // indeterminate, not drift — surfacing it as drift here would make a
             // transient probe failure flip the exit code. The display path
-            // (`diff`/`verify`) reports such errors to the user.
-            if let Ok(drifts) = configurator.diff(desired) {
-                for d in &drifts {
-                    drift.push(VerifyResult {
-                        resource_type: "system".to_string(),
-                        resource_id: cfgd_core::reconciler::system_resource_key(
-                            configurator.name(),
-                            &d.key,
-                        ),
-                        matches: false,
-                        expected: d.expected.clone(),
-                        actual: d.actual.clone(),
-                        unmanaged: false,
-                    });
+            // (`diff`/`verify`) reports such errors to the user. Indeterminate
+            // cuts both ways: the recorder keeps this configurator's recorded
+            // rows standing rather than resolving what nothing re-checked.
+            match configurator.diff(desired) {
+                Ok(drifts) => {
+                    for d in &drifts {
+                        drift.push(VerifyResult {
+                            resource_type: "system".to_string(),
+                            resource_id: cfgd_core::reconciler::system_resource_key(
+                                configurator.name(),
+                                &d.key,
+                            ),
+                            matches: false,
+                            expected: d.expected.clone(),
+                            actual: d.actual.clone(),
+                            unmanaged: false,
+                        });
+                    }
                 }
+                Err(_) => unchecked_system.push(configurator.name().to_string()),
             }
         }
     }
 
     // Env & aliases: whether the primary managed env file still holds the line
     // each declared alias and env var renders as, using the same
-    // generator-and-compare check `verify` persists as drift. Read-only like
-    // every other pass here — only the recording half in `reconciler::verify`
-    // writes to `drift_events`. `path_dirs` must be the same recorded
+    // generator-and-compare check `verify` persists as drift. The stored
+    // operands stay the check's own opaque markers — the declared value
+    // never reaches `drift_events`. `path_dirs` must be the same recorded
     // bootstrap directories `cfgd verify` passes: the whole-file check bundled
     // into `env_verify_results` compares against a freshly generated file, and
     // the file cfgd actually wrote carries the bootstrapped `PATH` export line
@@ -370,13 +482,15 @@ fn live_drift_results_inner(
         .filter(|r| !r.matches),
     );
 
+    record_full_scan_findings(state, &drift, &unchecked_system);
+
     Ok(drift)
 }
 
 /// Map a non-`Skip` [`PackageAction`] to a drift `VerifyResult`. Returns `None`
 /// for `Skip` (the desired/installed sets already agree). The `actual` verb is
 /// chosen to read naturally in the drift display (e.g. "not installed").
-fn package_action_drift(action: &PackageAction) -> Option<VerifyResult> {
+pub(super) fn package_action_drift(action: &PackageAction) -> Option<VerifyResult> {
     match action {
         PackageAction::Skip { .. } => None,
         PackageAction::Install {
@@ -468,7 +582,7 @@ pub(in crate::cli) fn manager_drift_phrase(action: &ManagerAction) -> Option<Man
 /// PER manager: each of them is missing from the host, and a reader asking
 /// `verify` whether pipx is installed must not be answered only about the
 /// manager whose name the batch happens to carry.
-fn manager_action_drift(action: &ManagerAction) -> Vec<VerifyResult> {
+pub(super) fn manager_action_drift(action: &ManagerAction) -> Vec<VerifyResult> {
     let Some(phrase) = manager_drift_phrase(action) else {
         return Vec::new();
     };
@@ -735,8 +849,7 @@ mod tests {
     /// `spec.aliases` at all before the Env pass was wired in — an alias
     /// hand-edited on the machine was invisible to a live scan even though
     /// `cfgd verify`'s recording half already caught it. Prove the shared
-    /// engine now reports the same mismatch this read-only path is meant to
-    /// surface.
+    /// engine reports the same mismatch.
     #[test]
     #[serial_test::serial]
     fn live_drift_results_includes_a_hand_edited_alias() {

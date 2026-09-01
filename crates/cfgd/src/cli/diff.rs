@@ -36,9 +36,16 @@ fn diff_module_file(
 
 /// Keep only the records worth reporting: a converged file is the absence of a
 /// finding, and listing every one of them would bury the drifted and the
-/// unevaluable entries a consumer actually acts on.
+/// unevaluable entries a consumer actually acts on. A drifted record also
+/// joins `findings` under the caller's `(resource_type, resource_id)` — the
+/// rows this run hands to the drift recorder, worded with the record's own
+/// post-classification literals so the store and the payload cannot disagree.
+#[allow(clippy::too_many_arguments)]
 fn record_file_drift(
     payload: &mut DiffOutput,
+    findings: &mut Vec<cfgd_core::reconciler::VerifyResult>,
+    resource_type: &str,
+    resource_id: String,
     mut record: cfgd_core::providers::FileDriftResult,
     strategy: cfgd_core::config::FileStrategy,
     config_dir: &std::path::Path,
@@ -50,6 +57,14 @@ fn record_file_drift(
         // drifted out of cfgd's own content, and the fix for it is a decision
         // rather than a re-write.
         cfgd_core::reconciler::mark_unmanaged_drift(&mut record, strategy, config_dir, state);
+        findings.push(cfgd_core::reconciler::VerifyResult {
+            resource_type: resource_type.to_string(),
+            resource_id,
+            matches: false,
+            expected: record.expected.clone(),
+            actual: record.actual.clone(),
+            unmanaged: record.unmanaged,
+        });
         payload.files.push(record);
     }
     drifted
@@ -156,6 +171,9 @@ pub fn cmd_diff(
     ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
 
     let mut diff_payload = DiffOutput::default();
+    // Every non-matching result this walk produces, in its producer's own
+    // literals — the rows the drift recorder writes below.
+    let mut findings: Vec<cfgd_core::reconciler::VerifyResult> = Vec::new();
     let mut has_system_drift = false;
 
     let file_state = ctx.state()?;
@@ -184,8 +202,17 @@ pub fn cmd_diff(
                 let strategy = strategies.for_target(&cfgd_core::expand_tilde(
                     std::path::Path::new(&record.target),
                 ));
-                drift |=
-                    record_file_drift(&mut diff_payload, record, strategy, config_dir, file_state);
+                let rid = record.target.clone();
+                drift |= record_file_drift(
+                    &mut diff_payload,
+                    &mut findings,
+                    "file",
+                    rid,
+                    record,
+                    strategy,
+                    config_dir,
+                    file_state,
+                );
             }
         }
         // Module-deployed files render the same inline content diff as profile
@@ -198,7 +225,17 @@ pub fn cmd_diff(
                     .for_target(&cfgd_core::expand_tilde(std::path::Path::new(&file.target)));
                 let record =
                     diff_module_file(&fm, &resolved, module, file, config_dir, strategy, printer)?;
-                if record_file_drift(&mut diff_payload, record, strategy, config_dir, file_state) {
+                let rid = super::live_drift::module_file_resource_id(&module.name, &record.target);
+                if record_file_drift(
+                    &mut diff_payload,
+                    &mut findings,
+                    "module",
+                    rid,
+                    record,
+                    strategy,
+                    config_dir,
+                    file_state,
+                ) {
                     drift = true;
                 }
             }
@@ -233,6 +270,17 @@ pub fn cmd_diff(
         let manager_actions: Vec<ManagerAction> = super::live_drift::manager_drift_actions(
             cfgd_core::reconciler::plan_managers(&registry, &pkg_actions, &[]),
         );
+        // The recorder's rows come from the same mapping `verify` and
+        // `status --scan` fold into their own results, so one missing
+        // package is one spelling wherever the record was written from.
+        findings.extend(
+            pkg_actions
+                .iter()
+                .filter_map(super::live_drift::package_action_drift),
+        );
+        for ma in &manager_actions {
+            findings.extend(super::live_drift::manager_action_drift(ma));
+        }
         print_package_drift(
             &pkg_actions,
             &manager_actions,
@@ -283,6 +331,10 @@ pub fn cmd_diff(
             );
             for r in results {
                 drift = true;
+                // Recorded BEFORE the display recompute below: the stored row
+                // keeps the check's own opaque markers, never the declared
+                // value the recompute words the terminal rows with.
+                findings.push(r.clone());
                 // An env-var/alias row's `expected`/`actual` are opaque markers —
                 // neither real value ever flows into a persisted or gateway-shipped
                 // drift record — so recompute both here, for this terminal/`-o json`
@@ -337,6 +389,16 @@ pub fn cmd_diff(
                         has_system_drift = true;
                         drifts.sort_by(|a, b| a.key.cmp(&b.key));
                         for drift in &drifts {
+                            findings.push(cfgd_core::reconciler::VerifyResult {
+                                resource_type: "system".to_string(),
+                                resource_id: cfgd_core::reconciler::system_resource_key(
+                                    key, &drift.key,
+                                ),
+                                matches: false,
+                                expected: drift.expected.clone(),
+                                actual: drift.actual.clone(),
+                                unmanaged: false,
+                            });
                             // A configurator that found no setting at all hands
                             // back an empty `actual`; the fold states the
                             // absence instead of rendering `have: `.
@@ -386,9 +448,18 @@ pub fn cmd_diff(
     };
 
     // This command just checked the machine itself, whatever it found — the
-    // recorded-state `status` header dates its display from here, and a scan
-    // that finds nothing is exactly the one a clean host has no other record of.
+    // record keeps every finding and resolves what this check did not
+    // re-find, the recorded-state `status` header dates its display from
+    // here, and a scan that finds nothing is exactly the one a clean host
+    // has no other record of. A configurator whose probe errored is
+    // indeterminate, so its recorded rows stay standing.
     if let Ok(state) = ctx.state() {
+        let unchecked_system: Vec<String> = diff_payload
+            .system_errors
+            .iter()
+            .map(|e| e.key.clone())
+            .collect();
+        super::live_drift::record_full_scan_findings(state, &findings, &unchecked_system);
         state.record_scan();
     }
 
@@ -494,6 +565,12 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
 
     let mut diff_payload = DiffOutput::default();
+    // The scoped record's two halves (module doc in `live_drift`): every key
+    // this run re-checked, and the non-matching subset in its producer's own
+    // literals. The shared env surface below joins neither — it is the whole
+    // profile's artifact, outside this run's module scope.
+    let mut checked: Vec<(String, String)> = Vec::new();
+    let mut findings: Vec<cfgd_core::reconciler::VerifyResult> = Vec::new();
     let mut has_file_diff = false;
     let mut has_pkg_drift = false;
 
@@ -522,7 +599,19 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     .for_target(&cfgd_core::expand_tilde(std::path::Path::new(&file.target)));
                 let record =
                     diff_module_file(&fm, &resolved, module, file, config_dir, strategy, printer)?;
-                if record_file_drift(&mut diff_payload, record, strategy, config_dir, state) {
+                let rid = super::live_drift::module_file_resource_id(&module.name, &record.target);
+                // name-row-ok: a stored resource-type key, never rendered
+                checked.push(("module".to_string(), rid.clone()));
+                if record_file_drift(
+                    &mut diff_payload,
+                    &mut findings,
+                    "module",
+                    rid,
+                    record,
+                    strategy,
+                    config_dir,
+                    state,
+                ) {
                     has_file_diff = true;
                 }
             }
@@ -536,8 +625,26 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
             let mut packages: Vec<&modules::ResolvedPackage> = module.packages.iter().collect();
             packages.sort_by(|a, b| a.resolved_name.cmp(&b.resolved_name));
             for pkg in packages {
+                // A `script` package and an unregistered manager are questions
+                // nothing can answer, so neither joins the scope this run can
+                // vouch for.
+                if pkg.manager != "script" && mgr_map.contains_key(pkg.manager.as_str()) {
+                    // name-row-ok: a stored resource-type key, never rendered
+                    checked.push((
+                        "package".to_string(),
+                        package_resource_id(&pkg.manager, std::slice::from_ref(&pkg.resolved_name)),
+                    ));
+                }
                 if let Some(drift) = package_missing_drift(pkg, &mgr_map, &pkg_cx) {
                     has_pkg_drift = true;
+                    findings.push(cfgd_core::reconciler::VerifyResult {
+                        resource_type: "package".to_string(),
+                        resource_id: package_resource_id(&drift.manager, &drift.packages),
+                        matches: false,
+                        expected: "installed".to_string(),
+                        actual: drift.shape.clone(),
+                        unmanaged: false,
+                    });
                     group
                         .status(Role::Warn, pkg.manager.clone())
                         .qualifier(cfgd_core::Absence::NotInstalled.as_str())
@@ -719,6 +826,10 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
             }
         }
     };
+
+    // The scoped record: this run's own module rows, and nothing beyond
+    // them — no machine-wide stamp, unlike the full-machine path above.
+    super::live_drift::record_scoped_scan_findings(state, &checked, &findings);
 
     diff_payload.summary = DiffSummary {
         has_file_drift: has_file_diff,

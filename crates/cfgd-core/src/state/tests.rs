@@ -333,6 +333,61 @@ fn resolve_drift_not_in_matches_on_full_tuple_not_id_alone() {
 }
 
 #[test]
+fn resolve_drift_in_resolves_only_the_named_keys() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_drift(
+            "module",
+            "nvim/.config/nvim/init.lua",
+            None,
+            Some("x"),
+            "local",
+        )
+        .unwrap();
+    store
+        .record_drift("module", "other/.zshrc", None, Some("x"), "local")
+        .unwrap();
+    store
+        .record_drift("file", "/etc/hosts", None, Some("x"), "local")
+        .unwrap();
+
+    // A module-scoped scan re-checked nvim's file and found it clean; it can
+    // vouch for nothing else, so only the named key resolves.
+    let healed = vec![(
+        "module".to_string(),
+        "nvim/.config/nvim/init.lua".to_string(),
+    )];
+    store.resolve_drift_in(&healed).unwrap();
+
+    let events = store.unresolved_drift().unwrap();
+    assert_eq!(events.len(), 2, "only the named key resolves");
+    assert!(
+        events
+            .iter()
+            .all(|e| e.resource_id != "nvim/.config/nvim/init.lua"),
+        "the healed row must be resolved"
+    );
+}
+
+#[test]
+fn resolve_drift_in_with_no_keys_resolves_nothing() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_drift("file", "/a", None, Some("x"), "local")
+        .unwrap();
+
+    // The scoped counterpart of `resolve_drift_not_in` inverts the empty-set
+    // meaning: a scan that verified nothing clean proves nothing healed.
+    store.resolve_drift_in(&[]).unwrap();
+
+    assert_eq!(
+        store.unresolved_drift().unwrap().len(),
+        1,
+        "an empty healed set must resolve nothing"
+    );
+}
+
+#[test]
 fn resolve_all_drift_clears_everything() {
     let store = StateStore::open_in_memory().unwrap();
     store

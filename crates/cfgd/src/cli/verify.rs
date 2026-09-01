@@ -141,6 +141,35 @@ pub fn cmd_verify(
         )?);
         Ok(results)
     })?;
+    // Recorded from the producer literals, BEFORE the display recompute
+    // below rewrites env rows to their declared values (`live_drift`'s
+    // module doc). The fleet-wide run is a FULL-machine check: every finding
+    // lands as a row and every recorded row it did not re-find resolves as
+    // healed — `reconciler::verify`'s own recording of the pkg/system/env
+    // halves upserts the same keys, so re-recording them here only refreshes
+    // their timestamps. A `--module` run records and resolves only the
+    // module-typed rows it checked; its manager and env halves read
+    // machine-wide surfaces and stay outside the scope it can vouch for.
+    if module_filter.is_none() {
+        super::live_drift::record_full_scan_findings(
+            state,
+            results.iter().filter(|r| !r.matches),
+            &[],
+        );
+    } else {
+        let checked: Vec<(String, String)> = results
+            .iter()
+            .filter(|r| r.resource_type == "module")
+            .map(|r| (r.resource_type.clone(), r.resource_id.clone()))
+            .collect();
+        super::live_drift::record_scoped_scan_findings(
+            state,
+            &checked,
+            results
+                .iter()
+                .filter(|r| !r.matches && r.resource_type == "module"),
+        );
+    }
     // `reconciler::verify` already persisted the opaque `current`/`missing or
     // changed` markers for every env-var/alias row (the declared value must
     // never reach `drift_events`) — but this `results` vec is the DISPLAY

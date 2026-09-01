@@ -103,6 +103,44 @@ impl StateStore {
         Ok(())
     }
 
+    /// Mark every unresolved drift row whose `(resource_type, resource_id)`
+    /// IS in `healed` as resolved, with no apply to link it to. The SCOPED
+    /// counterpart of [`Self::resolve_drift_not_in`]: a `--module` live check
+    /// proves clean only the rows it actually re-checked, so it names them
+    /// outright — the complement of a scoped scan's findings is mostly rows
+    /// the scan never looked at, which it cannot vouch for either way.
+    ///
+    /// `resolved_at` (not `resolved_by`) carries the marker because no apply
+    /// ran, exactly as in the complement method. The empty-set meaning
+    /// INVERTS between the pair: an empty `healed` set is a scan that
+    /// verified nothing clean, and resolves nothing.
+    pub fn resolve_drift_in(&self, healed: &[(String, String)]) -> Result<()> {
+        if healed.is_empty() {
+            return Ok(());
+        }
+        let timestamp = crate::utc_now_iso8601();
+
+        // Same composite-key match as `resolve_drift_not_in`: a `\x1f`-joined
+        // concatenation, every value a bound param.
+        let placeholders = std::iter::repeat_n("?", healed.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "UPDATE drift_events SET resolved_at = ?1
+                 WHERE resolved_by IS NULL AND resolved_at IS NULL
+                 AND (resource_type || char(31) || resource_id) IN ({placeholders})",
+        );
+
+        let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(healed.len() + 1);
+        bound.push(Box::new(timestamp));
+        for (rtype, rid) in healed {
+            bound.push(Box::new(format!("{rtype}\u{1f}{rid}")));
+        }
+        let refs: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
+        self.conn.execute(&sql, refs.as_slice())?;
+        Ok(())
+    }
+
     /// Mark every unresolved drift row whose `(resource_type, resource_id)` is
     /// NOT in `current` as resolved. Used by the daemon reconcile snapshot: the
     /// plan's action set is the ground truth for what is drifting right now, so
