@@ -11589,10 +11589,25 @@ fn daemon_log() -> String {
     DAEMON_LOG.lock().expect("lock").clone()
 }
 
+/// The ceiling every [`wait_for_daemon_log`] caller passes.
+///
+/// The poll itself resolves in single-digit milliseconds once the daemon
+/// actually logs the line, so a generous ceiling costs nothing on the happy
+/// path — it only matters as a backstop against a genuine hang. A flat 5s
+/// ceiling here once made `run_daemon_with_processes_sighup_tick_and_reloads_intervals`
+/// spuriously fail under a full parallel `cargo test` run: the sighup tick's
+/// tokio task simply had not been scheduled onto a worker thread within 5
+/// wall-clock seconds under CPU contention, though it always landed well
+/// under this ceiling. 30s mirrors `harness::LOOP_EXIT_BUDGET`, the daemon
+/// loop's own shutdown-join ceiling.
+const DAEMON_LOG_WAIT_CEILING: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Poll the global daemon log until it contains `needle`, or panic once
 /// `timeout` elapses. The readiness observable a `run_daemon_with` test
 /// synchronizes on before driving an action that would otherwise race the
-/// daemon's own setup.
+/// daemon's own setup. Callers pass [`DAEMON_LOG_WAIT_CEILING`], never a
+/// tight guess — the loop below already checks the real condition every 5ms,
+/// so the timeout is a hang backstop, not an expected latency budget.
 async fn wait_for_daemon_log(needle: &str, timeout: std::time::Duration) {
     let deadline = std::time::Instant::now() + timeout;
     loop {
@@ -13185,11 +13200,7 @@ spec:
         // Fire a SIGHUP-equivalent tick.
         senders.sighup_tx.send(()).await.unwrap();
         // Wait for the reload to actually land instead of guessing a duration.
-        wait_for_daemon_log(
-            "daemon: timer intervals reloaded",
-            StdDuration::from_secs(5),
-        )
-        .await;
+        wait_for_daemon_log("daemon: timer intervals reloaded", DAEMON_LOG_WAIT_CEILING).await;
         senders.shutdown_tx.send(()).unwrap();
         tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
             .await
@@ -16046,7 +16057,7 @@ spec: {}
 
         // Wait for the startup banner instead of guessing when the loop has
         // entered its select! arm.
-        wait_for_daemon_log("daemon: running", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log("daemon: running", DAEMON_LOG_WAIT_CEILING).await;
         // Send shutdown
         senders.shutdown_tx.send(()).unwrap();
 
@@ -16193,7 +16204,7 @@ spec: {}
         // POSIX tolerates the concurrent read/truncate, so the race only ever
         // bit Windows CI. Sequencing the rewrite after setup removes the race
         // on every platform.
-        wait_for_daemon_log("daemon: running", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log("daemon: running", DAEMON_LOG_WAIT_CEILING).await;
 
         // Rewrite the config to introduce daemon reconcile interval.
         std::fs::write(
@@ -16205,7 +16216,7 @@ spec: {}
         // Wait for the reload chatter instead of guessing a duration — a
         // fixed 200ms was already bumped once after this test lost the
         // printer-buffer race under llvm-cov instrumentation.
-        wait_for_daemon_log("daemon: reloading configuration", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log("daemon: reloading configuration", DAEMON_LOG_WAIT_CEILING).await;
         senders.shutdown_tx.send(()).unwrap();
 
         let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
@@ -16680,7 +16691,7 @@ spec: {}
         // buffer means the signal raised below is delivered to the daemon
         // rather than to the default disposition that would kill this test
         // process.
-        wait_for_daemon_log("daemon: running", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log("daemon: running", DAEMON_LOG_WAIT_CEILING).await;
 
         // SIGTERM drives the production wait_for_shutdown task which sends on
         // the shutdown oneshot, exiting the loop cleanly.
@@ -16905,7 +16916,7 @@ spec: {}
             env!("CARGO_PKG_VERSION"),
         ));
 
-        wait_for_daemon_log("daemon: running", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log("daemon: running", DAEMON_LOG_WAIT_CEILING).await;
         senders.reconcile_tx.send(()).await.unwrap();
         // sleep-ok: a clean reconcile tick logs nothing of its own — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(150)).await;
@@ -16971,9 +16982,9 @@ spec: {}
             env!("CARGO_PKG_VERSION"),
         ));
 
-        wait_for_daemon_log("daemon: running", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log("daemon: running", DAEMON_LOG_WAIT_CEILING).await;
         senders.file_tx.send(config_path).await.unwrap();
-        wait_for_daemon_log("watch: ", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log("watch: ", DAEMON_LOG_WAIT_CEILING).await;
         senders.shutdown_tx.send(()).unwrap();
 
         let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
