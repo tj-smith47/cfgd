@@ -570,6 +570,29 @@ impl SectionBuilder {
         self
     }
 
+    /// A child row under the Status row above it (`subject — detail`, no
+    /// glyph, one depth deeper) — the buffered twin of
+    /// [`super::SectionGuard::child_row`]. See [`Component::ChildRow`].
+    pub fn child_row(self, subject: impl Into<String>, detail: impl Into<String>) -> Self {
+        self.child_row_labeled(subject, detail, None)
+    }
+
+    /// [`Self::child_row`] with the trailing styled label slot filled — the
+    /// same at-end-of-subject slot `Status.label` carries.
+    pub fn child_row_labeled(
+        mut self,
+        subject: impl Into<String>,
+        detail: impl Into<String>,
+        label: Option<StatusLabel>,
+    ) -> Self {
+        self.children.push(Component::ChildRow {
+            subject: subject.into(),
+            detail: detail.into(),
+            label,
+        });
+        self
+    }
+
     pub fn hint(mut self, text: impl Into<String>) -> Self {
         self.children.push(Component::Hint { text: text.into() });
         self

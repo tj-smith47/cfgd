@@ -90,7 +90,12 @@ pub fn verify(
             actual: if ok {
                 "installed".to_string()
             } else {
-                "missing".to_string()
+                // The stored literal for a missing package is the ONE
+                // `Absence::NotInstalled` spelling every producer of this
+                // row shape writes (`cli::live_drift` mints the same), so a
+                // reader folding recorded operands never meets two words for
+                // one fact.
+                crate::Absence::NotInstalled.as_str().to_string()
             },
             unmanaged: false,
         });

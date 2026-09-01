@@ -575,7 +575,11 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                         resource_id: package_resource_id(&drift.manager, &drift.packages),
                         matches: false,
                         expected: "installed".to_string(),
-                        actual: drift.shape.clone(),
+                        // The RECORDED operand takes the one stored spelling
+                        // for a missing package (`Absence::NotInstalled`);
+                        // `drift.shape` stays the `-o json` payload's own
+                        // wire value untouched.
+                        actual: cfgd_core::Absence::NotInstalled.as_str().to_string(),
                         unmanaged: false,
                     });
                     group
@@ -602,20 +606,39 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
             &resolved.merged.entry_owners,
             &resolved_modules,
         );
-        // The env ids stay OUT of `checked` deliberately: they are
-        // machine-scope (`env-var:EDITOR` names the deployed line, not this
-        // module's claim on it), and a name a module OUTSIDE this chain
-        // redeclares can be drifted machine-wide while the isolate's own
-        // value happens to match — a scoped "clean" that healed the row
-        // would erase a finding it never re-checked. Findings still record;
-        // only the machine-wide check heals or re-verdicts these keys.
-        let results = env_drift_ordered(check.results);
+        // The ONE ownership answer, asked once for the whole block: which
+        // layer's declaration each checked name belongs to — the same fold
+        // the isolate's merge just applied.
+        let owners = cfgd_core::reconciler::merged_entry_owners(&resolved, &resolved_modules);
+        let chain_tokens: std::collections::HashSet<String> = resolved_modules
+            .iter()
+            .map(|m| cfgd_core::reconciler::Owner::module(&m.name).token())
+            .collect();
+        // The scoped check's env scope is the names the module's CHAIN owns,
+        // judged by `merged_entry_owners` — records, resolves, renders and
+        // exits all in that one scope, so a scoped diff can clear the very
+        // rows a scoped diff records instead of stranding them for a
+        // machine-wide walk. The ids are machine-scope (`env-var:EDITOR`
+        // names the deployed line), so an entry whose recorded winner is a
+        // layer OUTSIDE this chain stays out of `checked`: a scoped "clean"
+        // may not heal a claim it never re-checked. Whole-file staleness, rc
+        // source lines and the folded `PATH` line stay the machine-wide
+        // walk's.
+        let chain_owned = |r: &cfgd_core::reconciler::VerifyResult| {
+            let owner = if r.resource_type == "alias" {
+                owners.aliases.get(&r.resource_id)
+            } else {
+                owners.env.get(&r.resource_id)
+            };
+            owner.is_some_and(|o| chain_tokens.contains(o.as_str()))
+        };
+        let (owned, _foreign): (Vec<_>, Vec<_>) =
+            check.results.into_iter().partition(|r| chain_owned(r));
+        for r in &owned {
+            checked.push((r.resource_type.clone(), r.resource_id.clone()));
+        }
+        let results = env_drift_ordered(owned);
         {
-            // The ONE ownership answer for which module's group a finding
-            // renders under — the same fold the isolate's merge just applied,
-            // so a name two modules declare lands under the writer whose
-            // value survived.
-            let owners = cfgd_core::reconciler::merged_entry_owners(&resolved, &resolved_modules);
             // `path_dirs` feeds only the folded `PATH` line, which the scoped
             // check never renders a row for.
             let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
@@ -1588,6 +1611,103 @@ mod tests {
                 .any(|r| matches!(r.resource_type.as_str(), "env" | "env-rc")
                     || r.resource_id == "PAGER"),
             "nothing outside the module's ownership is recorded: {rows:?}"
+        );
+    }
+
+    /// The HEAL half of the scoped env contract: what a scoped diff records
+    /// a scoped diff can clear. The per-item check evaluates exactly the
+    /// entries the module's chain owns (`merged_entry_owners` over the
+    /// isolate), so those keys join the `checked` scope and a recorded
+    /// env-var/alias row heals the moment a scoped re-check finds the line
+    /// back in place — a module-only workflow no longer leaves rows only a
+    /// machine-wide walk could resolve.
+    #[test]
+    #[serial]
+    fn a_scoped_diff_clears_the_env_row_it_recorded_once_the_machine_converges() {
+        use crate::cli::helpers::tests::make_cli;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  env:\n    - name: PAGER\n      value: less\n  modules:\n    - env-mod\n",
+        )
+        .unwrap();
+        let env_mod_dir = tmp.path().join("modules").join("env-mod");
+        std::fs::create_dir_all(&env_mod_dir).unwrap();
+        std::fs::write(
+            env_mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: env-mod\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        // The machine has CONVERGED: the module-owned line is back in place.
+        std::fs::write(
+            tmp_home.path().join(".cfgd.env"),
+            "# managed by cfgd \u{2014} do not edit\nexport EDITOR=\"vim\" # module:env-mod\n",
+        )
+        .unwrap();
+
+        let mut cli = make_cli(config_path);
+        let state_dir = tmp.path().join("state");
+        cli.state_dir = Some(state_dir.clone());
+        cli.cache_dir = Some(tmp.path().join("cache"));
+
+        {
+            // What an earlier scoped check recorded while the line was gone —
+            // the module-owned row, and a profile-owned one beside it that a
+            // scoped heal may NOT touch (its name is outside this module's
+            // ownership, so this run cannot vouch for it either way).
+            let store =
+                crate::cli::registry::open_state_store(Some(&state_dir), cfgd_core::Scope::User)
+                    .unwrap();
+            store
+                .record_drift(
+                    "env-var",
+                    "EDITOR",
+                    Some("current"),
+                    Some("missing or changed"),
+                    "local",
+                )
+                .unwrap();
+            store
+                .record_drift(
+                    "env-var",
+                    "PAGER",
+                    Some("current"),
+                    Some("missing or changed"),
+                    "local",
+                )
+                .unwrap();
+        }
+
+        let printer = cfgd_core::test_helpers::test_printer();
+        cmd_diff(&cli, &printer, Some("env-mod"), false).unwrap();
+
+        let store =
+            crate::cli::registry::open_state_store(Some(&state_dir), cfgd_core::Scope::User)
+                .unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.resource_type == "env-var" && r.resource_id == "EDITOR"),
+            "a scoped re-check that finds the module-owned line in place \
+             heals the row a scoped check recorded: {rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.resource_type == "env-var" && r.resource_id == "PAGER"),
+            "a profile-owned row stays outside the scoped heal's scope: {rows:?}"
         );
     }
 

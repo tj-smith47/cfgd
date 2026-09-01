@@ -90,6 +90,18 @@ pub enum Component {
         #[serde(skip_serializing_if = "Option::is_none")]
         verdict: Option<String>,
     },
+    /// A child row belonging to the Status row above it: `subject — detail`,
+    /// no glyph, one depth below its parent — the buffered-`Doc` twin of the
+    /// streaming `SectionGuard::child_row` (a deploy row's per-file child, a
+    /// drifted owner's nested finding). `label` is the same trailing styled
+    /// slot `Status.label` carries, for a finding annotated with the source
+    /// that declared it.
+    ChildRow {
+        subject: String,
+        detail: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<StatusLabel>,
+    },
     Hint {
         text: String,
     },

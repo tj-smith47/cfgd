@@ -236,6 +236,13 @@ pub struct ModuleStatus {
     /// full check has ever run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_scan_at: Option<String>,
+    /// A `--scan` run's env probe failure: the primary managed env file
+    /// exists but could not be read, so every env verdict of this scan is
+    /// unknown. Rendered as the same first-class `error checking drift` row
+    /// `diff` mints for the identical probe, and it drives the `Error` exit
+    /// ahead of `DriftDetected` — unknown outranks known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_check_error: Option<super::output_types::SystemCheckError>,
 }
 
 impl ModuleStatus {
@@ -244,12 +251,13 @@ impl ModuleStatus {
     /// this single call, so a reader and a machine consumer can never be shown
     /// two different answers about one module.
     ///
-    /// `Drifted` is derived, never stored: it is read off the very scan whose
-    /// findings fill the sections below, so the two can never disagree. Without
-    /// a live scan there is no verdict to derive one from.
+    /// `Drifted` is derived, never stored: it is read off the very rows that
+    /// fill the Drift section below — a live scan's findings, or the RECORDED
+    /// rows the fallback renders — so the verdict word and the section can
+    /// never disagree, and this surface cannot call a module `Installed`
+    /// while the fleet's Component Health calls the same rows `Drifted`.
     fn state_display(&self) -> (&'static str, Role) {
-        let drifted = self.drift_checked_live && !self.drift.is_empty();
-        cfgd_core::state::module_status_display(&self.status, drifted)
+        cfgd_core::state::module_status_display(&self.status, !self.drift.is_empty())
     }
 }
 
@@ -414,11 +422,13 @@ pub struct ModuleFileStatus {
     pub state: ModuleFilePresence,
 }
 
-/// The "Drift" section's frame, shared by the fleet-wide and per-module status
-/// docs: both state the same thing about an empty scan, and only the rows
-/// inside differ. The empty branch lives here so the one distinction that
-/// matters — a live scan may report a detection, a recorded dashboard may only
-/// report what it holds — cannot be made twice and answered differently.
+/// The per-module "Drift" section's frame — the one owner's findings under
+/// one heading, which on the module surface already IS the nesting the fleet
+/// surface does under each Component Health owner row. The empty branch lives
+/// here so the one distinction that matters — a live scan may report a
+/// detection, a recorded dashboard may only report what it holds — cannot be
+/// made twice and answered differently; the fleet surface's empty verdict is
+/// the Component Health heading annotation ([`drift_checked_note`]).
 ///
 /// `verified` is whether ANY check stands behind an empty section: this run
 /// scanned, or a scan is on record. Without one the verdict is a report of
@@ -481,81 +491,61 @@ fn drift_section<T>(
     })
 }
 
-/// Render the fleet-wide "Drift" section: one row per recorded event, named by
-/// the resource type and id the event was stored under.
-fn render_drift_section(
-    doc: Doc,
-    drift: &[cfgd_core::state::DriftEvent],
-    check_errors: &[super::output_types::SystemCheckError],
-    checked_live: bool,
-    verified: bool,
-    scan_note: Option<&str>,
-) -> Doc {
-    let drop_env_file_row = cfgd_core::output::env_file_row_is_redundant(
-        drift.iter().map(|e| e.resource_type.as_str()),
-    );
-    let rows: Vec<&cfgd_core::state::DriftEvent> = drift
-        .iter()
-        .filter(|e| !(drop_env_file_row && e.resource_type == "env"))
-        .collect();
-    drift_section(
-        doc,
-        &rows,
-        check_errors,
-        checked_live,
-        verified,
-        scan_note,
-        |s, event| {
-            // A "script" / "Running script" resource_id is the raw run_str body
-            // (preserved byte-identical for UPSERT matching against prior drift
-            // rows) — condense only here, at the point it enters a status subject,
-            // so a multi-line inline script never lands raw. Two type strings exist
-            // because two producers persist script actions: `apply_script_action`
-            // (main pre/post-apply phase scripts, format.rs's
-            // `format_action_description`) stamps "script"; `execute_script`
-            // (onChange / module-onChange scripts, reconciler/scripts.rs) stamps
-            // "Running script: {body}" — both must condense here.
-            // Folded to `~/` like every other display slot of the report; the
-            // recorded id and the `-o json` payload keep the absolute path.
+/// One recorded finding worded for its nested slot under a Component Health
+/// owner row: the subject the reader can act on, the terse cause in the muted
+/// detail slot, and the source token as the trailing label when a non-local
+/// layer declared it — the same vocabulary `cfgd sync` and `cfgd source *`
+/// head their groups with.
+struct HealthFinding {
+    subject: String,
+    cause: String,
+    label: Option<cfgd_core::output::component::StatusLabel>,
+}
+
+impl HealthFinding {
+    /// Word one recorded event for the nested slot. `subject` is the item the
+    /// owner row above already attributes, so a module FILE finding names the
+    /// bare folded path rather than repeating its owner; every other kind
+    /// takes [`cfgd_core::output::drift_item_subject`]'s spelling. A script
+    /// id is the raw `run_str` body (preserved byte-identical for UPSERT
+    /// matching) and condenses only here, at the point it enters a subject.
+    fn of(event: &cfgd_core::state::DriftEvent, subject: Option<String>) -> Self {
+        let subject = subject.unwrap_or_else(|| {
             let display_id =
                 if event.resource_type == "script" || event.resource_type == "Running script" {
                     condense_script_label(&event.resource_id)
                 } else {
                     cfgd_core::fold_home_in_text(&event.resource_id)
                 };
-            let subject = cfgd_core::output::drift_item_subject(&event.resource_type, &display_id);
-            // The recomputed pair when a surface could read one off the machine,
-            // the stored pair otherwise — the human row states today's truth while
-            // the payload keeps the bytes the row was stored with.
-            let (expected, actual) = cfgd_core::output::drift_operands(
-                &event.resource_type,
-                event
-                    .want
-                    .as_deref()
-                    .or(event.expected.as_deref())
-                    .unwrap_or("?"),
-                event
-                    .have
-                    .as_deref()
-                    .or(event.actual.as_deref())
-                    .unwrap_or("?"),
-            );
-            if event.source != LOCAL_LAYER {
-                // Source attribution renders in `secondary` (pink/magenta) at
-                // end-of-subject; the StatusBuilder API guarantees the label lands
-                // last so the inner SGR reset is never followed by outer-role-styled
-                // text. The token is the vocabulary `cfgd sync` and `cfgd source *`
-                // head their groups with, so a reader carries one spelling across
-                // the three surfaces that name a source.
-                let label_text = cfgd_core::reconciler::Owner::source(&event.source).token();
-                s.status_with(Role::Warn, subject, |f| {
-                    f.drift(expected, actual).label(Role::Secondary, label_text)
-                })
-            } else {
-                s.status_with(Role::Warn, subject, |f| f.drift(expected, actual))
-            }
-        },
-    )
+            cfgd_core::output::drift_item_subject(&event.resource_type, &display_id)
+        });
+        // The recomputed pair when a surface could read one off the machine
+        // (`want`/`have`, filled by the heal-on-read pass), the stored pair
+        // otherwise; the payload keeps the bytes the row was stored with.
+        let cause = cfgd_core::output::drift_terse_cause(
+            &event.resource_type,
+            event
+                .want
+                .as_deref()
+                .or(event.expected.as_deref())
+                .unwrap_or_default(),
+            event
+                .have
+                .as_deref()
+                .or(event.actual.as_deref())
+                .unwrap_or_default(),
+        );
+        let label =
+            (event.source != LOCAL_LAYER).then(|| cfgd_core::output::component::StatusLabel {
+                role: Role::Secondary,
+                text: cfgd_core::reconciler::Owner::source(&event.source).token(),
+            });
+        Self {
+            subject,
+            cause,
+            label,
+        }
+    }
 }
 
 /// The order a drift row's surface sorts in: the `spec` blocks in the order
@@ -589,6 +579,7 @@ const SURFACE_ORDER: [&str; 4] = [
 fn render_module_drift_section(
     doc: Doc,
     drift: &[ModuleDrift],
+    check_errors: &[super::output_types::SystemCheckError],
     checked_live: bool,
     verified: bool,
     scan_note: Option<&str>,
@@ -603,7 +594,7 @@ fn render_module_drift_section(
     drift_section(
         doc,
         &ordered,
-        &[],
+        check_errors,
         checked_live,
         verified,
         scan_note,
@@ -716,23 +707,18 @@ pub fn build_fleet_status_doc(
         .kv_rows(cfgd_core::output::config_header_rows(head));
 
     // Only the recorded-state dashboard needs a staleness signal: a `--scan`/
-    // `--exit-code` run just checked the machine itself, so its Drift section
-    // already speaks for how current the display is.
+    // `--exit-code` run just checked the machine itself, and the Component
+    // Health heading annotation says so (`checked live now`).
     //
-    // The date rides the Drift verdict it qualifies, and the hint it earns is
-    // emitted ONCE at the foot of the report: a header row, a line inside
-    // Drift and a closing hint were three spellings of one suggestion.
+    // The date rides that one annotation, and the hint it earns is emitted
+    // ONCE at the foot of the report: a header row, a dated verdict and a
+    // closing hint were three spellings of one suggestion.
     let freshest = freshest_check_stamp(
         output.last_scan_at.as_deref(),
         output.drift.iter().map(|d| d.timestamp.as_str()),
     );
-    let (stale, note) = if output.drift_checked_live {
-        (false, None)
-    } else {
-        let stale =
-            freshest.is_none_or(|ts| cfgd_core::is_stale_since(ts, now, SCAN_STALENESS_SECS));
-        (stale, Some(drift_checked_note(freshest, now)))
-    };
+    let stale = !output.drift_checked_live
+        && freshest.is_none_or(|ts| cfgd_core::is_stale_since(ts, now, SCAN_STALENESS_SECS));
 
     match &output.last_apply {
         Some(last) => {
@@ -774,15 +760,6 @@ pub fn build_fleet_status_doc(
         }
     }
 
-    doc = render_drift_section(
-        doc,
-        &output.drift,
-        &output.system_errors,
-        output.drift_checked_live,
-        output.drift_checked_live || output.last_scan_at.is_some(),
-        note.as_deref(),
-    );
-
     if !configured_sources.is_empty() {
         doc = doc.section(super::source::list::SOURCES_SECTION, |s| {
             s.table(super::source::list::sources_table(
@@ -810,31 +787,58 @@ pub fn build_fleet_status_doc(
         .fold(doc, |d, w| d.status(Role::Warn, w));
 
     let health = component_health_rows(output, profile);
-    if !health.is_empty() {
+    if !health.rows.is_empty() || !health.loose.is_empty() || !output.system_errors.is_empty() {
         doc = doc.section_annotated(
             COMPONENT_HEALTH_SECTION,
-            drift_checked_note(freshest, now),
+            drift_checked_note(output.drift_checked_live, freshest, now),
             |s| {
-                health.into_iter().fold(s, |s, row| {
+                let s = health.rows.into_iter().fold(s, |s, row| {
                     // Subject is the owner token, exactly as the tree that
                     // applied the component heads its group; the verdict LEADS
-                    // in the role's own colour and the inventory is the muted
+                    // in the role's own colour and the counts are the muted
                     // parenthetical under it — comma-joined onto the end,
                     // `Synced` read as a fourth inventory item, and `Failed` —
                     // the one word the reader is scanning for — landed last
-                    // and least prominent behind three counts.
+                    // and least prominent behind three counts. Each unresolved
+                    // recorded finding nests one step below its owner's row,
+                    // so the verdict and its why read as one block.
                     let HealthRow {
                         owner,
                         verdict,
                         role,
                         counts,
+                        findings,
                     } = row;
-                    s.status_with(role, owner.token(), |f| {
+                    let s = s.status_with(role, owner.token(), |f| {
                         let f = f.verdict(verdict);
                         match counts {
                             Some(counts) => f.detail(counts),
                             None => f,
                         }
+                    });
+                    findings
+                        .into_iter()
+                        .fold(s, |s, f| s.child_row_labeled(f.subject, f.cause, f.label))
+                });
+                // A finding no owner row can carry still renders — a plain
+                // row, never a silent drop from the one section reporting
+                // drift.
+                let s = health.loose.into_iter().fold(s, |s, f| {
+                    s.status_with(Role::Warn, f.subject, |fields| {
+                        let fields = fields.detail(f.cause);
+                        match f.label {
+                            Some(label) => fields.label(label.role, label.text),
+                            None => fields,
+                        }
+                    })
+                });
+                // A check that could not run is a finding of its own — never
+                // silence, never a drift row: exactly the row `diff` renders
+                // for the same failed probe, worded the same way so the two
+                // surfaces read as one report.
+                output.system_errors.iter().fold(s, |s, err| {
+                    s.status_with(Role::Warn, err.key.clone(), |f| {
+                        f.qualifier("error checking drift").detail(&err.error)
                     })
                 })
             },
@@ -1337,17 +1341,21 @@ pub(super) fn recorded_module_tallies(
 /// row per component with its verdict leading.
 const COMPONENT_HEALTH_SECTION: &str = "Component Health";
 
-/// The ONE human rendering of the recorded drift-scan freshness: how old the
-/// scan stamp is (`checked 3m ago`), or that no scan has ever run (`drift
-/// never checked`). Both surfaces dating the recorded verdicts read it — the
-/// Component Health heading's muted annotation and the Drift verdict's
+/// The ONE human rendering of a drift check's freshness, over all three
+/// states a report can be in: this run checked the machine itself (`checked
+/// live now`), a recorded check stands (`checked 3m ago`), or nothing ever
+/// has (`drift never checked`). Both surfaces dating a drift verdict read it
+/// — the fleet Component Health heading's muted annotation, where the empty
+/// verdict LIVES on the fleet surface, and the module Drift section's
 /// qualifier — so one screen cannot date one fact in two vocabularies. The
 /// age and its unsubtractable-stamp fallback come from
 /// [`cfgd_core::humanize_age_cell`], the same degradation every other age
-/// slot takes; the ISO instant stays in `-o json`'s `lastScanAt`. `None` here
-/// is a host no scan ever stamped — a `--scan` run's caller suppresses the
-/// note instead, its findings needing no date.
-fn drift_checked_note(last_scan_at: Option<&str>, now: &str) -> String {
+/// slot takes; the ISO instant stays in `-o json`'s `lastScanAt`. `None` with
+/// `checked_live` false is a host no check ever stamped.
+fn drift_checked_note(checked_live: bool, last_scan_at: Option<&str>, now: &str) -> String {
+    if checked_live {
+        return "checked live now".to_string();
+    }
     match last_scan_at {
         Some(ts) => format!("checked {}", cfgd_core::humanize_age_cell(Some(ts), now)),
         None => "drift never checked".to_string(),
@@ -1370,28 +1378,130 @@ fn freshest_check_stamp<'a>(
 
 /// One Component Health row: the owner the run's trees head their groups
 /// with, the verdict word and role from the workspace's one module-state
-/// vocabulary, and the nonzero inventory counts as one joined clause.
+/// vocabulary, the counts clause (a clean owner's inventory, a drifted
+/// owner's SHORTFALL — `1 of 6 files`, never the raw inventory a reader
+/// would have to subtract from), and the owner's unresolved recorded
+/// findings, nested one step below the row.
 struct HealthRow {
     owner: cfgd_core::reconciler::Owner,
     verdict: &'static str,
     role: cfgd_core::output::Role,
     counts: Option<String>,
+    findings: Vec<HealthFinding>,
+}
+
+/// The whole Component Health derivation: the owner rows, and the findings
+/// no owner row can carry (a profile-declared row on a machine with no
+/// derivable profile) — rendered as plain rows so a recorded finding never
+/// silently drops from the one section that reports drift.
+struct ComponentHealth {
+    rows: Vec<HealthRow>,
+    loose: Vec<HealthFinding>,
+}
+
+/// Which Component Health owner one unresolved recorded finding belongs to,
+/// and the drifted-noun its shortfall counts under — `None` noun for a
+/// whole-module verdict, which flips the row without a countable unit.
+///
+/// One arm per producer id grammar, the same derivations every producer
+/// minted the id through: a `module` row splits on
+/// [`super::live_drift::split_module_file_resource_id`] (a bare id is the
+/// daemon's whole-module spelling); a shell row belongs to cfgd's env
+/// surface (`owner_of`'s vocabulary — the session refresh row to
+/// `cfgd:session`); a `provision:`/`refuse:` package row to `cfgd:managers`;
+/// any other package row to the module whose current resolution declares
+/// one of its names under the id's own manager, else to the profile — the
+/// same fallback every non-module recorded resource takes.
+fn finding_owner(
+    event: &cfgd_core::state::DriftEvent,
+    modules: &[ModuleStatusEntry],
+    profile_owner: Option<&cfgd_core::reconciler::Owner>,
+) -> (
+    Option<cfgd_core::reconciler::Owner>,
+    Option<&'static str>,
+    Option<String>,
+) {
+    use cfgd_core::reconciler::{ENV_GROUP, MANAGERS_GROUP, Owner, SESSION_GROUP};
+    match event.resource_type.as_str() {
+        "module" => match super::live_drift::split_module_file_resource_id(&event.resource_id) {
+            Some((owner, target)) => (
+                Some(Owner::module(owner)),
+                Some("file"),
+                // The owner row above already names the module, so the
+                // nested subject is the bare folded target.
+                Some(cfgd_core::fold_home_in_text(&target)),
+            ),
+            None => (
+                Some(Owner::module(&event.resource_id)),
+                None,
+                Some(Owner::module(&event.resource_id).token()),
+            ),
+        },
+        ENV_RESOURCE_TYPE if event.resource_id == cfgd_core::state::ENV_SESSION_RESOURCE_ID => {
+            (Some(Owner::cfgd(SESSION_GROUP)), Some("session env"), None)
+        }
+        shell @ (ENV_RESOURCE_TYPE | "env-var" | "alias" | "env-rc") => {
+            let noun = match shell {
+                ENV_RESOURCE_TYPE => "env file",
+                "env-var" => "env var",
+                "alias" => "alias",
+                _ => "rc line",
+            };
+            (Some(Owner::cfgd(ENV_GROUP)), Some(noun), None)
+        }
+        "package" => {
+            let Some((manager, names)) = event.resource_id.split_once(':') else {
+                return (profile_owner.cloned(), Some("package"), None);
+            };
+            if matches!(manager, "provision" | "refuse") {
+                return (Some(Owner::cfgd(MANAGERS_GROUP)), Some("manager"), None);
+            }
+            let declaring = modules.iter().find(|m| {
+                names.split(',').map(str::trim).any(|name| {
+                    m.declared
+                        .package_managers
+                        .get(name)
+                        .is_some_and(|managers| managers.contains(manager))
+                })
+            });
+            match declaring {
+                Some(m) => (Some(Owner::module(&m.name)), Some("package"), None),
+                None => (profile_owner.cloned(), Some("package"), None),
+            }
+        }
+        other => {
+            // `display_type`'s singulars, restated on `'static` literals so a
+            // shortfall clause can hold the noun beyond the event's borrow.
+            let noun = match other {
+                "file" | "files" => "file",
+                "script" | "Running script" => "script",
+                "system" => "setting",
+                _ => "item",
+            };
+            (profile_owner.cloned(), Some(noun), None)
+        }
+    }
 }
 
 /// Every owner the dashboard can report health for, in
-/// [`cfgd_core::reconciler::Owner::order`]'s order: the resolved modules, and
+/// [`cfgd_core::reconciler::Owner::order`]'s order: the resolved modules,
 /// each non-module owner whose recorded Managed Resources rows the table
-/// below renders — the profile and cfgd's own env surfaces.
+/// below renders — the profile and cfgd's own env surfaces — and any owner
+/// only an unresolved recorded finding names.
 ///
 /// The owner split is [`recorded_owner`]'s and the module counts are the
 /// recorded tallies already on `output.modules`, so this section and the
 /// table cannot attribute one row to two owners or two counts. The verdicts
-/// read RECORDED state only (`drifted: false`), same as every row of this
-/// dashboard: a recorded row is a surface an apply settled, so a non-module
-/// owner holding rows reads the installed token's word.
-fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Vec<HealthRow> {
+/// pass [`cfgd_core::state::module_status_display`] the RECORDED drift
+/// verdict — whether this owner holds an unresolved recorded finding — so a
+/// row reads `Drifted`/warn exactly when its nested findings say why, over
+/// the SAME one walk ([`finding_owner`] per event, never a second pass). A
+/// drifted owner's counts clause states the shortfall (`1 of 6 files`); a
+/// clean owner keeps its inventory.
+fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> ComponentHealth {
     use cfgd_core::reconciler::Owner;
-    let profile_owner = profile.map(|p| Owner::profile(p).token());
+    let profile_owner = profile.map(Owner::profile);
+    let profile_token = profile_owner.as_ref().map(Owner::token);
     // Per-owner, per-noun counts of the recorded non-module rows. Keyed by
     // the rendered token because `Owner` carries no ordering of its own here;
     // `owner_from_token` reads each key back for the comparator below.
@@ -1410,49 +1520,102 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Vec<He
         } else {
             // A profile-declared row with no derivable profile has no owner a
             // component row could name; the table renders it under `-`.
-            if profile_owner.is_none() {
+            if profile_token.is_none() {
                 continue;
             }
             display_type(&r.resource_type)
         };
-        let token = recorded_owner(r, profile_owner.as_deref().unwrap_or(NO_DETAIL));
+        let token = recorded_owner(r, profile_token.as_deref().unwrap_or(NO_DETAIL));
         *recorded.entry(token).or_default().entry(noun).or_default() += 1;
+    }
+
+    // ONE walk over the unresolved recorded findings: each event lands under
+    // its owner's token with its worded child row and its shortfall noun, or
+    // in `loose` when no owner can carry it. The managed env FILE's own
+    // freshness row drops when per-item rows already name what the file is
+    // missing, exactly as the flat section it replaces dropped it.
+    let drop_env_file_row = cfgd_core::output::env_file_row_is_redundant(
+        output.drift.iter().map(|e| e.resource_type.as_str()),
+    );
+    let mut findings: std::collections::BTreeMap<String, Vec<HealthFinding>> =
+        std::collections::BTreeMap::new();
+    let mut drifted: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<&'static str, usize>,
+    > = std::collections::BTreeMap::new();
+    let mut loose = Vec::new();
+    for event in &output.drift {
+        if drop_env_file_row && event.resource_type == ENV_RESOURCE_TYPE {
+            continue;
+        }
+        let (owner, noun, subject) = finding_owner(event, &output.modules, profile_owner.as_ref());
+        let finding = HealthFinding::of(event, subject);
+        match owner {
+            Some(owner) => {
+                let token = owner.token();
+                if let Some(noun) = noun {
+                    *drifted
+                        .entry(token.clone())
+                        .or_default()
+                        .entry(noun)
+                        .or_default() += 1;
+                }
+                findings.entry(token).or_default().push(finding);
+            }
+            None => loose.push(finding),
+        }
     }
 
     let mut owners: Vec<Owner> = Vec::with_capacity(recorded.len() + output.modules.len());
     owners.extend(recorded.keys().filter_map(|token| owner_from_token(token)));
     owners.extend(output.modules.iter().map(|m| Owner::module(&m.name)));
+    owners.extend(findings.keys().filter_map(|token| owner_from_token(token)));
     Owner::order(&mut owners);
+    owners.dedup_by_key(|o| o.token());
 
-    let (installed_word, installed_role) =
-        cfgd_core::state::module_status_display(cfgd_core::state::MODULE_STATUS_INSTALLED, false);
-    owners
+    let rows = owners
         .into_iter()
         .map(|owner| {
+            let token = owner.token();
+            let own_findings = findings.remove(&token).unwrap_or_default();
+            let is_drifted = !own_findings.is_empty();
+            let shortfall = drifted.get(&token).filter(|kinds| !kinds.is_empty());
             let module = (owner.kind == cfgd_core::reconciler::OwnerKind::Module)
                 .then(|| output.modules.iter().find(|m| m.name == owner.name))
                 .flatten();
             let (verdict, role, counts) = match module {
                 Some(m) => {
-                    // The dashboard reads RECORDED state only, so no row here
-                    // can claim `Drifted` — this surface's Drift section is
-                    // what reports that, and a `--scan` run is what derives it.
-                    let (word, role) = cfgd_core::state::module_status_display(&m.status, false);
-                    let counts = health_counts(
-                        [
-                            ("package", m.packages),
-                            ("file", m.files),
-                            ("script", m.scripts),
-                        ]
-                        .into_iter(),
-                    );
+                    let (word, role) =
+                        cfgd_core::state::module_status_display(&m.status, is_drifted);
+                    let totals = [
+                        ("package", m.packages),
+                        ("file", m.files),
+                        ("script", m.scripts),
+                    ];
+                    let counts = match shortfall {
+                        Some(kinds) => shortfall_counts(kinds, &totals),
+                        None => health_counts(totals.into_iter()),
+                    };
                     (word, role, counts)
                 }
                 None => {
-                    let counts = recorded
-                        .get(&owner.token())
-                        .and_then(|kinds| health_counts(ordered_kind_counts(kinds)));
-                    (installed_word, installed_role, counts)
+                    let (word, role) = cfgd_core::state::module_status_display(
+                        cfgd_core::state::MODULE_STATUS_INSTALLED,
+                        is_drifted,
+                    );
+                    let inventory = recorded.get(&token);
+                    let counts = match shortfall {
+                        Some(kinds) => {
+                            let totals: Vec<(&str, usize)> = inventory
+                                .map(|kinds| ordered_kind_counts(kinds).collect())
+                                .unwrap_or_default();
+                            shortfall_counts(kinds, &totals)
+                        }
+                        None => {
+                            inventory.and_then(|kinds| health_counts(ordered_kind_counts(kinds)))
+                        }
+                    };
+                    (word, role, counts)
                 }
             };
             HealthRow {
@@ -1460,9 +1623,36 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Vec<He
                 verdict,
                 role,
                 counts,
+                findings: own_findings,
             }
         })
-        .collect()
+        .collect();
+    ComponentHealth { rows, loose }
+}
+
+/// A drifted owner's counts clause: one part per drifted noun, `n of
+/// <total>` when the owner's own inventory prices the noun (`1 of 6 files`),
+/// the bare drifted count when it does not — never the raw inventory, which
+/// would make the reader subtract to learn how much is wrong.
+fn shortfall_counts(
+    kinds: &std::collections::BTreeMap<&'static str, usize>,
+    totals: &[(&str, usize)],
+) -> Option<String> {
+    let parts: Vec<String> = ordered_kind_counts(kinds)
+        .map(|(noun, n)| {
+            let total = totals
+                .iter()
+                .find(|(t_noun, _)| *t_noun == noun)
+                .map(|(_, t)| *t)
+                .unwrap_or_default();
+            if total >= n && total > 0 {
+                format!("{n} of {}", cfgd_core::pluralize(total, noun))
+            } else {
+                cfgd_core::pluralize(n, noun)
+            }
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(", "))
 }
 
 /// The nonzero inventory counts of one component, pluralized and joined in
@@ -1603,12 +1793,13 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
             } else {
                 (
                     output.last_scan_at.is_some(),
-                    Some(drift_checked_note(freshest, now)),
+                    Some(drift_checked_note(false, freshest, now)),
                 )
             };
             let doc = render_module_drift_section(
                 doc,
                 &output.drift,
+                output.env_check_error.as_slice(),
                 output.drift_checked_live,
                 verified,
                 note.as_deref(),
@@ -1732,6 +1923,24 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
     // under: env vars and aliases are two halves of one surface, and listing
     // them as siblings of `Files` said they were two.
     if !output.declared.env.is_empty() || !output.declared.aliases.is_empty() {
+        // A Shell row carries the report's own drift verdict for its item —
+        // recorded or scanned, whatever filled `output.drift` — so an
+        // inventory row can never read clean while the same invocation's
+        // `-o json` carries its finding; the file rows' rule, applied to
+        // every resource kind.
+        let shell_cause = |surface: &str, name: &str| -> Option<String> {
+            output
+                .drift
+                .iter()
+                .find(|d| d.surface == surface && d.item == name)
+                .map(|d| {
+                    cfgd_core::output::drift_terse_cause(
+                        &d.event.resource_type,
+                        d.event.expected.as_deref().unwrap_or_default(),
+                        d.event.actual.as_deref().unwrap_or_default(),
+                    )
+                })
+        };
         doc = doc.section("Shell", |s| {
             let s = s.subsection_if_nonempty("Aliases", &output.declared.aliases, |s, aliases| {
                 let mut sorted: Vec<&cfgd_core::config::ShellAlias> = aliases.iter().collect();
@@ -1742,10 +1951,11 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
                     } else {
                         alias.name.clone()
                     };
-                    s.status(
-                        Role::Ok,
-                        super::module::list_show::gated_value(subject, alias),
-                    )
+                    let subject = super::module::list_show::gated_value(subject, alias);
+                    match shell_cause(SURFACE_ALIASES, &alias.name) {
+                        Some(cause) => s.status_with(Role::Warn, subject, |f| f.detail(cause)),
+                        None => s.status(Role::Ok, subject),
+                    }
                 })
             });
             s.subsection_if_nonempty("Env", &output.declared.env, |s, env| {
@@ -1759,7 +1969,11 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
                     };
                     // Declared state, so a gated entry is listed and annotated
                     // exactly as `module show` annotates it.
-                    s.status(Role::Ok, super::module::list_show::gated_value(subject, ev))
+                    let subject = super::module::list_show::gated_value(subject, ev);
+                    match shell_cause(SURFACE_ENV, &ev.name) {
+                        Some(cause) => s.status_with(Role::Warn, subject, |f| f.detail(cause)),
+                        None => s.status(Role::Ok, subject),
+                    }
                 })
             })
         });
@@ -1811,6 +2025,7 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
         drift: Vec::new(),
         drift_checked_live: false,
         last_scan_at: None,
+        env_check_error: None,
     };
     let (state_word, _) = payload.state_display();
     Doc::new()
@@ -2300,6 +2515,7 @@ pub(super) fn cmd_status_module(
         String,
         std::collections::VecDeque<(String, ModulePackagePresence)>,
     > = std::collections::HashMap::new();
+    let mut env_check_error: Option<super::output_types::SystemCheckError> = None;
     if do_scan {
         let platform = Platform::current();
         // Deliberately the config-FREE registry: a module resolves against the
@@ -2410,7 +2626,7 @@ pub(super) fn cmd_status_module(
                                 ),
                                 matches: false,
                                 expected: "installed".to_string(),
-                                actual: cfgd_core::Absence::Missing.to_string(),
+                                actual: cfgd_core::Absence::NotInstalled.to_string(),
                                 unmanaged: false,
                             };
                             findings.push(finding.clone());
@@ -2444,6 +2660,61 @@ pub(super) fn cmd_status_module(
                         }
                     }
                 }
+
+                sp.set_message(format!("Scanning module:{mod_name} shell"));
+                // The same per-item check and the same chain-ownership scope
+                // as `diff --module`'s Shell pass, so a module-only workflow
+                // records, resolves, renders and exits in ONE scope — a scan
+                // can clear the very env rows a scoped diff recorded, instead
+                // of stranding them for a machine-wide walk. A name whose
+                // recorded winner is a layer outside this chain stays out of
+                // `checked`: a scoped "clean" may not heal a claim it never
+                // re-checked.
+                let env_check = cfgd_core::reconciler::env_item_verify_results(
+                    &resolved.merged.env,
+                    &resolved.merged.aliases,
+                    &resolved.merged.entry_owners,
+                    &resolved_modules,
+                );
+                let owners =
+                    cfgd_core::reconciler::merged_entry_owners(&resolved, &resolved_modules);
+                let tokens: std::collections::HashMap<String, &str> = resolved_modules
+                    .iter()
+                    .map(|m| {
+                        (
+                            cfgd_core::reconciler::Owner::module(&m.name).token(),
+                            m.name.as_str(),
+                        )
+                    })
+                    .collect();
+                for r in env_check.results {
+                    let owner = if r.resource_type == "alias" {
+                        owners.aliases.get(&r.resource_id)
+                    } else {
+                        owners.env.get(&r.resource_id)
+                    };
+                    let Some(owner_module) = owner.and_then(|o| tokens.get(o.as_str()).copied())
+                    else {
+                        continue;
+                    };
+                    checked.push((r.resource_type.clone(), r.resource_id.clone()));
+                    if r.matches {
+                        continue;
+                    }
+                    drift.push(ModuleDrift {
+                        event: super::live_drift::drift_event_from(&r, &merged_env_items),
+                        owner: owner_module.to_string(),
+                        surface: if r.resource_type == "alias" {
+                            SURFACE_ALIASES
+                        } else {
+                            SURFACE_ENV
+                        },
+                        item: r.resource_id.clone(),
+                    });
+                    findings.push(r);
+                }
+                env_check_error = env_check.check_error;
+
                 super::live_drift::record_scoped_scan_findings(state, &checked, &findings);
                 Ok(())
             },
@@ -2570,6 +2841,27 @@ pub(super) fn cmd_status_module(
                     }) else {
                         continue;
                     };
+                    // The recorded verdict seeds the same joined package state
+                    // a live scan fills, so the wide inventory row for a
+                    // package this report's Drift section names can never
+                    // read `not scanned` beside the finding — the file rows'
+                    // rule, applied to every resource kind.
+                    if let Some(module) = all_modules.get(mod_name) {
+                        for pkg in packages.split(',').map(str::trim) {
+                            let Some(entry) = module.spec.packages.iter().find(|entry| {
+                                entry.aliases.get(manager).unwrap_or(&entry.name) == pkg
+                            }) else {
+                                continue;
+                            };
+                            scanned_packages
+                                .entry(entry.name.clone())
+                                .or_default()
+                                .push_back((
+                                    manager.to_string(),
+                                    ModulePackagePresence::NotInstalled,
+                                ));
+                        }
+                    }
                     drift.push(ModuleDrift {
                         owner,
                         surface: SURFACE_PACKAGES,
@@ -2644,6 +2936,7 @@ pub(super) fn cmd_status_module(
         // moves it.
         last_scan_at: state.last_scan_at()?,
         drift,
+        env_check_error,
     };
 
     printer.emit(build_module_status_doc(
@@ -2652,8 +2945,16 @@ pub(super) fn cmd_status_module(
         &cfgd_core::utc_now_iso8601(),
     ));
 
-    if exit_code && !output.drift.is_empty() {
-        cfgd_core::exit::ExitCode::DriftDetected.exit();
+    if exit_code {
+        // Unknown outranks known, as on every `--exit-code` surface: a probe
+        // that could not run means the answer is missing, not that the
+        // machine is in sync.
+        if output.env_check_error.is_some() {
+            cfgd_core::exit::ExitCode::Error.exit();
+        }
+        if !output.drift.is_empty() {
+            cfgd_core::exit::ExitCode::DriftDetected.exit();
+        }
     }
 
     Ok(())
@@ -3677,20 +3978,20 @@ mod tests {
         );
     }
 
-    /// When the shown state was last checked rides the Drift VERDICT it
-    /// qualifies, and the report hints at `--scan` once that answer is old
-    /// enough to be misleading. The threshold is the daemon's default
-    /// reconcile interval: past it, the dashboard is showing something a live
-    /// daemon would never have let get this stale.
+    /// When the shown state was last checked rides the Component Health
+    /// heading its verdicts sit under, and the report hints at the live check
+    /// once that answer is old enough to be misleading. The threshold is the
+    /// daemon's default reconcile interval: past it, the dashboard is showing
+    /// something a live daemon would never have let get this stale.
     ///
     /// No separate `Last Scan` row: it sat in the header, pages above the
-    /// verdict it qualifies, leaving the reader to carry a timestamp down to
-    /// `No drift recorded` and decide for themselves what that verdict was
+    /// verdicts it qualifies, leaving the reader to carry a timestamp down to
+    /// each health row and decide for themselves what those verdicts were
     /// worth. The `-o json` payload keeps `lastScan` either way.
     ///
-    /// A run that DID scan says nothing here — its Drift section already
-    /// speaks for how current the display is — which is the branch that keeps
-    /// `--scan`'s own output from carrying a hint pointing back at itself.
+    /// A run that DID scan says so in the same slot — `(checked live now)` —
+    /// which is the branch that keeps `--scan`'s own output from carrying a
+    /// hint pointing back at itself.
     #[test]
     fn status_dates_the_drift_verdict_and_hints_when_it_is_stale() {
         fn header(last_scan_at: Option<&str>, checked_live: bool) -> String {
@@ -3700,7 +4001,15 @@ mod tests {
                 sources: Vec::new(),
                 pending_decisions: Vec::new(),
                 modules: Vec::new(),
-                managed_resources: Vec::new(),
+                // One recorded owner, so the Component Health section whose
+                // heading carries the freshness annotation renders.
+                managed_resources: vec![cfgd_core::state::ManagedResource {
+                    resource_type: "file".to_string(),
+                    resource_id: "~/.gitconfig".to_string(),
+                    source: "local".to_string(),
+                    last_hash: Some("hash1".to_string()),
+                    last_applied: Some(1_715_680_800),
+                }],
                 warnings: Vec::new(),
                 classification_degraded: false,
                 classification_degraded_code: None,
@@ -3734,43 +4043,43 @@ mod tests {
         // Exactly at the threshold is not yet stale — `is_stale_since` is
         // "more than", so the boundary belongs to the fresh side and a daemon
         // reconciling on schedule never trips the hint.
-        // The date is ON the verdict line, not in a row of its own.
-        let verdict = |out: &str| {
+        // The date is ON the section heading, not in a header row of its own.
+        let heading = |out: &str| {
             out.lines()
-                .find(|l| l.contains("No drift recorded") || l.contains("No drift detected"))
-                .unwrap_or_else(|| panic!("no drift verdict rendered: {out}"))
+                .find(|l| l.contains("Component Health"))
+                .unwrap_or_else(|| panic!("no Component Health heading rendered: {out}"))
                 .to_string()
         };
 
         let fresh = header(Some("2026-05-14T10:00:00Z"), false);
         assert!(
             !fresh.contains("Last Scan"),
-            "the date rides the verdict, it is not a header row: {fresh}"
+            "the date rides the heading, it is not a header row: {fresh}"
         );
         assert!(
-            verdict(&fresh).contains("checked 5m ago"),
+            heading(&fresh).contains("(checked 5m ago)"),
             "wrong age rendered: {fresh}"
         );
         assert!(!fresh.contains(hint), "a fresh scan must not hint: {fresh}");
 
         let stale = header(Some("2026-05-14T08:00:00Z"), false);
         assert!(
-            verdict(&stale).contains("checked 2h ago"),
+            heading(&stale).contains("(checked 2h ago)"),
             "wrong age rendered: {stale}"
         );
         assert!(stale.contains(hint), "a stale scan must hint: {stale}");
 
         let never = header(None, false);
         assert!(
-            verdict(&never).contains("drift never checked"),
-            "an unscanned host says so on the verdict: {never}"
+            heading(&never).contains("(drift never checked)"),
+            "an unscanned host says so on the heading: {never}"
         );
         assert!(never.contains(hint), "an unscanned host must hint: {never}");
 
         let scanned = header(Some("2026-05-14T08:00:00Z"), true);
         assert!(
-            !scanned.contains("checked ") && !scanned.contains(hint),
-            "a run that just scanned must not date or hint at itself: {scanned}"
+            heading(&scanned).contains("(checked live now)") && !scanned.contains(hint),
+            "a run that just scanned says so and never hints at itself: {scanned}"
         );
         assert!(
             !scanned.contains("Last Scan"),
@@ -3783,43 +4092,14 @@ mod tests {
     /// green `✓` claimed a verdict nothing had produced, while `diff` refuses
     /// exactly that (`Drift undetermined`, no tick) — the two are pinned here
     /// to one role for one fact: neither paints `Ok` over an unverified one.
+    ///
+    /// The MODULE surface and `diff` are the whole population: the fleet has
+    /// no Drift section — its disclaimer is the Component Health heading's
+    /// annotation, pinned by `the_fleet_heading_annotation_states_the_checks_freshness`
+    /// and `status_dates_the_drift_verdict_and_hints_when_it_is_stale`.
     #[test]
     fn no_recorded_verdict_claims_a_check_that_never_ran() {
         let tick = cfgd_core::output::Theme::default().icon_ok;
-        let fleet = |last_scan_at: Option<&str>, checked_live: bool| {
-            let output = StatusOutput {
-                last_apply: None,
-                drift: Vec::new(),
-                sources: Vec::new(),
-                pending_decisions: Vec::new(),
-                modules: Vec::new(),
-                managed_resources: Vec::new(),
-                warnings: Vec::new(),
-                classification_degraded: false,
-                classification_degraded_code: None,
-                classification_degraded_reason: None,
-                drift_checked_live: checked_live,
-                last_scan_at: last_scan_at.map(str::to_string),
-                system_errors: Vec::new(),
-            };
-            let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-            printer.emit(build_fleet_status_doc(
-                &output,
-                &cfgd_core::output::ConfigHeader {
-                    config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
-                    sources: &[],
-                    profile: Some("default"),
-                    profile_inherits: &[],
-                    modules: &[],
-                },
-                &[],
-                "2026-05-14T10:05:00Z",
-                &Default::default(),
-                &Default::default(),
-            ));
-            drop(printer);
-            cfgd_core::test_helpers::captured_text(&buf)
-        };
         let verdict = |out: &str| {
             out.lines()
                 .find(|l| l.contains("No drift"))
@@ -3827,22 +4107,6 @@ mod tests {
                 .trim()
                 .to_string()
         };
-
-        let never = verdict(&fleet(None, false));
-        assert!(
-            never.contains("drift never checked") && !never.starts_with(&tick),
-            "no check ran, so no tick: {never}"
-        );
-        let recorded = verdict(&fleet(Some("2026-05-14T10:00:00Z"), false));
-        assert!(
-            recorded.starts_with(&tick),
-            "a scan on record earns the tick: {recorded}"
-        );
-        let live = verdict(&fleet(None, true));
-        assert!(
-            live.starts_with(&tick),
-            "a scan this run made earns the tick: {live}"
-        );
 
         // The per-module view answers the same three ways: a live scan or a
         // recorded one stands behind its empty section, and nothing else does.
@@ -3864,6 +4128,7 @@ mod tests {
                 deployed_files: Vec::new(),
                 drift_checked_live: checked_live,
                 last_scan_at: last_scan_at.map(str::to_string),
+                env_check_error: None,
                 drift: Vec::new(),
             };
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -3968,8 +4233,8 @@ mod tests {
         };
         let live_out = dashboard(&live);
         assert!(
-            !live_out.contains("checked "),
-            "a run that just scanned does not date its own findings"
+            live_out.contains("(checked live now)") && !live_out.contains("ago"),
+            "a run that just scanned says so instead of dating its own findings: {live_out}"
         );
         assert!(
             live_out.contains(&super::heal_drift_hint(None)),
@@ -4060,15 +4325,16 @@ mod tests {
 
     /// One screen, one hint for one need. The Drift section stated the absence
     /// AND pointed at `--scan`, and the header pointed at it again; the report
-    /// now states the absence plainly and closes with the one hint, naming the
-    /// one command that checks the machine, and only while the recorded state
-    /// is old enough for it to matter.
+    /// now closes with the one hint, naming the one command that checks the
+    /// machine, and only while the recorded state is old enough for it to
+    /// matter — with nothing recorded and nothing owned there is no verdict
+    /// line for the absence to double up on.
     #[test]
     fn the_scan_hint_is_said_once_and_last() {
         let out = dashboard(&empty_output());
         assert!(
-            out.contains("No drift recorded"),
-            "the drift line states the absence plainly: {out}"
+            !out.contains("No drift"),
+            "no verdict line restates what the hint already carries: {out}"
         );
         let hint_lines: Vec<&str> = out.lines().filter(|l| l.contains("cfgd diff")).collect();
         assert_eq!(hint_lines.len(), 1, "one hint, one need: {out}");
@@ -4718,9 +4984,16 @@ mod tests {
             output.contains("No applies recorded yet"),
             "empty applies state should render info line, got: {output}"
         );
+        // No owners and no findings: nothing for Component Health to verdict
+        // on, so no health section and no drift wording — the closing hint
+        // carries the reader to the live check instead.
         assert!(
-            output.contains("No drift recorded"),
-            "an empty recorded dashboard says what it read, got: {output}"
+            !output.contains("Component Health") && !output.contains("No drift"),
+            "an empty recorded dashboard claims no verdict, got: {output}"
+        );
+        assert!(
+            output.contains("cfgd diff"),
+            "the empty dashboard closes on the live-check hint, got: {output}"
         );
     }
 
@@ -4788,12 +5061,18 @@ mod tests {
             "drift recorded — should NOT print all-clear line, got: {output}"
         );
         assert!(
-            output.contains("file") && output.contains("/etc/hosts"),
-            "drift event should appear in output, got: {output}"
+            output.contains("Drifted"),
+            "the finding's owner row wears the Drifted verdict, got: {output}"
         );
+        let finding = output
+            .lines()
+            .find(|l| l.contains("/etc/hosts"))
+            .unwrap_or_else(|| panic!("drift event should appear in output, got: {output}"));
+        // The nested finding states the terse cause; the stored operand pair
+        // stays in `-o json`, so the desired hash never renders here.
         assert!(
-            output.contains("desired-hash") && output.contains("actual-hash"),
-            "drift line should include want/have values, got: {output}"
+            finding.contains("actual-hash") && !output.contains("desired-hash"),
+            "the finding nests under its owner with its cause, got: {output}"
         );
     }
 
@@ -4978,14 +5257,14 @@ mod tests {
     }
 
     /// WARN regression (re-review of the QP13 fix round): `cfgd status
-    /// --scan`'s live-drift display must show a drifted env-var/alias's real
+    /// --scan`'s live-drift payload must carry a drifted env-var/alias's real
     /// declared line, not the opaque `current`/`missing or changed` markers
     /// `verify_env_items` persists. `drift_event_from` (`live_drift.rs`)
     /// shapes every live-scan finding into the exact `StatusOutput.drift`
-    /// vec this test reads back from `-o json`, and `render_drift_section`
-    /// renders the same `DriftEvent.expected` string to the human terminal —
-    /// so recomputing at that one shaping point fixes both surfaces. This is
-    /// the sibling of `cmd_diff_reports_no_env_drift_when_bootstrap_path_dirs_are_recorded`'s
+    /// vec this test reads back from `-o json`; the human render nests the
+    /// finding under its owner with the terse cause, so the opaque marker
+    /// must surface on neither. This is the sibling of
+    /// `cmd_diff_reports_no_env_drift_when_bootstrap_path_dirs_are_recorded`'s
     /// fix, on `status`'s parallel live-scan path rather than `diff`'s.
     #[test]
     fn cmd_status_scan_shows_the_declared_env_value_not_the_opaque_marker() {
@@ -5067,9 +5346,9 @@ mod tests {
             "must not regress to the opaque marker: {editor_row}"
         );
 
-        // The human render shares the same `DriftEvent`, so the fix must show
-        // up there too — assert its content directly rather than trusting the
-        // JSON assertion above to stand in for it.
+        // The human render shares the same `DriftEvent`; it nests the finding
+        // under its owner with the terse cause, so the opaque marker must not
+        // surface there either.
         let (human_printer, human_buf) = test_printers();
         cmd_status(&cli, &human_printer, None, false, true, false).unwrap();
         drop(human_printer);
@@ -5079,20 +5358,14 @@ mod tests {
             .find(|l| l.contains("env: EDITOR"))
             .unwrap_or_else(|| panic!("expected an EDITOR env drift line, got: {human}"));
         assert!(
-            editor_line.contains(&declared_line),
-            "the human render must show the declared line, got: {editor_line}"
+            editor_line
+                .trim_end()
+                .ends_with(cfgd_core::Absence::Missing.as_str()),
+            "the finding states its terse cause, got: {editor_line}"
         );
         assert!(
-            !editor_line.contains("want: current"),
+            !editor_line.contains("current") && !editor_line.contains("missing or changed"),
             "the EDITOR row must not show the opaque marker, got: {editor_line}"
-        );
-        assert!(
-            editor_line.contains(&cfgd_core::output::drift_detail(
-                &declared_line,
-                cfgd_core::Absence::Missing.as_str()
-            )),
-            "both operands must be real: the declared line against the absence \
-             the file reports, got: {editor_line}"
         );
     }
 
@@ -5161,10 +5434,9 @@ mod tests {
         )
         .declared_line("env-var", "EDITOR")
         .expect("EDITOR renders a declared line");
-        let expected_detail =
-            cfgd_core::output::drift_detail(&declared_line, cfgd_core::Absence::Missing.as_str());
 
         let mut cli = test_cli_for(config_path, &state_dir);
+        let mut renders = Vec::new();
         for scan in [false, true] {
             let (printer, buf) = test_printers();
             cmd_status(&cli, &printer, None, false, scan, false).unwrap();
@@ -5173,12 +5445,21 @@ mod tests {
             let editor_line = human
                 .lines()
                 .find(|l| l.contains("env: EDITOR"))
-                .unwrap_or_else(|| panic!("expected an EDITOR env drift line, got: {human}"));
+                .unwrap_or_else(|| panic!("expected an EDITOR env drift line, got: {human}"))
+                .to_string();
             assert!(
-                editor_line.contains(&expected_detail),
-                "scan={scan} must render the same real operands, got: {editor_line}"
+                editor_line
+                    .trim_end()
+                    .ends_with(cfgd_core::Absence::Missing.as_str())
+                    && !editor_line.contains("missing or changed"),
+                "scan={scan} must state the terse cause, never the stored marker: {editor_line}"
             );
+            renders.push(editor_line);
         }
+        assert_eq!(
+            renders[0], renders[1],
+            "both modes word the same drifted env var identically"
+        );
 
         // The recompute is a DISPLAY truth. The payload's `expected`/`actual`
         // stay the bytes the row was stored with — a keyed record describes
@@ -6340,6 +6621,7 @@ mod tests {
             deployed_files: Vec::new(),
             drift: Vec::new(),
             drift_checked_live: false,
+            env_check_error: None,
             last_scan_at: None,
         }
     }
@@ -6590,7 +6872,7 @@ mod tests {
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("No drift recorded"),
+            out.contains("Synced") && !out.contains("Drifted"),
             "a healed machine's recorded status must read clean, got: {out}"
         );
         assert!(
@@ -6971,6 +7253,191 @@ mod tests {
         assert!(
             file_line.contains("drifted") || file_line.contains("content differs"),
             "the recorded verdict lands on the inventory row: {out}"
+        );
+    }
+
+    /// The recorded verdicts reach EVERY wide inventory row, not only the
+    /// file rows: a recorded package finding seeds the same joined state a
+    /// live scan fills (so the row reads `not installed (brew)` while the
+    /// Drift section carries the finding, never `not scanned` beside it),
+    /// and a recorded env-var/alias row lands its cause on the Shell rows.
+    /// `-o json`'s `packageState` reads the same seed, so wide and machine
+    /// consumers agree for every resource kind.
+    #[test]
+    #[serial_test::serial]
+    fn a_recorded_finding_reaches_every_wide_inventory_row() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_WITH_MODULE_YAML).unwrap();
+        let mod_dir = config_dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\n\
+             kind: Module\n\
+             metadata:\n  name: test-mod\n\
+             spec:\n  packages:\n    - name: ripgrep\n\
+             \x20 env:\n    - name: EDITOR\n      value: vim\n\
+             \x20 aliases:\n    - name: ll\n      command: ls -l\n",
+        )
+        .unwrap();
+        {
+            let store =
+                cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
+            store
+                .record_drift(
+                    "package",
+                    "brew:ripgrep",
+                    Some("installed"),
+                    Some(cfgd_core::Absence::NotInstalled.as_str()),
+                    "local",
+                )
+                .unwrap();
+            store
+                .record_drift(
+                    "env-var",
+                    "EDITOR",
+                    Some("current"),
+                    Some("missing or changed"),
+                    "local",
+                )
+                .unwrap();
+            store
+                .record_drift(
+                    "alias",
+                    "ll",
+                    Some("current"),
+                    Some("missing or changed"),
+                    "local",
+                )
+                .unwrap();
+        }
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let (printer, buf) = test_printers();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            false,
+            ModuleStatusView::Inventory { show_values: false },
+        )
+        .unwrap();
+        drop(printer);
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+
+        // Word-match: a substring scan for `ll` matches "Installed Packages".
+        let row = |needle: &str| {
+            out.lines()
+                .find(|l| l.split_whitespace().any(|w| w == needle))
+                .unwrap_or_else(|| panic!("no `{needle}` inventory row in: {out}"))
+                .to_string()
+        };
+        let ripgrep = row("ripgrep");
+        assert!(
+            !ripgrep.contains(NOT_SCANNED),
+            "a package with a recorded finding may not claim nothing looked: {ripgrep}"
+        );
+        assert!(
+            ripgrep.contains(cfgd_core::Absence::NotInstalled.as_str()) && ripgrep.contains("brew"),
+            "the recorded verdict and its manager land on the row: {ripgrep}"
+        );
+        for shell_item in ["EDITOR", "ll"] {
+            let line = row(shell_item);
+            assert!(
+                line.contains(cfgd_core::Absence::Missing.as_str()),
+                "a recorded shell finding lands its cause on the Shell row: {line}"
+            );
+        }
+    }
+
+    /// A module-scoped `--scan` evaluates the env/alias entries the module's
+    /// chain owns — the same per-item check a scoped `diff` runs — so it
+    /// reports the drift a scoped diff would, records it, and HEALS the row
+    /// once the machine converges: a module-only workflow closes its own
+    /// loop, never stranding rows only a machine-wide walk could resolve.
+    #[test]
+    #[serial_test::serial]
+    fn a_module_scan_evaluates_and_heals_the_env_rows_its_chain_owns() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_WITH_MODULE_YAML).unwrap();
+        let mod_dir = config_dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\n\
+             kind: Module\n\
+             metadata:\n  name: test-mod\n\
+             spec:\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+
+        // The module-owned line is absent, so the scan finds and records it.
+        std::fs::write(
+            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
+            "# managed by cfgd \u{2014} do not edit\n",
+        )
+        .unwrap();
+        let cli = test_cli_for(config_path, state_dir.path());
+        let (printer, buf) = test_printers();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            true,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
+        drop(printer);
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("module:test-mod:env EDITOR"),
+            "the scan reports the module-owned missing entry: {out}"
+        );
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        assert!(
+            rows.iter()
+                .any(|r| r.resource_type == "env-var" && r.resource_id == "EDITOR"),
+            "the scan records the finding it reported: {rows:?}"
+        );
+        drop(store);
+
+        // The machine converges; the next scoped scan clears the row.
+        std::fs::write(
+            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
+            "# managed by cfgd \u{2014} do not edit\nexport EDITOR=\"vim\" # module:test-mod\n",
+        )
+        .unwrap();
+        let printer = cfgd_core::test_helpers::test_printer();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            true,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.resource_type == "env-var" && r.resource_id == "EDITOR"),
+            "a scoped scan heals what a scoped scan recorded: {rows:?}"
         );
     }
 }

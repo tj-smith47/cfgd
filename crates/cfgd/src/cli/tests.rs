@@ -30936,17 +30936,6 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
         heading_line.contains("(checked 3m ago)"),
         "the heading carries the recorded scan's age, got:\n{heading_line}"
     );
-    // One composer dates the recorded verdicts: the Drift verdict's qualifier
-    // spells the same fact with the same words as the heading's annotation.
-    let drift_line = rendered
-        .lines()
-        .find(|l| l.contains("No drift recorded"))
-        .unwrap_or_else(|| panic!("no drift verdict rendered:\n{rendered}"));
-    assert!(
-        drift_line.contains("checked 3m ago"),
-        "the Drift verdict and the heading date one fact in one vocabulary:\n{drift_line}"
-    );
-
     let rows = [
         ("profile:base", "— Synced (1 file)"),
         ("cfgd:env", "— Synced (1 env file)"),
@@ -30991,12 +30980,6 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
     assert!(
         rendered.contains("Component Health (drift never checked)"),
         "an unscanned host's heading says drift was never checked, got:\n{rendered}"
-    );
-    assert!(
-        rendered
-            .lines()
-            .any(|l| l.contains("No drift recorded") && l.contains("drift never checked")),
-        "the Drift verdict shares the heading's never-checked wording:\n{rendered}"
     );
 
     // No derivable profile (a `--module` isolated run): the profile-declared
@@ -31044,6 +31027,311 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
         raw.contains(&theme.muted.apply_to(" (checked 3m ago)").to_string()),
         "the heading's freshness note must render muted in:\n{raw:?}"
     );
+}
+
+/// The fleet dashboard has no standalone Drift section: each unresolved
+/// recorded finding renders indented under its owner's Component Health row,
+/// through the same ownership vocabulary every producer's group heading uses
+/// (`reconciler::owner_of`'s split: a module id names its module, a package
+/// is the module whose resolution declares it under the id's own manager,
+/// and everything else the profile). A drifted owner's verdict flips to
+/// `Drifted` — the RECORDED verdict, read off the same rows nested beneath
+/// it, so the word and the findings cannot disagree — and its parenthetical
+/// states the SHORTFALL (`1 of 6 files`), never the raw inventory. A
+/// non-local row keeps its `source:<name>` attribution on the nested line.
+#[test]
+#[serial_test::serial]
+fn component_health_nests_the_recorded_drift_under_its_owner() {
+    use cfgd_core::output::{Printer, Verbosity};
+
+    let mut output = component_health_fixture();
+    // git's resolution declares typescript under npm, so the recorded
+    // package row can reach the module row that should carry it.
+    output.modules[1]
+        .declared
+        .package_managers
+        .entry("typescript".into())
+        .or_default()
+        .insert("npm".into());
+    let event = |resource_type: &str, resource_id: &str, expected: &str, actual: &str| {
+        cfgd_core::state::DriftEvent {
+            id: 0,
+            timestamp: "2026-05-14T10:02:00Z".into(),
+            resource_type: resource_type.into(),
+            resource_id: resource_id.into(),
+            expected: Some(expected.into()),
+            actual: Some(actual.into()),
+            resolved_by: None,
+            source: cfgd_core::config::LOCAL_LAYER.into(),
+            want: None,
+            have: None,
+        }
+    };
+    output.drift = vec![
+        event(
+            "module",
+            &super::live_drift::module_file_resource_id("nvim", "/home/user/.config/nvim/init.lua"),
+            "content matches source",
+            "content differs from source",
+        ),
+        event("package", "npm:typescript", "installed", "not installed"),
+        {
+            let mut e = event("package", "brew:ripgrep", "installed", "not installed");
+            e.source = "team-config".into();
+            e
+        },
+    ];
+
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    printer.emit(component_health_doc(&output, Some("base")));
+    drop(printer);
+    let rendered = cfgd_core::test_helpers::captured_text(&buf);
+
+    assert!(
+        !rendered.lines().any(|l| l.trim() == "Drift"),
+        "the standalone fleet Drift section dissolved:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("No drift recorded"),
+        "the empty verdict moved into the heading annotation:\n{rendered}"
+    );
+
+    let section = component_health_section(&rendered);
+    let lines: Vec<&str> = section.lines().collect();
+    let row_at = |owner: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(owner) && l.contains('—'))
+            .unwrap_or_else(|| panic!("no `{owner}` health row in:\n{section}"))
+    };
+
+    // The drifted module: verdict flips, the parenthetical is the shortfall,
+    // and the finding is the very next line, one indent step deeper.
+    let nvim = row_at("module:nvim");
+    assert!(
+        lines[nvim].contains("Drifted (1 of 6 files)"),
+        "a drifted owner reads the shortfall, not the inventory:\n{}",
+        lines[nvim]
+    );
+    let finding = lines
+        .get(nvim + 1)
+        .unwrap_or_else(|| panic!("no line under the nvim row:\n{section}"));
+    assert!(
+        finding.contains(".config/nvim/init.lua") && finding.contains("content differs"),
+        "the finding nests under its owner with its terse cause:\n{finding}"
+    );
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    assert!(
+        indent(finding) > indent(lines[nvim]),
+        "the finding indents one step below its owner row:\nrow: {}\nfinding: {finding}",
+        lines[nvim]
+    );
+
+    // A package row reaches the module whose resolution declares it under
+    // the id's own manager — never the profile row beside it.
+    let git = row_at("module:git");
+    assert!(
+        lines[git].contains("Drifted"),
+        "the declared package's owner carries the verdict:\n{}",
+        lines[git]
+    );
+    assert!(
+        lines
+            .get(git + 1)
+            .is_some_and(|l| l.contains("typescript") && l.contains("not installed")),
+        "the package finding nests under the declaring module:\n{section}"
+    );
+
+    // A package no module declares is the profile's, and a non-local row
+    // keeps its source attribution on the nested line.
+    let profile = row_at("profile:base");
+    assert!(
+        lines[profile].contains("Drifted"),
+        "an undeclared package's drift is the profile's:\n{}",
+        lines[profile]
+    );
+    let ripgrep = lines
+        .iter()
+        .find(|l| l.contains("ripgrep"))
+        .unwrap_or_else(|| panic!("no ripgrep finding in:\n{section}"));
+    assert!(
+        ripgrep.contains("source:team-config"),
+        "a non-local finding keeps its source token:\n{ripgrep}"
+    );
+
+    // The Warn verdict carries the warning style — the deferred half of the
+    // themed-verdict pin, live now that a recorded row can flip a verdict.
+    let theme = cfgd_core::output::Theme::from_preset("dracula").with_colors(true);
+    let (printer, buf) = Printer::for_test_with_theme_colored(theme.clone(), Verbosity::Normal);
+    printer.emit(component_health_doc(&output, Some("base")));
+    printer.flush();
+    // raw-capture-ok: the subject IS the verdict's SGR bytes, which captured_text strips.
+    let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(
+        raw.contains(&theme.warning.apply_to("Drifted").to_string()),
+        "a Warn verdict must carry the warning style in:\n{raw:?}"
+    );
+}
+
+/// The fleet heading annotation is where the machine's check-freshness fact
+/// lives — the one place, now that the standalone Drift section is gone. It
+/// states one of three things through one composer: this run checked live
+/// (`checked live now`), a recorded check stands (`checked <age> ago`), or
+/// nothing ever has (`drift never checked`).
+#[test]
+fn the_fleet_heading_annotation_states_the_checks_freshness() {
+    use cfgd_core::output::{Printer, Verbosity};
+
+    let annotation = |mutate: fn(&mut super::status::StatusOutput)| {
+        let mut output = component_health_fixture();
+        mutate(&mut output);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(component_health_doc(&output, Some("base")));
+        drop(printer);
+        let rendered = cfgd_core::test_helpers::captured_text(&buf);
+        rendered
+            .lines()
+            .find(|l| l.contains("Component Health"))
+            .unwrap_or_else(|| panic!("no Component Health heading in:\n{rendered}"))
+            .to_string()
+    };
+
+    assert!(
+        annotation(|_| {}).contains("(checked 3m ago)"),
+        "a recorded stamp dates the heading: {}",
+        annotation(|_| {})
+    );
+    assert!(
+        annotation(|o| o.last_scan_at = None).contains("(drift never checked)"),
+        "an unchecked host says so: {}",
+        annotation(|o| o.last_scan_at = None)
+    );
+    assert!(
+        annotation(|o| o.drift_checked_live = true).contains("(checked live now)"),
+        "a `--scan` run's verdicts are this run's own: {}",
+        annotation(|o| o.drift_checked_live = true)
+    );
+}
+
+/// One stored literal for a missing package: every producer that persists a
+/// package row's `actual` spells it [`cfgd_core::Absence::NotInstalled`]
+/// (`not installed`). `verify` stored `missing` where the live scan stored
+/// `not installed` for the SAME fact, so one host answered two spellings —
+/// and a compliance diff of two snapshots taken through two commands read as
+/// drift. The walk finds every `resource_type: "package"` construction in
+/// the producer files and requires its `actual` arm to reference the shared
+/// vocabulary, never a bare string literal.
+#[test]
+fn one_stored_literal_for_a_missing_package() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let producers = [
+        "crates/cfgd-core/src/reconciler/verify.rs",
+        "crates/cfgd/src/cli/live_drift.rs",
+        "crates/cfgd/src/cli/diff.rs",
+        "crates/cfgd/src/cli/status.rs",
+    ];
+    let mut seen = 0usize;
+    let mut offenders = Vec::new();
+    for file in producers {
+        let text = std::fs::read_to_string(root.join(file)).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains(r#"resource_type: "package""#) {
+                continue;
+            }
+            // The construction's `actual:` arm within the next few lines; a
+            // window that carries none is a `checked`-scope key, not a row.
+            let window = lines[i..(i + 12).min(lines.len())].join("\n");
+            let Some(actual_at) = window.find("actual:") else {
+                continue;
+            };
+            seen += 1;
+            let arm = &window[actual_at..];
+            // `phrase.state` is `manager_drift_phrase`'s field, itself spelled
+            // from `Absence::NotInstalled` in the same walked file — the one
+            // accepted indirection.
+            if !arm.contains("NotInstalled")
+                && !arm.contains(r#""installed""#)
+                && !arm.contains("phrase.state")
+            {
+                offenders.push(format!("{file}:{}: {}", i + 1, lines[i].trim()));
+            }
+        }
+    }
+    assert!(
+        seen >= 3,
+        "the walk found package-row constructions, found {seen}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a missing package's stored `actual` comes from `Absence::NotInstalled`, \
+         never a second literal:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every drift-empty verdict states whether a check ran, and the
+/// `No drift detected` / `No drift recorded` pair has exactly two production
+/// homes: `status`'s per-module Drift section (`drift_section`, whose live/
+/// recorded split IS the claim) and `diff`'s live verdict (a check it just
+/// ran). The fleet surface's empty verdict is the Component Health heading
+/// annotation — `the_fleet_heading_annotation_states_the_checks_freshness`
+/// pins its three states.
+///
+/// `verify`'s `All N resources match desired state` and the compliance
+/// surfaces are DIFFERENT verbs and keep their own wording: both speak only
+/// after a comparison they themselves just ran (verify against the resolved
+/// desired state, compliance against a named snapshot), so neither can utter
+/// its verdict without a check standing behind it — the ambiguity this pair
+/// exists to resolve cannot arise there.
+#[test]
+fn every_empty_drift_verdict_states_whether_a_check_ran() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut carriers = Vec::new();
+    let mut stack = vec![
+        root.join("crates/cfgd-core/src"),
+        root.join("crates/cfgd/src"),
+    ];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            if text.contains("No drift detected") || text.contains("No drift recorded") {
+                carriers.push(path);
+            }
+        }
+    }
+    let allowed = |p: &std::path::Path| {
+        let s = cfgd_core::to_posix_string(p);
+        // The two production homes, plus test files asserting about them.
+        s.ends_with("cli/status.rs") || s.ends_with("cli/diff.rs") || s.ends_with("tests.rs")
+    };
+    let offenders: Vec<String> = carriers
+        .iter()
+        .filter(|p| !allowed(p))
+        .map(cfgd_core::to_posix_string)
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "the empty-drift pair renders from its two homes only:\n{}",
+        offenders.join("\n")
+    );
+    // Both homes still exist — the walk is not vacuous.
+    for home in ["cli/status.rs", "cli/diff.rs"] {
+        assert!(
+            carriers
+                .iter()
+                .any(|p| cfgd_core::to_posix_string(p).ends_with(home)),
+            "`{home}` no longer carries its verdict — move this walk's allowlist deliberately"
+        );
+    }
 }
 
 /// The fleet dashboard's Last Apply block leads on its verdict: `Result`,
@@ -32133,6 +32421,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         }],
         drift_checked_live: true,
         last_scan_at: None,
+        env_check_error: None,
     };
     let source_show = super::output_types::SourceShowOutput {
         name: "team".into(),

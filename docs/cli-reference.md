@@ -571,20 +571,34 @@ claim about the machine right now:
 ```
 
 The recorded dashboard dates itself on the verdicts the date qualifies: the
-Drift verdict and the Component Health heading both carry `checked 6m ago` (or
-`drift never checked`), the freshest of the machine-wide scan stamp and the
-recorded rows' own timestamps, since a scoped scan records rows without moving
-the stamp. Once that freshest evidence passes the daemon's default reconcile
-interval the report closes on a hint pointing at `cfgd diff`, so a stale
-dashboard says so rather than reading as a clean machine. `-o json` carries the
-stamp itself as `lastScanAt` (an ISO 8601 timestamp, absent when there has been
-no machine-wide scan) and each row's `timestamp` beside it.
+Component Health heading carries `checked 6m ago` (`drift never checked` when
+no scan is on record, `checked live now` after `--scan`), the freshest of the
+machine-wide scan stamp and the recorded rows' own timestamps, since a scoped
+scan records rows without moving the stamp. Each unresolved recorded finding
+nests under the health row of the owner it belongs to, stating its terse
+cause, and the owner's verdict flips to `Drifted` with the shortfall as its
+parenthetical:
+
+```
+Component Health (checked 6m ago)
+  ⚠ module:nvim — Drifted (1 of 6 files)
+    ~/.config/nvim/init.lua — content differs
+  ✓ module:git  — Synced (1 file)
+```
+
+Once that freshest evidence passes the daemon's default reconcile interval the
+report closes on a hint pointing at `cfgd diff`, so a stale dashboard says so
+rather than reading as a clean machine. `-o json` carries the stamp itself as
+`lastScanAt` (an ISO 8601 timestamp, absent when there has been no
+machine-wide scan) and each row's `timestamp` beside it, with the findings as
+the flat `drift` array.
 
 A recorded `env-var` or `alias` row is re-read against the machine before it is
 shown. If the declared line is the line the managed env file now holds, the row
 healed since it was recorded and is not reported at all (state clears it on the
-next apply or scan). If it still differs, the human row states both real lines,
-and `-o json` adds `want` and `have` beside the row's stored `expected` and
+next apply or scan). If it still differs, the human row states the terse cause
+(`missing`), and `-o json` adds `want` and `have` — the real declared line
+against what the file holds — beside the row's stored `expected` and
 `actual`. The stored pair keeps the bytes the row was written with (the opaque
 `current` / `missing or changed` markers a keyed record describes itself by); the
 additive pair carries what the re-read found. Both additive fields are omitted
@@ -603,19 +617,21 @@ when the scan found drift, or `1` when a system configurator check itself
 failed: the same split `cfgd diff --exit-code` and `cfgd verify --exit-code`
 report, since an unknown state outranks a known one (see
 [Exit Codes](#exit-codes)); `--scan` on its own never changes the exit code.
-A failed check is never silently dropped: the Drift section renders it as its
-own row (`gpgKeys: error checking drift — keyring unavailable`) and `-o json`
+A failed check is never silently dropped: the report renders it as its own
+row (`gpgKeys: error checking drift — keyring unavailable`) and `-o json`
 carries it in `systemErrors` (the same `{key, error}` entries `cfgd diff` and
 `cfgd verify` report), so an empty `drift` array beside a non-empty
 `systemErrors` reads as "unknown", not "clean". The live scan costs real time
 (each run is a full package/file check, roughly 10-15s per module in a
 typical container), so reach for it deliberately rather than in an
 interactive dashboard refresh.
-`status --module <name> --scan` scans that module's own files and missing
-packages only: it does not evaluate the module's system-config contribution
+`status --module <name> --scan` scans that module's own files, missing
+packages, and the env vars and aliases its chain owns (the same per-item check
+`cfgd diff --module` runs, so a scoped workflow records AND heals its own
+shell rows): it does not evaluate the module's system-config contribution
 (`effective_system_map` folds that into the profile-wide scan) or manager
-drift. `cfgd diff --module` shares the files-and-packages scope and adds the
-module's own declared env vars and aliases (see [`cfgd diff`](#cfgd-diff)).
+drift. `cfgd diff --module` shares the whole scope (see
+[`cfgd diff`](#cfgd-diff)).
 
 The fleet report's `Managed Resources` table names an owner per row, in the same
 vocabulary the plan and apply trees head their groups with and `cfgd diff`
@@ -676,9 +692,10 @@ daemon's whole-module rows (a bare `module:<name>` verdict with no file
 granularity), package rows whose packages the chain declares under the
 recorded manager, and `env-var`/`alias` rows attributed to the last chain
 module declaring the name (the merge's own winner). The verdict carries the
-same freshness qualifier the fleet verdict does — `checked 2h ago`, dated by
-the freshest of the machine-wide stamp and the rows' own timestamps, or `No
-drift recorded — drift never checked` when there is neither — and the module
+same freshness vocabulary the fleet's Component Health heading does — `checked
+2h ago`, dated by the freshest of the machine-wide stamp and the rows' own
+timestamps, or `No drift recorded — drift never checked` when there is
+neither — and the module
 `-o json` payload carries the same `lastScanAt` the fleet payload does. A
 recorded module-file finding also marks its Deployed Files row `drifted`
 rather than `not scanned`. A `--scan` replaces the recorded rows with what
