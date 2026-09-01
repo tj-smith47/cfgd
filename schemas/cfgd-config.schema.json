@@ -313,6 +313,14 @@
           ],
           "default": null,
           "description": "Update policy for the cfgd binary and authored skills."
+        },
+        "usageHints": {
+          "default": null,
+          "description": "Whether closing `→` usage hints render. Omitted, hints render.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "type": "object"

@@ -659,6 +659,41 @@ pub fn resolve_theme_config(
     }
 }
 
+/// Resolve whether closing `→` usage hints render, folding `--no-hints`,
+/// `CFGD_USAGE_HINTS` and `spec.usageHints` into the one decision every
+/// entry point's printer is built from (`Printer::with_hints_enabled`).
+/// Precedence: the flag beats the env var beats the config field beats the
+/// default (hints render).
+///
+/// Best-effort by design, mirroring [`resolve_theme_config`]: a missing,
+/// unreadable or malformed config renders hints rather than failing, because
+/// a printer has to exist before there is anything to report a load failure
+/// through.
+///
+/// `CFGD_USAGE_HINTS` is read directly here rather than bound to `--no-hints`
+/// via `#[arg(env = …)]`: the two spellings have OPPOSITE polarity (a set
+/// `--no-hints` suppresses; a set `CFGD_USAGE_HINTS=false` also suppresses,
+/// but `CFGD_USAGE_HINTS=true` does NOT set `no_hints`), and clap has no
+/// shape for negating a bool flag from a positively-named env var short of a
+/// second hidden field. Boolish spellings are accepted through the same
+/// table every other `CFGD_*` boolean env var uses.
+pub fn resolve_hints_enabled(config_path: &Path, no_hints_flag: bool) -> bool {
+    if no_hints_flag {
+        return false;
+    }
+    if let Ok(raw) = std::env::var("CFGD_USAGE_HINTS")
+        && let Some(canonical) = cfgd_core::canonical_bool_str(&raw)
+    {
+        return canonical == "true";
+    }
+    let stored = config_path
+        .exists()
+        .then(|| cfgd_core::config::load_config(config_path).ok())
+        .flatten()
+        .and_then(|c| c.spec.usage_hints);
+    stored.unwrap_or(true)
+}
+
 #[derive(Debug, Clone)]
 pub struct OutputFormatArg(pub cfgd_core::output::OutputFormat);
 
@@ -795,6 +830,13 @@ pub struct Cli {
     /// Wrap top-level array payloads under -o json/yaml in a KRM List envelope ({apiVersion, kind: List, items})
     #[arg(long, global = true, env = "CFGD_LIST_ENVELOPE")]
     pub list_envelope: bool,
+
+    /// Suppress closing `→` usage hints for this invocation. `CFGD_USAGE_HINTS=false`
+    /// and `spec.usageHints: false` do the same thing persistently; this flag wins
+    /// over both. No env attached here: `CFGD_USAGE_HINTS` has the OPPOSITE polarity
+    /// (it names what stays ON) and is read directly in `resolve_hints_enabled`.
+    #[arg(long = "no-hints", global = true)]
+    pub no_hints: bool,
 
     /// [DEPRECATED — use --output jsonpath=EXPR] JSONPath expression to extract from structured output
     #[arg(long, global = true, hide = true)]

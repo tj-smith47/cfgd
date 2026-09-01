@@ -392,6 +392,17 @@ pub struct Renderer {
     pub(crate) live: std::sync::Arc<LiveBarState>,
     /// Non-zero while a `DepthInheritGuard` is alive.
     pub(crate) inherit_guards: AtomicUsize,
+    /// Whether [`Self::render_hint`] emits anything. Settled once by
+    /// `Printer::with_hints_enabled` (from `--no-hints` / `CFGD_USAGE_HINTS` /
+    /// `spec.usageHints`) and then read by every renderer sharing this
+    /// printer's decision — `SectionGuard` and `Doc` rendering hold their own
+    /// `Arc<Renderer>` clone rather than asking the `Printer`, so the flag has
+    /// to live here, at the one seam every hint producer already reaches.
+    /// `AtomicBool` rather than a constructor parameter: threading a new
+    /// argument through `Renderer::new`/`with_bars` would touch every one of
+    /// their ~70 test call sites for a decision only two production call
+    /// sites (the CLI, the kubectl plugin) ever need to flip off.
+    pub(crate) hints_enabled: AtomicBool,
 }
 
 impl Renderer {
@@ -403,6 +414,7 @@ impl Renderer {
             bars: None,
             live: std::sync::Arc::new(LiveBarState::new(None)),
             inherit_guards: AtomicUsize::new(0),
+            hints_enabled: AtomicBool::new(true),
         }
     }
 
@@ -438,12 +450,17 @@ impl Renderer {
     /// `live` is the replaced renderer's own [`LiveBarState`], not a fresh one:
     /// both renderers write the one live region, so both have to route their
     /// emissions through the one clear-and-repaint decision it holds.
+    ///
+    /// `hints_enabled` is the replaced renderer's own decision (read via
+    /// `Renderer::hints_enabled`), not a fresh default: a re-themed or
+    /// derived printer must not un-suppress hints the parent turned off.
     pub(crate) fn with_bars_continued(
         theme: Theme,
         verbosity: Verbosity,
         bars: indicatif::MultiProgress,
         seed: RenderState,
         live: std::sync::Arc<LiveBarState>,
+        hints_enabled: bool,
     ) -> Self {
         // Spelled out rather than `..Self::new(theme, verbosity)`: the struct
         // update operand is evaluated in full, so the shorthand mints a fresh
@@ -455,7 +472,19 @@ impl Renderer {
             bars: Some(bars),
             live,
             inherit_guards: AtomicUsize::new(0),
+            hints_enabled: AtomicBool::new(hints_enabled),
         }
+    }
+
+    /// Whether [`Self::render_hint`] emits anything on this renderer.
+    pub(crate) fn hints_enabled(&self) -> bool {
+        self.hints_enabled.load(Relaxed)
+    }
+
+    /// Flip whether [`Self::render_hint`] emits anything. Called once, right
+    /// after construction, by `Printer::with_hints_enabled` — never mid-run.
+    pub(crate) fn set_hints_enabled(&self, enabled: bool) {
+        self.hints_enabled.store(enabled, Relaxed);
     }
 
     /// Snapshot the blank-line bookkeeping a derived renderer needs from this
@@ -1160,8 +1189,16 @@ impl Renderer {
     /// the rows above it. Folded HERE rather than at the composers because a
     /// `Doc` with no `with_data` serializes its `Component::Hint` text into the
     /// Doc-derived payload, which keeps the absolute path a script can `cat`.
+    ///
+    /// Also the ONE seam `spec.usageHints: false` / `CFGD_USAGE_HINTS=false` /
+    /// `--no-hints` suppresses through: the early return below fires before
+    /// `open_top_group` arms the leading blank line a hint would otherwise
+    /// own, so turning hints off drops both the hint AND its blank line
+    /// rather than leaving a bare blank behind. `note`/`deprecation`/`alert`
+    /// are NOT hints and do not check this flag — they report what the run
+    /// did or will do, not what to run next, and stay visible with hints off.
     pub fn render_hint(&self, w: &dyn Writer, depth: usize, text: &str) {
-        if self.verbosity == Verbosity::Quiet {
+        if self.verbosity == Verbosity::Quiet || !self.hints_enabled() {
             return;
         }
         let arrow = self

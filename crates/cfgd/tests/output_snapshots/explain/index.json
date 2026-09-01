@@ -6983,6 +6983,12 @@
         "required": false,
         "type": "object",
         "typeName": "UpdateConfig"
+      },
+      {
+        "description": "Whether closing `→` usage hints render. Omitted, hints render.",
+        "name": "usageHints",
+        "required": false,
+        "type": "boolean"
       }
     ],
     "kind": "Config",

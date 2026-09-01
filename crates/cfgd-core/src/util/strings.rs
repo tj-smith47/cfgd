@@ -611,6 +611,26 @@ pub fn xml_escape(s: &str) -> String {
     out
 }
 
+/// Map a raw boolish env-var value to the canonical `"true"`/`"false"` clap's
+/// `BoolishValueParser` accepts. Case-insensitive: TRUE = {1, y, yes, t, true,
+/// on}, FALSE = {0, n, no, f, false, off}. Returns `None` for anything else,
+/// so a genuinely-invalid value still surfaces as a validation error at
+/// whichever call site parsed it rather than being silently coerced.
+///
+/// Shared by the `cfgd` binary crate's env pre-normalization (rewriting
+/// `CFGD_QUIET=1` to `"true"` before clap parses it) and the `cfgd` library
+/// crate's own manual reads of a boolean env var not bound to a clap field
+/// (`CFGD_USAGE_HINTS`, read by `cli::resolve_hints_enabled`) — the two are
+/// separate crate compilations, so a `cfgd-core` helper is what lets them
+/// agree on one accept-set instead of drifting into two.
+pub fn canonical_bool_str(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "y" | "yes" | "t" | "true" | "on" => Some("true"),
+        "0" | "n" | "no" | "f" | "false" | "off" => Some("false"),
+        _ => None,
+    }
+}
+
 /// The ONE absence vocabulary this workspace renders, so three call sites
 /// naming the same kind of gap never drift into three different spellings.
 /// The choice is about WHAT is absent, not how badly:
@@ -669,6 +689,55 @@ impl std::fmt::Display for Absence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_bool_str_accepts_truthy_spellings() {
+        for raw in [
+            "1", "y", "yes", "t", "true", "on", "YES", "Yes", "ON", "True",
+        ] {
+            assert_eq!(
+                canonical_bool_str(raw),
+                Some("true"),
+                "{raw:?} should normalize to true"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_bool_str_accepts_falsey_spellings() {
+        for raw in ["0", "n", "no", "f", "false", "off", "NO", "Off", "FALSE"] {
+            assert_eq!(
+                canonical_bool_str(raw),
+                Some("false"),
+                "{raw:?} should normalize to false"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_bool_str_trims_surrounding_whitespace() {
+        assert_eq!(canonical_bool_str("  1  "), Some("true"));
+        assert_eq!(canonical_bool_str("\toff\n"), Some("false"));
+    }
+
+    #[test]
+    fn canonical_bool_str_passes_through_canonical_values() {
+        assert_eq!(canonical_bool_str("true"), Some("true"));
+        assert_eq!(canonical_bool_str("false"), Some("false"));
+    }
+
+    #[test]
+    fn canonical_bool_str_rejects_unrecognized_values() {
+        // Unrecognized values return None so they remain untouched and clap's
+        // bool parser still rejects them, preserving validation.
+        for raw in ["garbage", "", "2", "tru", "yess", "10"] {
+            assert_eq!(
+                canonical_bool_str(raw),
+                None,
+                "{raw:?} should not be recognized as boolish"
+            );
+        }
+    }
 
     #[test]
     fn absence_wording_carries_no_severity_vocabulary() {

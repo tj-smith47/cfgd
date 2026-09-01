@@ -288,6 +288,7 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
             ai: raw.spec.ai,
             compliance: raw.spec.compliance,
             update: raw.spec.update,
+            usage_hints: raw.spec.usage_hints,
         },
         deprecations,
     })
@@ -332,6 +333,8 @@ struct RawConfigSpec {
     compliance: Option<ComplianceConfig>,
     #[serde(default)]
     update: Option<UpdateConfig>,
+    #[serde(default)]
+    usage_hints: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

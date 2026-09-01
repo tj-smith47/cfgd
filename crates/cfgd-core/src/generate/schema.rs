@@ -568,6 +568,10 @@ spec:
       # optional: Inherit (default), Auto, Prompt, Notify, Manual
       policy: Inherit
 
+  # Whether closing usage hints render.
+  # optional, bool, default: true
+  usageHints: true
+
   # Daemon configuration — controls the background reconciliation loop.
   # optional
   daemon:

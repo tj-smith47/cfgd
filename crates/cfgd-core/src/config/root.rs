@@ -160,6 +160,10 @@ pub struct ConfigSpec {
     /// Update policy for the cfgd binary and authored skills.
     #[serde(default)]
     pub update: Option<UpdateConfig>,
+
+    /// Whether closing `→` usage hints render. Omitted, hints render.
+    #[serde(default)]
+    pub usage_hints: Option<bool>,
 }
 
 /// Schema for `spec.fileStrategy`: the [`FileStrategy`] variants minus `Patch`.

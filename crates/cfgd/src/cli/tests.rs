@@ -198,6 +198,7 @@ impl CliTestHarness {
             quiet: true,
             output: OutputFormatArg(self.output_format.clone()),
             list_envelope: false,
+            no_hints: false,
             theme: None,
             jsonpath: None,
             yes: false,
@@ -745,6 +746,62 @@ fn resolve_theme_config_falls_back_to_the_default_theme_when_it_cannot_read_one(
     assert!(
         super::resolve_theme_config(&broken, None).is_none(),
         "an unparseable config resolves no theme rather than failing"
+    );
+}
+
+#[test]
+fn resolve_hints_enabled_defaults_on_with_no_config_flag_or_env() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert!(
+        super::resolve_hints_enabled(&dir.path().join("absent.yaml"), false),
+        "hints render by default"
+    );
+}
+
+#[test]
+fn resolve_hints_enabled_reads_spec_usage_hints() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  usageHints: false\n",
+    )
+    .expect("write config");
+    assert!(
+        !super::resolve_hints_enabled(&path, false),
+        "spec.usageHints: false must turn hints off"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_hints_enabled_precedence_flag_beats_env_beats_spec_beats_default() {
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  usageHints: false\n",
+    )
+    .expect("write config");
+
+    // spec.usageHints: false, no env, no flag -> off.
+    let _unset = EnvVarGuard::unset("CFGD_USAGE_HINTS");
+    assert!(!super::resolve_hints_enabled(&path, false));
+
+    // The env var beats a config that says the opposite.
+    let _on_env = EnvVarGuard::set("CFGD_USAGE_HINTS", "true");
+    assert!(
+        super::resolve_hints_enabled(&path, false),
+        "CFGD_USAGE_HINTS=true must outrank spec.usageHints: false"
+    );
+
+    // The flag beats an env var that says the opposite.
+    let _off_env = EnvVarGuard::set("CFGD_USAGE_HINTS", "true");
+    assert!(
+        !super::resolve_hints_enabled(&path, true),
+        "--no-hints must outrank CFGD_USAGE_HINTS=true"
     );
 }
 
@@ -1786,6 +1843,7 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        no_hints: false,
         theme: None,
         jsonpath: None,
         yes: false,
@@ -5216,6 +5274,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        no_hints: false,
         theme: None,
         jsonpath: None,
         yes: false,
@@ -5770,6 +5829,7 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
         quiet: false,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        no_hints: false,
         theme: None,
         jsonpath: None,
         yes: false,

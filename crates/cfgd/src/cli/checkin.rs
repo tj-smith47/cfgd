@@ -464,6 +464,7 @@ spec: {}
             color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
+            no_hints: false,
             theme: None,
             jsonpath: None,
             yes: false,
