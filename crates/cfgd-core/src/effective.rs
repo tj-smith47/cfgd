@@ -211,6 +211,7 @@ pub fn effective_files(
 /// consumer, because three consumers resolving it separately is how one of them
 /// read a strategy-less entry as `Symlink` under a global `fileStrategy: Patch`
 /// and prompted about a file the other two adopted in place.
+#[derive(Default)]
 pub struct FileStrategies {
     by_target: std::collections::HashMap<std::path::PathBuf, crate::config::FileStrategy>,
     default: crate::config::FileStrategy,

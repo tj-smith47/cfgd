@@ -682,11 +682,18 @@ pub fn recorded_env_method(resource_id: &str) -> &'static str {
     let name = resource_id.rsplit('/').next().unwrap_or(resource_id);
     match name {
         ".cfgd.env" | ".cfgd-env.ps1" | "cfgd-env.fish" | "cfgd.conf" | MACOS_USER_PLIST_NAME => {
-            "write"
+            ENV_VERB_WRITE
         }
-        _ => "inject",
+        _ => ENV_VERB_INJECT,
     }
 }
+
+/// The two verbs the env engine's actions go by, on every surface that names
+/// one: the `env:write:`/`env:inject:` resource ids, the plan bullets and the
+/// status table's Method cells. One spelling here keeps a rename from leaving
+/// any of the three silently stale against the other two.
+pub const ENV_VERB_WRITE: &str = "write";
+pub const ENV_VERB_INJECT: &str = "inject";
 
 fn unix_targets(
     content: EnvContent<'_>,
@@ -1274,32 +1281,36 @@ mod tests {
                 let env = vec![ev("PATH", &format!("$HOME/.cargo/bin{separator}$PATH"))];
                 let dirs = dirs(&crate::to_posix_string(home));
                 let origins = EnvOrigins::default();
-                for target in env_targets(
-                    EnvContent::new(&env, &[], &dirs, &origins),
-                    EnvScope::All,
-                    home,
-                    probe,
-                    platform,
-                ) {
-                    // The recorded id is `to_posix_string(path)` for both verbs
-                    // (`format_action_description`'s env arms), so the walk
-                    // folds the same way before asking.
-                    let (id, expected) = match &target {
-                        EnvTarget::ManagedFile { path, .. } => {
-                            writes += 1;
-                            (crate::to_posix_string(path), "write")
-                        }
-                        EnvTarget::SourceLine { rc_path, .. } => {
-                            injects += 1;
-                            (crate::to_posix_string(rc_path), "inject")
-                        }
-                        EnvTarget::LiveSession { .. } => continue,
-                    };
-                    assert_eq!(
-                        recorded_env_method(&id),
-                        expected,
-                        "{id} classifies under the verb that produced it"
-                    );
+                // Every scope, not just the superset: a future arm gated on a
+                // narrower scope must classify too.
+                for scope in [EnvScope::All, EnvScope::Login, EnvScope::Interactive] {
+                    for target in env_targets(
+                        EnvContent::new(&env, &[], &dirs, &origins),
+                        scope,
+                        home,
+                        probe,
+                        platform,
+                    ) {
+                        // The recorded id is `to_posix_string(path)` for both verbs
+                        // (`format_action_description`'s env arms), so the walk
+                        // folds the same way before asking.
+                        let (id, expected) = match &target {
+                            EnvTarget::ManagedFile { path, .. } => {
+                                writes += 1;
+                                (crate::to_posix_string(path), ENV_VERB_WRITE)
+                            }
+                            EnvTarget::SourceLine { rc_path, .. } => {
+                                injects += 1;
+                                (crate::to_posix_string(rc_path), ENV_VERB_INJECT)
+                            }
+                            EnvTarget::LiveSession { .. } => continue,
+                        };
+                        assert_eq!(
+                            recorded_env_method(&id),
+                            expected,
+                            "{id} classifies under the verb that produced it"
+                        );
+                    }
                 }
             }
         }

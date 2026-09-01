@@ -3,6 +3,7 @@ use crate::config::LOCAL_LAYER;
 use crate::providers::{FileAction, PackageAction, SecretAction};
 use crate::to_posix_string;
 
+use super::env_engine::{ENV_VERB_INJECT, ENV_VERB_WRITE};
 use super::types::{
     Action, EnvAction, ManagerAction, ModuleAction, ModuleActionKind, OwnerGroup, ScriptAction,
     ScriptPhase, SystemAction,
@@ -210,10 +211,10 @@ pub fn format_action_description(action: &Action) -> String {
         },
         Action::Env(ea) => match ea {
             EnvAction::WriteEnvFile { path, .. } => {
-                format!("env:write:{}", path_str(path))
+                format!("env:{}:{}", ENV_VERB_WRITE, path_str(path))
             }
             EnvAction::InjectSourceLine { rc_path, .. } => {
-                format!("env:inject:{}", path_str(rc_path))
+                format!("env:{}:{}", ENV_VERB_INJECT, path_str(rc_path))
             }
             EnvAction::RefreshLiveSession { .. } => LIVE_SESSION_RESOURCE_ID.to_string(),
         },
@@ -419,6 +420,10 @@ pub(super) fn deploy_file_children(action: &Action) -> Option<Vec<(String, Strin
                 // `render_hint` folds its own text — one fold, at the
                 // renderer boundary, never at the producer.
                 let target = file.target.display_posix();
+                // The plan settles the configured default into the action, so
+                // this display path never resolves one itself — the type's own
+                // default is NOT `registry.default_file_strategy`, and re-
+                // deriving here is how the tree and the manifest disagreed.
                 let method = file.strategy.unwrap_or_default().method_label();
                 (target, method.to_string())
             })
@@ -694,10 +699,10 @@ fn plan_item(action: &Action) -> String {
         Action::Module(ma) => module_action_item(ma),
         Action::Env(ea) => match ea {
             EnvAction::WriteEnvFile { path, .. } => {
-                format!("write {}", path.posix())
+                format!("{ENV_VERB_WRITE} {}", path.posix())
             }
             EnvAction::InjectSourceLine { rc_path, .. } => {
-                format!("inject source line into {}", rc_path.posix())
+                format!("{ENV_VERB_INJECT} source line into {}", rc_path.posix())
             }
             EnvAction::RefreshLiveSession { vars } => {
                 format!(

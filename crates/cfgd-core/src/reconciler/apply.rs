@@ -1735,7 +1735,10 @@ impl<'a> super::Reconciler<'a> {
                                 .detail(e.to_string());
                             results.push(ActionResult {
                                 phase: PhaseName::Prerequisites.as_str().to_string(),
-                                description: "env:write:regenerate".to_string(),
+                                description: format!(
+                                    "env:{}:regenerate",
+                                    super::env_engine::ENV_VERB_WRITE
+                                ),
                                 success: false,
                                 error: Some(e.to_string()),
                                 changed: false,

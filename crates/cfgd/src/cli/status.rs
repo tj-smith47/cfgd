@@ -822,22 +822,11 @@ const NO_DETAIL: &str = cfgd_core::ABSENT;
 /// `strategies` is the effective resolution a profile file's Method cell
 /// reads. Both stay empty on a surface that renders no per-file rows; the
 /// aggregate rendering degrades to the recorded count alone.
+#[derive(Default)]
 pub struct ManagedResourceDetail {
     pub wide: bool,
     pub module_files: std::collections::BTreeMap<String, Vec<cfgd_core::state::ModuleFileRecord>>,
     pub strategies: cfgd_core::effective::FileStrategies,
-}
-
-impl Default for ManagedResourceDetail {
-    fn default() -> Self {
-        Self {
-            wide: false,
-            module_files: std::collections::BTreeMap::new(),
-            strategies: cfgd_core::effective::FileStrategies::with_default(
-                cfgd_core::config::FileStrategy::default(),
-            ),
-        }
-    }
 }
 
 /// The Managed Resources rows, as `[Type, Owner, Resource, Method, Source]`.
@@ -873,7 +862,7 @@ fn managed_resource_rows(
     profile: Option<&str>,
     detail: &ManagedResourceDetail,
 ) -> Vec<[String; 5]> {
-    let mut rows: Vec<[String; 5]> = Vec::new();
+    let mut rows: Vec<[String; 5]> = Vec::with_capacity(items.len());
     let profile_owner = profile.map_or_else(
         || NO_DETAIL.to_string(),
         |p| cfgd_core::reconciler::Owner::profile(p).token(),
@@ -918,29 +907,38 @@ fn managed_resource_rows(
             .find(|m| m.name == module)
             .map(|m| &m.declared);
         let (surface, item) = rest.split_once(':').unwrap_or((rest, ""));
-        let manifest = detail
-            .module_files
-            .get(module)
-            .map_or(&[][..], Vec::as_slice);
-        if surface == "files" && detail.wide && !manifest.is_empty() {
-            // Full granularity: the aggregate blows up into the manifest the
-            // same apply recorded beside it, one row per deployed file with
-            // the strategy that row itself carries.
-            for rec in manifest {
-                rows.push([
-                    display_type(surface).to_string(),
-                    owner.clone(),
-                    cfgd_core::fold_home_in_text(&rec.file_path),
-                    cfgd_core::config::FileStrategy::from_recorded(&rec.strategy)
-                        .map_or(NO_DETAIL, |s| s.method_label())
-                        .to_string(),
-                    r.source.clone(),
-                ]);
+        if surface == "files" {
+            let manifest = detail
+                .module_files
+                .get(module)
+                .map_or(&[][..], Vec::as_slice);
+            if detail.wide && !manifest.is_empty() {
+                // Full granularity: the aggregate blows up into the manifest
+                // the same apply recorded beside it, one row per deployed
+                // file with the strategy that row itself carries.
+                for rec in manifest {
+                    rows.push([
+                        display_type(surface).to_string(),
+                        owner.clone(),
+                        cfgd_core::fold_home_in_text(&rec.file_path),
+                        cfgd_core::config::FileStrategy::from_recorded(&rec.strategy)
+                            .map_or(NO_DETAIL, |s| s.method_label())
+                            .to_string(),
+                        r.source.clone(),
+                    ]);
+                }
+                continue;
             }
+            rows.push([
+                display_type(surface).to_string(),
+                owner,
+                module_files_resource(item, declared, manifest),
+                NO_DETAIL.to_string(),
+                r.source.clone(),
+            ]);
             continue;
         }
         let resource = match surface {
-            "files" => module_files_resource(item, declared, manifest),
             "packages" => module_packages_resource(item, declared),
             "script" => declared
                 .and_then(|d| d.script_summary.clone())
@@ -973,8 +971,15 @@ fn managed_resource_rows(
     // reconciler's own comparator, so a reader moving between this table and a
     // plan or apply tree meets the owners in one order.
     let order = owner_render_order(&rows);
-    let rank = |token: &String| order.iter().position(|o| o == token).unwrap_or(order.len());
-    rows.sort_by(|a, b| rank(&a[1]).cmp(&rank(&b[1])).then_with(|| a.cmp(b)));
+    // Wide multiplies the row count, so the owner rank is a map lookup per
+    // comparison rather than a linear scan of the order list.
+    let rank: std::collections::HashMap<&str, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(i, owner)| (owner.as_str(), i))
+        .collect();
+    let rank_of = |token: &String| rank.get(token.as_str()).copied().unwrap_or(order.len());
+    rows.sort_unstable_by(|a, b| rank_of(&a[1]).cmp(&rank_of(&b[1])).then_with(|| a.cmp(b)));
     rows
 }
 
@@ -1877,10 +1882,11 @@ pub(super) fn cmd_status(
     // never held.
     let configured_sources = super::source::list::configured_source_entries(cfg, state);
 
-    // The per-file half of the table: each listed module's recorded manifest
-    // (read whenever a `files:<n>` row will render, because a manifest of one
-    // names the file the default table shows bare), and — only when the wide
-    // table will read them — the resolved profile-file strategies.
+    // The per-file half of the table: each listed module's recorded manifest,
+    // and — only when the wide table will read them — the resolved
+    // profile-file strategies. A default table consumes a manifest only for a
+    // `files:1` row (a manifest of one names the file it shows bare), so
+    // every other module skips the query.
     let wide = printer.is_wide();
     let mut module_files: std::collections::BTreeMap<
         String,
@@ -1889,9 +1895,11 @@ pub(super) fn cmd_status(
     for r in &resources {
         if let Some((module, rest)) = module_id_parts(&r.resource_type, &r.resource_id)
             && (rest == "files" || rest.starts_with("files:"))
-            && !module_files.contains_key(module)
+            && (wide || rest == "files:1")
+            && let std::collections::btree_map::Entry::Vacant(slot) =
+                module_files.entry(module.to_string())
         {
-            module_files.insert(module.to_string(), state.module_deployed_files(module)?);
+            slot.insert(state.module_deployed_files(module)?);
         }
     }
     let strategies = if wide {
@@ -3867,6 +3875,57 @@ mod tests {
             out.contains("4 packages, 6 files, 7 scripts"),
             "the headline reports the recorded tally: {out}"
         );
+
+        // The same invariant under wide: the exploded per-file rows count
+        // what the headline says. The two derive from different stores — the
+        // `files:<n>` aggregate and the manifest — which agree only because
+        // the deploy prunes the manifest to the declared set it records the
+        // aggregate for.
+        let manifest: Vec<cfgd_core::state::ModuleFileRecord> = (0..6)
+            .map(|i| cfgd_core::state::ModuleFileRecord {
+                module_name: "nvim".to_string(),
+                file_path: format!("/home/u/.config/nvim/f{i}.lua"),
+                content_hash: String::new(),
+                strategy: "Copy".to_string(),
+                last_applied: None,
+            })
+            .collect();
+        let wide_rows = managed_resource_rows(
+            &resources,
+            &output.modules,
+            Some("base"),
+            &ManagedResourceDetail {
+                wide: true,
+                module_files: std::collections::BTreeMap::from([("nvim".to_string(), manifest)]),
+                strategies: Default::default(),
+            },
+        );
+        let file_rows = wide_rows
+            .iter()
+            .filter(|r| r[0] == "file" && r[1] == "module:nvim")
+            .count();
+        assert_eq!(
+            tally.files, file_rows,
+            "wide table vs headline: {wide_rows:?}"
+        );
+    }
+
+    /// A recorded `file` row outliving its declaration claims no method: the
+    /// effective lookup answers only for a target the config still declares,
+    /// so the wide cell reads the absence token rather than a strategy
+    /// nothing resolved.
+    #[test]
+    fn a_file_row_outliving_its_declaration_reads_an_absent_method() {
+        let rows = managed_resource_rows(
+            &[recorded("file", "~/.stale")],
+            &[],
+            Some("base"),
+            &ManagedResourceDetail {
+                wide: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(rows[0][3], cfgd_core::ABSENT, "{rows:?}");
     }
 
     /// The non-module Component Health rows count what the Managed Resources

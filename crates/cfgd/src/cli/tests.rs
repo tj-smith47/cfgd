@@ -6508,6 +6508,15 @@ fn the_fleet_wide_table_lists_one_row_per_deployed_file_with_its_method() {
             "the `{path}` row carries method `{method}`: {row}\nin:\n{wide}"
         );
     }
+    let pos = |path: &str| {
+        wide.lines()
+            .position(|l| l.contains(path))
+            .unwrap_or_else(|| panic!("no `{path}` row in:\n{wide}"))
+    };
+    assert!(
+        pos("~/.config/nvim/init.lua") < pos("~/.config/nvim/keys.lua"),
+        "a module's per-file rows land path-sorted: {wide}"
+    );
     assert!(
         !wide.contains("(2 files)"),
         "wide blows the aggregate up into per-file rows: {wide}"
@@ -6525,6 +6534,180 @@ fn the_fleet_wide_table_lists_one_row_per_deployed_file_with_its_method() {
     assert!(
         json.contains("nvim:files:2"),
         "json keeps the raw aggregate resource id: {json}"
+    );
+}
+
+/// One file, one method, two surfaces: the plan settles a strategy-less
+/// file's CONFIGURED default into the action, so the apply tree's child row
+/// and the wide table's Method cell speak one word. Before the settle, the
+/// tree resolved the type's own default (`Symlink`) while the executor and
+/// the manifest resolved `spec.fileStrategy` — under `fileStrategy: Copy`
+/// the tree said `symlink` for a file the run copied.
+#[test]
+#[cfg(unix)]
+fn a_strategy_less_file_names_one_method_on_the_tree_and_the_table() {
+    let (config_dir, state_dir) = setup_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  fileStrategy: Copy\n",
+    )
+    .unwrap();
+    let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - onefile\n";
+    std::fs::write(
+        config_dir.path().join("profiles").join("default.yaml"),
+        profile,
+    )
+    .unwrap();
+    create_module_in_dir(
+        config_dir.path(),
+        "onefile",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: onefile\nspec:\n  files:\n    - source: files/rc\n      target: ~/.mrc\n",
+    );
+    std::fs::write(
+        config_dir
+            .path()
+            .join("modules")
+            .join("onefile")
+            .join("files")
+            .join("rc"),
+        "rc\n",
+    )
+    .unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let (printer, buf) = test_printer_capture();
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec![],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    let result = super::apply::cmd_apply(&cli, &printer, &args);
+    assert!(result.is_ok(), "apply should succeed: {:?}", result.err());
+    drop(printer);
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    let tree_row = out
+        .lines()
+        .find(|l| l.contains("~/.mrc"))
+        .unwrap_or_else(|| panic!("no `~/.mrc` child row in:\n{out}"));
+    assert!(
+        tree_row.contains("copy") && !tree_row.contains("symlink"),
+        "the tree's child row speaks the configured default: {tree_row}\nin:\n{out}"
+    );
+
+    let mut wide_cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    wide_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
+    let (printer, cap) =
+        cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
+    super::status::cmd_status(&wide_cli, &printer, None, false, false, false).unwrap();
+    drop(printer);
+    let wide = cfgd_core::output::strip_ansi(&cap.human());
+    let table_row = wide
+        .lines()
+        .find(|l| l.contains("~/.mrc"))
+        .unwrap_or_else(|| panic!("no `~/.mrc` table row in:\n{wide}"));
+    assert!(
+        table_row.contains("copy") && !table_row.contains("symlink"),
+        "the table's Method cell speaks the same word: {table_row}\nin:\n{wide}"
+    );
+}
+
+/// A dropped `files:` declaration cannot resurrect the one-file aggregate:
+/// the deploy prunes the manifest to the declared set, so the `files:1` the
+/// next apply records and the manifest it leaves agree — the default table
+/// names the surviving file, and the wide table no longer lists the file the
+/// module stopped declaring.
+#[test]
+#[cfg(unix)]
+fn a_dropped_file_declaration_cannot_resurrect_the_one_file_aggregate() {
+    let (config_dir, state_dir) = setup_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - pair\n";
+    std::fs::write(
+        config_dir.path().join("profiles").join("default.yaml"),
+        profile,
+    )
+    .unwrap();
+    create_module_in_dir(
+        config_dir.path(),
+        "pair",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pair\nspec:\n  files:\n    - source: files/pa\n      target: ~/.pa\n      strategy: Copy\n    - source: files/pb\n      target: ~/.pb\n      strategy: Copy\n",
+    );
+    let files = config_dir.path().join("modules").join("pair").join("files");
+    std::fs::write(files.join("pa"), "a\n").unwrap();
+    std::fs::write(files.join("pb"), "b\n").unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec![],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    let result = super::apply::cmd_apply(&cli, &test_printer(), &args);
+    assert!(result.is_ok(), "first apply: {:?}", result.err());
+
+    // Drop `~/.pb` from the declaration and change the survivor's source so
+    // the next run plans the module's files again.
+    std::fs::write(
+        config_dir
+            .path()
+            .join("modules")
+            .join("pair")
+            .join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pair\nspec:\n  files:\n    - source: files/pa\n      target: ~/.pa\n      strategy: Copy\n",
+    )
+    .unwrap();
+    std::fs::write(files.join("pa"), "a changed\n").unwrap();
+    let result = super::apply::cmd_apply(&cli, &test_printer(), &args);
+    assert!(result.is_ok(), "second apply: {:?}", result.err());
+
+    let (printer, buf) = test_printer_capture();
+    super::status::cmd_status(&cli, &printer, None, false, false, false).unwrap();
+    drop(printer);
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    let table = out
+        .split_once("Managed Resources")
+        .map(|(_, after)| after)
+        .unwrap_or_else(|| panic!("no Managed Resources section:\n{out}"));
+    assert!(
+        table.contains("~/.pa"),
+        "the surviving file is named outright: {out}"
+    );
+    assert!(
+        !table.contains("(1 file)"),
+        "a stale manifest row must not resurrect the aggregate: {out}"
+    );
+
+    let mut wide_cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    wide_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
+    let (printer, cap) =
+        cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
+    super::status::cmd_status(&wide_cli, &printer, None, false, false, false).unwrap();
+    drop(printer);
+    let wide = cfgd_core::output::strip_ansi(&cap.human());
+    assert!(
+        !wide.contains("~/.pb"),
+        "the manifest no longer lists the dropped file: {wide}"
     );
 }
 

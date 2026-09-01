@@ -561,7 +561,8 @@ impl<'a> super::Reconciler<'a> {
             EnvAction::WriteEnvFile { path, content, .. } => {
                 if super::env_files::read_managed_baseline(path).as_ref() == Some(content) {
                     return Ok(format!(
-                        "env:write:{}{}",
+                        "env:{}:{}{}",
+                        super::env_engine::ENV_VERB_WRITE,
                         crate::to_posix_string(path),
                         super::apply::ENV_SKIPPED_SUFFIX
                     ));
@@ -571,14 +572,19 @@ impl<'a> super::Reconciler<'a> {
                 // Resource-id key, not display: `to_posix_string` folds on every
                 // host (unlike `posix()`, a no-op on unix), so this matches the
                 // id `format_action_description` derives for the same path.
-                Ok(format!("env:write:{}", crate::to_posix_string(path)))
+                Ok(format!(
+                    "env:{}:{}",
+                    super::env_engine::ENV_VERB_WRITE,
+                    crate::to_posix_string(path)
+                ))
             }
             EnvAction::InjectSourceLine { rc_path, line } => {
                 let existing = super::env_files::read_rc_baseline(rc_path)?;
                 let Some(content) = super::env_files::merge_source_line(&existing, line) else {
                     // Already present as the exact desired line — nothing to write.
                     return Ok(format!(
-                        "env:inject:{}{}",
+                        "env:{}:{}{}",
+                        super::env_engine::ENV_VERB_INJECT,
                         crate::to_posix_string(rc_path),
                         super::apply::ENV_SKIPPED_SUFFIX
                     ));
@@ -586,7 +592,11 @@ impl<'a> super::Reconciler<'a> {
                 super::env_files::guard_rc_write(rc_path, &existing)?;
                 crate::ensure_parent_dir(rc_path)?;
                 crate::atomic_write_resolved_str(rc_path, &content)?;
-                Ok(format!("env:inject:{}", crate::to_posix_string(rc_path)))
+                Ok(format!(
+                    "env:{}:{}",
+                    super::env_engine::ENV_VERB_INJECT,
+                    crate::to_posix_string(rc_path)
+                ))
             }
             EnvAction::RefreshLiveSession { vars } => {
                 let refresh = crate::refresh_session_env(vars);
