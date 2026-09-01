@@ -171,8 +171,12 @@ fn drift_output() -> StatusOutput {
                 timestamp: "2026-05-14T09:58:00Z".into(),
                 resource_type: "file".into(),
                 resource_id: "~/.zshrc".into(),
-                expected: Some("hash-desired".into()),
-                actual: Some("hash-actual".into()),
+                // The file producer's own stored literals
+                // (`files/plan.rs`), so the golden's child row reads the
+                // documented terse cause instead of echoing a synthetic
+                // operand no producer ever writes.
+                expected: Some("content matches source".into()),
+                actual: Some("content differs from source".into()),
                 resolved_by: None,
                 source: "local".into(),
                 want: None,
@@ -322,7 +326,7 @@ fn per_module_output() -> ModuleStatus {
         ],
         drift: Vec::new(),
         drift_checked_live: false,
-        env_check_error: None,
+        system_errors: Vec::new(),
         last_scan_at: None,
     }
 }
@@ -434,7 +438,7 @@ fn per_module_scanned_output() -> ModuleStatus {
             },
         ],
         drift_checked_live: true,
-        env_check_error: None,
+        system_errors: Vec::new(),
         last_scan_at: None,
     }
 }

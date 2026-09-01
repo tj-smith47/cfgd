@@ -20,7 +20,7 @@ Pending Decisions (1 item)
 
 Component Health (checked 6m ago)
   ⚠ profile:default — Drifted (1 package, 1 file)
-    file ~/.zshrc — hash-actual
+    file ~/.zshrc — content differs
     package ripgrep source:team-config — version mismatch
   ✓ module:shell-config — Synced (4 files)
 

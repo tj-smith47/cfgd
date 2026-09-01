@@ -2,8 +2,8 @@
   "classificationDegraded": false,
   "drift": [
     {
-      "actual": "hash-actual",
-      "expected": "hash-desired",
+      "actual": "content differs from source",
+      "expected": "content matches source",
       "id": 10,
       "resolvedBy": null,
       "resourceId": "~/.zshrc",

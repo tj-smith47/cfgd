@@ -2,7 +2,8 @@
 #![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation
 
 //! Exit-code contract for every drift surface that takes `--exit-code`
-//! (`diff`, `status`, `verify` — `every_exit_code_surface_reports_an_erroring_check`
+//! (`diff`, `status`, `verify`, plus the `--module` flag-scoped variants of
+//! the first two — `every_exit_code_surface_reports_an_erroring_check`
 //! walks the clap population).
 //!
 //! An erroring check (a system configurator whose drift probe itself fails)
@@ -23,6 +24,17 @@ const EXIT_CODE_SURFACES: [&[&str]; 3] = [
     &["status", "--scan", "--exit-code"],
     &["diff", "--exit-code"],
     &["verify", "--exit-code"],
+];
+
+/// The flag-scoped variants of the same contract: `--module` narrows `status`
+/// and `diff` to one module's chain, where the module-scoped env probe is the
+/// check that can error (the primary managed env file exists but cannot be
+/// read, so every env verdict of the scan is unknown). `verify --module`
+/// deliberately evaluates no env half — a scoped run's composition is
+/// module-only config (`cli/verify.rs`) — so it has no erroring-check cell.
+const SCOPED_EXIT_CODE_SURFACES: [&[&str]; 2] = [
+    &["status", "--module", "envmod", "--scan", "--exit-code"],
+    &["diff", "--module", "envmod", "--exit-code"],
 ];
 
 /// A gpg stand-in that always fails, so the gpgKeys configurator's own
@@ -159,6 +171,55 @@ fn an_erroring_check_outranks_real_drift_on_every_exit_code_surface() {
         assert!(
             text.contains("error checking drift"),
             "cfgd {args:?}: the failed check still renders beside the drift, got: {text}"
+        );
+    }
+}
+
+/// One module declaring an env var, so a scoped run's merged env is
+/// non-empty and the env probe actually runs.
+fn write_module_config(dir: &Path) {
+    let module_dir = dir.join("modules").join("envmod");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: envmod\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n",
+    )
+    .unwrap();
+    write_config(dir, false, false);
+}
+
+#[test]
+fn a_scoped_env_probe_failure_is_reported_and_escalates_on_both_scoped_surfaces() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    write_module_config(config_tmp.path());
+    // The primary managed env file EXISTS but cannot be read — a directory
+    // at its path fails `read_to_string` with EISDIR on every host, root
+    // included (a permission bit would not).
+    std::fs::create_dir(home_tmp.path().join(".cfgd.env")).unwrap();
+
+    for args in SCOPED_EXIT_CODE_SURFACES {
+        let state_tmp = tempfile::tempdir().unwrap();
+        let out = run(
+            args,
+            config_tmp.path(),
+            state_tmp.path(),
+            home_tmp.path(),
+            None,
+        );
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "cfgd {args:?}: a probe that could not run exits Error on the scoped surface too, got: {text}"
+        );
+        assert!(
+            text.contains("error checking drift") && text.contains(".cfgd.env"),
+            "cfgd {args:?}: the failed probe renders as its own row naming the file, got: {text}"
         );
     }
 }
