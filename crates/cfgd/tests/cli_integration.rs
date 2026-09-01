@@ -599,7 +599,7 @@ fn verify_full_path_resolves_modules_and_catches_module_file_drift() {
         .assert()
         .code(5);
     // The human Doc renders to stderr; stdout is reserved for structured `-o`.
-    let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(
         !out.contains("No managed resources to verify"),
         "modules-only profile must be verified, got:\n{out}"
@@ -712,7 +712,7 @@ fn status_module_exit_code_catches_module_file_drift() {
         .arg(state_dir.path())
         .assert()
         .code(5);
-    let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(
         out.contains("module:accmod:files")
             && out.contains("conf")
@@ -1524,7 +1524,7 @@ fn status_exit_code_renders_live_file_drift_not_no_drift() {
         .assert()
         .code(5);
     // The human Doc renders to stderr; stdout is reserved for structured `-o`.
-    let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(
         out.contains("deployed.conf"),
         "drift section must name the drifted file, got:\n{out}"
@@ -1561,7 +1561,7 @@ fn source_update_all_failed_exits_1() {
         .arg(state_dir.path())
         .assert()
         .code(1);
-    let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     // The source is named ONCE, by the owner heading the failure rows hang
     // under; the row itself carries the cause the git layer reported.
     assert!(
@@ -1599,7 +1599,8 @@ fn a_local_pull_failure_exits_1_from_both_verbs_that_pull() {
             .arg(state_dir.path())
             .assert()
             .code(1);
-        let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+        let out =
+            cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
         assert!(
             out.contains("Pull failed") && out.contains("find remote"),
             "`cfgd {}` must name the cause it exited on, got:\n{out}",
@@ -2397,7 +2398,7 @@ fn status_plain_keeps_recorded_dashboard_despite_live_drift() {
         .assert()
         .code(0);
     // The human Doc renders to stderr; stdout is reserved for structured `-o`.
-    let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(
         out.contains("No drift recorded"),
         "plain status shows the recorded dashboard (no live scan), got:\n{out}"
@@ -2736,7 +2737,7 @@ fn backup_run_dirty_success_exits_nonzero() {
         .arg(state_dir.path())
         .assert()
         .code(1);
-    let err = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    let err = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(
         err.contains("dirty"),
         "stderr must name the dirty backup, got:\n{err}"
@@ -2766,7 +2767,7 @@ fn backup_run_failed_unit_exits_nonzero() {
         .arg(state_dir.path())
         .assert()
         .code(1);
-    let err = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    let err = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(
         err.contains("broken"),
         "stderr must name the failed backup, got:\n{err}"
@@ -2797,7 +2798,7 @@ fn backup_run_unknown_name_exits_6_with_hint_in_stderr() {
         .arg(state_dir.path())
         .assert()
         .code(6);
-    let err = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    let err = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(
         err.contains("nosuchbackup"),
         "stderr must name the unknown backup, got:\n{err}"
@@ -2805,5 +2806,140 @@ fn backup_run_unknown_name_exits_6_with_hint_in_stderr() {
     assert!(
         err.contains("clean"),
         "stderr must list the valid backup name via the hint, got:\n{err}"
+    );
+}
+
+/// A config + profile + module whose `plan` always finds exactly one pending
+/// file deploy, so it renders `perform_preview_hint`'s closing `→` line.
+/// `usage_hints` writes (or omits) `spec.usageHints` in the config.
+fn create_hint_producing_config(dir: &std::path::Path, usage_hints: Option<bool>) {
+    std::fs::create_dir_all(dir.join("profiles")).unwrap();
+    std::fs::create_dir_all(dir.join("modules/example/files")).unwrap();
+    let hints_line = match usage_hints {
+        Some(v) => format!("  usageHints: {v}\n"),
+        None => String::new(),
+    };
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec:\n{hints_line}  profile: base\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("profiles/base.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - example\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("modules/example/module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: example\nspec:\n  files:\n    - source: files/example.txt\n      target: {}/deployed/example.txt\n",
+            dir.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.join("modules/example/files/example.txt"), "hello\n").unwrap();
+}
+
+/// The one end-to-end pin for `main.rs`'s two-line wiring
+/// (`cli::resolve_hints_enabled` -> `Printer::with_hints_enabled`): every
+/// other hints test exercises the resolver or the renderer in isolation.
+/// This drives the real compiled binary so a dropped `.with_hints_enabled()`
+/// call, a swapped argument order, or a wrong config path would go red here
+/// even though it would pass every unit-level pin.
+#[test]
+fn hints_render_by_default_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    create_hint_producing_config(dir.path(), None);
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("plan")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
+    assert!(
+        out.contains("\n\n→ Run `cfgd apply`"),
+        "baseline must render the hint behind its leading blank, got:\n{out}"
+    );
+}
+
+/// `--no-hints` reaching a real command's rendered output.
+#[test]
+fn no_hints_flag_suppresses_the_hint_and_its_leading_blank_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    create_hint_producing_config(dir.path(), None);
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("--no-hints")
+        .arg("plan")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
+    assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
+    assert!(
+        out.trim_end().ends_with("1 action planned"),
+        "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
+    );
+}
+
+/// `CFGD_USAGE_HINTS=false` reaching a real command's rendered output.
+#[test]
+fn cfgd_usage_hints_env_suppresses_the_hint_and_its_leading_blank_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    create_hint_producing_config(dir.path(), None);
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .env("CFGD_USAGE_HINTS", "false")
+        .arg("plan")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
+    assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
+    assert!(
+        out.trim_end().ends_with("1 action planned"),
+        "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
+    );
+}
+
+/// `spec.usageHints: false` reaching a real command's rendered output.
+#[test]
+fn spec_usage_hints_false_suppresses_the_hint_and_its_leading_blank_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    create_hint_producing_config(dir.path(), Some(false));
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("plan")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
+    assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
+    assert!(
+        out.trim_end().ends_with("1 action planned"),
+        "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
     );
 }

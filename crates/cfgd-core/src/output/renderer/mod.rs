@@ -400,8 +400,9 @@ pub struct Renderer {
     /// to live here, at the one seam every hint producer already reaches.
     /// `AtomicBool` rather than a constructor parameter: threading a new
     /// argument through `Renderer::new`/`with_bars` would touch every one of
-    /// their ~70 test call sites for a decision only two production call
-    /// sites (the CLI, the kubectl plugin) ever need to flip off.
+    /// their ~70 test call sites for a decision the CLI's one production call
+    /// site ever needs to flip off (the kubectl plugin's minimal global-flag
+    /// subset omits `--no-hints` entirely, so hints there always stay on).
     pub(crate) hints_enabled: AtomicBool,
 }
 

@@ -59,6 +59,7 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 ## CLI parsing / validation
 
 - `canonical_bool_str(raw)` — a boolish env-var value (`1`/`yes`/`on`/… and their negatives) to clap's canonical `"true"`/`"false"`; `None` for anything else. Shared across the `cfgd` binary's env pre-normalization and the library's own manual boolean-env reads (`cli::resolve_hints_enabled`) because the two are separate crate compilations.
+- `cli::resolve_hints_enabled(config_path, no_hints_flag)` (`crates/cfgd/src/cli/mod.rs`) — the ONE precedence resolution for whether closing `→` hints render: `--no-hints` flag > `CFGD_USAGE_HINTS` env > `spec.usageHints` > default on. Called once in `main.rs`, beside `resolve_theme_config`, feeding `Printer::with_hints_enabled`.
 - `parse_env_var(input)` / `parse_alias(input)` — parse `KEY=VALUE` / `name=command`, validating as they go.
 - `validate_env_var_user_name(name)` — the one to use for USER input: shell-safety plus the reserved `CFGD_*` refusal.
 - `validate_env_var_name(name)` / `validate_alias_name(name)` — low-level shape checks; prefer the user-facing one above for user input.
