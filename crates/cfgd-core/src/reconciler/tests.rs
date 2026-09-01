@@ -6770,78 +6770,228 @@ fn both_producers_mint_one_identity_for_a_provision_finding() {
     assert_eq!((rtype.as_str(), rid.as_str()), ("package", "refuse:npm"));
 }
 
-/// The id-shape invariant both keep predicates rest on, walked over the
-/// daemon's action grammar: a daemon `module` row is the bare module name
-/// (never a `/`, which the CLI's `module_file_resource_id` always carries),
-/// and a daemon `package` Skip row is the bare manager name (never a `:`,
-/// which every CLI-minted package id carries). The exhaustive match is the
-/// trip-wire: a new `Action` variant fails this test's compile until its
-/// recorded shape is judged against the two live grammars here.
+/// The id-shape invariant both keep predicates rest on, judged over the
+/// daemon's action grammar INNER variant by inner variant: a daemon `module`
+/// row is the bare module name (never a `/`, which the CLI's
+/// `module_file_resource_id` always carries), a daemon `package` Skip row the
+/// bare manager name (never a `:`, which every CLI-minted package id
+/// carries), a daemon `system` row the `:`-spelled key the keep predicates
+/// split the two system grammars on, and a provision or refusal the CLI's own
+/// `package`-typed id so either producer's next check heals the other's row.
+/// The nested exhaustive matches are the trip-wire: a new inner variant of
+/// ANY action enum fails this test's compile until its recorded shape is
+/// judged against the two live grammars here.
 #[test]
 fn no_daemon_action_row_wears_the_live_checks_separator() {
-    use super::types::{ModuleAction, ModuleActionKind, action_resource_info};
+    use super::types::{ManagerAction, ModuleAction, ModuleActionKind, action_resource_info};
+    use crate::providers::{FileAction, PackageAction, SecretAction};
+    use crate::reconciler::{EnvAction, ScriptAction, SystemAction};
 
-    fn every_variant_judged(a: &Action) {
+    // One judgment per INNER variant, no wildcard anywhere — matching only
+    // the outer `Action` would let a new module kind or manager node change
+    // its recorded shape without failing anything here.
+    fn judged(a: &Action) {
+        let (rtype, rid) = action_resource_info(a);
         match a {
-            Action::File(_)
-            | Action::Package(_)
-            | Action::Secret(_)
-            | Action::System(_)
-            | Action::Script(_)
-            | Action::Module(_)
-            | Action::Env(_)
-            | Action::Manager(_) => {}
+            Action::File(fa) => match fa {
+                FileAction::Create { .. }
+                | FileAction::Update { .. }
+                | FileAction::Delete { .. }
+                | FileAction::SetPermissions { .. }
+                | FileAction::Skip { .. } => assert_eq!(rtype, "file"),
+            },
+            Action::Package(pa) => match pa {
+                // The daemon's bare-manager spelling: identity, never the
+                // CLI's `<manager>:<name>`.
+                PackageAction::Skip { .. } => {
+                    assert_eq!(rtype, "package");
+                    assert!(
+                        !rid.contains(':'),
+                        "a daemon Skip row is the bare manager, got {rid:?}"
+                    );
+                }
+                // A batch always carries `:`, and carries `,` exactly when it
+                // holds several packages — a single-package batch IS the
+                // CLI's per-package row, so the same fact recorded by either
+                // producer is one row.
+                PackageAction::Install { packages, .. }
+                | PackageAction::Uninstall { packages, .. } => {
+                    assert_eq!(rtype, "package");
+                    assert!(rid.contains(':'), "a batch row names its manager: {rid:?}");
+                    assert_eq!(
+                        packages.len() > 1,
+                        rid.contains(','),
+                        "the `,` marks exactly the multi-package batch: {rid:?}"
+                    );
+                }
+            },
+            Action::Secret(sa) => match sa {
+                SecretAction::Decrypt { .. }
+                | SecretAction::Resolve { .. }
+                | SecretAction::ResolveEnv { .. }
+                | SecretAction::Skip { .. } => assert_eq!(rtype, "secret"),
+            },
+            Action::System(sa) => match sa {
+                // The `:` is the discriminator the keep predicates split the
+                // daemon's spelling from the CLI's `<configurator>.<key>` on.
+                SystemAction::SetValue { .. } => {
+                    assert_eq!(rtype, "system");
+                    assert!(
+                        rid.contains(':'),
+                        "a daemon SetValue row wears the `:` spelling, got {rid:?}"
+                    );
+                }
+                SystemAction::Skip { .. } => {
+                    assert_eq!(rtype, "system");
+                    assert!(
+                        !rid.contains(':') && !rid.contains('.'),
+                        "a daemon system Skip row is the bare configurator, got {rid:?}"
+                    );
+                }
+            },
+            Action::Script(sa) => match sa {
+                ScriptAction::Run { .. } => assert_eq!(rtype, "script"),
+            },
+            Action::Module(ma) => match &ma.kind {
+                // Whatever work the module plans, its row is the bare module
+                // name — never the `/` every CLI module-file id carries.
+                ModuleActionKind::InstallPackages { .. }
+                | ModuleActionKind::DeployFiles { .. }
+                | ModuleActionKind::RunScript { .. }
+                | ModuleActionKind::Skip { .. } => {
+                    assert_eq!(rtype, "module");
+                    assert!(
+                        !rid.contains('/'),
+                        "a daemon module row is the bare name, got {rid:?}"
+                    );
+                }
+            },
+            Action::Env(ea) => match ea {
+                EnvAction::WriteEnvFile { .. } => assert_eq!(rtype, "env"),
+                EnvAction::InjectSourceLine { .. } => assert_eq!(rtype, "env-rc"),
+                EnvAction::RefreshLiveSession { .. } => assert_eq!(rtype, "env-session"),
+            },
+            Action::Manager(man) => match man {
+                // A provision finding (and its refusal) is a PACKAGE fact
+                // under the id the CLI live check mints.
+                ManagerAction::Provision { manager, .. } => {
+                    assert_eq!(rtype, "package");
+                    assert_eq!(rid, ManagerAction::provision_resource_id(manager));
+                }
+                ManagerAction::Refuse { manager, .. } => {
+                    assert_eq!(rtype, "package");
+                    assert_eq!(rid, ManagerAction::refuse_resource_id(manager));
+                }
+                // cfgd's own scaffolding keeps the `manager` type
+                // `record_managed_resources` refuses to manage.
+                ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => {
+                    assert_eq!(rtype, "manager");
+                }
+            },
         }
     }
 
-    let module = Action::Module(ModuleAction::local(
-        "nvim",
+    let module_kinds = [
+        ModuleActionKind::InstallPackages { resolved: vec![] },
         ModuleActionKind::DeployFiles {
             files: vec![],
             declared_total: 0,
         },
-    ));
-    let (rtype, rid) = action_resource_info(&module);
-    every_variant_judged(&module);
-    assert_eq!(rtype, "module");
-    assert!(
-        !rid.contains('/'),
-        "a daemon module row is the bare name, got {rid:?}"
-    );
-
-    let skip = Action::Package(crate::providers::PackageAction::Skip {
-        manager: "brew".to_string(),
-        reason: "up to date".to_string(),
-        origin: "profile".to_string(),
-    });
-    let (rtype, rid) = action_resource_info(&skip);
-    assert_eq!(rtype, "package");
-    assert!(
-        !rid.contains(':'),
-        "a daemon Skip row is the bare manager, got {rid:?}"
-    );
-
-    // The one shape BOTH grammars mint: a single-package batch spells
-    // `<manager>:<name>` exactly as the CLI's per-package row does, so the
-    // same fact recorded by either producer is one row; a multi-package
-    // batch carries the `,` that keeps it out of the CLI's keep-resolve.
-    let install = |packages: &[&str]| {
-        Action::Package(crate::providers::PackageAction::Install {
-            manager: "brew".to_string(),
-            packages: packages.iter().map(|s| s.to_string()).collect(),
+        ModuleActionKind::RunScript {
+            script: ScriptEntry::Simple("echo hi".to_string()),
+            phase: super::ScriptPhase::PostApply,
+        },
+        ModuleActionKind::Skip {
+            reason: "gated".to_string(),
+        },
+    ];
+    let mut actions: Vec<Action> = module_kinds
+        .into_iter()
+        .map(|kind| Action::Module(ModuleAction::local("nvim", kind)))
+        .collect();
+    actions.extend([
+        Action::File(FileAction::Delete {
+            target: PathBuf::from("/home/u/.conf"),
             origin: "profile".to_string(),
-        })
-    };
-    assert_eq!(
-        action_resource_info(&install(&["jq"])).1,
-        "brew:jq",
-        "a single-package batch is the shared per-package spelling"
-    );
-    assert!(
-        action_resource_info(&install(&["jq", "rg"]))
-            .1
-            .contains(',')
-    );
+        }),
+        Action::Package(PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: vec!["jq".to_string()],
+            origin: "profile".to_string(),
+        }),
+        Action::Package(PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: vec!["jq".to_string(), "rg".to_string()],
+            origin: "profile".to_string(),
+        }),
+        Action::Package(PackageAction::Uninstall {
+            manager: "brew".to_string(),
+            packages: vec!["fd".to_string()],
+            origin: "profile".to_string(),
+        }),
+        Action::Package(PackageAction::Skip {
+            manager: "brew".to_string(),
+            reason: "up to date".to_string(),
+            origin: "profile".to_string(),
+        }),
+        Action::Secret(SecretAction::Skip {
+            source: "s.enc".to_string(),
+            reason: "no backend".to_string(),
+            origin: "profile".to_string(),
+        }),
+        Action::System(SystemAction::SetValue {
+            configurator: "gsettings".to_string(),
+            key: "org.gnome.x key".to_string(),
+            desired: "1".to_string(),
+            current: "0".to_string(),
+            origin: "profile".to_string(),
+        }),
+        Action::System(SystemAction::Skip {
+            configurator: "systemdUnits".to_string(),
+            reason: "'systemdUnits' is not available on this host".to_string(),
+            origin: "profile".to_string(),
+            unknown: false,
+        }),
+        Action::Script(ScriptAction::Run {
+            entry: ScriptEntry::Simple("echo hi".to_string()),
+            phase: super::ScriptPhase::PreApply,
+            origin: "profile".to_string(),
+        }),
+        Action::Env(EnvAction::WriteEnvFile {
+            path: PathBuf::from("/home/u/.cfgd.env"),
+            content: String::new(),
+            vars: 0,
+            aliases: 0,
+        }),
+        Action::Env(EnvAction::InjectSourceLine {
+            rc_path: PathBuf::from("/home/u/.zshrc"),
+            line: "source ~/.cfgd.env".to_string(),
+        }),
+        Action::Env(EnvAction::RefreshLiveSession { vars: vec![] }),
+        Action::Manager(ManagerAction::RefreshIndex {
+            manager: "apt".to_string(),
+        }),
+        Action::Manager(ManagerAction::Provision {
+            manager: "npm".to_string(),
+            via: "brew".to_string(),
+            declared: None,
+            batched: vec![],
+            depends_on: vec![],
+        }),
+        Action::Manager(ManagerAction::Prerequisite {
+            tool: "curl".to_string(),
+            installer: "apt".to_string(),
+            required_by: vec!["brew".to_string()],
+            depends_on: vec![],
+        }),
+        Action::Manager(ManagerAction::Refuse {
+            manager: "npm".to_string(),
+            reason: "provision failed".to_string(),
+        }),
+    ]);
+    for action in &actions {
+        judged(action);
+    }
 }
 
 #[test]
@@ -8005,6 +8155,102 @@ fn apply_manager_provision_makes_manager_available() {
 
     // Manager should now be available
     assert!(registry.package_managers()[0].is_available());
+}
+
+/// An apply that installs a package settles the drift rows the two live
+/// producers mint for it — the CLI's per-package `<mgr>:<pkg>` and the
+/// daemon's batch `<mgr>:<a>,<b>` — immediately, not at the next scan.
+/// `managed_resources` tracks under a third grammar (`<mgr>/<pkg>`), which no
+/// drift writer mints; resolving under it healed nothing, so an installed
+/// package kept reporting drift until a later check happened to re-look.
+#[test]
+fn an_apply_that_installs_packages_resolves_both_producers_drift_rows() {
+    let state = test_state();
+    for rid in ["brew:jq", "brew:rg", "brew:jq,rg", "brew:bystander"] {
+        state
+            .record_drift("package", rid, Some("installed"), Some("missing"), "local")
+            .unwrap();
+    }
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "brew",
+    )));
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Package(crate::providers::PackageAction::Install {
+                manager: "brew".to_string(),
+                packages: vec!["jq".to_string(), "rg".to_string()],
+                origin: "profile".to_string(),
+            })],
+        )],
+        warnings: vec![],
+    };
+    let (result, _) = apply_manager_plan(&registry, &state, &plan);
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let mut standing: Vec<String> = state
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.resource_id)
+        .collect();
+    standing.sort_unstable();
+    assert_eq!(
+        standing,
+        vec!["brew:bystander".to_string()],
+        "the per-package rows and the batch row resolve with the apply; \
+         a package this apply did not install stands"
+    );
+}
+
+/// An apply that provisions a manager settles the finding both producers
+/// record for the missing tooling — `("package", "provision:<mgr>")` and its
+/// `refuse:` twin — immediately. A row about a manager this apply did not
+/// provision stands.
+#[test]
+fn an_apply_that_provisions_a_manager_resolves_both_provision_findings() {
+    let state = test_state();
+    for rid in ["provision:snap", "refuse:snap", "provision:other"] {
+        state
+            .record_drift("package", rid, Some("available"), Some("missing"), "local")
+            .unwrap();
+    }
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(BootstrappablePackageManager::new("snap")));
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("test"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "snap".to_string(),
+                via: "stub".to_string(),
+                declared: None,
+                batched: vec![],
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
+    };
+    let (result, _) = apply_manager_plan(&registry, &state, &plan);
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let mut standing: Vec<String> = state
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.resource_id)
+        .collect();
+    standing.sort_unstable();
+    assert_eq!(
+        standing,
+        vec!["provision:other".to_string()],
+        "the landed provision resolves its own finding and its refuse: twin; \
+         another manager's finding stands"
+    );
 }
 
 /// The registry answers availability from a memoized sweep, and the dispatcher

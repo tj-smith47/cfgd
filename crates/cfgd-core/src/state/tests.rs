@@ -2870,6 +2870,88 @@ fn completion_index_backfills_every_historical_row_from_its_plan_position() {
     }
 }
 
+#[test]
+fn legacy_manager_provision_rows_meet_the_package_grammar_on_open() {
+    // The daemon once recorded a failed provision as
+    // `('manager', 'provision:<name>')` while every live check mints
+    // `('package', 'provision:<name>')` — and nothing on a CLI-only host
+    // resolves the `manager` spelling. Opening the store settles the legacy
+    // rows: one with a standing `package` twin is the duplicate and resolves,
+    // one without a twin is the only record of the finding and retypes, and
+    // history keeps the type it was recorded under.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        // A legacy row already resolved before the upgrade: history.
+        store
+            .record_drift("manager", "provision:old", None, None, "local")
+            .unwrap();
+        store.resolve_all_drift().unwrap();
+        // A legacy row with a standing package twin, and one without.
+        for (rtype, rid) in [
+            ("manager", "provision:snap"),
+            ("package", "provision:snap"),
+            ("manager", "provision:pipx"),
+        ] {
+            store.record_drift(rtype, rid, None, None, "local").unwrap();
+        }
+        rewind_schema_version(&store, 20);
+    }
+
+    let store = StateStore::open(&path).unwrap();
+    let mut standing: Vec<(String, String)> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    standing.sort_unstable();
+    assert_eq!(
+        standing,
+        vec![
+            ("package".to_string(), "provision:pipx".to_string()),
+            ("package".to_string(), "provision:snap".to_string()),
+        ],
+        "the twinned legacy row resolves, the lone one retypes"
+    );
+    let resolved_as = |rtype: &str, rid: &str| -> i64 {
+        store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM drift_events
+                     WHERE resource_type = ?1 AND resource_id = ?2
+                     AND resolved_at IS NOT NULL",
+                params![rtype, rid],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        resolved_as("manager", "provision:snap"),
+        1,
+        "the duplicate is resolved in place, keeping its recorded type"
+    );
+    assert_eq!(
+        resolved_as("manager", "provision:old"),
+        1,
+        "a row resolved before the upgrade is history and keeps its type"
+    );
+    let indexed: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_drift_events_resource'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        indexed, 1,
+        "the resource-key index lands with the migration"
+    );
+}
+
 // --- concurrent in-memory stores ---
 
 #[test]

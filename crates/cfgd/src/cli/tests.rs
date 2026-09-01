@@ -29366,6 +29366,105 @@ fn every_merged_env_view_is_built_once_per_command() {
     );
 }
 
+/// Every live-minted drift identity comes from its type's ONE composer: a
+/// `module` id from `live_drift::module_file_resource_id`, a `package` id
+/// from `diff::package_resource_id` (or the journal's own
+/// `provision:`/`refuse:` spelling for a manager node), a `system` id from
+/// `reconciler::system_resource_key`. The live producers (`diff`, the shared
+/// scanners in `live_drift`, `status <module> --scan`) mint `(type, id)` rows
+/// the recorders later resolve by EXACT string match, so a hand-spelled id is
+/// a permanent row nothing can ever heal. The walk finds every production
+/// literal of the three composed types under `src/cli` and requires that
+/// type's composer inside the surrounding window; a site whose id is
+/// genuinely not composed carries `// composed-id-ok: <why>` on its own or
+/// the preceding line.
+#[test]
+fn every_live_minted_drift_id_comes_from_its_composer() {
+    const HATCH: &str = "composed-id-ok:";
+    // Each production mint, by file and count: `diff`'s module-file finding,
+    // system finding, scoped checked-key pushes and package findings;
+    // `live_drift`'s module/system/package scanners and the manager-node
+    // rows; `status <module> --scan`'s checked key and finding.
+    const EXPECTED: [(&str, usize); 3] = [("diff.rs", 6), ("live_drift.rs", 4), ("status.rs", 2)];
+    const COMPOSERS: [(&str, &[&str]); 3] = [
+        ("module", &["module_file_resource_id("]),
+        (
+            "package",
+            &[
+                "package_resource_id(",
+                "provision_resource_id(",
+                ".resource_id()",
+            ],
+        ),
+        ("system", &["system_resource_key("]),
+    ];
+
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut offenders = Vec::new();
+    let mut files: Vec<std::path::PathBuf> = walk_rust_files(&cli_dir);
+    files.sort();
+    for path in files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if name == "tests.rs" {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = body
+            .split_once("\n#[cfg(test)]")
+            .map(|(head, _)| head)
+            .unwrap_or(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let Some((_, composers)) = COMPOSERS.iter().find(|(ty, _)| {
+                line.contains(&format!("\"{ty}\".to_string()"))
+                    || line.contains(&format!("resource_type: \"{ty}\""))
+            }) else {
+                continue;
+            };
+            if line.contains(HATCH) || (i > 0 && lines[i - 1].contains(HATCH)) {
+                continue;
+            }
+            *counts.entry(name.clone()).or_default() += 1;
+            // The id may be composed just above (a `let rid =` shared by a
+            // checked-key push and the finding built from it) or well below
+            // (`manager_action_drift` takes the id as a closure parameter
+            // and composes it at the bottom of the function).
+            let lo = i.saturating_sub(10);
+            let hi = (i + 16).min(lines.len());
+            if !lines[lo..hi]
+                .iter()
+                .any(|l| composers.iter().any(|c| l.contains(c)))
+            {
+                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a live drift id is composed by its type's one composer, never spelled \
+         by hand (or carries `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+    let found: Vec<(String, usize)> = counts.into_iter().collect();
+    let mut expected: Vec<(String, usize)> = EXPECTED
+        .iter()
+        .map(|(f, n)| ((*f).to_string(), *n))
+        .collect();
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "every production live-drift mint is pinned here; a new one means a \
+         producer whose ids nothing resolves until it is reviewed"
+    );
+}
+
 /// A `ResolvedPackage` is minted by `modules::resolve_package` and nowhere
 /// else in production: it is the one site that decides WHICH manager a bare
 /// entry lands on (the one that already holds it, else the platform default),

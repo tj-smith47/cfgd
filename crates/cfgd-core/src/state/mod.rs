@@ -492,6 +492,35 @@ const MIGRATIONS: &[&str] = &[
     // by the first refresh that sees the row; a refresh that finds no prior
     // breakdown reports no count rather than the row's coverage.
     "ALTER TABLE managed_resources ADD COLUMN file_hashes TEXT;",
+    // Migration 20, two halves of one drift-identity settlement. The index:
+    // `record_drift` is an UPDATE-then-SELECT and the set-based resolvers
+    // scan too, so every daemon tick paid full table scans per recorded row
+    // over a table that only grows. The retype: the daemon once recorded a
+    // failed provision as `('manager', 'provision:<name>')` while the CLI's
+    // live check mints `('package', 'provision:<name>')` — two spellings of
+    // one finding, and nothing on a CLI-only host resolves the `manager`
+    // one. A legacy row with a standing `package` twin is the duplicate and
+    // resolves; one without a twin is the only record of the finding and is
+    // retyped so the live check and the apply can settle it. Resolved rows
+    // keep their recorded type — history describes what was written.
+    "CREATE INDEX IF NOT EXISTS idx_drift_events_resource
+         ON drift_events (resource_type, resource_id);
+
+     UPDATE drift_events
+         SET resolved_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+       WHERE resource_type = 'manager'
+         AND resource_id GLOB 'provision:*'
+         AND resolved_by IS NULL AND resolved_at IS NULL
+         AND EXISTS (SELECT 1 FROM drift_events p
+                      WHERE p.resource_type = 'package'
+                        AND p.resource_id = drift_events.resource_id
+                        AND p.resolved_by IS NULL AND p.resolved_at IS NULL);
+
+     UPDATE drift_events
+         SET resource_type = 'package'
+       WHERE resource_type = 'manager'
+         AND resource_id GLOB 'provision:*'
+         AND resolved_by IS NULL AND resolved_at IS NULL;",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable
