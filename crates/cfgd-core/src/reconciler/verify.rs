@@ -332,6 +332,75 @@ pub fn env_verify_results(
     results
 }
 
+/// What a module-scoped env check answered: the per-item rows it could judge,
+/// or the one probe failure that kept it from judging any.
+pub struct EnvItemCheck {
+    pub results: Vec<VerifyResult>,
+    /// The primary env file exists but could not be read, so every item
+    /// verdict is unknown — the same first-class "error checking drift" row an
+    /// erroring system configurator mints, never a silent clean.
+    pub check_error: Option<SystemCheckError>,
+}
+
+/// The per-item half of the env check ALONE, for a `--module`-scoped surface.
+///
+/// Each env var and alias the scope's merge declares is judged against the
+/// line the primary managed env file holds — and nothing else is evaluated.
+/// The whole-file staleness row, the rc source lines and the folded `PATH`
+/// line are the whole profile's shared artifacts: a module isolate can
+/// neither vouch for nor blame them ([`EntryOwners`](crate::config::EntryOwners)
+/// records `PATH` with as many owners as contributed, because its
+/// declarations concatenate across layers — which is why even a module that
+/// declares `PATH` entries does not get a `PATH` row here).
+///
+/// A file that is NOT THERE answers per item: every declared line is
+/// genuinely absent, and reporting nothing would read a deleted env surface
+/// as converged. A file that exists but cannot be read answers nothing —
+/// `check_error` says so instead.
+pub fn env_item_verify_results(
+    profile_env: &[crate::config::EnvVar],
+    profile_aliases: &[crate::config::ShellAlias],
+    layer_owners: &crate::config::EntryOwners,
+    modules: &[ResolvedModule],
+) -> EnvItemCheck {
+    let (mut merged, merged_aliases, origins) =
+        merge_module_env_aliases(profile_env, profile_aliases, layer_owners, modules);
+    merged.retain(|ev| ev.name != "PATH");
+    let mut check = EnvItemCheck {
+        results: Vec::new(),
+        check_error: None,
+    };
+    if merged.is_empty() && merged_aliases.is_empty() {
+        return check;
+    }
+    let home = expand_tilde(std::path::Path::new("~"));
+    let platform = EnvPlatform::current();
+    let path = super::env_engine::primary_env_file_path(&home, platform);
+    let actual = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            check.check_error = Some(SystemCheckError {
+                key: to_posix_string(&path),
+                error: e.to_string(),
+            });
+            return check;
+        }
+    };
+    // `fold` is only ever consulted for a `PATH` row, and `PATH` was retained
+    // out above.
+    verify_env_items_in(
+        &actual,
+        &merged,
+        &merged_aliases,
+        &origins,
+        platform,
+        None,
+        &mut check.results,
+    );
+    check
+}
+
 /// Per-declared-item drift for the primary managed env file: whether the
 /// line each declared alias and env var renders as is still present in what
 /// is actually on disk. Follows the same read-the-generated-file-and-compare
@@ -353,6 +422,22 @@ fn verify_env_items(
     let Ok(actual) = std::fs::read_to_string(path) else {
         return;
     };
+    verify_env_items_in(&actual, env, aliases, origins, platform, fold, results);
+}
+
+/// The item loop of [`verify_env_items`] over content the caller already
+/// read, so the scoped check below can decide for itself what an unreadable
+/// file means instead of inheriting the silent early return the whole-file
+/// check compensates for.
+fn verify_env_items_in(
+    actual: &str,
+    env: &[crate::config::EnvVar],
+    aliases: &[crate::config::ShellAlias],
+    origins: &EnvOrigins,
+    platform: EnvPlatform,
+    fold: Option<&super::env_engine::FoldedPath>,
+    results: &mut Vec<VerifyResult>,
+) {
     let actual_lines: std::collections::HashSet<&str> = actual.lines().collect();
 
     for ev in env {

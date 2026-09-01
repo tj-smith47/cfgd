@@ -219,14 +219,23 @@ pub struct ModuleStatus {
     /// present, and reporting presence as health is the contradiction this
     /// field exists to make unrepresentable.
     pub deployed_files: Vec<ModuleFileStatus>,
-    /// Live drift found for this module's files and packages. Always empty
-    /// unless `--scan` (or `--exit-code`, which implies it) requested the live
-    /// scan — see `drift_checked_live`.
+    /// Drift on this module's files and packages: a live scan's findings
+    /// under `--scan` (or `--exit-code`, which implies it), otherwise the
+    /// RECORDED rows the store holds for this module's chain — what a daemon
+    /// tick, a `diff`, or an earlier scoped scan found and nothing has
+    /// resolved since. See `drift_checked_live` for which one this is.
     pub drift: Vec<ModuleDrift>,
-    /// Whether `drift` is the verdict of a live scan of this module or just
-    /// an unchecked empty default. Mirrors `StatusOutput::drift_checked_live`
-    /// so the two `-o json` shapes read the same way.
+    /// Whether `drift` is the verdict of a live scan of this module or the
+    /// rows something previously recorded. Mirrors
+    /// `StatusOutput::drift_checked_live` so the two `-o json` shapes read
+    /// the same way.
     pub drift_checked_live: bool,
+    /// When the machine was last scanned for live drift — the same
+    /// machine-wide stamp the fleet dashboard reads, which is what dates the
+    /// recorded rows above (a scoped scan never writes it). `None` when no
+    /// full check has ever run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_scan_at: Option<String>,
 }
 
 impl ModuleStatus {
@@ -563,7 +572,13 @@ const SURFACE_ORDER: [&str; 2] = [SURFACE_FILES, SURFACE_PACKAGES];
 /// stated here rather than inherited from scan order: a scan visits files and
 /// packages in whatever order resolution reached them, so an unsorted section
 /// re-orders itself between two runs that found the same drift.
-fn render_module_drift_section(doc: Doc, drift: &[ModuleDrift], checked_live: bool) -> Doc {
+fn render_module_drift_section(
+    doc: Doc,
+    drift: &[ModuleDrift],
+    checked_live: bool,
+    verified: bool,
+    scan_note: Option<&str>,
+) -> Doc {
     let mut ordered: Vec<&ModuleDrift> = drift.iter().collect();
     ordered.sort_by(|a, b| {
         surface_rank(a.surface)
@@ -571,15 +586,13 @@ fn render_module_drift_section(doc: Doc, drift: &[ModuleDrift], checked_live: bo
             .then_with(|| a.surface.cmp(b.surface))
             .then_with(|| a.item.cmp(&b.item))
     });
-    // No scan stamp reaches this surface, so the only check that can stand
-    // behind an empty section is the one this run made.
     drift_section(
         doc,
         &ordered,
         &[],
         checked_live,
-        checked_live,
-        None,
+        verified,
+        scan_note,
         |s, d| {
             let subject = format!(
                 "{}:{} {}",
@@ -1543,11 +1556,29 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
 
     doc = match view {
         ModuleStatusView::Compact => {
-            let doc = render_module_drift_section(doc, &output.drift, output.drift_checked_live);
-            // Same rule as the fleet report: the Drift line states what is
-            // recorded, and the ONE hint about checking the machine closes the
-            // report. This surface holds no scan timestamp, so "unchecked" is
-            // the whole of its staleness.
+            // Same split as the fleet dashboard: only the recorded branch
+            // dates its Drift section, and the recorded machine-wide stamp is
+            // a check that stands behind an empty section — the full walk it
+            // dates covered this module's files and packages too.
+            let (verified, note) = if output.drift_checked_live {
+                (true, None)
+            } else {
+                (
+                    output.last_scan_at.is_some(),
+                    Some(drift_checked_note(output.last_scan_at.as_deref(), now)),
+                )
+            };
+            let doc = render_module_drift_section(
+                doc,
+                &output.drift,
+                output.drift_checked_live,
+                verified,
+                note.as_deref(),
+            );
+            // Same rule as the fleet report: a recorded view — rows or not —
+            // closes on the ONE invitation to check the machine, and only a
+            // live scan that FOUND drift earns the heal hint (the looking has
+            // been done).
             if !output.drift_checked_live {
                 doc.hint(SCAN_HINT)
             } else if output.drift.is_empty() {
@@ -1737,6 +1768,7 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
         deployed_files: Vec::new(),
         drift: Vec::new(),
         drift_checked_live: false,
+        last_scan_at: None,
     };
     let (state_word, _) = payload.state_display();
     Doc::new()
@@ -2196,10 +2228,11 @@ pub(super) fn cmd_status_module(
 
     // Same live, read-only re-check `diff --module` performs, and the same
     // deliberate gate as the profile-wide command: plain `status --module`
-    // stays a fast recorded-only dashboard (this module surface has no
-    // recorded drift rows of its own to fall back to — module drift is only
-    // ever LIVE), and only `--scan`/`--exit-code` (which implies `--scan`)
-    // pays for a real scan of the file content and installed packages.
+    // stays a fast recorded-only dashboard — it reads back the drift rows the
+    // daemon and the scoped scans recorded for this module's chain, exactly as
+    // the fleet dashboard does — and only `--scan`/`--exit-code` (which
+    // implies `--scan`) pays for a real scan of the file content and
+    // installed packages.
     // Without this, a module that was sabotaged out-of-band read as clean
     // forever, because "Deployed Files" below only checks presence.
     // The scan's findings are recorded MODULE-SCOPED (`live_drift`'s module
@@ -2373,6 +2406,78 @@ pub(super) fn cmd_status_module(
                 Ok(())
             },
         )?;
+    } else {
+        // The recorded fallback: the daemon's tick and the scoped scans in
+        // `diff`/`verify` record their findings, and a dashboard that holds
+        // rows for this module may not render an empty section over them —
+        // exactly the fleet dashboard's recorded read, filtered to this
+        // module's chain. A row is attributed by its id alone (no manager or
+        // profile resolution on the recorded path): a module-file id names
+        // its owner outright, and a package id is matched against the chain's
+        // DECLARED names under the id's own manager. An id in neither grammar
+        // (a whole-machine surface, a daemon action spelling with no manager
+        // prefix) is a row this module cannot vouch for and stays off the
+        // report.
+        //
+        // The chain degrades to the named module alone when the depends graph
+        // cannot resolve: this is a READ, and the graph error belongs to the
+        // surfaces that would act on it (`apply`/`plan` refuse it loudly).
+        let chain =
+            cfgd_core::modules::resolve_dependency_order(&[mod_name.to_string()], &all_modules)
+                .unwrap_or_else(|_| vec![mod_name.to_string()]);
+        for event in state.unresolved_drift()? {
+            match event.resource_type.as_str() {
+                "module" => {
+                    let Some((owner, item)) =
+                        super::live_drift::split_module_file_resource_id(&event.resource_id)
+                    else {
+                        continue;
+                    };
+                    if !chain.iter().any(|m| m == owner) {
+                        continue;
+                    }
+                    drift.push(ModuleDrift {
+                        owner: owner.to_string(),
+                        surface: SURFACE_FILES,
+                        item,
+                        event,
+                    });
+                }
+                "package" => {
+                    let Some((manager, packages)) = event.resource_id.split_once(':') else {
+                        continue;
+                    };
+                    // A recorded row may batch several packages under one
+                    // manager (the daemon's action spelling); the module's
+                    // share is the subset its chain declares, matched under
+                    // the row's own manager through the declared alias.
+                    let declares =
+                        |pkg: &str, module: &cfgd_core::modules::LoadedModule| {
+                            module.spec.packages.iter().any(|entry| {
+                                entry.aliases.get(manager).unwrap_or(&entry.name) == pkg
+                            })
+                        };
+                    let Some((owner, mine)) = chain.iter().find_map(|name| {
+                        let module = all_modules.get(name)?;
+                        let mine: Vec<&str> = packages
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|pkg| declares(pkg, module))
+                            .collect();
+                        (!mine.is_empty()).then(|| (name.clone(), mine.join(", ")))
+                    }) else {
+                        continue;
+                    };
+                    drift.push(ModuleDrift {
+                        owner,
+                        surface: SURFACE_PACKAGES,
+                        item: mine,
+                        event,
+                    });
+                }
+                _ => {}
+            }
+        }
     }
 
     let package_state = join_package_state(
@@ -2428,6 +2533,10 @@ pub(super) fn cmd_status_module(
         package_state,
         deployed_files,
         drift_checked_live: do_scan,
+        // Carried on both branches: the scan branch's payload states when the
+        // RECORDED stamp was taken too, since a module scan deliberately never
+        // moves it.
+        last_scan_at: state.last_scan_at()?,
         drift,
     };
 
@@ -3629,9 +3738,9 @@ mod tests {
             "a scan this run made earns the tick: {live}"
         );
 
-        // The per-module view holds no scan stamp, so only a live scan can
-        // stand behind its empty section.
-        let module = |checked_live: bool| {
+        // The per-module view answers the same three ways: a live scan or a
+        // recorded one stands behind its empty section, and nothing else does.
+        let module = |last_scan_at: Option<&str>, checked_live: bool| {
             let output = ModuleStatus {
                 name: "nvim".to_string(),
                 packages: 0,
@@ -3648,6 +3757,7 @@ mod tests {
                 package_state: Vec::new(),
                 deployed_files: Vec::new(),
                 drift_checked_live: checked_live,
+                last_scan_at: last_scan_at.map(str::to_string),
                 drift: Vec::new(),
             };
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -3660,14 +3770,19 @@ mod tests {
             verdict(&cfgd_core::test_helpers::captured_text(&buf))
         };
         assert!(
-            !module(false).starts_with(&tick),
+            !module(None, false).starts_with(&tick),
             "an unscanned module wears no tick: {}",
-            module(false)
+            module(None, false)
         );
         assert!(
-            module(true).starts_with(&tick),
+            module(Some("2026-05-14T10:00:00Z"), false).starts_with(&tick),
+            "a scan on record earns the module tick too: {}",
+            module(Some("2026-05-14T10:00:00Z"), false)
+        );
+        assert!(
+            module(None, true).starts_with(&tick),
             "a scanned module earns it: {}",
-            module(true)
+            module(None, true)
         );
 
         // The sibling surface, for the same fact: a check that could not run
@@ -6119,6 +6234,7 @@ mod tests {
             deployed_files: Vec::new(),
             drift: Vec::new(),
             drift_checked_live: false,
+            last_scan_at: None,
         }
     }
 
@@ -6482,6 +6598,109 @@ mod tests {
             store.last_scan_at().unwrap(),
             None,
             "a scoped check must never write the machine-wide stamp"
+        );
+    }
+
+    /// Drift another surface RECORDED for this module — a daemon tick, `cfgd
+    /// diff`, a scoped scan — renders in a plain `status --module` (no
+    /// `--scan`), with the recorded wording and the recorded-scan freshness
+    /// note, instead of `No drift recorded` over rows the store already
+    /// holds. Rows outside the module's chain stay off the report, and the
+    /// presence-only Deployed Files rows keep their not-scanned honesty:
+    /// only the Drift section reads the record.
+    #[test]
+    #[serial_test::serial]
+    fn a_module_status_shows_its_recorded_drift_without_a_scan() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_WITH_MODULE_YAML).unwrap();
+        let mod_dir = config_dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(mod_dir.join("module.yaml"), MODULE_YAML).unwrap();
+
+        let module_target = cfgd_core::to_posix_string(tmp_home.path().join("mod-file.txt"));
+        {
+            let store =
+                cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
+            // This module's rows, in both id grammars a producer mints; the
+            // file id comes from the real producer so the fixture cannot
+            // drift from the trim-and-restore round trip it exercises.
+            store
+                .record_drift(
+                    "module",
+                    &super::super::live_drift::module_file_resource_id("test-mod", &module_target),
+                    Some("content matches source"),
+                    Some("content differs from source"),
+                    "local",
+                )
+                .unwrap();
+            store
+                .record_drift(
+                    "package",
+                    "brew:ripgrep",
+                    Some("installed"),
+                    Some("missing"),
+                    "local",
+                )
+                .unwrap();
+            // Rows OUTSIDE the module's chain: neither may reach the report.
+            store
+                .record_drift(
+                    "module",
+                    "other-mod/etc/other.conf",
+                    None,
+                    Some("x"),
+                    "local",
+                )
+                .unwrap();
+            store
+                .record_drift("file", "/etc/hosts", None, Some("x"), "local")
+                .unwrap();
+        }
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let (printer, buf) = test_printers();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            false,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
+        drop(printer);
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+
+        assert!(
+            !out.contains("No drift recorded"),
+            "recorded module drift must not render as an empty section: {out}"
+        );
+        assert!(
+            out.contains("module:test-mod:files ~/mod-file.txt"),
+            "the recorded file finding renders under its owner and surface, \
+             the restored root folded to `~/` with no doubled separator: {out}"
+        );
+        assert!(
+            out.contains("ripgrep"),
+            "the recorded package finding renders: {out}"
+        );
+        assert!(
+            out.contains("drift never checked"),
+            "the recorded fallback dates itself with the recorded-scan freshness note: {out}"
+        );
+        assert!(
+            !out.contains("other-mod") && !out.contains("/etc/hosts"),
+            "rows outside the module's chain stay off a module report: {out}"
+        );
+        assert!(
+            !out.contains("No drift detected"),
+            "an unscanned report may not claim a live verdict: {out}"
         );
     }
 }
