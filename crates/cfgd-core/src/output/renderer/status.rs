@@ -216,15 +216,18 @@ pub(crate) fn compose_status_split(
 pub(crate) const GLYPH_PREFIX_WIDTH: usize = 2;
 
 /// Depths below its parent action row a deploy row's per-file child renders
-/// at — two, not one, so an enumerated file list reads apart from one more
-/// owner group nested under the action.
-pub(crate) const CHILD_ROW_DEPTH_OFFSET: usize = 2;
+/// at — one, so the child's text sits exactly one raw 2-space indent step
+/// below the parent row's own indent, its target aligned under the parent's
+/// subject rather than under a nested owner group.
+pub(crate) const CHILD_ROW_DEPTH_OFFSET: usize = 1;
 
 /// The columns [`Emitting::child_row_column`] subtracts from the parent's
 /// claimed width: [`CHILD_ROW_DEPTH_OFFSET`] depths of extra indent (2
 /// columns each) minus the glyph a child never opens on
 /// ([`GLYPH_PREFIX_WIDTH`]) — the net a child gives up so its trailing
-/// `— method` still lands where its parent's trailer did.
+/// `— method` still lands where its parent's trailer did. Nets to 0 at one
+/// depth of extra indent: the indent step and the missing glyph cancel
+/// exactly, so a child's column claim equals its parent's.
 pub(crate) const CHILD_ROW_INDENT_DELTA: usize = CHILD_ROW_DEPTH_OFFSET * 2 - GLYPH_PREFIX_WIDTH;
 
 /// The columns a wait row spends between its own subject and the OTHER
@@ -342,9 +345,9 @@ impl Emitting<'_> {
     /// trailing `— method` lands on the same x its parent's `— detail`/`(time)`
     /// did.
     ///
-    /// A child renders [`CHILD_ROW_DEPTH_OFFSET`] depths below its parent
-    /// action row (an extra indent, so an enumerated file list reads apart
-    /// from one more owner group) and opens with no glyph at all — two
+    /// A child renders [`CHILD_ROW_DEPTH_OFFSET`] depth below its parent
+    /// action row (one raw indent step, so its target aligns under the
+    /// parent's subject) and opens with no glyph at all — two
     /// changes that cancel everywhere but the padded width itself, which is
     /// why [`CHILD_ROW_INDENT_DELTA`] is subtracted here rather than folded
     /// into the depth's indent or a glyph reservation the way `bullet_column`

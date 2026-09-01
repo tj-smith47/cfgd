@@ -1122,7 +1122,7 @@ impl Renderer {
     /// A deploy row's per-file child: a target and its resolved method,
     /// `— method` muted after the em-dash like every other detail slot.
     ///
-    /// Renders with no glyph, two depths below its parent (see
+    /// Renders with no glyph, one depth below its parent (see
     /// `Emitting::child_row_column` for why the trailing marker still lands
     /// at the report's one claimed column), and continues the parent row's
     /// group rather than opening one of its own —
