@@ -15232,7 +15232,10 @@ fn rendered_labels(body: &str) -> Vec<(usize, String)> {
             let open = at + opener.len() - 1;
             let (_, span) = bracketed_span(body, open);
             // Only the first literal of each tuple is a label; the value
-            // beside it is prose and keeps its own case.
+            // beside it is prose and keeps its own case. A tuple opening on a
+            // drift-store resource-type key is a WIRE row headed for
+            // `drift_events`, never a rendered fact, so the store's own
+            // vocabulary is the skip — not a hatch at each call site.
             for (rel, _) in span.match_indices('(').chain(span.match_indices('[')) {
                 let after = &span[rel + 1..];
                 if let Some(lit) = after
@@ -15240,6 +15243,9 @@ fn rendered_labels(body: &str) -> Vec<(usize, String)> {
                     .strip_prefix('"')
                     .and_then(|r| r.split('"').next())
                 {
+                    if crate::cli::live_drift::FULL_CHECK_RESOLVABLE_TYPES.contains(&lit) {
+                        continue;
+                    }
                     labels.push((open + rel, lit.to_string()));
                 }
             }

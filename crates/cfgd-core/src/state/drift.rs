@@ -67,6 +67,42 @@ impl StateStore {
         Ok(())
     }
 
+    /// The ONE composite-key UPDATE the three set-based resolvers share: set
+    /// `set_clause` on every unresolved row whose `(resource_type,
+    /// resource_id)` satisfies `membership` (`IN` / `NOT IN`) against `keys`.
+    /// The composite key is matched via a `\x1f`-joined concatenation (the
+    /// unit separator never appears in a resource type or a POSIX-folded id),
+    /// and every value is a bound param — nothing is interpolated into the
+    /// SQL, so it stays injection-safe. Empty-set semantics are each caller's
+    /// to decide BEFORE calling; an empty `keys` here is a caller bug and
+    /// matches nothing (`IN ()`) or everything (`NOT IN ()`).
+    fn update_unresolved_by_keys(
+        &self,
+        set_clause: &str,
+        membership: &str,
+        first_param: &dyn rusqlite::ToSql,
+        keys: &[(String, String)],
+    ) -> Result<()> {
+        let placeholders = std::iter::repeat_n("?", keys.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "UPDATE drift_events SET {set_clause}
+                 WHERE resolved_by IS NULL AND resolved_at IS NULL
+                 AND (resource_type || char(31) || resource_id) {membership} ({placeholders})",
+        );
+
+        let bound: Vec<String> = keys
+            .iter()
+            .map(|(rtype, rid)| format!("{rtype}\u{1f}{rid}"))
+            .collect();
+        let mut refs: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(keys.len() + 1);
+        refs.push(first_param);
+        refs.extend(bound.iter().map(|b| b as &dyn rusqlite::ToSql));
+        self.conn.execute(&sql, refs.as_slice())?;
+        Ok(())
+    }
+
     /// Resolve every unresolved drift row whose `(resource_type, resource_id)`
     /// IS in `keys`, linking each to `apply_id`.
     ///
@@ -80,27 +116,7 @@ impl StateStore {
         if keys.is_empty() {
             return Ok(());
         }
-
-        // Same composite-key match `resolve_drift_not_in` uses: a `\x1f`-joined
-        // concatenation (the unit separator never appears in a resource type or
-        // a POSIX-folded id), every value a bound param.
-        let placeholders = std::iter::repeat_n("?", keys.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "UPDATE drift_events SET resolved_by = ?1
-                 WHERE resolved_by IS NULL AND resolved_at IS NULL
-                 AND (resource_type || char(31) || resource_id) IN ({placeholders})",
-        );
-
-        let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(keys.len() + 1);
-        bound.push(Box::new(apply_id));
-        for (rtype, rid) in keys {
-            bound.push(Box::new(format!("{rtype}\u{1f}{rid}")));
-        }
-        let refs: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
-        self.conn.execute(&sql, refs.as_slice())?;
-        Ok(())
+        self.update_unresolved_by_keys("resolved_by = ?1", "IN", &apply_id, keys)
     }
 
     /// Mark every unresolved drift row whose `(resource_type, resource_id)`
@@ -119,26 +135,7 @@ impl StateStore {
             return Ok(());
         }
         let timestamp = crate::utc_now_iso8601();
-
-        // Same composite-key match as `resolve_drift_not_in`: a `\x1f`-joined
-        // concatenation, every value a bound param.
-        let placeholders = std::iter::repeat_n("?", healed.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "UPDATE drift_events SET resolved_at = ?1
-                 WHERE resolved_by IS NULL AND resolved_at IS NULL
-                 AND (resource_type || char(31) || resource_id) IN ({placeholders})",
-        );
-
-        let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(healed.len() + 1);
-        bound.push(Box::new(timestamp));
-        for (rtype, rid) in healed {
-            bound.push(Box::new(format!("{rtype}\u{1f}{rid}")));
-        }
-        let refs: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
-        self.conn.execute(&sql, refs.as_slice())?;
-        Ok(())
+        self.update_unresolved_by_keys("resolved_at = ?1", "IN", &timestamp, healed)
     }
 
     /// Mark every unresolved drift row whose `(resource_type, resource_id)` is
@@ -150,35 +147,12 @@ impl StateStore {
     /// — `resolved_by` is a foreign key into applies(id) and cannot take a
     /// synthetic value.
     pub fn resolve_drift_not_in(&self, current: &[(String, String)]) -> Result<()> {
-        let timestamp = crate::utc_now_iso8601();
-
         // Empty current set → every unresolved row healed.
         if current.is_empty() {
             return self.resolve_all_drift();
         }
-
-        // Single set-based UPDATE: keep rows whose (resource_type, resource_id)
-        // is in `current`, resolve the rest. The composite key is matched via a
-        // `\x1f`-joined concatenation (unit-separator never appears in a
-        // resource type or POSIX-folded id), and all values are bound params —
-        // no value is interpolated into the SQL, so it stays injection-safe.
-        let placeholders = std::iter::repeat_n("?", current.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "UPDATE drift_events SET resolved_at = ?1
-                 WHERE resolved_by IS NULL AND resolved_at IS NULL
-                 AND (resource_type || char(31) || resource_id) NOT IN ({placeholders})",
-        );
-
-        let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(current.len() + 1);
-        bound.push(Box::new(timestamp));
-        for (rtype, rid) in current {
-            bound.push(Box::new(format!("{rtype}\u{1f}{rid}")));
-        }
-        let refs: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
-        self.conn.execute(&sql, refs.as_slice())?;
-        Ok(())
+        let timestamp = crate::utc_now_iso8601();
+        self.update_unresolved_by_keys("resolved_at = ?1", "NOT IN", &timestamp, current)
     }
 
     /// Mark every unresolved drift row as resolved. Used by the daemon reconcile

@@ -1636,34 +1636,38 @@ pub(super) fn cmd_status(
     //
     // Only a shell kind can answer at all, and the gate is what keeps a file,
     // package or system row from paying the profile-and-modules env merge to
-    // be told so.
-    output.drift.retain_mut(|event| {
-        if !cfgd_core::output::is_shell_drift_kind(&event.resource_type) {
-            return true;
-        }
-        let Some((want, have)) =
-            merged_env_items.display_values(&event.resource_type, &event.resource_id)
-        else {
-            return true;
-        };
-        // The recompute just read the machine: a row whose declared line is
-        // the line the file holds has HEALED since it was recorded, and
-        // rendering it would put `want: X, have: X` under a warning glyph —
-        // a finding that refutes itself. It leaves the `-o json` payload with
-        // the human row (this vector IS `drift[]`), which is the point: a
-        // machine consumer must read the same converged verdict a reader does.
-        // The exit code stays in agreement for free — it counts the LIVE
-        // scan's findings, and a content-aware scan does not report a
-        // converged entry either. Nothing is written back: plain `status`
-        // reads state, and the stored row clears on the next apply or scan
-        // that touches it.
-        if want == have {
-            return false;
-        }
-        event.want = Some(want);
-        event.have = Some(have);
-        true
-    });
+    // be told so. A `--scan` run skips the recompute outright: the live scan
+    // below clears this vector and refills it from its own findings, so any
+    // work spent on the recorded rows here would be discarded unrendered.
+    if !do_scan {
+        output.drift.retain_mut(|event| {
+            if !cfgd_core::output::is_shell_drift_kind(&event.resource_type) {
+                return true;
+            }
+            let Some((want, have)) =
+                merged_env_items.display_values(&event.resource_type, &event.resource_id)
+            else {
+                return true;
+            };
+            // The recompute just read the machine: a row whose declared line
+            // is the line the file holds has HEALED since it was recorded,
+            // and rendering it would put `want: X, have: X` under a warning
+            // glyph — a finding that refutes itself. It leaves the `-o json`
+            // payload with the human row (this vector IS `drift[]`), which is
+            // the point: a machine consumer must read the same converged
+            // verdict a reader does. The exit code stays in agreement for
+            // free — it counts the LIVE scan's findings, and a content-aware
+            // scan does not report a converged entry either. Nothing is
+            // written back: plain `status` reads state, and the stored row
+            // clears on the next apply or scan that touches it.
+            if want == have {
+                return false;
+            }
+            event.want = Some(want);
+            event.have = Some(have);
+            true
+        });
+    }
 
     // Plain `status` (no --scan/--exit-code) keeps the fast RECORDED-drift
     // dashboard by deliberate design. `--scan` (and `--exit-code`, which
@@ -1953,7 +1957,6 @@ pub(super) fn cmd_status_module(
                         let scannable =
                             pkg.manager != "script" && mgr_map.contains_key(pkg.manager.as_str());
                         if scannable {
-                            // name-row-ok: a stored resource-type key, never rendered
                             checked.push((
                                 "package".to_string(),
                                 super::diff::package_resource_id(

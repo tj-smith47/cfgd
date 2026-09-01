@@ -141,20 +141,32 @@ pub fn cmd_verify(
         )?);
         Ok(results)
     })?;
-    // Recorded from the producer literals, BEFORE the display recompute
-    // below rewrites env rows to their declared values (`live_drift`'s
-    // module doc). The fleet-wide run is a FULL-machine check: every finding
-    // lands as a row and every recorded row it did not re-find resolves as
-    // healed — `reconciler::verify`'s own recording of the pkg/system/env
-    // halves upserts the same keys, so re-recording them here only refreshes
-    // their timestamps. A `--module` run records and resolves only the
-    // module-typed rows it checked; its manager and env halves read
-    // machine-wide surfaces and stay outside the scope it can vouch for.
+    // `reconciler::verify` is pure compute — this seam is where its results
+    // become recorded rows, from the producer literals, BEFORE the display
+    // recompute below rewrites env rows to their declared values
+    // (`live_drift`'s module doc). The fleet-wide run is a FULL-machine
+    // check: every finding lands as a row and every recorded row it
+    // re-checked and did not re-find resolves as healed. Which system
+    // namespaces it re-checked is read off the results themselves: a
+    // configurator whose diff produced any row (clean or drifted) vouches
+    // for its `<configurator>.` prefix, and one that errored or never ran
+    // contributes no system row at all, so its recorded rows stand. A
+    // `--module` run records and resolves only the module-typed rows it
+    // checked; its manager and env halves read machine-wide surfaces and
+    // stay outside the scope it can vouch for.
     if module_filter.is_none() {
+        let mut evaluated_system: Vec<String> = results
+            .iter()
+            .filter(|r| r.resource_type == "system")
+            .filter_map(|r| r.resource_id.split('.').next())
+            .map(str::to_string)
+            .collect();
+        evaluated_system.sort_unstable();
+        evaluated_system.dedup();
         super::live_drift::record_full_scan_findings(
             state,
             results.iter().filter(|r| !r.matches),
-            &[],
+            &evaluated_system,
         );
     } else {
         let checked: Vec<(String, String)> = results
@@ -170,13 +182,12 @@ pub fn cmd_verify(
                 .filter(|r| !r.matches && r.resource_type == "module"),
         );
     }
-    // `reconciler::verify` already persisted the opaque `current`/`missing or
+    // The recording above persisted the opaque `current`/`missing or
     // changed` markers for every env-var/alias row (the declared value must
-    // never reach `drift_events`) — but this `results` vec is the DISPLAY
-    // copy, rendered below into `build_verify_doc`'s human/`-o json` output,
-    // and persistence already happened inside `reconciler::verify` before it
-    // returned. Recomputing here is exactly `diff`'s "opaque markers carry
-    // neither real value" rule applied to `verify`'s own render.
+    // never reach `drift_events`) — this `results` vec is now the DISPLAY
+    // copy, rendered below into `build_verify_doc`'s human/`-o json` output.
+    // Recomputing here is exactly `diff`'s "opaque markers carry neither
+    // real value" rule applied to `verify`'s own render.
     let merged_env_items = reconciler::MergedEnvItems::new(
         &resolved.merged.env,
         &resolved.merged.aliases,
@@ -500,6 +511,230 @@ mod tests {
             editor_row["expected"],
             serde_json::json!(declared_line),
             "the -o json payload must carry the declared line: {editor_row}"
+        );
+    }
+
+    /// A fleet-wide `cfgd verify` is a FULL-machine live check: every finding
+    /// lands as a `drift_events` row (in the producer's own literals — a
+    /// declared env value never reaches the store), every recorded row it
+    /// re-checked and did not re-find resolves as healed, and every recorded
+    /// row it CANNOT re-find stands: a class it never evaluates (`secret`,
+    /// `script`), a daemon-spelled id (`system` with `:`, a comma-batched
+    /// `package`), and a `system` row of a configurator this run never
+    /// probed. The kept rows are their own writer's to resolve; a verify that
+    /// cleared them would erase findings nothing re-checked.
+    #[test]
+    #[serial_test::serial]
+    fn a_full_verify_records_its_findings_and_keeps_rows_it_cannot_refind() {
+        use crate::cli::helpers::tests::{make_cli, quiet_printer};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let files_dir = tmp.path().join("files");
+        std::fs::create_dir_all(&files_dir).unwrap();
+        std::fs::write(files_dir.join("managed.txt"), "declared content\n").unwrap();
+        let absent_target = tmp.path().join("absent.txt");
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - source: files/managed.txt\n        target: {}\n        strategy: Copy\n  env:\n    - name: FIXTURE_TOKEN\n      value: sk-fixture-secret\n",
+                cfgd_core::to_posix_string(&absent_target)
+            ),
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("modules")).unwrap();
+
+        let state_dir = tmp.path().join("state");
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(state_dir.clone());
+        cli.cache_dir = Some(tmp.path().join("cache"));
+
+        // Rows a full verify cannot re-find (they must stand), plus one stale
+        // row of a class it DOES re-check (it must resolve).
+        let kept: [(&str, &str); 5] = [
+            ("secret", "op://vault/item"),
+            ("script", "echo hi"),
+            ("system", "sysctl:vm.swappiness"),
+            ("package", "brew:jq,ripgrep"),
+            ("system", "ghostcfg.some.key"),
+        ];
+        {
+            let store = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
+            for (rtype, rid) in kept {
+                store
+                    .record_drift(rtype, rid, Some("x"), Some("y"), "daemon")
+                    .unwrap();
+            }
+            store
+                .record_drift(
+                    "file",
+                    &cfgd_core::to_posix_string(tmp.path().join("stale.txt")),
+                    Some("current"),
+                    Some("missing"),
+                    "local",
+                )
+                .unwrap();
+        }
+
+        let printer = quiet_printer();
+        cmd_verify(&cli, &printer, None, false).unwrap();
+
+        let store = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        assert!(
+            rows.iter().any(|e| e.resource_type == "file"
+                && e.resource_id == cfgd_core::to_posix_string(&absent_target)),
+            "the missing managed file must be recorded, got: {rows:?}"
+        );
+        for (rtype, rid) in kept {
+            assert!(
+                rows.iter()
+                    .any(|e| e.resource_type == rtype && e.resource_id == rid),
+                "a row this check cannot re-find must stand: {rtype}/{rid}, got: {rows:?}"
+            );
+        }
+        assert!(
+            !rows.iter().any(|e| e.resource_id.contains("stale.txt")),
+            "a file row the check re-checked and did not re-find must resolve, got: {rows:?}"
+        );
+        for e in &rows {
+            for op in [&e.expected, &e.actual] {
+                assert!(
+                    !op.as_deref().unwrap_or("").contains("sk-fixture-secret"),
+                    "a declared env value must never reach the store, got: {e:?}"
+                );
+            }
+        }
+        assert!(
+            store.last_scan_at().unwrap().is_some(),
+            "a fleet-wide verify checked the machine and must date the dashboard"
+        );
+    }
+
+    /// A `--module` verify is evidence about ONE module: it records and
+    /// resolves only `module`-typed rows in its own scope, writes nothing for
+    /// the machine-wide env/system comparison its empty-profile composition
+    /// makes (that comparison is module-only config against machine-wide
+    /// surfaces — factually wrong as a machine claim), and leaves foreign
+    /// rows and the machine-wide stamp alone.
+    #[test]
+    #[serial_test::serial]
+    fn a_module_scoped_verify_records_only_its_own_modules_rows_and_no_stamp() {
+        use crate::cli::helpers::tests::{make_cli, quiet_printer};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        let mod_dir = tmp.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(mod_dir.join("files")).unwrap();
+        std::fs::write(mod_dir.join("files").join("app.conf"), "app config\n").unwrap();
+        std::fs::write(mod_dir.join("files").join("ok.conf"), "converged\n").unwrap();
+        let missing_target = tmp.path().join("mod-target.txt");
+        let healed_target = tmp.path().join("mod-healed.txt");
+        std::fs::write(&healed_target, "converged\n").unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  env:\n    - name: FOO\n      value: sk-module-secret\n  files:\n    - source: files/app.conf\n      target: {}\n    - source: files/ok.conf\n      target: {}\n",
+                cfgd_core::to_posix_string(&missing_target),
+                cfgd_core::to_posix_string(&healed_target)
+            ),
+        )
+        .unwrap();
+
+        let state_dir = tmp.path().join("state");
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(state_dir.clone());
+        cli.cache_dir = Some(tmp.path().join("cache"));
+
+        let healed_id = super::super::live_drift::module_file_resource_id(
+            "test-mod",
+            &cfgd_core::to_posix_string(&healed_target),
+        );
+        {
+            let store = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
+            // Foreign rows a scoped run may not touch, and one own-scope row
+            // the run re-checks and no longer finds drifted.
+            for (rtype, rid) in [
+                ("module", "other-mod/etc/other.conf"),
+                ("file", "/etc/hosts"),
+                ("module", healed_id.as_str()),
+            ] {
+                store
+                    .record_drift(rtype, rid, Some("x"), Some("y"), "daemon")
+                    .unwrap();
+            }
+        }
+
+        let printer = quiet_printer();
+        cmd_verify(&cli, &printer, Some("test-mod"), false).unwrap();
+
+        let store = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        let missing_id = super::super::live_drift::module_file_resource_id(
+            "test-mod",
+            &cfgd_core::to_posix_string(&missing_target),
+        );
+        assert!(
+            rows.iter()
+                .any(|e| e.resource_type == "module" && e.resource_id == missing_id),
+            "the scoped run must record its own module's finding, got: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|e| e.resource_id == healed_id),
+            "an own-scope row the run re-checked clean must resolve, got: {rows:?}"
+        );
+        for (rtype, rid) in [
+            ("module", "other-mod/etc/other.conf"),
+            ("file", "/etc/hosts"),
+        ] {
+            assert!(
+                rows.iter()
+                    .any(|e| e.resource_type == rtype && e.resource_id == rid),
+                "a foreign row must stand: {rtype}/{rid}, got: {rows:?}"
+            );
+        }
+        let out_of_scope: Vec<_> = rows
+            .iter()
+            .filter(|e| e.resource_type != "module" && e.resource_id != "/etc/hosts")
+            .collect();
+        assert!(
+            out_of_scope.is_empty(),
+            "a scoped verify writes no row outside its module's scope (the \
+             machine-wide env/system halves included), got: {out_of_scope:?}"
+        );
+        for e in &rows {
+            for op in [&e.expected, &e.actual] {
+                assert!(
+                    !op.as_deref().unwrap_or("").contains("sk-module-secret"),
+                    "a declared env value must never reach the store, got: {e:?}"
+                );
+            }
+        }
+        assert_eq!(
+            store.last_scan_at().unwrap(),
+            None,
+            "one module's verify re-dated the whole dashboard"
         );
     }
 

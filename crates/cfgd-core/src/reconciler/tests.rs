@@ -1522,14 +1522,9 @@ fn verify_module_drift_packages() {
     );
     assert!(ok.unwrap().matches);
 
-    // The missing package must also be recorded as drift in the state store.
-    let recorded = state.unresolved_drift().unwrap();
-    assert!(
-        recorded
-            .iter()
-            .any(|d| d.resource_type == "module" && d.resource_id == "nvim/ripgrep"),
-        "missing module package must record drift: {recorded:?}"
-    );
+    // Pure compute: nothing lands in `drift_events` — recording is the
+    // caller's, at the CLI seam, per its own scope.
+    assert!(state.unresolved_drift().unwrap().is_empty());
 }
 
 #[test]
@@ -1771,8 +1766,8 @@ fn module_one_pkg(name: &str, manager: &str, pkg: &str) -> ResolvedModule {
 
 #[test]
 fn verify_module_package_not_installed_is_module_drift() {
-    // A module-only package the host lacks must surface as a `module` non-match,
-    // recorded in the state store under `<module>/<name>`.
+    // A module-only package the host lacks must surface as a `module`
+    // non-match under `<module>/<name>`.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry.add_package_manager(Box::new(
@@ -1798,13 +1793,9 @@ fn verify_module_package_not_installed_is_module_drift() {
         .expect("module package must emit a module row");
     assert!(!row.matches, "uninstalled module package must be drift");
 
-    let recorded = state.unresolved_drift().unwrap();
-    assert!(
-        recorded
-            .iter()
-            .any(|d| d.resource_type == "module" && d.resource_id == "dev/ripgrep"),
-        "module package drift must be recorded: {recorded:?}"
-    );
+    // Pure compute: nothing lands in `drift_events` — recording is the
+    // caller's, at the CLI seam, per its own scope.
+    assert!(state.unresolved_drift().unwrap().is_empty());
 }
 
 #[test]
@@ -13310,77 +13301,22 @@ fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouc
     assert!(env_row.matches);
 }
 
+/// WARN regression: an env/alias verify row must never carry the declared
+/// value — only the opaque `current`/`missing or changed` markers. A
+/// declared value can be sensitive (a secret-shaped env var, a command
+/// embedding a token) and the row flows unmodified into `drift_events` (the
+/// CLI recording seam stores each producer's own literals) and from there to
+/// `cfgd status`/`cfgd diff` *and* the device gateway, so the real content
+/// has to be recomputed from config at render time
+/// (`env_item_declared_line`) rather than carried. Uses a deliberately
+/// secret-shaped env value and alias command so a regression that words the
+/// row with the raw line fails on the sensitive substring, not just on a
+/// generic marker string.
 #[test]
 #[serial_test::serial]
-fn verify_env_persists_drift_for_a_hand_edited_alias() {
+fn env_verify_results_carry_only_the_opaque_markers_never_the_declared_value() {
     let tmp_home = tempfile::tempdir().unwrap();
     let _home = crate::with_test_home_guard(tmp_home.path());
-    let state = test_state();
-
-    let aliases = vec![ShellAlias {
-        name: "ll".to_string(),
-        command: "ls -la".to_string(),
-        platforms: vec![],
-    }];
-    let (path, content) = primary_managed_env_target(tmp_home.path(), &[], &aliases);
-    let platform = EnvPlatform::current();
-    let declared_line =
-        super::env_files::primary_alias_line(&aliases[0], platform, &Default::default())
-            .expect("alias renders a declared line");
-    let hand_edited = ShellAlias {
-        name: "ll".to_string(),
-        command: "ls -lah".to_string(),
-        platforms: vec![],
-    };
-    let hand_edited_line =
-        super::env_files::primary_alias_line(&hand_edited, platform, &Default::default())
-            .expect("hand-edited alias renders a line");
-    let mutated = content.replace(&declared_line, &hand_edited_line);
-    std::fs::write(path, mutated).unwrap();
-
-    let mut results = Vec::new();
-    super::verify::verify_env(
-        &[],
-        &aliases,
-        &Default::default(),
-        EnvScope::All,
-        &[],
-        &[],
-        &state,
-        &mut results,
-    );
-
-    assert!(
-        results
-            .iter()
-            .any(|r| r.resource_type == "alias" && r.resource_id == "ll" && !r.matches)
-    );
-
-    let drift = state.unresolved_drift().unwrap();
-    assert!(
-        drift
-            .iter()
-            .any(|d| d.resource_type == "alias" && d.resource_id == "ll"),
-        "expected a persisted alias drift row, got {drift:?}"
-    );
-}
-
-/// WARN regression: a persisted `drift_events` row for a per-item env/alias
-/// mismatch must never carry the declared value — only the opaque
-/// `current`/`missing or changed` markers. A declared value can be sensitive
-/// (a secret-shaped env var, a command embedding a token) and the row is
-/// read back by `cfgd status`/`cfgd diff` *and* shipped to the device
-/// gateway, so the real content has to be recomputed from config at render
-/// time (`env_item_declared_line`) rather than stored. Uses a
-/// deliberately secret-shaped env value and alias command so a regression
-/// that persists the raw line fails on the sensitive substring, not just on
-/// a generic marker string.
-#[test]
-#[serial_test::serial]
-fn verify_env_never_persists_the_declared_value_only_the_opaque_marker() {
-    let tmp_home = tempfile::tempdir().unwrap();
-    let _home = crate::with_test_home_guard(tmp_home.path());
-    let state = test_state();
 
     let env = vec![EnvVar {
         name: "API_TOKEN".to_string(),
@@ -13403,54 +13339,28 @@ fn verify_env_never_persists_the_declared_value_only_the_opaque_marker() {
     let (path, _) = primary_managed_env_target(tmp_home.path(), &env, &aliases);
     std::fs::write(path, format!("{ENV_FILE_HEADER}\n")).unwrap();
 
-    let mut results = Vec::new();
-    super::verify::verify_env(
+    let results = super::verify::env_verify_results(
         &env,
         &aliases,
         &Default::default(),
         EnvScope::All,
         &[],
         &[],
-        &state,
-        &mut results,
     );
 
-    let env_row = results
-        .iter()
-        .find(|r| r.resource_type == "env-var" && r.resource_id == "API_TOKEN")
-        .expect("env-var row present");
-    assert!(!env_row.matches);
-    assert_eq!(env_row.expected, "current");
-    assert_eq!(env_row.actual, "missing or changed");
-
-    let alias_row = results
-        .iter()
-        .find(|r| r.resource_type == "alias" && r.resource_id == "deploy")
-        .expect("alias row present");
-    assert!(!alias_row.matches);
-    assert_eq!(alias_row.expected, "current");
-    assert_eq!(alias_row.actual, "missing or changed");
-
-    let drift = state.unresolved_drift().unwrap();
-    let persisted_env = drift
-        .iter()
-        .find(|d| d.resource_type == "env-var" && d.resource_id == "API_TOKEN")
-        .expect("persisted env-var drift row");
-    let persisted_alias = drift
-        .iter()
-        .find(|d| d.resource_type == "alias" && d.resource_id == "deploy")
-        .expect("persisted alias drift row");
-
-    for row in [persisted_env, persisted_alias] {
-        let expected = row.expected.as_deref().unwrap_or_default();
-        let actual = row.actual.as_deref().unwrap_or_default();
+    for (rtype, rid) in [("env-var", "API_TOKEN"), ("alias", "deploy")] {
+        let row = results
+            .iter()
+            .find(|r| r.resource_type == rtype && r.resource_id == rid)
+            .unwrap_or_else(|| panic!("{rtype} row present"));
+        assert!(!row.matches);
         assert!(
-            !expected.contains("sk-super-secret-value")
-                && !actual.contains("sk-super-secret-value"),
-            "declared value must never reach drift_events: {row:?}"
+            !row.expected.contains("sk-super-secret-value")
+                && !row.actual.contains("sk-super-secret-value"),
+            "declared value must never be a row's operand: {row:?}"
         );
-        assert_eq!(expected, "current");
-        assert_eq!(actual, "missing or changed");
+        assert_eq!(row.expected, "current");
+        assert_eq!(row.actual, "missing or changed");
     }
 }
 

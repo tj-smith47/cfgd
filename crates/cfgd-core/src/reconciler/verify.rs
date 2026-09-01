@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::config::{EnvScope, LOCAL_LAYER, ResolvedProfile};
+use crate::config::{EnvScope, ResolvedProfile};
 use crate::errors::Result;
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
@@ -12,29 +12,13 @@ use super::env_engine::{
     EnvContent, EnvHostProbe, EnvOrigins, EnvPlatform, EnvTarget, ManagerPathDir, env_targets,
 };
 
-/// Record a drift event or log a warning if the write fails. Previous sites
-/// used `.ok()` which silently dropped SQLite errors (locked DB, full disk),
-/// leaving `unresolved_drift()` out of sync with observed reality.
-pub(super) fn record_drift_or_warn(
-    state: &StateStore,
-    resource_type: &str,
-    resource_id: &str,
-    expected: Option<&str>,
-    actual: Option<&str>,
-    source: &str,
-) {
-    if let Err(e) = state.record_drift(resource_type, resource_id, expected, actual, source) {
-        // tracing-ok: the drift ROW could not be stored; the finding itself is reported by the caller that found it
-        tracing::warn!(
-            error = %e,
-            resource_type = %resource_type,
-            resource_id = %resource_id,
-            "failed to record drift"
-        );
-    }
-}
-
 /// Verify all managed resources match their desired state.
+///
+/// Pure compute over the machine: nothing here writes `drift_events`. The
+/// caller decides which results become recorded rows — a FULL-machine check
+/// records every finding, a `--module` one only the rows in its own scope —
+/// and a recorder buried in here forced every scope to record machine-wide
+/// (`cli::live_drift`'s module doc states the contract).
 ///
 /// `cx` is the caller's package context rather than one built here, so the
 /// manager half of `cfgd verify` — planned separately, in the CLI — reads the
@@ -101,17 +85,6 @@ pub fn verify(
             },
             unmanaged: false,
         });
-
-        if !ok {
-            record_drift_or_warn(
-                state,
-                resource_type,
-                &resource_id,
-                Some("installed"),
-                Some("missing"),
-                LOCAL_LAYER,
-            );
-        }
     }
 
     // Verify system configurators against the effective (profile ⊕ modules)
@@ -139,15 +112,6 @@ pub fn verify(
                         actual: drift.actual.clone(),
                         unmanaged: false,
                     });
-
-                    record_drift_or_warn(
-                        state,
-                        "system",
-                        &format!("{}.{}", sc.name(), drift.key),
-                        Some(&drift.expected),
-                        Some(&drift.actual),
-                        LOCAL_LAYER,
-                    );
                 }
             }
         }
@@ -161,16 +125,14 @@ pub fn verify(
 
     // Verify env: re-derive the same targets the planner wrote and check each.
     let path_dirs = super::env::recorded_manager_path_dirs(state, &resolved.merged, modules);
-    verify_env(
+    results.extend(env_verify_results(
         &resolved.merged.env,
         &resolved.merged.aliases,
         &resolved.merged.entry_owners,
         resolved.merged.env_scope,
         modules,
         &path_dirs,
-        state,
-        &mut results,
-    );
+    ));
 
     Ok(results)
 }
@@ -228,53 +190,17 @@ pub(super) fn merge_module_env_aliases(
     (merged, merged_aliases, origins)
 }
 
-/// Verify env file and shell rc source line match expected state, persisting
-/// a drift record for every non-matching result [`env_verify_results`]
-/// computes. The compute/persist split is what lets `cli::live_drift` (the
-/// shared engine behind `status --scan` and the non-recording half of
-/// `verify`) run the identical checks read-only.
+/// Re-derive the exact env targets the planner would write for this scope
+/// and check each against what is actually on disk. Never touches the state
+/// store — recording is the caller's, per scope (`verify`'s doc above). Every
+/// non-matching row carries only the opaque `current`/`missing or changed`
+/// markers: a declared value can be sensitive and a recorded row is read back
+/// by `status`/`diff` AND shipped to the device gateway, so the real content
+/// is recomputed from config at render time, never stored.
 // NOTE: Secret-backed env vars (from SecretSpec.envs) are not included in
 // verification because they require provider resolution. This means cfgd status
 // may report env file drift after secret envs are written. This will be addressed
 // when compliance snapshots track secret env metadata.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn verify_env(
-    profile_env: &[crate::config::EnvVar],
-    profile_aliases: &[crate::config::ShellAlias],
-    layer_owners: &crate::config::EntryOwners,
-    scope: EnvScope,
-    modules: &[ResolvedModule],
-    path_dirs: &[ManagerPathDir],
-    state: &StateStore,
-    results: &mut Vec<VerifyResult>,
-) {
-    for r in env_verify_results(
-        profile_env,
-        profile_aliases,
-        layer_owners,
-        scope,
-        modules,
-        path_dirs,
-    ) {
-        if !r.matches {
-            record_drift_or_warn(
-                state,
-                &r.resource_type,
-                &r.resource_id,
-                Some(&r.expected),
-                Some(&r.actual),
-                LOCAL_LAYER,
-            );
-        }
-        results.push(r);
-    }
-}
-
-/// Pure computation behind `verify_env`: re-derive the exact env targets
-/// the planner would write for this scope and check each against what is
-/// actually on disk. Never touches the state store — the entry point for a
-/// caller that wants the same checks without persisting a drift record
-/// (`cli::live_drift`'s shared `status --scan` / `verify` engine).
 pub fn env_verify_results(
     profile_env: &[crate::config::EnvVar],
     profile_aliases: &[crate::config::ShellAlias],
