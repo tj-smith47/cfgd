@@ -15832,6 +15832,7 @@ fn every_drift_verdict_offers_the_heal_and_only_when_it_reports_drift() {
         }],
         pass_count: 0,
         fail_count: 1,
+        system_errors: Vec::new(),
     };
     let verify = rendered(build_verify_doc(&failing, None));
     assert!(
@@ -15855,6 +15856,7 @@ fn every_drift_verdict_offers_the_heal_and_only_when_it_reports_drift() {
             }],
             pass_count: 1,
             fail_count: 0,
+            system_errors: Vec::new(),
         },
         None,
     ));
@@ -32798,4 +32800,47 @@ fn diff_and_scan_agree_on_the_findings() {
             "{surface} reports the failed check, got: {out}"
         );
     }
+}
+
+/// The erroring-check contract quantifies over SURFACES: every command that
+/// takes `--exit-code` renders a check that could not run as its own row
+/// (`<key>: error checking drift — <detail>`) and exits `Error` (1) ahead of
+/// `DriftDetected` (5) — an unanswered check is "unknown", never "clean".
+/// This walk reads the population off the real clap definitions, so a NEW
+/// `--exit-code` surface fails here until it joins
+/// `tests/drift_exit_code.rs`'s three-cell matrix (error-only, drift-only,
+/// error-beside-drift) and `docs/cli-reference.md`'s exit-code table.
+#[test]
+fn every_exit_code_surface_reports_an_erroring_check() {
+    use clap::CommandFactory;
+
+    fn collect(cmd: &clap::Command, path: &str, out: &mut Vec<String>) {
+        for sub in cmd.get_subcommands() {
+            let sub_path = if path.is_empty() {
+                sub.get_name().to_string()
+            } else {
+                format!("{path} {}", sub.get_name())
+            };
+            if sub
+                .get_arguments()
+                .any(|a| a.get_long() == Some("exit-code"))
+            {
+                out.push(sub_path.clone());
+            }
+            collect(sub, &sub_path, out);
+        }
+    }
+
+    let cmd = Cli::command();
+    let mut surfaces = Vec::new();
+    collect(&cmd, "", &mut surfaces);
+    surfaces.sort();
+    assert_eq!(
+        surfaces,
+        ["diff", "status", "verify"],
+        "a new --exit-code surface must report an erroring check as its own \
+         row and exit Error ahead of DriftDetected; cover it in \
+         tests/drift_exit_code.rs and docs/cli-reference.md's exit-code \
+         table, then add it here"
+    );
 }

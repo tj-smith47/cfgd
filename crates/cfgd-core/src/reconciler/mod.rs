@@ -88,7 +88,9 @@ pub use types::{
     Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext,
     RollbackResult, SESSION_GROUP, ScriptAction, ScriptPhase, SystemAction, Tier, attempted_count,
 };
-pub use verify::{MergedEnvItems, VerifyResult, env_verify_results, verify};
+pub use verify::{
+    MergedEnvItems, SystemCheckError, VerifyReport, VerifyResult, env_verify_results, verify,
+};
 
 pub(crate) use env::all_recorded_path_dirs;
 /// Widened past this crate for `cfgd::cli::plan_ops::filter_plan`, the one

@@ -39,8 +39,9 @@ pub fn verify(
     modules: &[ResolvedModule],
     cx: &crate::providers::PackageContext<'_>,
     machine_surfaces: bool,
-) -> Result<Vec<VerifyResult>> {
+) -> Result<VerifyReport> {
     let mut results = Vec::new();
+    let mut check_errors = Vec::new();
 
     // Verify packages — profile and module packages share one effective desired
     // set so a `(manager, name)` declared in both is checked once, and the
@@ -96,15 +97,31 @@ pub fn verify(
     }
 
     if !machine_surfaces {
-        return Ok(results);
+        return Ok(VerifyReport {
+            results,
+            check_errors,
+        });
     }
 
     // Verify system configurators against the effective (profile ⊕ modules)
-    // system map so module system config is verified too.
+    // system map so module system config is verified too. A configurator
+    // whose own probe fails becomes DATA, not an abort: the remaining folds,
+    // the recording and the scan stamp all still happen at the caller, and
+    // the errored configurator contributes no system row — so its recorded
+    // rows stand rather than being healed by a check that never ran.
     let system = crate::effective::effective_system_map(&resolved.merged, modules);
     for sc in registry.available_system_configurators() {
         if let Some(desired) = system.get(sc.name()) {
-            let drifts = sc.diff(desired)?;
+            let drifts = match sc.diff(desired) {
+                Ok(drifts) => drifts,
+                Err(e) => {
+                    check_errors.push(SystemCheckError {
+                        key: sc.name().to_string(),
+                        error: crate::output::collapse_to_subject_line(e),
+                    });
+                    continue;
+                }
+            };
             if drifts.is_empty() {
                 results.push(VerifyResult {
                     resource_type: "system".to_string(),
@@ -146,7 +163,32 @@ pub fn verify(
         &path_dirs,
     ));
 
-    Ok(results)
+    Ok(VerifyReport {
+        results,
+        check_errors,
+    })
+}
+
+/// What a verify pass computed: one verdict per resource, plus the checks
+/// that could not run. A check error travels as data rather than aborting,
+/// so the caller still renders every other finding, records what WAS
+/// checked, and escalates its exit to `Error` — the same first-class shape
+/// `cli::live_drift`'s engine reports for `diff` and `status --scan`.
+pub struct VerifyReport {
+    pub results: Vec<VerifyResult>,
+    pub check_errors: Vec<SystemCheckError>,
+}
+
+/// A configurator whose drift check itself failed — the machine's state for
+/// that key is unknown, which no drifted/clean verdict may stand in for.
+/// Serialized under `systemErrors` by every surface's `-o json` payload
+/// (`diff`, `status`, `verify`), so an empty drift list beside a non-empty
+/// `systemErrors` reads as "unknown", never "clean".
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemCheckError {
+    pub key: String,
+    pub error: String,
 }
 
 /// Result of verifying a single resource.

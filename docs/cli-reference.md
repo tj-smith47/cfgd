@@ -597,15 +597,17 @@ not record one, because a single module's check is not evidence the machine was
 scanned. It composes with `--module` (scanning that one module) and with
 `--exit-code`. `--exit-code` / `-e` implies `--scan` and additionally exits `5`
 when the scan found drift, or `1` when a system configurator check itself
-failed — the same split `cfgd diff --exit-code` reports, since an unknown
-state outranks a known one (see [Exit Codes](#exit-codes)); `--scan` on its
-own never changes the exit code. A failed check is never silently dropped:
-the Drift section renders it as its own row (`gpgKeys — error checking
-drift`) and `-o json` carries it in `systemErrors` (the same
-`{key, error}` entries `cfgd diff` reports), so an empty `drift` array
-beside a non-empty `systemErrors` reads as "unknown", not "clean". The live scan costs real time (each run is a full
-package/file check, roughly 10-15s per module in a typical container), so reach
-for it deliberately rather than in an interactive dashboard refresh.
+failed: the same split `cfgd diff --exit-code` and `cfgd verify --exit-code`
+report, since an unknown state outranks a known one (see
+[Exit Codes](#exit-codes)); `--scan` on its own never changes the exit code.
+A failed check is never silently dropped: the Drift section renders it as its
+own row (`gpgKeys: error checking drift — keyring unavailable`) and `-o json`
+carries it in `systemErrors` (the same `{key, error}` entries `cfgd diff` and
+`cfgd verify` report), so an empty `drift` array beside a non-empty
+`systemErrors` reads as "unknown", not "clean". The live scan costs real time
+(each run is a full package/file check, roughly 10-15s per module in a
+typical container), so reach for it deliberately rather than in an
+interactive dashboard refresh.
 `status --module <name> --scan` scans that module's own files and missing
 packages only: it does not evaluate the module's system-config contribution
 (`effective_system_map` folds that into the profile-wide scan) or manager
@@ -969,6 +971,15 @@ cfgd verify --module nvim    # verify only a single module's resources (no profi
 ```
 
 Each entry in `results[]` carries `resourceType`, `resourceId`, `matches`, `expected`, `actual`, and `unmanaged`, alongside the top-level `passCount` / `failCount`. `unmanaged` is `true` only for a `file` result whose target holds a file cfgd never wrote; see [`cfgd diff`](#cfgd-diff)'s `files[]`.
+
+A system configurator whose check itself fails is reported as its own row
+(`gpgKeys: error checking drift — keyring unavailable`) rather than aborting
+the run: every other resource is still verified and recorded, `-o json`
+carries the failure in `systemErrors` (the same `{key, error}` entries
+`cfgd diff` and `cfgd status` report), and the closing tally counts it as its
+own clause (`5 passed, 0 failed, 1 check could not run`). With `--exit-code`
+such a run exits `1` ahead of `5`: an unanswered check reads as "unknown",
+not "clean" (see [Exit Codes](#exit-codes)).
 
 ### `cfgd doctor`
 
@@ -2285,7 +2296,7 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | Code | Meaning | Emitted by |
 |---|---|---|
 | `0` | Operation succeeded. | All commands on success. |
-| `1` | Generic failure (network, IO, unclassified internal error). Also a `cfgd backup run` that recorded a failed or unclean snapshot (see [Run Semantics](backups.md#run-semantics)), a `cfgd backup restore` or `cfgd backup rollback` whose overlay, safety copy or hooks failed, and `cfgd diff --exit-code` or `cfgd status --exit-code` when a system configurator's own check failed — drift is undetermined rather than absent, which outranks `5`. | Any command whose `Result` resolves to a non-config error, and `cfgd diff --exit-code` / `cfgd status --exit-code` on a failed configurator check. |
+| `1` | Generic failure (network, IO, unclassified internal error). Also a `cfgd backup run` that recorded a failed or unclean snapshot (see [Run Semantics](backups.md#run-semantics)), a `cfgd backup restore` or `cfgd backup rollback` whose overlay, safety copy or hooks failed, and `cfgd diff --exit-code`, `cfgd status --exit-code`, or `cfgd verify --exit-code` when a system configurator's own check failed (drift is undetermined rather than absent, which outranks `5`). | Any command whose `Result` resolves to a non-config error, and `cfgd diff --exit-code` / `cfgd status --exit-code` / `cfgd verify --exit-code` on a failed configurator check. |
 | `2` | An upgrade is available but not installed. | `cfgd upgrade --check` only. |
 | `3` | No cfgd config file at the resolved path. | Any command when `--config` points to a missing file. |
 | `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |
@@ -2295,7 +2306,7 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | `130` | `apply` was cooperatively aborted by `SIGINT` (Ctrl-C). | `cfgd apply` interrupted with Ctrl-C; the in-flight action finishes, the lock releases, the run is recorded as `Aborted`. |
 | `143` | `apply` was cooperatively aborted by `SIGTERM`. | `cfgd apply` interrupted with `kill`; same cooperative-abort semantics as `130`. |
 
-Codes `130` / `143` follow the POSIX `128 + signal` convention and are not cfgd-specific. See [Graceful Interruption](safety.md#graceful-interruption-sigint--sigterm) for the abort semantics. The `--exit-code` / `-e` flag on `diff`, `status`, and `verify` follows the `git diff --exit-code` convention: without the flag these commands always exit `0`; with the flag they exit `5` whenever drift is present, except that `cfgd diff --exit-code` and `cfgd status --exit-code` exit `1` instead when a system configurator check itself failed, since an unknown state outranks a known one for a script deciding whether to apply.
+Codes `130` / `143` follow the POSIX `128 + signal` convention and are not cfgd-specific. See [Graceful Interruption](safety.md#graceful-interruption-sigint--sigterm) for the abort semantics. The `--exit-code` / `-e` flag on `diff`, `status`, and `verify` follows the `git diff --exit-code` convention: without the flag these commands always exit `0`; with the flag they exit `5` whenever drift is present, except that all three exit `1` instead when a system configurator check itself failed, since an unknown state outranks a known one for a script deciding whether to apply.
 
 External-process passthrough (e.g. `kubectl exec` invoked by the `kubectl cfgd` plugin) forwards the inner tool's exit code unchanged; those codes are not part of the cfgd taxonomy.
 

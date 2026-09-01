@@ -270,14 +270,10 @@ pub struct SystemDriftOutput {
     pub actual: String,
 }
 
-/// A configurator whose drift check itself failed — the machine's state for
-/// that key is unknown.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SystemCheckError {
-    pub key: String,
-    pub error: String,
-}
+// One type across all three erroring-check producers (`cli::live_drift`'s
+// engine and `reconciler::verify`), so the `systemErrors` payload entry
+// cannot fork per surface.
+pub use cfgd_core::reconciler::SystemCheckError;
 
 /// One drifted env row: a declared env var or alias whose deployed line
 /// diverges from what `spec.env`/`spec.aliases` declares (`kind` is
