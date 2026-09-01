@@ -29716,11 +29716,13 @@ fn every_merged_env_view_is_built_once_per_command() {
 #[test]
 fn every_live_minted_drift_id_comes_from_its_composer() {
     const HATCH: &str = "composed-id-ok:";
-    // Each production mint, by file and count: `diff`'s module-file finding,
-    // system finding, scoped checked-key pushes and package findings;
-    // `live_drift`'s module/system/package scanners and the manager-node
-    // rows; `status <module> --scan`'s checked key and finding.
-    const EXPECTED: [(&str, usize); 3] = [("diff.rs", 6), ("live_drift.rs", 4), ("status.rs", 2)];
+    // Each production mint, by file and count: `diff --module`'s scoped
+    // module-file finding and checked-key pushes plus its package findings
+    // (the machine-wide `diff` mints nothing of its own — it consumes the
+    // shared engine's findings); `live_drift`'s module/system/package
+    // scanners and the manager-node rows; `status <module> --scan`'s checked
+    // key and finding.
+    const EXPECTED: [(&str, usize); 3] = [("diff.rs", 4), ("live_drift.rs", 4), ("status.rs", 2)];
     const COMPOSERS: [(&str, &[&str]); 3] = [
         ("module", &["module_file_resource_id("]),
         (
@@ -30697,6 +30699,7 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
         classification_degraded_reason: None,
         drift_checked_live: false,
         last_scan_at: None,
+        system_errors: Vec::new(),
     };
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     printer.emit(super::status::build_fleet_status_doc(
@@ -30865,6 +30868,7 @@ fn component_health_fixture() -> super::status::StatusOutput {
         classification_degraded_reason: None,
         drift_checked_live: false,
         last_scan_at: Some("2026-05-14T10:02:00Z".into()),
+        system_errors: Vec::new(),
     }
 }
 
@@ -31067,6 +31071,7 @@ fn last_apply_leads_on_its_verdict() {
         classification_degraded_reason: None,
         drift_checked_live: false,
         last_scan_at: None,
+        system_errors: Vec::new(),
     };
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     printer.emit(super::status::build_fleet_status_doc(
@@ -32097,6 +32102,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         classification_degraded_reason: None,
         drift_checked_live: false,
         last_scan_at: None,
+        system_errors: Vec::new(),
     };
     let module = super::status::ModuleStatus {
         name: "nvim".into(),
@@ -32653,4 +32659,143 @@ fn every_docs_pointer_the_cli_renders_goes_through_the_linked_slot() {
          `// docs-pointer-ok: <why>`:\n{}",
         pointers.join("\n")
     );
+}
+
+// -----------------------------------------------------------------------
+// One live-drift engine — erroring checks on every surface
+// -----------------------------------------------------------------------
+
+/// A profile whose only system demand is a gpg key, so pointing
+/// `CFGD_GPG_BIN` at a failing shim makes the gpgKeys probe itself error.
+#[cfg(unix)]
+const GPG_CHECK_PROFILE_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  system:
+    gpgKeys:
+      - name: sig
+        realName: Test User
+        email: sig@example.com
+"#;
+
+/// `status --scan` shares `diff`'s engine, and the engine used to drop an
+/// erroring configurator silently — the scan rendered "No drift detected"
+/// over a machine whose check never ran. The error is its own row, worded
+/// as `diff` words it.
+#[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn a_status_scan_reports_an_erroring_system_check_as_its_own_row() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_GPG_BIN",
+        1,
+        "",
+        "gpg: keyring unavailable",
+    );
+    let h = CliTestHarness::builder()
+        .profile("default", GPG_CHECK_PROFILE_YAML)
+        .build();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, true, false).unwrap();
+    h.assert_output_contains("gpgKeys");
+    h.assert_output_contains("error checking drift");
+}
+
+/// The same failed check must reach a `-o json` consumer: an empty `drift`
+/// array beside no error entry is indistinguishable from a clean scan.
+#[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn a_status_scan_carries_an_erroring_check_in_its_json_payload() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_GPG_BIN",
+        1,
+        "",
+        "gpg: keyring unavailable",
+    );
+    let h = CliTestHarness::builder()
+        .json()
+        .profile("default", GPG_CHECK_PROFILE_YAML)
+        .build();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, true, false).unwrap();
+    let parsed = h.json_output();
+    let errors = parsed
+        .get("systemErrors")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("scan payload carries systemErrors, got: {parsed}"));
+    assert_eq!(errors.len(), 1, "one failed probe, one entry: {errors:?}");
+    assert_eq!(errors[0]["key"], "gpgKeys");
+}
+
+/// `diff` and `status --scan` answer the drift question through the one
+/// engine, so the same machine yields the same recorded finding set through
+/// either surface — including when one check errors: both report it, and
+/// neither records it as drift.
+#[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn diff_and_scan_agree_on_the_findings() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_GPG_BIN",
+        1,
+        "",
+        "gpg: keyring unavailable",
+    );
+
+    // ONE machine (one tampered target, one failing check), visited by both
+    // surfaces — only the state dir is fresh per run, so the recorded row
+    // sets are comparable id-for-id.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("deployed.txt");
+    std::fs::write(&target, "tampered\n").unwrap();
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  system:\n    gpgKeys:\n      - name: sig\n        realName: Test User\n        email: sig@example.com\n  files:\n    managed:\n      - source: files/managed.txt\n        target: {}\n        strategy: Copy\n",
+        target.display(),
+    );
+
+    let drift_rows = |run: &dyn Fn(&CliTestHarness)| {
+        let h = CliTestHarness::builder()
+            .profile("default", &profile)
+            .build();
+        let files_dir = h.config_path().join("files");
+        std::fs::create_dir_all(&files_dir).unwrap();
+        std::fs::write(files_dir.join("managed.txt"), "desired\n").unwrap();
+        run(&h);
+        let state = cfgd_core::state::StateStore::open_in_dir(h.state_path()).unwrap();
+        let mut rows: Vec<(String, String)> = state
+            .unresolved_drift()
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.resource_type, e.resource_id))
+            .collect();
+        rows.sort();
+        (rows, h.output())
+    };
+
+    let (diff_rows, diff_out) = drift_rows(&|h: &CliTestHarness| {
+        super::diff::cmd_diff(&h.cli(), h.printer(), None, false).unwrap();
+    });
+    let (scan_rows, scan_out) = drift_rows(&|h: &CliTestHarness| {
+        super::status::cmd_status(&h.cli(), h.printer(), None, false, true, false).unwrap();
+    });
+
+    assert!(
+        !diff_rows.is_empty(),
+        "the fixture's tampered file is a finding: {diff_out}"
+    );
+    assert_eq!(
+        diff_rows, scan_rows,
+        "one engine, one finding set — diff recorded {diff_rows:?}, scan recorded {scan_rows:?}"
+    );
+    assert!(
+        !diff_rows.iter().any(|(t, _)| t == "system"),
+        "an errored probe is not drift on either surface: {diff_rows:?}"
+    );
+    for (surface, out) in [("diff", &diff_out), ("status --scan", &scan_out)] {
+        assert!(
+            out.contains("error checking drift"),
+            "{surface} reports the failed check, got: {out}"
+        );
+    }
 }

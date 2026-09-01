@@ -144,6 +144,7 @@ fn clean_output() -> StatusOutput {
         classification_degraded_reason: None,
         drift_checked_live: false,
         last_scan_at: Some("2026-05-14T10:00:00Z".into()),
+        system_errors: Vec::new(),
     }
 }
 
@@ -228,6 +229,7 @@ fn drift_output() -> StatusOutput {
         classification_degraded_reason: None,
         drift_checked_live: false,
         last_scan_at: Some("2026-05-14T08:00:00Z".into()),
+        system_errors: Vec::new(),
     }
 }
 
