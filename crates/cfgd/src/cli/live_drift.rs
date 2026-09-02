@@ -169,12 +169,20 @@ fn full_check_cannot_refind(
 /// cannot be read, the resolve is skipped outright — recording without
 /// resolving overstates drift at worst, while resolving rows nothing checked
 /// erases real findings.
+///
+/// Returns the keep-set itself — the rows this check left STANDING, in their
+/// stored literals. A caller presenting the scan renders and prices them
+/// beside the findings: they are exactly the drift this very call re-affirmed
+/// as unresolved, and a report of the findings alone contradicts the record it
+/// just wrote. The set is threaded out rather than recomputed, so no reader
+/// can disagree with the recorder about which rows stood.
 pub(super) fn record_full_scan_findings<'a>(
     state: &cfgd_core::state::StateStore,
     findings: impl IntoIterator<Item = &'a VerifyResult>,
     evaluated_system: &[String],
     check_errors: &[super::output_types::SystemCheckError],
-) {
+) -> Vec<cfgd_core::state::DriftEvent> {
+    let mut kept: Vec<cfgd_core::state::DriftEvent> = Vec::new();
     // One transaction over the whole record-and-resolve batch: each upsert is
     // two scans of an append-only table, and a per-row implicit commit is its
     // own WAL write. Per-row failures stay warnings — one refused row must
@@ -186,11 +194,16 @@ pub(super) fn record_full_scan_findings<'a>(
             current.push((r.resource_type.clone(), r.resource_id.clone()));
         }
         match state.unresolved_drift() {
-            Ok(rows) => current.extend(
-                rows.into_iter()
-                    .filter(|e| full_check_cannot_refind(e, evaluated_system, check_errors))
-                    .map(|e| (e.resource_type, e.resource_id)),
-            ),
+            Ok(rows) => {
+                kept.extend(
+                    rows.into_iter()
+                        .filter(|e| full_check_cannot_refind(e, evaluated_system, check_errors)),
+                );
+                current.extend(
+                    kept.iter()
+                        .map(|e| (e.resource_type.clone(), e.resource_id.clone())),
+                );
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to read recorded drift; leaving rows unresolved");
                 return Ok(());
@@ -203,6 +216,7 @@ pub(super) fn record_full_scan_findings<'a>(
     }) {
         tracing::warn!(error = %e, "failed to commit the drift scan");
     }
+    kept
 }
 
 /// The declared-floor pass over a SCOPED (`--module`) run's own modules.
@@ -405,6 +419,12 @@ pub(super) struct LiveDriftReport {
     /// The recorded bootstrap PATH dirs the env check compared against, for a
     /// caller recomputing an env row's display values over the same inputs.
     pub path_dirs: Vec<cfgd_core::reconciler::ManagerPathDir>,
+    /// The recorded rows this check could not re-find and therefore left
+    /// standing ([`record_full_scan_findings`]), in their stored literals. A
+    /// caller reporting the scan renders and prices them beside `findings`:
+    /// the two together are what the store holds once the scan has written
+    /// itself, and either half alone is a verdict the record contradicts.
+    pub standing: Vec<cfgd_core::state::DriftEvent>,
 }
 
 impl LiveDriftReport {
@@ -615,15 +635,16 @@ fn live_drift_results_inner(
         .filter(|r| !r.matches),
     );
 
-    let report = LiveDriftReport {
+    let mut report = LiveDriftReport {
         findings: drift,
         check_errors,
         package_check_errors,
         pkg_actions,
         manager_actions,
         path_dirs,
+        standing: Vec::new(),
     };
-    record_full_scan_findings(
+    report.standing = record_full_scan_findings(
         state,
         &report.findings,
         &evaluated_system,
