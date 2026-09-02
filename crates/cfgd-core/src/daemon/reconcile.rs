@@ -554,6 +554,7 @@ fn reconcile_tick(
     let reconciler = crate::reconciler::Reconciler::new(registry, store)
         .with_config_dir(&config_dir)
         .withholding_env_surface(pending_exclusions.withholds_env_surface())
+        .withholding_rows(&pending_exclusions)
         .diffing_installed(&pkg_cx);
 
     // ONE file manager per tick: the manager that planned is the manager the

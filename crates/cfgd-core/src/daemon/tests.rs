@@ -12910,6 +12910,29 @@ spec:
             "the targets awaiting a decision stay unwritten through an \
              auto-applying tick"
         );
+
+        // The apply that deploys a module's files resolves the per-file rows
+        // of every file that module DECLARES, which is one row wider than the
+        // pruned action wrote. The withheld file is in the declared set and
+        // out of the action, so only the exclusions the tick hands the
+        // reconciler keep its row open.
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let standing: Vec<String> = store
+            .unresolved_drift()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.resource_id)
+            .collect();
+        assert!(
+            standing.contains(&withheld_id),
+            "the withheld file's row survives the apply that deployed its \
+             declared siblings: {standing:?}"
+        );
+        assert!(
+            !standing.contains(&planned_id),
+            "the deployed sibling's row is resolved by the apply that wrote \
+             it: {standing:?}"
+        );
     }
 
     /// A per-module tick refreshes the subscriptions the status wire carries.

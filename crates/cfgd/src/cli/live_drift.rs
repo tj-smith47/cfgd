@@ -315,6 +315,10 @@ pub(super) fn file_verify_results(
         .collect())
 }
 
+pub(super) use cfgd_core::reconciler::{
+    module_file_resource_id, module_file_spec_resource_id, split_module_file_resource_id,
+};
+
 /// Content-aware verify results for every file a resolved module deploys.
 ///
 /// Mirrors [`file_verify_results`] for module-deployed files: each module file's
@@ -323,10 +327,6 @@ pub(super) fn file_verify_results(
 /// target is missing OR its bytes drifted out-of-band. Module files carry no tera
 /// `origin`, so `None` is passed — consistent with how they deploy. The
 /// `resource_id` is `"<module>/<target>"` so module-file drift is attributable.
-pub(super) use cfgd_core::reconciler::{
-    module_file_resource_id, module_file_spec_resource_id, split_module_file_resource_id,
-};
-
 pub(super) fn module_file_verify_results(
     fm: &CfgdFileManager,
     config_dir: &std::path::Path,
@@ -1359,6 +1359,71 @@ mod tests {
         assert_eq!(results[0].resource_type, "module");
         assert!(results[0].resource_id.starts_with("accmod/"));
         assert!(results[1].matches, "converged Patch target must pass");
+    }
+
+    /// The spec composer and the live check mint one id for a `~`-spelled
+    /// target, whichever strategy it carries.
+    ///
+    /// `module_file_spec_resource_id` answers from the DECLARED file — the one
+    /// place the `Patch`/expanded split is decided — while the check names the
+    /// target its drift result carries. A `~` target is where the two can
+    /// disagree without either looking wrong: a probe would then miss the
+    /// finding it went looking for, and an apply would resolve a row nobody
+    /// recorded.
+    #[test]
+    #[serial_test::serial]
+    fn the_spec_composer_and_the_live_check_spell_one_id_for_a_tilde_target() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let dir = tempfile::tempdir().unwrap();
+
+        let patched = tmp_home.path().join("patched.json");
+        std::fs::write(&patched, "{\n  \"telemetry\": true\n}\n").unwrap();
+        let copied = tmp_home.path().join("copied.txt");
+        std::fs::write(&copied, "stale\n").unwrap();
+        let source = dir.path().join("copied.txt");
+        std::fs::write(&source, "fresh\n").unwrap();
+
+        let resolved = resolved_with_file(dir.path().join("unused.txt"));
+        let mut modules = vec![module_with_file(
+            "accmod",
+            std::path::PathBuf::new(),
+            std::path::PathBuf::from("~/patched.json"),
+        )];
+        modules[0].files[0].strategy = Some(FileStrategy::Patch);
+        modules[0].files[0].patch = Some(cfgd_core::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
+            script: None,
+            blocked_by: None,
+        });
+        modules[0].files.push(cfgd_core::modules::ResolvedFile {
+            source,
+            target: std::path::PathBuf::from("~/copied.txt"),
+            is_git_source: false,
+            strategy: Some(FileStrategy::Copy),
+            encryption: None,
+            permissions: None,
+            patch: None,
+        });
+
+        let results = module_file_verify_results(
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+            dir.path(),
+            &resolved,
+            &modules,
+            cfgd_core::config::FileStrategy::default(),
+            &cfgd_core::state::StateStore::open_in_memory().unwrap(),
+        )
+        .unwrap();
+
+        let minted: Vec<&str> = results.iter().map(|r| r.resource_id.as_str()).collect();
+        let declared: Vec<String> = modules[0]
+            .files
+            .iter()
+            .map(|f| module_file_spec_resource_id("accmod", f))
+            .collect();
+        assert_eq!(minted, declared, "the two composers must agree per file");
     }
 
     #[test]
