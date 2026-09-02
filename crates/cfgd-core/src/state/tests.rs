@@ -2895,6 +2895,53 @@ fn completion_index_backfills_every_historical_row_from_its_plan_position() {
 }
 
 #[test]
+fn legacy_chmod_tracking_rows_carrying_their_mode_are_swept_on_open() {
+    // `file:chmod:<mode>:<target>` dropped only its verb, so every
+    // permissions fix recorded the mode glued to the path. The parse now
+    // yields the bare target, and nothing sweeps `managed_resources` on
+    // observation — so without the migration a host that ever ran a chmod
+    // shows both spellings in `cfgd status` forever.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        for rid in [
+            "0o600:/etc/config.yaml",
+            "0o755:C:/Users/u/bin",
+            "/etc/config.yaml",
+        ] {
+            store
+                .upsert_managed_resource("file", rid, "local", None, None)
+                .unwrap();
+        }
+        // A path that merely LOOKS mode-prefixed is another type's row and a
+        // legal filename either way; the sweep is scoped to `file`.
+        store
+            .upsert_managed_resource("env", "0o600:/etc/env", "local", None, None)
+            .unwrap();
+        rewind_schema_version(&store, 22);
+    }
+
+    let store = StateStore::open(&path).unwrap();
+    let mut rows: Vec<(String, String)> = store
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    rows.sort_unstable();
+    assert_eq!(
+        rows,
+        vec![
+            ("env".to_string(), "0o600:/etc/env".to_string()),
+            ("file".to_string(), "/etc/config.yaml".to_string()),
+        ],
+        "every mode-prefixed file row goes, the corrected twin and the other \
+         type's row stay"
+    );
+}
+
+#[test]
 fn legacy_manager_provision_rows_meet_the_package_grammar_on_open() {
     // The daemon once recorded a failed provision cascade as
     // `('manager', 'provision:<name>')` and its planned refusals as
