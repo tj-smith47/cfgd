@@ -26350,6 +26350,69 @@ fn a_v_prefixed_floor_neither_replans_nor_drifts_a_package_that_clears_it() {
     );
 }
 
+/// A `minVersion` nobody can parse — `>=1.2` written into the floor field,
+/// `1.2.x`, a typo — is a check that could not RUN, on both surfaces that read
+/// it. Guarding only the installed side made it a permanent `Below`: the
+/// comparator's `false` came from failing to parse its own argument, so every
+/// scan reported drift no apply could heal and every plan re-installed a
+/// package the machine already held.
+#[test]
+fn a_declared_floor_nothing_can_parse_is_a_check_error_not_permanent_drift() {
+    let state = test_state();
+    let printer = test_printer();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("brew").with_installed_at("neovim", "1.2.3"),
+    ));
+    let cx = test_package_context(&printer, &state);
+    let reconciler = Reconciler::new(&registry, &state).diffing_installed(&cx);
+    let resolved = make_empty_resolved();
+
+    for floor in [">=1.2", "1.2.x", "latest"] {
+        let mut module = make_resolved_module("dev");
+        module.packages.retain(|p| p.canonical_name == "neovim");
+        module.packages[0].min_version = Some(floor.to_string());
+
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                vec![module],
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+        let items = all_plan_items(&plan).join("\n");
+        assert!(
+            !items.contains("neovim"),
+            "a floor spelled {floor} is a report, not work the plan invents, got:\n{items}"
+        );
+
+        let mgr = MockPackageManager::new("brew").with_installed_at("neovim", "1.2.3");
+        let installed = cx.installed_for(&mgr).expect("the mock lists");
+        let verdict =
+            crate::reconciler::package_version_floor(&mgr, &installed, "neovim", Some(floor));
+        match verdict {
+            crate::reconciler::VersionFloor::Unreadable { detail } => assert!(
+                detail.contains(floor),
+                "the check error names the declaration it could not read: {detail}"
+            ),
+            other => panic!("a floor spelled {floor} is no verdict about the machine: {other:?}"),
+        }
+    }
+}
+
+/// The default comparator's own two answers. The per-family half — a packaging
+/// grammar stays a comparable floor for the family that reads it — is walked
+/// over the real managers by
+/// `every_registered_manager_judges_a_floor_in_its_own_version_grammar`.
+#[test]
+fn the_default_floor_guard_refuses_a_range_and_tolerates_a_v_prefix() {
+    let plain = MockPackageManager::new("brew");
+    assert!(!plain.floor_comparable(">=1.2"));
+    assert!(plain.floor_comparable("v1.2.0"));
+}
+
 #[test]
 fn a_module_whose_packages_are_all_installed_plans_nothing() {
     let state = test_state();

@@ -259,6 +259,18 @@ pub fn package_version_floor(
     let Some(floor) = min_version else {
         return VersionFloor::Met;
     };
+    if !mgr.floor_comparable(floor) {
+        // The DECLARATION is unreadable, which the listing cannot rescue: the
+        // comparator's `false` would be an artifact of parsing the floor, not
+        // a verdict about the machine.
+        return VersionFloor::Unreadable {
+            detail: format!(
+                "the declared minVersion {floor} for {package} is not a version \
+                 {} can compare against",
+                mgr.name()
+            ),
+        };
+    }
     let identity = mgr.package_identity(package);
     let Some(entry) = installed
         .listed()

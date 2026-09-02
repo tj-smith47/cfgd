@@ -4492,6 +4492,13 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
                     "{}: {sample} clears a floor of itself",
                     mgr.name()
                 );
+                assert!(
+                    !mgr.floor_comparable(">=1.2"),
+                    "{}: a range written where a version belongs is a floor this \
+                     comparator cannot judge, so the check errors rather than \
+                     reporting drift forever",
+                    mgr.name()
+                );
                 if let Some(refused) = incomparable {
                     assert!(
                         !mgr.version_comparable(refused),
@@ -4503,6 +4510,14 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
                 }
             }
             VersionGrammar::Packaged { sample, floor } => {
+                // The floor guard is the MANAGER's: this family reads
+                // packaging fields, so a declaration carrying them is a
+                // comparable floor and never a check error.
+                assert!(
+                    mgr.floor_comparable(sample),
+                    "{}: {sample} is a floor this family can compare against",
+                    mgr.name()
+                );
                 assert!(
                     mgr.version_comparable(sample),
                     "{}: {sample} is this family's own listing shape, not an \
@@ -4534,6 +4549,14 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
                 assert!(
                     mgr.version_meets_minimum(sample, floor),
                     "{}: a floor declared {floor} clears when the tool says `=`",
+                    mgr.name()
+                );
+                // This family's comparability answer is the tool's, so the
+                // declared floor is handed over whatever its shape: the guard
+                // the semver families apply is not this one's to apply.
+                assert!(
+                    mgr.floor_comparable(">=1.2"),
+                    "{}: the tool judges every floor it is handed",
                     mgr.name()
                 );
                 let argv = shim.argv_log();

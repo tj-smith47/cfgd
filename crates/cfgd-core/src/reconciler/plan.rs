@@ -1145,6 +1145,12 @@ impl<'a> super::Reconciler<'a> {
     /// manager is never elided this way: a declared route provisions through
     /// that very manager (`declared_manager_routes`), so its own listing
     /// reports the tool and the installed arm applies.
+    ///
+    /// A floor the manager cannot parse
+    /// ([`floor_comparable`](crate::providers::PackageManager::floor_comparable))
+    /// is not a retention reason: the plan does not invent work out of an
+    /// unreadable declaration, and the report belongs to the verify pass,
+    /// which states it as a check that could not run.
     pub(super) fn package_survives_elision(
         mgr: &dyn PackageManager,
         installed: &crate::providers::InstalledPackages,
@@ -1165,6 +1171,13 @@ impl<'a> super::Reconciler<'a> {
         let Some(min) = pkg.min_version.as_deref() else {
             return false;
         };
+        if !mgr.floor_comparable(min) {
+            // A floor nothing can parse is a REPORT the verify pass owns
+            // (`VersionFloor::Unreadable`), never work: retaining the entry
+            // here re-planned an install on every run of a machine that
+            // already held the package, and no apply could settle it.
+            return false;
+        }
         installed
             .listed()
             .iter()
