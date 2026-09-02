@@ -4566,17 +4566,13 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
 }
 
 /// The half of the grammar walk that needs the tool itself, split out because
-/// [`cfgd_core::test_helpers::ToolShim`] is Unix-only and gating the whole walk
-/// took the winget / chocolatey / scoop classification off the one OS those
-/// managers run on. Structural, not a skipped loop iteration: on Windows this
-/// test does not exist, while the walk above still visits every registered
-/// manager — a manager missing from `MANAGER_VERSION_GRAMMARS` panics there on
-/// every OS.
+/// it spawns a [`cfgd_core::test_helpers::ToolShim`] and so has to serialize
+/// against every other test driving the same env seam, while the walk above
+/// answers from the manager alone and runs in parallel.
 ///
 /// A `ToolOwned` manager's `version_comparable` is unconditionally true, so a
 /// floor it misreads invents drift rather than erroring: the declaration has to
 /// reach the tool in a spelling the tool can read.
-#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn a_tool_owned_manager_reaches_its_tool_with_a_floor_it_can_read() {
