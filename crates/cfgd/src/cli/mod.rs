@@ -334,12 +334,19 @@ pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> HintCommands 
 /// The next step a drift report offers once it has FOUND drift, scoped the way
 /// the report was.
 ///
-/// Every verdict surface — `diff`, `diff --module`, `status --scan`,
-/// `status --module --scan`, `verify` — described the divergence and then
-/// stopped, leaving the reader to know on their own which command heals it.
-/// One wording, one home, so the whole-machine and per-module forms cannot
-/// drift apart. Distinct from [`MSG_RUN_APPLY`], which invites a preview of
-/// changes the reader has not seen yet: here they have just read them.
+/// Every verdict surface — `diff`, `diff --module`, `status`,
+/// `status --module`, either of those with `--scan`, `verify` — described the
+/// divergence and then stopped, leaving the reader to know on their own which
+/// command heals it. One wording, one home, so the whole-machine and
+/// per-module forms cannot drift apart. Distinct from [`MSG_RUN_APPLY`], which
+/// invites a preview of changes the reader has not seen yet: here they have
+/// just read them.
+///
+/// What earns it is that the report SHOWS unresolved drift a standing check
+/// backs, not that this run did the checking: a recorded finding under a scan
+/// stamp fresher than the reconcile interval is pending work the reader can
+/// act on, and only once that evidence goes stale does the invitation to look
+/// again outrank the heal.
 pub(in crate::cli) fn heal_drift_hint(module: Option<&str>) -> String {
     match module {
         Some(module) => format!("Run `cfgd apply --module {module}` to reconcile"),

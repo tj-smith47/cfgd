@@ -882,9 +882,12 @@ pub fn build_fleet_status_doc(
         },
     );
 
-    // A report that FOUND drift owes the reader the command that heals it, and
-    // that outranks the invitation to look again: the looking has been done.
-    if !output.drift.is_empty() && output.drift_checked_live {
+    // A report that SHOWS drift owes the reader the command that heals it, and
+    // that outranks the invitation to look again: an unresolved finding a
+    // recent check still stands behind is pending work, whether this run did
+    // the looking or read what the last one recorded. Only once that evidence
+    // has gone stale does the look outrank the heal.
+    if !output.drift.is_empty() && !stale {
         doc = doc.hint(super::heal_drift_hint(None));
     } else if stale {
         doc = doc.hint(SCAN_HINT);
@@ -1955,9 +1958,10 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
             let stale = !output.drift_checked_live
                 && freshest
                     .is_none_or(|ts| cfgd_core::is_stale_since(ts, now, SCAN_STALENESS_SECS));
-            if !output.drift.is_empty() && output.drift_checked_live {
-                // The scan found drift, so the report closes on the command
-                // that heals it, scoped to the module the report is about.
+            if !output.drift.is_empty() && !stale {
+                // The report shows drift a standing check found, so it closes
+                // on the command that heals it, scoped to the module the
+                // report is about.
                 doc.hint(super::heal_drift_hint(Some(&output.name)))
             } else if stale {
                 doc.hint(SCAN_HINT)
