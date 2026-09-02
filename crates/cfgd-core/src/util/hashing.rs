@@ -124,19 +124,30 @@ pub fn parse_loose_version(s: &str) -> Option<semver::Version> {
     None
 }
 
+/// A declared floor as a comparator can read it: the value somebody AUTHORED,
+/// less the leading `v` that only the VERSION side of the comparison tolerates.
+///
+/// A `minVersion`, or a module's declared requirement, arrives in the
+/// spellings [`parse_loose_version`] accepts — `v1.2.0` among them — while
+/// `semver`'s RANGE parser and FreeBSD's `pkg version -t` both refuse the
+/// prefix: the range fails to parse, and pkg compares the alphabetic `v`
+/// against a digit and answers `<`. Either way the floor is one nothing ever
+/// clears, so the package reports as below it on a converged machine and is
+/// re-planned as an upgrade forever. The strip lives here rather than at
+/// config read because every display surface echoes the value the user
+/// declared, prefix and all.
+pub fn declared_floor_version(floor: &str) -> &str {
+    floor.strip_prefix(['v', 'V']).unwrap_or(floor)
+}
+
 /// Whether `version` clears a declared `>=` floor.
 ///
-/// The floor is a value somebody AUTHORED — a `minVersion`, a module's
-/// declared requirement — so it arrives in the same spellings
-/// [`parse_loose_version`] tolerates on the version side, a leading `v` above
-/// all. `semver`'s RANGE parser refuses that prefix, so a caller composing
-/// `>={floor}` straight from the declaration turns `minVersion: v1.2.0` into a
-/// floor nothing ever clears: invented drift on a converged machine, and a
-/// package re-planned as an upgrade forever. Every floor comparison in the
-/// workspace composes its requirement here, the family comparators included.
+/// Every floor comparison in the workspace reads the declaration through
+/// [`declared_floor_version`]: the semver families compose their requirement
+/// here, and a comparator owned by a manager's own tool strips through that
+/// helper before handing the floor over.
 pub fn version_meets_floor(version: &str, floor: &str) -> bool {
-    let floor = floor.strip_prefix(['v', 'V']).unwrap_or(floor);
-    version_satisfies(version, &format!(">={floor}")) // floor-composer: the one home
+    version_satisfies(version, &format!(">={}", declared_floor_version(floor))) // floor-composer-ok: the one home
 }
 
 /// Check whether `version_str` satisfies `requirement_str` (semver range).
@@ -208,7 +219,9 @@ mod tests {
                 let src = std::fs::read_to_string(path).ok()?;
                 let body = crate::test_helpers::production_slice(&src);
                 body.lines()
-                    .find(|line| line.contains("format!(\">=") && !line.contains("floor-composer:"))
+                    .find(|line| {
+                        line.contains("format!(\">=") && !line.contains("floor-composer-ok:")
+                    })
                     .map(|line| format!("{}: {}", path.display(), line.trim()))
             })
             .collect();

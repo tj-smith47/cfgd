@@ -172,10 +172,23 @@ pub(super) fn query_version_pkg(manager: &str, package: &str) -> Result<Option<S
 /// would mis-order them (e.g. `1.2.0,1` vs `1.2.0`); deferring to `pkg version`
 /// evaluates the floor exactly as `pkg install`'s own resolver would. Returns
 /// `Ok(true)` when `available` is equal to or greater than the floor.
+///
+/// The declared floor is read through
+/// [`cfgd_core::declared_floor_version`] first: pkg compares the leading `v`
+/// of a `v1.2.0` declaration against a digit and answers `<`, which is this
+/// manager's spelling of the perpetual re-plan the semver families strip the
+/// prefix to avoid. This comparator answers for a manager whose
+/// `version_comparable` is unconditionally true, so a mis-read floor here
+/// cannot degrade to a check error — it invents drift instead.
 pub(super) fn pkg_version_meets_minimum(available: &str, min_version: &str) -> Result<bool> {
     let output = run_pkg_query(
         "pkg",
-        tool_cmd(PKG_BIN_ENV, "pkg").args(["version", "-t", available, min_version]),
+        tool_cmd(PKG_BIN_ENV, "pkg").args([
+            "version",
+            "-t",
+            available,
+            cfgd_core::declared_floor_version(min_version),
+        ]),
     )?;
     if !output.status.success() {
         return Ok(false);
