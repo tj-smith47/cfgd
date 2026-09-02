@@ -418,7 +418,8 @@ Plan
 Pending Decisions (1 item, not included in this plan)
   source:acme-corp
     ◉ Recommended packages.brew.k9s — brew install k9s
-  → Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
+  → Answer each pending decision:
+    $ cfgd decide [accept|reject] <resource>
 
 Phase: Prerequisites
   cfgd:managers
@@ -446,7 +447,8 @@ A plan whose only remaining work is withheld says so instead of reporting succes
 Pending Decisions (1 item, not included in this plan)
   source:acme-corp
     ◉ Recommended packages.brew.k9s — brew install k9s
-  → Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
+  → Answer each pending decision:
+    $ cfgd decide [accept|reject] <resource>
 
 ⊙ Nothing to apply — 1 decision pending
 ```

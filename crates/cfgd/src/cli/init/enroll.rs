@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, KvPair, Printer, Role};
+use cfgd_core::output::{Doc, HintCommands, KvPair, Printer, Role};
 use serde::Serialize;
 
 use super::*;
@@ -38,16 +38,21 @@ pub struct EnrollOutput {
 /// Remediation hint for an enrollment error `kind`, rendered in human mode.
 /// Shared by [`build_enroll_error`] and the `signing_failed` ctx carrier so the
 /// hint text stays in one place.
-fn enroll_error_hint(kind: &str) -> Option<&'static str> {
+fn enroll_error_hint(kind: &str) -> Option<HintCommands> {
     match kind {
-        "method_mismatch" => Some(
-            "This server uses bootstrap token enrollment. Re-run with: `cfgd enroll --server-url <url> --token <token>`",
-        ),
-        "no_key" => Some(
-            "Provide --ssh-key <path> or --gpg-key <id>. Checked: SSH agent, ~/.ssh/id_ed25519, ~/.ssh/id_rsa, ~/.ssh/id_ecdsa",
-        ),
+        "method_mismatch" => Some(HintCommands::new(
+            "This server uses bootstrap token enrollment. Re-run with:",
+            ["cfgd enroll --server-url <url> --token <token>"],
+        )),
+        // Two flags, one re-run: the reader picks a key kind, not a command,
+        // so the alternatives collapse into the one line they differ inside.
+        "no_key" => Some(HintCommands::new(
+            "No signing key found — checked the SSH agent, ~/.ssh/id_ed25519, id_rsa, id_ecdsa. \
+             Re-run with one:",
+            ["cfgd enroll [--ssh-key <path> | --gpg-key <id>]"],
+        )),
         "signing_failed" => {
-            Some("Verify the signing key is accessible and the signing tool is installed.")
+            Some("Verify the signing key is accessible and the signing tool is installed.".into())
         }
         _ => None,
     }
@@ -55,12 +60,8 @@ fn enroll_error_hint(kind: &str) -> Option<&'static str> {
 
 /// Hints for an enrollment error `kind` as a `Vec`, suitable for the
 /// `cli_error*_with_hints` carriers.
-fn enroll_error_hints(kind: &str) -> Vec<String> {
-    enroll_error_hint(kind)
-        .map(|h| vec![h.to_string()])
-        .into_iter()
-        .flatten()
-        .collect()
+fn enroll_error_hints(kind: &str) -> Vec<HintCommands> {
+    enroll_error_hint(kind).into_iter().collect()
 }
 
 /// Build an enrollment error carrying the structured payload (`error: <kind>`,

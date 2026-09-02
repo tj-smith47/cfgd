@@ -79,6 +79,7 @@ use cfgd_core::composition::{self, CompositionInput, SubscriptionConfig};
 use cfgd_core::config::{self, CfgdConfig, MergedProfile, ResolvedProfile};
 use cfgd_core::daemon::{PullFailure, PullFailureKind};
 use cfgd_core::modules;
+use cfgd_core::output::HintCommands;
 use cfgd_core::platform::Platform;
 use cfgd_core::providers::{
     FileAction, PackageAction, ProviderRegistry, SecretAction, SecretBackend,
@@ -115,21 +116,25 @@ const MSG_NOT_A_REPOSITORY: &str = "Nothing to pull — the config directory is 
 ///
 /// `command` is the verb that just reported the refusal, so the re-run names
 /// the command the reader actually ran.
-pub(in crate::cli) fn local_pull_next_step(failure: &PullFailure, command: &str) -> String {
+pub(in crate::cli) fn local_pull_next_step(failure: &PullFailure, command: &str) -> HintCommands {
     match failure.kind {
         PullFailureKind::FindRemote => {
             format!("Add the remote with `git remote add origin <url>`, then re-run `{command}`")
+                .into()
         }
         PullFailureKind::Diverged => format!(
             "Reconcile the diverged branch with `git pull --rebase` in the config directory, then re-run `{command}`"
-        ),
+        )
+        .into(),
         PullFailureKind::Fetch => format!(
             "Check the remote is reachable and your credentials are current, then re-run `{command}`"
-        ),
+        )
+        .into(),
         // A `git init` with nothing committed has no HEAD to fast-forward, and
         // the fix is a first commit rather than anything about the remote.
-        PullFailureKind::GetHead => format!(
-            "Make the first commit in the config directory with `git add -A && git commit -m 'initial'`, then re-run `{command}`"
+        PullFailureKind::GetHead => HintCommands::new(
+            "Make the first commit in the config directory:",
+            ["git add -A && git commit -m 'initial'".to_string(), command.to_string()],
         ),
         PullFailureKind::OpenRepo
         | PullFailureKind::BranchName
@@ -140,7 +145,7 @@ pub(in crate::cli) fn local_pull_next_step(failure: &PullFailure, command: &str)
         | PullFailureKind::SetTarget
         | PullFailureKind::SetHead
         | PullFailureKind::Checkout => {
-            format!("Inspect the config directory with `git status`, then re-run `{command}`")
+            format!("Inspect the config directory with `git status`, then re-run `{command}`").into()
         }
     }
 }
@@ -254,11 +259,11 @@ pub(in crate::cli) enum Mutation<'a> {
 /// every edit to the COMPOSITION points at the preview and the apply that
 /// settle it; a verb that produced an ARTIFACT somebody else consumes names the
 /// consumer; a verb that moved the MACHINE names what now reads the difference.
-pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> String {
+pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> HintCommands {
     match mutation {
         Mutation::SourceUpdated {
             trust_changed: true,
-        } => "Run `cfgd sync` to fetch under the new policy".to_string(),
+        } => "Run `cfgd sync` to fetch under the new policy".into(),
         Mutation::SourceSubscribed
         | Mutation::SourceUpdated {
             trust_changed: false,
@@ -272,60 +277,57 @@ pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> String {
         | Mutation::ModulePulled { name: None }
         | Mutation::ProfileUpdated
         | Mutation::ProfileSwitched
-        | Mutation::SecretEdited => MSG_RUN_APPLY.to_string(),
+        | Mutation::SecretEdited => MSG_RUN_APPLY.into(),
         Mutation::ProfileCreated { name } => {
-            format!("Activate it with `cfgd profile switch {name}`")
+            format!("Activate it with `cfgd profile switch {name}`").into()
         }
-        Mutation::SecretsInitialized => {
-            "Encrypt a file with `cfgd secret encrypt <file>`".to_string()
-        }
+        Mutation::SecretsInitialized => "Encrypt a file with `cfgd secret encrypt <file>`".into(),
         Mutation::SecretEncrypted => {
-            "Reference it with `cfgd profile update <profile> --secret <file>:<target>`".to_string()
+            "Reference it with `cfgd profile update <profile> --secret <file>:<target>`".into()
         }
         Mutation::RolledBack => {
-            "Run `cfgd diff` to see how the machine now differs from your config".to_string()
+            "Run `cfgd diff` to see how the machine now differs from your config".into()
         }
         Mutation::BackupRolledBack { unit } => {
             format!("Run `cfgd backup run {unit}` to take a snapshot of what was just put back")
+                .into()
         }
         Mutation::ModuleCreated { name } => {
             format!("Add it to a profile with `cfgd profile update <profile> --module {name}`")
+                .into()
         }
         Mutation::ModuleBuilt { output } => {
             format!("Push it with `cfgd module push {output} --artifact <registry>/<name>:<tag>`")
+                .into()
         }
         Mutation::ModulePushed {
             applied: Some(name),
             ..
-        } => format!("Check it with `kubectl get module {name}`"),
-        Mutation::ModulePushed { applied: None } => {
-            "Register it as a Module pointing at the cluster's registry address: \
-             `kubectl apply -f <module-resource>.yaml`, or `--apply` next time"
-                .to_string()
-        }
+        } => format!("Check it with `kubectl get module {name}`").into(),
+        Mutation::ModulePushed { applied: None } => HintCommands::new(
+            "Register it as a Module pointing at the cluster's registry address \
+             (or pass --apply next time):",
+            ["kubectl apply -f <module-resource>.yaml"],
+        ),
         Mutation::ModulePulled { name: Some(name) } => {
-            format!("Review it with `cfgd module show {name}`, then run `cfgd apply`")
+            format!("Review it with `cfgd module show {name}`, then run `cfgd apply`").into()
         }
-        Mutation::RegistryAdded => {
-            "Search for modules with `cfgd module search <query>`".to_string()
-        }
-        Mutation::KeysGenerated { dir } => {
-            format!(
-                "Sign with `cfgd module push <dir> --artifact <ref> --sign --key {dir}/cosign.key`"
-            )
-        }
+        Mutation::RegistryAdded => "Search for modules with `cfgd module search <query>`".into(),
+        Mutation::KeysGenerated { dir } => format!(
+            "Sign with `cfgd module push <dir> --artifact <ref> --sign --key {dir}/cosign.key`"
+        )
+        .into(),
         Mutation::KeysRotated {
             dir,
             resigned: true,
-        } => {
-            format!("Verify with `cosign verify --key {dir}/cosign.pub <artifact>`")
-        }
+        } => format!("Verify with `cosign verify --key {dir}/cosign.pub <artifact>`").into(),
         Mutation::KeysRotated {
             dir,
             resigned: false,
         } => format!(
             "Re-sign each artifact with `cfgd module push <dir> --artifact <ref> --sign --key {dir}/cosign.key`"
-        ),
+        )
+        .into(),
     }
 }
 

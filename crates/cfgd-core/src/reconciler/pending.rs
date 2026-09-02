@@ -908,24 +908,33 @@ pub fn title_cased_tier(tier: &str) -> String {
 ///
 /// Three surfaces a single take shows back to back said `Run \`cfgd decide
 /// accept/reject\` to answer` and `Use \`cfgd decide accept \<resource\>\` … to
-/// resolve` — two verbs and two nouns for one operation on one object.
-pub const MSG_ANSWER_DECISIONS: &str =
-    "Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer";
+/// resolve` — two verbs and two nouns for one operation on one object. The
+/// sentence introduces the command rather than carrying it: the two spellings
+/// differ in one token, so they collapse to one `$` line rather than reading
+/// as two separate things to run.
+pub const MSG_ANSWER_DECISIONS: &str = "Answer each pending decision:";
+
+/// The command [`MSG_ANSWER_DECISIONS`] introduces.
+const CMD_ANSWER_DECISION: &str = "cfgd decide [accept|reject] <resource>";
+
+/// The bulk form, offered beside the per-resource one where it can do
+/// something a single answer cannot.
+const CMD_ANSWER_ALL_DECISIONS: &str = "cfgd decide accept --all";
 
 /// [`MSG_ANSWER_DECISIONS`] with the bulk form folded in, for a surface that
 /// knows how many decisions are waiting.
 ///
 /// `cfgd decide` printed the per-resource instruction and the bulk instruction
 /// as two hints whose first thirty characters were identical, so the second read
-/// as a wrapped continuation of the first. One line carries both, and the bulk
+/// as a wrapped continuation of the first. One block carries both, and the bulk
 /// half appears only where it can do something a single answer cannot — with one
 /// item pending, `--all` and naming the resource are the same operation.
-pub fn answer_decisions_hint(pending: usize) -> String {
+pub fn answer_decisions_hint(pending: usize) -> crate::output::HintCommands {
+    let mut commands = vec![CMD_ANSWER_DECISION.to_string()];
     if pending > 1 {
-        format!("{MSG_ANSWER_DECISIONS}; `cfgd decide accept --all` answers every item")
-    } else {
-        MSG_ANSWER_DECISIONS.to_string()
+        commands.push(CMD_ANSWER_ALL_DECISIONS.to_string());
     }
+    crate::output::HintCommands::new(MSG_ANSWER_DECISIONS, commands)
 }
 
 /// The same, for a decision already declined: the answer exists and reversing

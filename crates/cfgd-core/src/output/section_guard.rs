@@ -122,10 +122,20 @@ impl<'p> SectionGuard<'p> {
         self
     }
 
-    pub fn hint(&self, text: impl Into<String>) -> &Self {
+    pub fn hint(&self, hint: impl Into<crate::output::HintCommands>) -> &Self {
+        let hint = hint.into();
         self.renderer
-            .render_hint(self.sink.as_ref(), self.depth, &text.into());
+            .render_hint(self.sink.as_ref(), self.depth, &hint.text, &hint.commands);
         self
+    }
+
+    /// A hint whose colon-introduced payload is one or more commands, dropped
+    /// onto their own indented `$ ` lines. See [`crate::output::HintCommands`].
+    pub fn hint_commands(&self, prose: impl Into<String>, commands: &[&str]) -> &Self {
+        self.hint(crate::output::HintCommands::new(
+            prose,
+            commands.iter().copied(),
+        ))
     }
 
     pub fn note(&self, text: impl Into<String>) -> &Self {

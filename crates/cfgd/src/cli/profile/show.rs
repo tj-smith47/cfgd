@@ -209,7 +209,10 @@ pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> any
                     let available = super::available_profile_names(&dir);
                     let mut hints = Vec::new();
                     if !available.is_empty() {
-                        hints.push(format!("Available profiles: {}", available.join(", ")));
+                        hints.push(cfgd_core::output::HintCommands::from(format!(
+                            "Available profiles: {}",
+                            available.join(", ")
+                        )));
                     }
                     crate::cli::cli_error_ctx_with_hints(
                         e.into(),

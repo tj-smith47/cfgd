@@ -606,7 +606,10 @@ impl<'a> ApplyRun<'a> {
         // says what would land on the machine. What is run-SPECIFIC is the
         // instruction, and it is ONE hint under the block rather than a suffix
         // repeated on every row.
-        let block = |title: &str, rows: &[crate::state::PendingDecision], role, hint: &str| {
+        let block = |title: &str,
+                     rows: &[crate::state::PendingDecision],
+                     role,
+                     hint: crate::output::HintCommands| {
             let section = printer.section(title);
             for (source, items) in super::decisions_by_source(rows) {
                 let owner = section.section_owner(&OwnerLabel::new("source", source));
@@ -630,7 +633,7 @@ impl<'a> ApplyRun<'a> {
             let unrecorded = withheld.pending.iter().any(|d| d.id == 0);
             let hint = if unrecorded && !self.decide_answerable {
                 "Not yet recorded — answer from the machine's own config, or pass --state-dir"
-                    .to_string()
+                    .into()
             } else {
                 super::answer_decisions_hint(withheld.pending.len())
             };
@@ -641,7 +644,7 @@ impl<'a> ApplyRun<'a> {
                 ),
                 &withheld.pending,
                 Role::Info,
-                &hint,
+                hint,
             );
         }
         if !withheld.rejected.is_empty() {
@@ -652,7 +655,7 @@ impl<'a> ApplyRun<'a> {
                 ),
                 &withheld.rejected,
                 Role::Skipped,
-                super::MSG_INCLUDE_DECLINED_DECISIONS,
+                super::MSG_INCLUDE_DECLINED_DECISIONS.into(),
             );
         }
     }

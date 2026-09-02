@@ -16,7 +16,8 @@ Sources
 Pending Decisions (1 item)
   source:team-config
     ◉ Recommended package/curl
-  → Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
+  → Answer each pending decision:
+    $ cfgd decide [accept|reject] <resource>
 
 Component Health (checked 6m ago)
   ⚠ profile:default — Drifted (1 package, 1 file)

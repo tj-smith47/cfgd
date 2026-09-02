@@ -822,10 +822,7 @@ pub(super) fn ensure_dir_writable(dir: &Path) -> anyhow::Result<()> {
             "target_not_writable",
             format!("target path not writable: {}", dir.posix()),
             serde_json::json!({ "path": cfgd_core::to_posix_string(dir) }),
-            vec![format!(
-                "check directory permissions: chmod u+w {}",
-                dir.posix()
-            )],
+            vec![format!("check directory permissions: chmod u+w {}", dir.posix()).into()],
         )),
         cfgd_core::DirWritable::Io(e) => Err(cfgd_core::errors::CfgdError::File(
             cfgd_core::errors::FileError::Io {

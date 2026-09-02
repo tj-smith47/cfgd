@@ -778,14 +778,15 @@ fn backup_rollback_without_a_copy_is_a_typed_refusal() {
     assert!(
         meta.hints
             .iter()
-            .any(|h| h.contains("cfgd backup restore <name>") && !h.contains("restore docs")),
+            .any(|h| h.text.contains("cfgd backup restore <name>")
+                && !h.text.contains("restore docs")),
         "the hint states how a copy comes to exist without instructing the destructive write \
          that would create one: {meta:?}"
     );
     assert!(
         meta.hints
             .iter()
-            .any(|h| h.contains("cfgd backup list docs")),
+            .any(|h| h.text.contains("cfgd backup list docs")),
         "the hint points at the read-only surface that shows this unit's snapshots: {meta:?}"
     );
     assert_eq!(
@@ -858,7 +859,7 @@ fn backup_rollback_without_yes_refuses_when_no_prompt_is_available() {
         .expect("the refusal carries structured metadata");
     assert_eq!(meta.error_kind, "confirmation_required");
     assert!(
-        meta.hints.iter().any(|h| h.contains("--yes")),
+        meta.hints.iter().any(|h| h.text.contains("--yes")),
         "the remedy must ride along: {:?}",
         meta.hints
     );
@@ -1841,7 +1842,7 @@ fn backup_restore_at_unknown_snapshot_is_a_snapshot_not_found_error() {
     assert!(
         meta.hints
             .iter()
-            .any(|h| h.contains("available snapshots:")),
+            .any(|h| h.text.contains("available snapshots:")),
         "expected the available-snapshots hint, got: {meta:?}"
     );
 }
@@ -2012,7 +2013,7 @@ fn backup_restore_without_yes_refuses_when_no_prompt_is_available() {
         .expect("the refusal carries structured metadata");
     assert_eq!(meta.error_kind, "confirmation_required");
     assert!(
-        meta.hints.iter().any(|h| h.contains("--yes")),
+        meta.hints.iter().any(|h| h.text.contains("--yes")),
         "the remedy must ride along: {:?}",
         meta.hints
     );

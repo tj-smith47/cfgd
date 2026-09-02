@@ -5,4 +5,6 @@ Pending Decisions (5 items)
     ◉ Required files./home/u/.bashrc  — 3 lines, mode 0644
     ◉ Recommended system.shellAliases — {"gs":"git status"}
     ◉ Optional env.GONE
-  → Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer; `cfgd decide accept --all` answers every item
+  → Answer each pending decision:
+    $ cfgd decide [accept|reject] <resource>
+    $ cfgd decide accept --all

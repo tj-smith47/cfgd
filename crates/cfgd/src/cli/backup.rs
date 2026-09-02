@@ -33,7 +33,7 @@ fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
         "not_found",
         format!("Backup '{name}' not found"),
         serde_json::json!({ "hint": hint }),
-        vec![hint],
+        vec![hint.into()],
     )
 }
 
@@ -251,7 +251,7 @@ pub fn cmd_backup_list(
             "missing_argument",
             "--snapshots needs a backup name",
             serde_json::json!({ "flag": "--snapshots" }),
-            vec!["cfgd backup list <name> --snapshots".to_string()],
+            vec!["cfgd backup list <name> --snapshots".into()],
         ));
     }
 
@@ -442,7 +442,7 @@ fn snapshot_selection_error(name: &str, e: cfgd_core::errors::BackupError) -> an
         kind,
         message,
         serde_json::json!({ "hint": hint }),
-        vec![hint],
+        vec![hint.into()],
     )
 }
 
@@ -586,7 +586,7 @@ fn confirm_restore(
             "confirmation_required",
             message,
             serde_json::json!({ "hint": hint, "snapshot": snapshot.name }),
-            vec![hint],
+            vec![hint.into()],
         )
     })
 }
@@ -609,7 +609,7 @@ fn no_rollback_copy_error(name: &str, source: &Path) -> anyhow::Error {
         "no_rollback_copy",
         format!("Backup '{name}' has no copy to roll back to"),
         serde_json::json!({ "hint": hint }),
-        vec![hint],
+        vec![hint.into()],
     )
 }
 
@@ -811,7 +811,7 @@ fn confirm_rollback(
             "confirmation_required",
             message,
             serde_json::json!({ "hint": hint, "copy": copy }),
-            vec![hint],
+            vec![hint.into()],
         )
     })
 }

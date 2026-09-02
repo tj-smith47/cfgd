@@ -270,9 +270,22 @@ impl Doc {
         self
     }
 
-    pub fn hint(mut self, text: impl Into<String>) -> Self {
-        self.children.push(Component::Hint { text: text.into() });
+    pub fn hint(mut self, hint: impl Into<crate::output::HintCommands>) -> Self {
+        let hint = hint.into();
+        self.children.push(Component::Hint {
+            text: hint.text,
+            commands: hint.commands,
+        });
         self
+    }
+
+    /// A hint whose colon-introduced payload is one or more commands, dropped
+    /// onto their own indented `$ ` lines. See [`crate::output::HintCommands`].
+    pub fn hint_commands(self, prose: impl Into<String>, commands: &[&str]) -> Self {
+        self.hint(crate::output::HintCommands::new(
+            prose,
+            commands.iter().copied(),
+        ))
     }
 
     /// Append a prose paragraph (see [`Component::Paragraph`]) — body text
@@ -593,9 +606,22 @@ impl SectionBuilder {
         self
     }
 
-    pub fn hint(mut self, text: impl Into<String>) -> Self {
-        self.children.push(Component::Hint { text: text.into() });
+    pub fn hint(mut self, hint: impl Into<crate::output::HintCommands>) -> Self {
+        let hint = hint.into();
+        self.children.push(Component::Hint {
+            text: hint.text,
+            commands: hint.commands,
+        });
         self
+    }
+
+    /// A hint whose colon-introduced payload is one or more commands, dropped
+    /// onto their own indented `$ ` lines. See [`crate::output::HintCommands`].
+    pub fn hint_commands(self, prose: impl Into<String>, commands: &[&str]) -> Self {
+        self.hint(crate::output::HintCommands::new(
+            prose,
+            commands.iter().copied(),
+        ))
     }
 
     /// The nested counterpart of [`Doc::paragraph`] — prose about whatever the
@@ -938,7 +964,7 @@ mod tests {
     #[test]
     fn doc_hint_adds_hint_component() {
         let d = Doc::new().hint("run cfgd apply");
-        if let Component::Hint { text } = &d.children[0] {
+        if let Component::Hint { text, .. } = &d.children[0] {
             assert_eq!(text, "run cfgd apply");
         } else {
             panic!("expected Hint");
@@ -1078,7 +1104,7 @@ mod tests {
         let c = s.into_component();
         if let Component::Section { children, .. } = c {
             assert_eq!(children.len(), 2);
-            assert!(matches!(&children[0], Component::Hint { text } if text == "try this"));
+            assert!(matches!(&children[0], Component::Hint { text, .. } if text == "try this"));
             assert!(matches!(&children[1], Component::Note { text } if text == "see also"));
         } else {
             panic!("expected Section");

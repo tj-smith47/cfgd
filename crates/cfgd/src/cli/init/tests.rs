@@ -177,7 +177,7 @@ fn scaffold_readonly_dir_yields_target_not_writable_with_path_and_hint() {
         meta.message
     );
     assert!(
-        meta.hints.iter().any(|h| h.contains("chmod u+w")),
+        meta.hints.iter().any(|h| h.text.contains("chmod u+w")),
         "expected a chmod remediation hint, got: {:?}",
         meta.hints
     );
@@ -4214,7 +4214,9 @@ mod enroll_mockito {
         assert_eq!(meta.name, "https://example.com");
         assert_eq!(meta.extras["serverMethod"], "token");
         assert!(
-            meta.hints.iter().any(|h| h.contains("bootstrap token")),
+            meta.hints
+                .iter()
+                .any(|h| h.text.contains("bootstrap token")),
             "method_mismatch hint must reference bootstrap token: {:?}",
             meta.hints
         );
@@ -4237,9 +4239,10 @@ mod enroll_mockito {
         assert_eq!(meta.error_kind, "no_key");
         assert_eq!(meta.extras["checked"], serde_json::json!(["ssh-agent"]));
         assert!(
-            meta.hints
+            meta.hints.iter().any(|h| h
+                .commands
                 .iter()
-                .any(|h| h.contains("--ssh-key") || h.contains("--gpg-key")),
+                .any(|c| c.contains("--ssh-key") && c.contains("--gpg-key"))),
             "no_key hint must name both flag forms: {:?}",
             meta.hints
         );
@@ -4264,7 +4267,7 @@ mod enroll_mockito {
         assert!(
             meta.hints
                 .iter()
-                .any(|h| h.contains("signing key") || h.contains("signing tool")),
+                .any(|h| h.text.contains("signing key") || h.text.contains("signing tool")),
             "signing_failed hint must advise on tool/key accessibility: {:?}",
             meta.hints
         );
