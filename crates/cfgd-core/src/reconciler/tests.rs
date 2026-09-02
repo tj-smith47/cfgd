@@ -226,6 +226,80 @@ fn an_apply_that_deploys_a_module_file_resolves_that_files_drift_row() {
     );
 }
 
+/// An apply that plants a source line in a shell rc file resolves the
+/// `env-rc` row the check that reads that line left open.
+///
+/// The action's subject is the rc file, so it records under `env` — but the
+/// check keys its finding on `env-rc`, a different kind for the same path.
+/// The line landed and the row stood open until the next scan.
+#[test]
+fn an_apply_that_injects_a_source_line_resolves_the_rc_rows_drift() {
+    let dir = tempfile::tempdir().unwrap();
+    let rc_path = dir.path().join(".bashrc");
+    std::fs::write(&rc_path, "# rc\n").unwrap();
+    let rid = crate::to_posix_string(&rc_path);
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    state
+        .record_drift(
+            "env-rc",
+            &rid,
+            Some("sourced"),
+            Some("missing"),
+            crate::config::LOCAL_LAYER,
+        )
+        .unwrap();
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::cfgd("env"),
+            vec![Action::Env(super::EnvAction::InjectSourceLine {
+                rc_path: rc_path.clone(),
+                line: ". \"$HOME/.cfgd.env\"".to_string(),
+            })],
+        )],
+        warnings: vec![],
+    };
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success, "{result:?}");
+    assert!(
+        std::fs::read_to_string(&rc_path)
+            .unwrap()
+            .contains(".cfgd.env"),
+        "the apply really planted the source line"
+    );
+
+    let open: Vec<(String, String)> = state
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    assert!(
+        !open.contains(&("env-rc".to_string(), rid.clone())),
+        "the rc row the apply healed must not survive it: {open:?}"
+    );
+}
+
 #[test]
 fn apply_empty_plan_records_success() {
     let state = test_state();
@@ -7113,6 +7187,20 @@ fn parse_resource_from_description_cases() {
         ("env:write:/home/u/.cfgd.env", "env", "/home/u/.cfgd.env"),
         ("env:inject:~/.bashrc", "env", "~/.bashrc"),
         (super::format::LIVE_SESSION_RESOURCE_ID, "env", "refresh"),
+        // The one description with a segment between its verb and its
+        // subject. The mode is dropped whole: `{:#o}` cannot emit a colon, so
+        // the first colon after the verb always ends it, and a Windows target
+        // keeps its drive letter because the split stops there.
+        (
+            "file:chmod:0o600:/etc/config.yaml",
+            "file",
+            "/etc/config.yaml",
+        ),
+        (
+            "file:chmod:0o600:C:/Users/u/config.yaml",
+            "file",
+            "C:/Users/u/config.yaml",
+        ),
     ];
     for (input, expected_type, expected_id) in cases {
         let (rtype, rid) = super::parse_resource_from_description(input);

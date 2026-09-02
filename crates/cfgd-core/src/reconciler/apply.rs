@@ -2129,8 +2129,12 @@ impl<'a> super::Reconciler<'a> {
                 // but the check that reads it records the source line under
                 // `env-rc`, not `env` — so the injected line's row stood open
                 // through the apply that wrote it. The verb is reconstructed
-                // from the target, the one reading of that split.
-                if super::recorded_env_method(&rid) == super::ENV_VERB_INJECT {
+                // from the target, the one reading of that split — an ask the
+                // live-session id is not a target for, so it is held back
+                // before the question is put, as its sibling below holds it.
+                if rid != crate::state::ENV_SESSION_RESOURCE_ID
+                    && super::recorded_env_method(&rid) == super::ENV_VERB_INJECT
+                {
                     self.state.resolve_drift(apply_id, "env-rc", &rid)?;
                 }
                 self.resolve_env_item_drift(apply_id, &rid, resolved, modules)?;
