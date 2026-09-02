@@ -180,6 +180,15 @@ pub fn cmd_verify(
     // `--module` run computes nothing but its own module's files and
     // packages, so it records and resolves exactly what it checked.
     if module_filter.is_none() {
+        // A configurator's diff yields one result per key it read, each id
+        // spelled `<configurator>.<key>`, so the leading segment is the
+        // configurator itself and a probe that answered ALWAYS contributes at
+        // least one — including the clean case, whose matching rows are in
+        // `results` beside the drifted ones. That is the invariant this fold
+        // is fail-safe under: nothing can drop a configurator out of the list
+        // while its rows stayed in, so the worst error is naming one whose
+        // keys were only partly read, which over-KEEPS recorded rows rather
+        // than healing rows nothing checked.
         let mut evaluated_system: Vec<String> = results
             .iter()
             .filter(|r| r.resource_type == "system")
