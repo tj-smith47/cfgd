@@ -3626,43 +3626,52 @@ pub fn freeze_last_scan_at(
     store.freeze_last_scan_at(timestamp)
 }
 
-/// The production region of a Rust source file a walk-style pin reads, cut at
-/// the TRAILING test module.
+/// The production region of a Rust source file a walk-style pin reads: the file
+/// with EVERY top-level inline test module removed.
 ///
-/// A pin that scans source has to drop the file's own `#[cfg(test)]` block,
-/// which describes the surface rather than rendering it. The cut anchors on the
-/// module DECLARATION (`\n#[cfg(test)]\nmod `), taken from the END of the file,
-/// because a bare `#[cfg(test)]` anchor is not the test module: a mid-file
-/// `#[cfg(test)] use` import or a test-only `impl` block carries the attribute
-/// too, and cutting at the first one blinds the walk to every line below it —
-/// silently, since a walk that reads nothing reports nothing. Files with no
-/// test module come back whole.
+/// A pin that scans source has to drop the file's own `#[cfg(test)]` blocks,
+/// which describe the surface rather than rendering it. What it must not drop is
+/// production code, and both cheaper spellings do: cutting at the first bare
+/// `#[cfg(test)]` blinds the walk below a mid-file `#[cfg(test)] use` import or
+/// test-only `impl`, and cutting at the last `#[cfg(test)]\nmod ` blinds it below
+/// an aggregator's one-line `mod tests;` DECLARATION, whose tests live in another
+/// file (93% of `reconciler/mod.rs`, 59% of `daemon/mod.rs`). Both fail silently,
+/// since a walk that reads nothing reports nothing.
 ///
-/// The cut point is an INLINE module — a `mod` line opening a brace block — and
-/// never a `#[cfg(test)] mod tests;` DECLARATION, whose tests live in a separate
-/// file and whose line is followed by the rest of this one. An aggregator
-/// `mod.rs` declares `mod tests;` beside its sibling `mod x;` lines near the
-/// top, so cutting at a declaration drops the `pub use` block and every function
-/// below it (93% of `reconciler/mod.rs`, 59% of `daemon/mod.rs`) — the same
-/// silent blinding, one level down. A file whose only match is a declaration
-/// comes back whole.
+/// So this is a strip, not a suffix cut: a trailing test module is only the
+/// common case, and a file may hold several inline siblings (`output/mod.rs` has
+/// five). A declaration survives — it carries no test text — and so does every
+/// line between and after the blocks.
+///
+/// The shape relied on is rustfmt's, which every file in this workspace is
+/// formatted by: the attribute alone at column 0, and the module's closing `}`
+/// alone at column 0. Each anchor drops through the next such line.
 ///
 /// A walk over several files pairs this with a per-file floor on what it found,
 /// so a future re-blinding fails rather than passes quietly.
-pub fn production_slice(src: &str) -> &str {
-    const ANCHOR: &str = "\n#[cfg(test)]\nmod ";
-    let mut searched = src.len();
-    while let Some(at) = src[..searched].rfind(ANCHOR) {
-        let mod_line = src[at + ANCHOR.len() - "mod ".len()..]
-            .lines()
-            .next()
-            .unwrap_or_default();
-        if mod_line.trim_end().ends_with('{') {
-            return &src[..at];
+pub fn production_slice(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut lines = src.lines();
+    while let Some(line) = lines.next() {
+        if line == "#[cfg(test)]" {
+            let mut rest = lines.clone();
+            if rest
+                .next()
+                .is_some_and(|m| m.starts_with("mod ") && m.trim_end().ends_with('{'))
+            {
+                lines = rest;
+                for inner in lines.by_ref() {
+                    if inner == "}" {
+                        break;
+                    }
+                }
+                continue;
+            }
         }
-        searched = at;
+        out.push_str(line);
+        out.push('\n');
     }
-    src
+    out
 }
 
 #[cfg(test)]
@@ -3748,6 +3757,65 @@ mod tests {
             !production.contains("fn hidden"),
             "the inline test module is where the cut lands: {production}"
         );
+    }
+
+    /// The strip is not a suffix cut. Here the inline block comes FIRST and a
+    /// bare `mod tests;` declaration is the rightmost anchor, so anything that
+    /// searches backward for one cut point either stops at the declaration
+    /// (dropping the file) or cuts at the block (dropping everything after it).
+    #[test]
+    fn production_slice_strips_an_inline_block_that_is_not_the_last_anchor() {
+        let attr = format!("#[cfg({})]", "test");
+        let src = format!(
+            "{attr}\nmod early_tests #OPEN#\n    fn hidden() #OPEN##CLOSE#\n#CLOSE#\n\
+             pub const RENDERED: &str = \"a literal a walk must see\";\n\
+             {attr}\nmod tests;\n\
+             pub const TRAILING: &str = \"below the declaration\";\n"
+        )
+        .replace("#OPEN#", "{")
+        .replace("#CLOSE#", "}");
+        let production = production_slice(&src);
+        assert!(
+            !production.contains("fn hidden"),
+            "an inline block is stripped wherever it sits: {production}"
+        );
+        for kept in ["a literal a walk must see", "below the declaration"] {
+            assert!(
+                production.contains(kept),
+                "production after an earlier inline block must survive: \
+                 {production}"
+            );
+        }
+    }
+
+    /// Several inline siblings in one file — the shape `output/mod.rs` has —
+    /// where a suffix cut leaves every block but the last inside the slice.
+    #[test]
+    fn production_slice_strips_every_inline_sibling() {
+        let attr = format!("#[cfg({})]", "test");
+        let src = format!(
+            "{attr}\nmod first #OPEN#\n    fn hidden_one() #OPEN##CLOSE#\n#CLOSE#\n\
+             pub const A: &str = \"between one and two\";\n\
+             {attr}\nmod second #OPEN#\n    fn hidden_two() #OPEN##CLOSE#\n#CLOSE#\n\
+             pub const B: &str = \"between two and three\";\n\
+             {attr}\nmod third #OPEN#\n    fn hidden_three() #OPEN##CLOSE#\n#CLOSE#\n"
+        )
+        .replace("#OPEN#", "{")
+        .replace("#CLOSE#", "}");
+        let production = production_slice(&src);
+        for gone in ["hidden_one", "hidden_two", "hidden_three"] {
+            assert!(
+                !production.contains(gone),
+                "every inline sibling is stripped, not just the last: \
+                 {production}"
+            );
+        }
+        for kept in ["between one and two", "between two and three"] {
+            assert!(
+                production.contains(kept),
+                "the production between the siblings survives: {production}"
+            );
+        }
     }
 
     /// The guard's exclusion is the reason no window-pinning test carries a

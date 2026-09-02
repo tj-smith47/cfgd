@@ -30118,8 +30118,8 @@ fn no_result_section_respells_a_word_its_command_title_already_spent() {
             continue;
         };
         let production = cfgd_core::test_helpers::production_slice(&body);
-        let headings = literals(production, "printer.heading(\"");
-        let sections = literals(production, "printer.section(\"");
+        let headings = literals(&production, "printer.heading(\"");
+        let sections = literals(&production, "printer.section(\"");
         for heading in &headings {
             for section in &sections {
                 if section_respells_title(heading, section) {
