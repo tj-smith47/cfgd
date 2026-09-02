@@ -52,7 +52,7 @@ impl SourceRows<'_> {
         }
     }
 
-    fn hint(&self, text: impl Into<String>) {
+    fn hint(&self, text: impl Into<cfgd_core::output::HintCommands>) {
         match self.section {
             Some(section) => {
                 section.hint(text);

@@ -12,7 +12,10 @@ use cfgd_core::state::source_status_display;
 pub fn build_source_not_found_error(name: &str, available: &[String]) -> anyhow::Error {
     let mut hints = Vec::new();
     if !available.is_empty() {
-        hints.push(format!("Available sources: {}", available.join(", ")));
+        hints.push(cfgd_core::output::HintCommands::from(format!(
+            "Available sources: {}",
+            available.join(", ")
+        )));
     }
     // Carry the typed `SourceError::NotFound` in the chain so the exit-code
     // downcast in `main.rs` resolves to ExitCode::NotFound (6); the attached

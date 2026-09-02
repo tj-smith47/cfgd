@@ -842,7 +842,9 @@ fn profile_switch_error_lists_available_profiles() {
         .expect("handler returns CliErrorMeta");
     assert_eq!(meta.error_kind, "not_found");
     assert!(
-        meta.hints.iter().any(|h| h.contains("Available profiles")),
+        meta.hints
+            .iter()
+            .any(|h| h.text.contains("Available profiles")),
         "error hints should list available profiles: {:?}",
         meta.hints
     );

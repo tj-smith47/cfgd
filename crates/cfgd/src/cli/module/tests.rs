@@ -621,7 +621,7 @@ fn cmd_module_show_with_available_hint() {
         .expect("handler returns CliErrorMeta");
     assert_eq!(meta.error_kind, "not_found");
     assert!(
-        meta.hints.iter().any(|h| h.contains("existing")),
+        meta.hints.iter().any(|h| h.text.contains("existing")),
         "should hint available modules, got: {:?}",
         meta.hints
     );

@@ -104,6 +104,8 @@ pub enum Component {
     },
     Hint {
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        commands: Vec<String>,
     },
     Note {
         text: String,
@@ -527,6 +529,67 @@ impl CommandPair {
 impl<K: Into<String>, V: Into<String>> From<(K, V)> for CommandPair {
     fn from((k, v): (K, V)) -> Self {
         Self::new(k, v)
+    }
+}
+
+/// A hint, and the commands it introduces.
+///
+/// A hint whose payload is a command reads two ways. Named mid-sentence, one
+/// short command belongs in the sentence and keeps its backticks. Introduced
+/// by a colon — or worse, two of them spliced with a comma — the sentence
+/// becomes a paragraph the reader has to parse for the part they are meant to
+/// type. `Register it as a Module pointing at the cluster's registry address:
+/// "kubectl apply -f the module resource", or "--apply" next time` buried one
+/// command inside prose that also named a flag.
+///
+/// So `commands` is the payload and `text` the sentence that introduces it.
+/// The renderer owns the layout — the two-space indent and the muted `$ `
+/// prefix — which is what makes every block on one screen line up and what
+/// keeps a command COMPLETE as printed: what follows the `$ ` is exactly what
+/// the reader copies. A caller supplies the bare command and never a prefix
+/// of its own.
+///
+/// An empty `commands` is a plain prose hint, which is why `String` and
+/// `&str` convert straight into one and every existing `hint` call site is
+/// unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HintCommands {
+    pub text: String,
+    pub commands: Vec<String>,
+}
+
+impl HintCommands {
+    /// A hint whose prose introduces `commands`. The prose ends on the colon
+    /// that introduces them; the renderer supplies everything else.
+    pub fn new<C: Into<String>>(
+        text: impl Into<String>,
+        commands: impl IntoIterator<Item = C>,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            commands: commands.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<String> for HintCommands {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            commands: Vec::new(),
+        }
+    }
+}
+
+impl From<&str> for HintCommands {
+    fn from(text: &str) -> Self {
+        Self::from(text.to_string())
+    }
+}
+
+impl From<&String> for HintCommands {
+    fn from(text: &String) -> Self {
+        Self::from(text.clone())
     }
 }
 

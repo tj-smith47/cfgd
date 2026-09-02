@@ -514,9 +514,9 @@ conflict instead stays pending with the conflict annotated in the row's
 and the `id: 0` shape alike; a manager whose listing reports no version reads
 `installed (version unknown), source wants ^14`.
 
-In the human render, an unrecorded item keeps the usual ``Run `cfgd decide accept
-<resource>` or `cfgd decide reject <resource>` to answer`` instruction only where
-that command could actually record it. On a config that cannot mint the row (a
+In the human render, an unrecorded item keeps the usual *Answer each pending
+decision:* instruction and its `$ cfgd decide [accept|reject] <resource>` block
+line only where that command could actually record it. On a config that cannot mint the row (a
 foreign `--config` without `--state-dir`) the hint says so instead (*Not yet
 recorded — answer from the machine's own config, or pass --state-dir*); a
 recorded row resolves without a mint, so its instruction holds on every config.

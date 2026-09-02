@@ -488,14 +488,17 @@ fn classify_mutate_error(e: &anyhow::Error) -> &'static str {
 /// Remediation hint for a `target_not_writable` mutate failure naming the config
 /// directory, or none for other failure kinds. Centralized so `config set` and
 /// `config unset` attach the identical chmod guidance.
-fn writability_hint(kind: &str, config_path: &Path) -> Vec<String> {
+fn writability_hint(kind: &str, config_path: &Path) -> Vec<cfgd_core::output::HintCommands> {
     if kind == "target_not_writable"
         && let Some(parent) = config_path.parent()
     {
-        return vec![format!(
-            "check directory permissions: chmod u+w {}",
-            cfgd_core::to_posix_string(parent)
-        )];
+        return vec![
+            format!(
+                "check directory permissions: chmod u+w {}",
+                cfgd_core::to_posix_string(parent)
+            )
+            .into(),
+        ];
     }
     Vec::new()
 }
@@ -606,7 +609,7 @@ spec:
             .expect("CliErrorMeta carrier");
         assert_eq!(meta.error_kind, "target_not_writable");
         assert!(
-            meta.hints.iter().any(|h| h.contains("chmod u+w")),
+            meta.hints.iter().any(|h| h.text.contains("chmod u+w")),
             "expected a chmod remediation hint, got: {:?}",
             meta.hints
         );

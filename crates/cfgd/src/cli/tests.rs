@@ -10371,9 +10371,14 @@ fn load_config_and_profile_active_profile_delivered_by_source_emits_wrap_hint() 
     let meta = err
         .downcast_ref::<super::CliErrorMeta>()
         .expect("smart error carries CliErrorMeta");
-    let joined = meta.hints.join("\n");
+    let joined = meta
+        .hints
+        .iter()
+        .map(|h| h.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        meta.hints.iter().any(|h| h.contains("acme-corp")),
+        meta.hints.iter().any(|h| h.text.contains("acme-corp")),
         "wrap hint must name the providing source, got: {joined}"
     );
     // The YAML wrap lives in the code block, not the hints.
@@ -10394,7 +10399,8 @@ fn load_config_and_profile_active_profile_delivered_by_source_emits_wrap_hint() 
     assert!(
         meta.hints
             .iter()
-            .chain(meta.code_block.iter())
+            .map(|h| h.text.as_str())
+            .chain(meta.code_block.iter().map(String::as_str))
             .all(|l| !l.contains('\n')),
         "each carried line must be newline-free, got hints={joined} block={:?}",
         meta.code_block
@@ -10456,7 +10462,7 @@ fn load_config_and_profile_explicit_profile_delivered_by_source_emits_wrap_hint(
         .downcast_ref::<super::CliErrorMeta>()
         .expect("smart error carries CliErrorMeta");
     assert!(
-        meta.hints.iter().any(|h| h.contains("team-base")),
+        meta.hints.iter().any(|h| h.text.contains("team-base")),
         "wrap hint must name the providing source, got: {:?}",
         meta.hints
     );
@@ -16640,10 +16646,19 @@ fn every_composed_next_step_names_a_command() {
     );
     for (mutation, own_verbs) in mutations {
         let hint = success_next_step(*mutation);
-        let commands: Vec<&str> = hint.split('`').skip(1).step_by(2).collect();
+        // A hint names its commands two ways: backticked mid-sentence, or on
+        // the `$` block lines the prose introduces. Both are the reader's to
+        // type, so both are judged.
+        let commands: Vec<&str> = hint
+            .text
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .chain(hint.commands.iter().map(String::as_str))
+            .collect();
         assert!(
             !commands.is_empty(),
-            "{mutation:?} closes on a hint naming no command: {hint}"
+            "{mutation:?} closes on a hint naming no command: {hint:?}"
         );
         for command in commands {
             // A placeholder is read by substituting its own name, which is how
@@ -16656,14 +16671,14 @@ fn every_composed_next_step_names_a_command() {
                         .split_whitespace()
                         .any(|token| token.ends_with(input)),
                     "{mutation:?} names `{input}` — the file the verb that just ran REQUIRES — \
-                     so following the hint overwrites what the run produced: {hint}"
+                     so following the hint overwrites what the run produced: {hint:?}"
                 );
             }
             if own_verbs.iter().any(|verb| command.starts_with(verb)) {
                 assert!(
                     command.contains('<'),
                     "{mutation:?} re-spells the verb that just ran with concrete arguments — \
-                     a re-run hint is a <placeholder> template or names a different command: {hint}"
+                     a re-run hint is a <placeholder> template or names a different command: {hint:?}"
                 );
             }
             let argv: Vec<&str> = substituted.split_whitespace().collect();
@@ -16683,10 +16698,10 @@ fn every_composed_next_step_names_a_command() {
                         Some(true),
                         "{mutation:?} composes `{command}`, a foreign invocation either missing \
                          the argument its tool refuses to run without, or absent from \
-                         `foreign_command_is_complete`'s table: {hint}"
+                         `foreign_command_is_complete`'s table: {hint:?}"
                     );
                 }
-                None => panic!("{mutation:?} composes an empty backticked span: {hint}"),
+                None => panic!("{mutation:?} composes an empty backticked span: {hint:?}"),
             }
         }
     }
@@ -17587,9 +17602,17 @@ fn every_command_a_message_names_is_quoted_in_backticks() {
                 if examples.is_some_and(|ex| at > ex) {
                     continue;
                 }
+                // A literal that IS the invocation — a `$` block line, or a
+                // clap example — carries no backticks: nothing encloses it, so
+                // there is no sentence for it to be bare inside of. `[a|b]` is
+                // a placeholder like `<x>`, standing for the one token two
+                // spellings of the same command differ in.
                 if at == start
                     && rest.split_whitespace().all(|t| {
-                        all.contains(t) || t.starts_with(['-', '<', '{']) || t == "..." || t == "|"
+                        all.contains(t)
+                            || t.starts_with(['-', '<', '{', '['])
+                            || t == "..."
+                            || t == "|"
                     })
                 {
                     continue;
@@ -19279,15 +19302,17 @@ fn every_local_pull_refusal_names_the_fix_for_its_own_kind() {
             message: "whatever libgit2 said; class=Repository; code=-3".to_string(),
         };
         let hint = super::local_pull_next_step(&failure, "cfgd sync");
+        // Backticked mid-sentence, or on the `$` block line the prose
+        // introduces — both hand the reader the same verb to re-run.
         assert!(
-            hint.contains("`cfgd sync`"),
-            "the hint names the verb to re-run, in backticks: {hint}"
+            hint.text.contains("`cfgd sync`") || hint.commands.iter().any(|c| c == "cfgd sync"),
+            "the hint names the verb to re-run: {hint:?}"
         );
         assert!(
-            !hint.contains("class="),
-            "the hint carries no libgit2 internals: {hint}"
+            !hint.text.contains("class=") && !hint.commands.iter().any(|c| c.contains("class=")),
+            "the hint carries no libgit2 internals: {hint:?}"
         );
-        seen.insert(hint);
+        seen.insert(format!("{hint:?}"));
     }
     // The four kinds with advice of their own, plus the shared arm.
     assert_eq!(
@@ -30494,6 +30519,11 @@ fn is_composed_call(arg: &str) -> bool {
 /// `success_next_step`, an error's remediation lines) is out of class
 /// here and pinned by its own producer; a constant is followed to its text.
 /// A genuinely command-less instruction carries a `// hint-ok: <why>` marker.
+///
+/// `hint_commands` satisfies the rule by construction: its payload IS the
+/// commands, dropped onto their own `$` lines, so the backticks that mark a
+/// command inside a sentence have nothing left to mark.
+/// `every_hint_command_block_line_comes_from_the_one_composer` holds those.
 #[test]
 fn every_closing_hint_names_a_command() {
     let sources = cli_production_sources();
@@ -30508,6 +30538,10 @@ fn every_closing_hint_names_a_command() {
                 || line.contains("fn hint(")
                 || line.contains("fn next_step(")
             {
+                continue;
+            }
+            if line.contains(".hint_commands(") {
+                checked += 1;
                 continue;
             }
             let Some(at) = line.find(".hint(").or_else(|| line.find("next_step(")) else {
@@ -30540,6 +30574,98 @@ fn every_closing_hint_names_a_command() {
     assert!(
         offenders.is_empty(),
         "a closing hint names the command the reader runs next, in backticks:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A hint's `$ ` block line is COMPLETE as printed, and the renderer alone
+/// builds it.
+///
+/// The block exists because a colon-introduced command inside a sentence is a
+/// command the reader has to excavate: `Register it as a Module pointing at
+/// the cluster's registry address: \`kubectl apply -f <module-resource>.yaml\`,
+/// or \`--apply\` next time` ran one copyable command, one flag and two
+/// clauses together on one line. Dropping the command onto its own prompt
+/// line only helps if what follows the prompt is exactly what the reader
+/// copies — so a command literal carries no prompt of its own, no indent, no
+/// backticks left over from the sentence it came out of, and no trailing
+/// punctuation. `HintCommands` holds the parts; `Renderer::render_hint` spells
+/// the indent and the `$ `, once, for every surface.
+#[test]
+fn every_hint_command_block_line_comes_from_the_one_composer() {
+    let walked: Vec<(std::path::PathBuf, String)> = cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+        .collect();
+    let mut checked = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in &walked {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            // A hint text literal never carries the block's own furniture:
+            // the newline that would fake a second line, or the prompt.
+            if let Some(at) = line.find(".hint(") {
+                let arg = call_argument(&lines, n, at);
+                for l in arg.lines() {
+                    for &(s, e) in string_literal_spans(l).iter() {
+                        let lit = &l[s..e];
+                        if lit.contains("\\n") || lit.contains("$ ") {
+                            offenders.push(format!(
+                                "{}:{}: a hint hand-builds a command line: {lit}",
+                                path.display(),
+                                n + 1
+                            ));
+                        }
+                    }
+                }
+            }
+            let Some(at) = line
+                .find("hint_commands(")
+                .or_else(|| line.find("HintCommands::new("))
+            else {
+                continue;
+            };
+            let arg = call_argument(&lines, n, at);
+            // The prose is the first literal; every later one is a command.
+            let mut literals = arg
+                .lines()
+                .flat_map(|l| {
+                    string_literal_spans(l)
+                        .into_iter()
+                        .map(move |(s, e)| l[s..e].to_string())
+                })
+                .skip(1);
+            for lit in &mut literals {
+                checked += 1;
+                let bare = lit.trim_start_matches("\\\"");
+                if bare != lit.trim()
+                    || lit.starts_with('$')
+                    || lit.contains('`')
+                    || lit.ends_with('.')
+                    || lit.is_empty()
+                {
+                    offenders.push(format!(
+                        "{}:{}: a `$` block line is complete as printed — no prompt, \
+                         indent, backtick or trailing stop: {lit}",
+                        path.display(),
+                        n + 1
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        checked >= 8,
+        "the walk no longer reaches the command-block lines it exists to hold \
+         — it found {checked}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "the renderer owns a hint's block layout; a call site supplies bare \
+         commands:\n{}",
         offenders.join("\n")
     );
 }

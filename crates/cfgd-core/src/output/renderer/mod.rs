@@ -1199,6 +1199,11 @@ impl Renderer {
     /// Hint: arrow glyph + dim text. Shown at Normal+ (NOT Quiet). The
     /// canonical "next step" surface.
     ///
+    /// `commands` drops the hint's payload onto its own indented `$ ` lines
+    /// (see [`crate::output::HintCommands`]) — the ONE place that indent and
+    /// that prompt are spelled, so no call site hand-builds either and the
+    /// home fold below reaches the block lines too.
+    ///
     /// The ONE seam every hint reaches — `Printer::hint`, `SectionGuard::hint`
     /// and the `Component::Hint` a `Doc` / `SectionBuilder` carries all render
     /// here — so a path under home folds to `~/` for the whole class at once,
@@ -1214,7 +1219,7 @@ impl Renderer {
     /// rather than leaving a bare blank behind. `note`/`deprecation`/`alert`
     /// are NOT hints and do not check this flag — they report what the run
     /// did or will do, not what to run next, and stay visible with hints off.
-    pub fn render_hint(&self, w: &dyn Writer, depth: usize, text: &str) {
+    pub fn render_hint(&self, w: &dyn Writer, depth: usize, text: &str, commands: &[String]) {
         if self.verbosity == Verbosity::Quiet || !self.hints_enabled() {
             return;
         }
@@ -1224,10 +1229,22 @@ impl Renderer {
             .apply_to(format!("{} ", self.theme.icon_arrow));
         let text = crate::fold_home_in_text(text);
         let body = format!("{}{}", arrow, self.theme.muted.apply_to(cursor_safe(&text)));
+        // The prompt is scenery and the command is the payload, so only the
+        // prompt is muted: what the reader copies reads at full weight.
+        let block: Vec<String> = commands
+            .iter()
+            .map(|c| {
+                let c = crate::fold_home_in_text(c);
+                format!("{}{}", self.theme.muted.apply_to("$ "), cursor_safe(&c))
+            })
+            .collect();
         self.emit_with(w, |e| {
             e.flush_section_headers();
             e.open_top_group(TopGroup::Hint);
             e.push_line(depth, &body);
+            for line in &block {
+                e.push_line(depth + 1, line);
+            }
             e.mark_top_level_group(TopGroup::Hint);
         });
     }
@@ -1362,7 +1379,7 @@ mod tests {
         assert_styled("heading", |r, s| r.render_heading(s, "h"));
         assert_styled("bullet", |r, s| r.render_bullet(s, 0, "b", None, None));
         assert_styled("stream_line", |r, s| r.render_stream_line(s, 0, "l"));
-        assert_styled("hint", |r, s| r.render_hint(s, 0, "h"));
+        assert_styled("hint", |r, s| r.render_hint(s, 0, "h", &[]));
         assert_styled("code_block", |r, s| {
             r.render_code_block(s, 0, &["c".to_string()])
         });
@@ -1602,7 +1619,7 @@ mod tests {
                         },
                     )
                 }),
-                TopGroup::Hint => Some(|r, w| r.render_hint(w, 0, "run cfgd apply")),
+                TopGroup::Hint => Some(|r, w| r.render_hint(w, 0, "run cfgd apply", &[])),
                 TopGroup::Bullet => Some(|r, w| r.render_bullet(w, 0, "item", None, None)),
                 TopGroup::CodeBlock => {
                     Some(|r, w| r.render_code_block(w, 0, &["let x = 1;".to_string()]))
@@ -1666,10 +1683,63 @@ mod tests {
     #[test]
     fn hint_uses_arrow_glyph() {
         let (r, sink, buf) = capture();
-        r.render_hint(&sink, 0, "run cfgd apply");
+        r.render_hint(&sink, 0, "run cfgd apply", &[]);
         let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("→"), "got: {s:?}");
         assert!(s.contains("run cfgd apply"));
+    }
+
+    /// A hint's commands drop onto their own lines, one indent below the
+    /// prose, each behind a `$ ` the renderer supplies. The prose keeps the
+    /// arrow; the block lines carry no glyph of their own, so the prompt
+    /// column is what the eye follows down.
+    #[test]
+    fn a_hint_with_commands_drops_them_onto_indented_dollar_lines() {
+        let (r, sink, buf) = capture();
+        r.render_hint(
+            &sink,
+            0,
+            "Make the first commit in the config directory:",
+            &[
+                "git add -A && git commit -m 'initial'".to_string(),
+                "cfgd pull".to_string(),
+            ],
+        );
+        let s = crate::test_helpers::captured_text(&buf);
+        let rows: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(
+            rows,
+            vec![
+                "→ Make the first commit in the config directory:",
+                "  $ git add -A && git commit -m 'initial'",
+                "  $ cfgd pull",
+            ],
+            "got: {s:?}"
+        );
+    }
+
+    /// The home fold reaches the block lines too: a command naming a path
+    /// under home must not spell it one way while the rows above spell it
+    /// another.
+    #[test]
+    fn a_hint_command_naming_a_path_under_home_folds_it() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::with_test_home_guard(home.path());
+        let (r, sink, buf) = capture();
+        r.render_hint(
+            &sink,
+            0,
+            "Stop it later, from a GUI login session:",
+            &[format!(
+                "launchctl bootout gui/$(id -u) {}/Library/LaunchAgents/com.cfgd.daemon.plist",
+                crate::to_posix_string(home.path())
+            )],
+        );
+        let s = crate::test_helpers::captured_text(&buf);
+        assert!(
+            s.contains("$ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/"),
+            "got: {s:?}"
+        );
     }
 
     /// Every hint reaches `render_hint`, so the home fold sits there rather
@@ -1687,6 +1757,7 @@ mod tests {
                 "chmod u+w {}/.config/cfgd",
                 crate::to_posix_string(home.path())
             ),
+            &[],
         );
         let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("chmod u+w ~/.config/cfgd"), "got: {s:?}");

@@ -565,10 +565,20 @@ impl Printer {
             .render_command_list(self.sink_stderr.as_ref(), depth, &pairs);
     }
 
-    pub fn hint(&self, text: impl Into<String>) {
+    pub fn hint(&self, hint: impl Into<crate::output::HintCommands>) {
+        let hint = hint.into();
         let depth = self.renderer.inherit_depth();
         self.renderer
-            .render_hint(self.sink_stderr.as_ref(), depth, &text.into());
+            .render_hint(self.sink_stderr.as_ref(), depth, &hint.text, &hint.commands);
+    }
+
+    /// A hint whose colon-introduced payload is one or more commands, dropped
+    /// onto their own indented `$ ` lines. See [`crate::output::HintCommands`].
+    pub fn hint_commands(&self, prose: impl Into<String>, commands: &[&str]) {
+        self.hint(crate::output::HintCommands::new(
+            prose,
+            commands.iter().copied(),
+        ));
     }
 
     pub fn note(&self, text: impl Into<String>) {

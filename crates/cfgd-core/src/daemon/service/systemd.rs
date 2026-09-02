@@ -232,8 +232,9 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
                         "No user session bus (XDG_RUNTIME_DIR unset and /run/user/<uid> absent)",
                     )
                     .detail(super::INSTALLED_NOT_STARTED);
-                printer.hint(
-                    "Enable lingering so the user service can run without an active login: loginctl enable-linger $USER, then re-run `cfgd daemon install`",
+                printer.hint_commands(
+                    "Enable lingering so the user service can run without an active login:",
+                    &["loginctl enable-linger $USER", "cfgd daemon install"],
                 );
                 return Ok(false);
             }

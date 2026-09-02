@@ -787,7 +787,7 @@ pub fn build_explain_not_found_error(name: &str, available: &[String]) -> anyhow
         "not_found",
         format!("Unknown resource type '{name}'. Run `cfgd explain` to see available types."),
         serde_json::json!({ "available": available }),
-        vec!["Run `cfgd explain` to see available resource types.".to_string()],
+        vec!["Run `cfgd explain` to see available resource types.".into()],
     )
 }
 

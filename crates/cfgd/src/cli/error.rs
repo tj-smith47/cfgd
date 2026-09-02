@@ -7,6 +7,8 @@
 //! `name`, `extras`) that used to be emitted at each call site — without the
 //! call site emitting anything itself.
 
+use cfgd_core::output::HintCommands;
+
 /// Structured metadata attached to a CLI error so the central renderer
 /// (`render_cli_error` in `main.rs`) can emit exactly one consistent payload
 /// under `-o json|yaml|...` and exactly one human `✗` line — never both,
@@ -14,14 +16,17 @@
 ///
 /// `hints` are remediation lines rendered in human mode only (matching the
 /// `.hint(...)` calls the old call sites attached to their error `Doc`);
-/// they never appear in the structured payload.
+/// they never appear in the structured payload. A hint whose payload is a
+/// colon-introduced command carries it as [`HintCommands::commands`] rather
+/// than inside the sentence, and renders as the same `$` block every other
+/// surface's hints do.
 #[derive(Debug, Clone)]
 pub struct CliErrorMeta {
     pub error_kind: String,
     pub name: String,
     pub message: String,
     pub extras: serde_json::Value,
-    pub hints: Vec<String>,
+    pub hints: Vec<HintCommands>,
     /// Verbatim, copy-pasteable lines (e.g. a YAML snippet) replayed AFTER the
     /// hints in human mode only. Rendered as a tight code block — no `→` glyph,
     /// no blank lines between rows — so a multi-line remediation snippet stays
@@ -42,7 +47,7 @@ fn meta(
     error_kind: impl Into<String>,
     message: impl Into<String>,
     extras: serde_json::Value,
-    hints: Vec<String>,
+    hints: Vec<HintCommands>,
 ) -> CliErrorMeta {
     meta_full(name, error_kind, message, extras, hints, Vec::new())
 }
@@ -52,7 +57,7 @@ fn meta_full(
     error_kind: impl Into<String>,
     message: impl Into<String>,
     extras: serde_json::Value,
-    hints: Vec<String>,
+    hints: Vec<HintCommands>,
     code_block: Vec<String>,
 ) -> CliErrorMeta {
     CliErrorMeta {
@@ -84,7 +89,7 @@ pub fn cli_error_with_hints(
     error_kind: impl Into<String>,
     message: impl Into<String>,
     extras: serde_json::Value,
-    hints: Vec<String>,
+    hints: Vec<HintCommands>,
 ) -> anyhow::Error {
     anyhow::Error::new(meta(name, error_kind, message, extras, hints))
 }
@@ -109,7 +114,7 @@ pub fn cli_error_ctx_with_hints(
     error_kind: impl Into<String>,
     message: impl Into<String>,
     extras: serde_json::Value,
-    hints: Vec<String>,
+    hints: Vec<HintCommands>,
 ) -> anyhow::Error {
     source.context(meta(name, error_kind, message, extras, hints))
 }
@@ -124,7 +129,7 @@ pub fn cli_error_ctx_with_hints_and_block(
     error_kind: impl Into<String>,
     message: impl Into<String>,
     extras: serde_json::Value,
-    hints: Vec<String>,
+    hints: Vec<HintCommands>,
     code_block: Vec<String>,
 ) -> anyhow::Error {
     source.context(meta_full(
@@ -271,13 +276,18 @@ mod tests {
             "not_found",
             "Module 'nope' not found",
             serde_json::json!({ "available": ["a", "b"] }),
-            vec!["Available modules: a, b".to_string()],
+            vec!["Available modules: a, b".into()],
         );
         let meta = err
             .downcast_ref::<CliErrorMeta>()
             .expect("CliErrorMeta resolves from the carrier");
         assert_eq!(meta.error_kind, "not_found");
-        assert_eq!(meta.hints, vec!["Available modules: a, b".to_string()]);
+        assert_eq!(
+            meta.hints,
+            vec![cfgd_core::output::HintCommands::from(
+                "Available modules: a, b"
+            )]
+        );
     }
 
     #[test]
@@ -455,7 +465,7 @@ mod tests {
             "not_found",
             "Module 'nope' not found",
             serde_json::json!({ "available": ["a", "b"] }),
-            vec!["Available modules: a, b".to_string()],
+            vec!["Available modules: a, b".into()],
         );
         render_cli_error(&printer, &err);
         printer.flush();
@@ -479,7 +489,7 @@ mod tests {
             "already_exists",
             "Module 'mymod' already exists",
             serde_json::json!({ "path": "/tmp/mymod" }),
-            vec!["a hint".to_string()],
+            vec!["a hint".into()],
         );
         render_cli_error(&printer, &err);
         printer.flush();
