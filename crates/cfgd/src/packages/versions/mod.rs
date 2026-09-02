@@ -215,9 +215,9 @@ pub(super) fn distro_upstream_version(raw: &str) -> &str {
 /// Whether a distro-family manager's `available` version clears a `min_version`
 /// floor, comparing [`distro_upstream_version`] of each.
 pub(super) fn distro_version_meets_minimum(available: &str, min_version: &str) -> bool {
-    cfgd_core::version_satisfies(
+    cfgd_core::version_meets_floor(
         distro_upstream_version(available),
-        &format!(">={}", distro_upstream_version(min_version)),
+        distro_upstream_version(min_version),
     )
 }
 
@@ -261,9 +261,9 @@ pub(super) fn brew_upstream_version(raw: &str) -> &str {
 /// Whether a Homebrew version clears a `min_version` floor, comparing
 /// [`brew_upstream_version`] of each.
 pub(super) fn brew_version_meets_minimum(available: &str, min_version: &str) -> bool {
-    cfgd_core::version_satisfies(
+    cfgd_core::version_meets_floor(
         brew_upstream_version(available),
-        &format!(">={}", brew_upstream_version(min_version)),
+        brew_upstream_version(min_version),
     )
 }
 
