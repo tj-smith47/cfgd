@@ -4551,12 +4551,19 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
                     "{}: a floor declared {floor} clears when the tool says `=`",
                     mgr.name()
                 );
-                // This family's comparability answer is the tool's, so the
-                // declared floor is handed over whatever its shape: the guard
-                // the semver families apply is not this one's to apply.
+                // The tool owns this family's grammar, so the shapes it reads
+                // stay comparable — a letter suffix FreeBSD orders by
+                // collation among them — while a range expression is refused
+                // here as everywhere: `pkg version -t` settles one by
+                // collation, which is an answer rather than a comparison.
                 assert!(
-                    mgr.floor_comparable(">=1.2"),
-                    "{}: the tool judges every floor it is handed",
+                    mgr.floor_comparable("1.2.x"),
+                    "{}: the tool orders its own letter suffixes",
+                    mgr.name()
+                );
+                assert!(
+                    !mgr.floor_comparable(">=1.2"),
+                    "{}: a range expression is no version in any grammar",
                     mgr.name()
                 );
                 let argv = shim.argv_log();

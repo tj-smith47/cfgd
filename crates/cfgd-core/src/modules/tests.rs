@@ -420,6 +420,38 @@ fn resolve_package_min_version_check() {
     assert_eq!(result.version, Some("0.10.3".into()));
 }
 
+/// A floor nobody can parse is a report, not a rejection: rejecting every
+/// candidate on it deletes the package from the plan entirely, which is the
+/// resolver's spelling of the invented-drift class — the verify pass owns the
+/// check error instead.
+#[test]
+fn resolve_package_keeps_a_candidate_a_malformed_floor_could_not_judge() {
+    let apt = MockManager::new("apt").with_package("neovim", "0.6.1");
+    let managers = make_manager_map(&[("apt", &apt)]);
+    let platform = linux_ubuntu_platform();
+
+    let entry = ModulePackageEntry {
+        name: "neovim".into(),
+        min_version: Some(">=0.9".into()),
+        prefer: vec!["apt".into()],
+        aliases: HashMap::new(),
+        script: None,
+        deny: vec![],
+        platforms: vec![],
+        ..Default::default()
+    };
+
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
+        .unwrap()
+        .expect("the package still resolves");
+    assert_eq!(result.manager, "apt");
+    assert_eq!(
+        result.min_version.as_deref(),
+        Some(">=0.9"),
+        "and the declaration travels on, for the check that names it"
+    );
+}
+
 #[test]
 fn resolve_package_unresolvable() {
     let apt = MockManager::new("apt").with_package("neovim", "0.6.1");

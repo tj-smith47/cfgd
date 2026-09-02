@@ -140,6 +140,27 @@ pub fn declared_floor_version(floor: &str) -> &str {
     floor.strip_prefix(['v', 'V']).unwrap_or(floor)
 }
 
+/// Whether a declared floor is shaped like a RANGE EXPRESSION rather than like
+/// a version — the check no version grammar can disagree with.
+///
+/// A `minVersion` names one version; a caller who writes `>=1.2`, `^1`, `1.*`
+/// or `1.2 || 2.0` has written a constraint into a field that holds an operand,
+/// and no packaging scheme in the world spells a version with those characters.
+/// The twin of
+/// [`floor_comparable`](crate::providers::PackageManager::floor_comparable),
+/// split by WHO can say so: this one refuses what NO grammar allows and is
+/// therefore safe where no manager is in hand, while `floor_comparable` refuses
+/// what THIS family cannot read and is the stricter of the two wherever a
+/// manager is available. A letter suffix is deliberately not a tell: FreeBSD
+/// orders `1.2.x` by collation and pkg reads it as a version.
+pub fn declared_floor_is_range_shaped(floor: &str) -> bool {
+    // A comma is NOT a tell: FreeBSD spells PORTEPOCH `1.2.0,1` and a brew cask
+    // its build `1.2.3,4567`, both legitimate floors for their own family.
+    declared_floor_version(floor)
+        .chars()
+        .any(|c| matches!(c, '>' | '<' | '=' | '~' | '^' | '*' | '|') || c.is_whitespace())
+}
+
 /// Whether `version` clears a declared `>=` floor.
 ///
 /// Every floor comparison in the workspace reads the declaration through

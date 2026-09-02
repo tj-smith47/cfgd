@@ -119,18 +119,34 @@ pub fn effective_system_map(profile: &MergedProfile, modules: &[ResolvedModule])
 }
 
 /// The stricter of two declared floors: `None` loses to `Some`, and between two
-/// floors the winner is the one the OTHER does not satisfy — which is also how
-/// a floor nothing can compare resolves, since it satisfies nothing.
+/// floors the winner is the one the OTHER does not satisfy.
+///
+/// A floor shaped like a range expression
+/// ([`declared_floor_is_range_shaped`](crate::declared_floor_is_range_shaped))
+/// WINS instead of being compared, because unknown outranks known here as it
+/// does on every other drift surface: comparing it would answer `false` for
+/// the parse rather than for the constraint, and the readable floor would
+/// quietly outrank a declaration that — claimed alone by one module — is a
+/// check error the reader must see. It survives to the verify pass, which
+/// names it. The manager-agnostic tell is the only question available here:
+/// the dedup holds a manager NAME, not the manager, and the family-aware
+/// [`floor_comparable`](crate::providers::PackageManager::floor_comparable)
+/// needs the manager itself.
 fn stricter_floor(claimed: &Option<String>, candidate: &Option<String>) -> Option<String> {
     match (claimed, candidate) {
         (_, None) => claimed.clone(),
         (None, Some(_)) => candidate.clone(),
         (Some(a), Some(b)) => {
-            if crate::version_meets_floor(a, b) {
-                Some(a.clone())
+            let winner = if crate::declared_floor_is_range_shaped(a) {
+                a
+            } else if crate::declared_floor_is_range_shaped(b) {
+                b
+            } else if crate::version_meets_floor(a, b) {
+                a
             } else {
-                Some(b.clone())
-            }
+                b
+            };
+            Some(winner.clone())
         }
     }
 }
