@@ -547,6 +547,17 @@ const MIGRATIONS: &[&str] = &[
        WHERE resource_type = 'manager'
          AND (resource_id GLOB 'provision:*' OR resource_id GLOB 'refuse:*')
          AND resolved_by IS NULL AND resolved_at IS NULL;",
+    // Migration 22: the `file` tracking rows a permissions fix wrote under the
+    // old id. `file:chmod:<mode>:<target>` dropped only its verb, so the mode
+    // stayed glued to the path and every `SetPermissions` apply recorded
+    // `0o600:/etc/config.yaml`. The parse now yields the bare target, and
+    // nothing sweeps `managed_resources` on observation (see this module's
+    // schema notes), so the old rows would sit in `cfgd status` forever
+    // beside their corrected twins. Deleting them is safe by migration 9's
+    // reasoning: a file row is bookkeeping the next apply re-derives, and it
+    // carries no `uninstall_cmd` for anything to act on.
+    "DELETE FROM managed_resources
+       WHERE resource_type = 'file' AND resource_id GLOB '0o[0-7]*:*';",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable
