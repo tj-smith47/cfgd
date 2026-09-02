@@ -4462,9 +4462,7 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
     ),
 ];
 
-#[cfg(unix)]
 #[test]
-#[serial_test::serial]
 fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
     for mgr in all_package_managers() {
         let (_, grammar) = MANAGER_VERSION_GRAMMARS
@@ -4531,25 +4529,10 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
                     mgr.name()
                 );
             }
-            VersionGrammar::ToolOwned { sample, floor } => {
+            VersionGrammar::ToolOwned { sample, .. } => {
                 assert!(
                     mgr.version_comparable(sample),
                     "{}: the tool's own comparator reads everything it lists",
-                    mgr.name()
-                );
-                // The tool answers `=`, so the floor clears only if the
-                // declaration reached it in a spelling it can read: this
-                // manager's `version_comparable` is unconditionally true, so a
-                // floor it misreads invents drift rather than erroring.
-                let shim = cfgd_core::test_helpers::ToolShim::install(
-                    super::versions::PKG_BIN_ENV,
-                    0,
-                    "=\n",
-                    "",
-                );
-                assert!(
-                    mgr.version_meets_minimum(sample, floor),
-                    "{}: a floor declared {floor} clears when the tool says `=`",
                     mgr.name()
                 );
                 // The tool owns this family's grammar, so the shapes it reads
@@ -4557,6 +4540,9 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
                 // collation among them — while a range expression is refused
                 // here as everywhere: `pkg version -t` settles one by
                 // collation, which is an answer rather than a comparison.
+                // Both questions are answered without spawning the tool; what
+                // the tool itself must say is
+                // `a_tool_owned_manager_reaches_its_tool_with_a_floor_it_can_read`.
                 assert!(
                     mgr.floor_comparable("1.2.x"),
                     "{}: the tool orders its own letter suffixes",
@@ -4567,20 +4553,54 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
                     "{}: a range expression is no version in any grammar",
                     mgr.name()
                 );
-                let argv = shim.argv_log();
-                assert!(
-                    argv.contains("version -t"),
-                    "{}: the comparison really reached the tool: {argv}",
-                    mgr.name()
-                );
-                assert!(
-                    !argv.contains(" v"),
-                    "{}: the declared floor reaches the tool with no `v` for it \
-                     to compare against a digit: {argv}",
-                    mgr.name()
-                );
             }
         }
+    }
+}
+
+/// The half of the grammar walk that needs the tool itself, split out because
+/// [`cfgd_core::test_helpers::ToolShim`] is Unix-only and gating the whole walk
+/// took the winget / chocolatey / scoop classification off the one OS those
+/// managers run on. Structural, not a skipped loop iteration: on Windows this
+/// test does not exist, while the walk above still visits every registered
+/// manager — a manager missing from `MANAGER_VERSION_GRAMMARS` panics there on
+/// every OS.
+///
+/// A `ToolOwned` manager's `version_comparable` is unconditionally true, so a
+/// floor it misreads invents drift rather than erroring: the declaration has to
+/// reach the tool in a spelling the tool can read.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_tool_owned_manager_reaches_its_tool_with_a_floor_it_can_read() {
+    for mgr in all_package_managers() {
+        let Some((_, VersionGrammar::ToolOwned { sample, floor })) = MANAGER_VERSION_GRAMMARS
+            .iter()
+            .find(|(name, _)| *name == mgr.name())
+        else {
+            continue;
+        };
+        // The tool answers `=`, so the floor clears only if the declaration
+        // reached it in a spelling it can read.
+        let shim =
+            cfgd_core::test_helpers::ToolShim::install(super::versions::PKG_BIN_ENV, 0, "=\n", "");
+        assert!(
+            mgr.version_meets_minimum(sample, floor),
+            "{}: a floor declared {floor} clears when the tool says `=`",
+            mgr.name()
+        );
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("version -t"),
+            "{}: the comparison really reached the tool: {argv}",
+            mgr.name()
+        );
+        assert!(
+            !argv.contains(" v"),
+            "{}: the declared floor reaches the tool with no `v` for it \
+             to compare against a digit: {argv}",
+            mgr.name()
+        );
     }
 }
 
