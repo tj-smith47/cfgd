@@ -15310,10 +15310,7 @@ fn no_command_words_the_up_to_date_verdict_for_itself() {
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let production = body
-            .split_once("\n#[cfg(test)]")
-            .map(|(head, _)| head)
-            .unwrap_or(&body);
+        let production = cfgd_core::test_helpers::production_slice(&body);
         for (n, line) in production.lines().enumerate() {
             let code = line.trim_start();
             if code.starts_with("//") || code.starts_with("///") {
@@ -29649,12 +29646,7 @@ fn every_merged_env_view_is_built_once_per_command() {
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
-        // Only the production half: a `#[cfg(test)]` module below it builds a
-        // view per assertion, which is what a test SHOULD do.
-        let production = body
-            .split_once("\n#[cfg(test)]")
-            .map(|(head, _)| head)
-            .unwrap_or(&body);
+        let production = cfgd_core::test_helpers::production_slice(&body);
         let mut open: Vec<&str> = Vec::new();
         let mut prev = "";
         for line in production.lines() {
@@ -29757,10 +29749,7 @@ fn every_live_minted_drift_id_comes_from_its_composer() {
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let production = body
-            .split_once("\n#[cfg(test)]")
-            .map(|(head, _)| head)
-            .unwrap_or(&body);
+        let production = cfgd_core::test_helpers::production_slice(&body);
         let lines: Vec<&str> = production.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             let Some((_, composers)) = COMPOSERS.iter().find(|(ty, _)| {
@@ -29846,13 +29835,7 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
-        // Cut at the trailing test MODULE, not the first `#[cfg(test)]` —
-        // core files carry mid-file `#[cfg(test)] impl` helpers, and cutting
-        // there would blind the walk to every production mint below them.
-        let production = body
-            .split_once("\n#[cfg(test)]\nmod ")
-            .map(|(head, _)| head)
-            .unwrap_or(&body);
+        let production = cfgd_core::test_helpers::production_slice(&body);
         let lines: Vec<&str> = production.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if !line.contains("\"package\".to_string()")
@@ -29920,10 +29903,7 @@ fn every_resolved_package_producer_routes_through_the_one_resolver() {
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let production = body
-            .split_once("\n#[cfg(test)]")
-            .map(|(head, _)| head)
-            .unwrap_or(&body);
+        let production = cfgd_core::test_helpers::production_slice(&body);
         for (i, line) in production.lines().enumerate() {
             if line.contains("ResolvedPackage {") && !line.contains("pub struct ResolvedPackage") {
                 producers.push(format!(
@@ -29967,10 +29947,7 @@ fn every_unknown_package_version_a_manager_reports_comes_from_the_one_sentinel()
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let production = body
-            .split_once("\n#[cfg(test)]")
-            .map(|(head, _)| head)
-            .unwrap_or(&body);
+        let production = cfgd_core::test_helpers::production_slice(&body);
         for (i, line) in production.lines().enumerate() {
             let code = line.trim();
             if code.starts_with("//") || !code.contains("\"unknown\"") {
@@ -30140,10 +30117,7 @@ fn no_result_section_respells_a_word_its_command_title_already_spent() {
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let production = body
-            .split_once("\n#[cfg(test)]")
-            .map(|(head, _)| head)
-            .unwrap_or(&body);
+        let production = cfgd_core::test_helpers::production_slice(&body);
         let headings = literals(production, "printer.heading(\"");
         let sections = literals(production, "printer.section(\"");
         for heading in &headings {
@@ -33454,17 +33428,14 @@ fn every_fleet_drift_surface_names_the_system_settings_class() {
         "crates/cfgd-operator/src/controllers/mod.rs",
     ];
 
-    let mut checked = 0usize;
     for rel in files {
         let path = root.join(rel);
         let body = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("fleet drift surface {rel} unreadable: {e}"));
-        // A `#[cfg(test)]` module describes the surface rather than rendering it.
-        let production = body.split("\n#[cfg(test)]").next().unwrap_or(&body);
+        let production = cfgd_core::test_helpers::production_slice(&body);
         let lines: Vec<&str> = production.lines().collect();
+        let mut checked = 0usize;
         for (n, line) in lines.iter().enumerate() {
-            // `mod tests` inside these files describes the surface rather than
-            // rendering it.
             if line.trim_start().starts_with("//") || !line.contains('"') {
                 continue;
             }
@@ -33529,12 +33500,15 @@ fn every_fleet_drift_surface_names_the_system_settings_class() {
                 line.trim()
             );
         }
+        // Per FILE, because a whole-walk floor cannot tell a file that stopped
+        // saying `drift` from a file the production cut stopped reaching.
+        assert!(
+            checked > 0,
+            "{rel} contributed no reader-facing drift string to the fleet walk — \
+             either the candidate scan stopped matching or the file's production \
+             region is being cut short of the strings it renders"
+        );
     }
-    assert!(
-        checked >= 6,
-        "the fleet drift walk found only {checked} reader-facing drift strings — \
-         the candidate scan stopped matching, not the surfaces stopped saying it"
-    );
 }
 
 /// `doctor` probes tooling and environment prerequisites: is `git` on PATH, is
@@ -33563,36 +33537,57 @@ fn no_doctor_section_or_verdict_borrows_the_managed_resource_vocabulary() {
         "managed resources",
     ];
 
+    // Flattened, because rustfmt wraps a long `.section_if_nonempty(` onto the
+    // line below its opener and a line-scoped scan reads right past it.
+    let production = cfgd_core::test_helpers::production_slice(&body);
+    let flat = production
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .flat_map(|l| l.split_whitespace())
+        .collect::<Vec<_>>()
+        .join(" ");
+
     let mut names: Vec<String> = Vec::new();
-    for line in body.lines() {
-        if line.trim_start().starts_with("//") {
-            continue;
-        }
-        for opener in [".section(", ".section_if_nonempty(", ".heading("] {
-            let Some(at) = line.find(opener) else {
-                continue;
+    for opener in [
+        ".section( \"",
+        ".section_if_nonempty( \"",
+        ".heading( \"",
+        ".section(\"",
+        ".section_if_nonempty(\"",
+        ".heading(\"",
+        // The closing verdict is the same claim in one line: a doctor that
+        // "passed every check" must not sound like a machine proven in sync.
+        ".status(Role::Ok, \"",
+        ".status(Role::Fail, \"",
+        ".status_with(Role::Ok, \"",
+        ".status_with(Role::Fail, \"",
+    ] {
+        let mut from = 0usize;
+        while let Some(at) = flat[from..].find(opener) {
+            let start = from + at + opener.len();
+            let Some(end) = flat[start..].find('"') else {
+                break;
             };
-            let rest = &line[at + opener.len()..];
-            if !rest.starts_with('"') {
-                continue;
-            }
-            if let Some(end) = rest[1..].find('"') {
-                names.push(rest[1..1 + end].to_string());
-            }
+            names.push(flat[start..start + end].to_string());
+            from = start + end;
         }
     }
-    assert!(
-        names.iter().any(|n| n == "Config"),
-        "the doctor section walk found no sections: {names:?}"
-    );
+    for expected in ["Config", "Package Managers", "Passed every check"] {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "the doctor walk lost sight of `{expected}` — the scan stopped \
+             matching rather than doctor stopping saying it: {names:?}"
+        );
+    }
 
     for name in &names {
         let lowered = name.to_ascii_lowercase();
         assert!(
-            !RESERVED.contains(&lowered.as_str()),
-            "doctor's `{name}` section borrows the managed-resource vocabulary \
-             `status`/`diff` earn by checking a declared resource against the \
-             machine — doctor checks prerequisites, so name what it examines"
+            !RESERVED.iter().any(|r| lowered == *r),
+            "doctor's `{name}` section or verdict borrows the managed-resource \
+             vocabulary `status`/`diff` earn by checking a declared resource \
+             against the machine — doctor checks prerequisites, so name what it \
+             examines"
         );
     }
 }

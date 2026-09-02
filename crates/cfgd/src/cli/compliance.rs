@@ -1097,9 +1097,8 @@ mod tests {
             assert!(
                 empty.contains(key),
                 "the header rows name the base and the target snapshot, not an \
-                 unlabelled pair: {empty}"
+                 unlabelled pair — `{key}` is missing from: {empty}"
             );
-            let _ = key;
         }
         assert!(
             empty

@@ -2146,7 +2146,7 @@ cfgd compliance                          # collect and store a snapshot, print t
 cfgd compliance export                   # write the newest snapshot out
 cfgd compliance history                  # list stored snapshots, newest first
 cfgd compliance history --since 30d      # only snapshots newer than a duration
-cfgd compliance diff <base-id> <target-id>   # what changed between two RECORDED snapshots
+cfgd compliance diff <base-id> <target-id>   # what changed between two recorded snapshots
 ```
 
 | Flag | Meaning |
