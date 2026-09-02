@@ -157,7 +157,7 @@ pub fn verify(
                 for drift in &drifts {
                     results.push(VerifyResult {
                         resource_type: "system".to_string(),
-                        resource_id: format!("{}.{}", sc.name(), drift.key),
+                        resource_id: super::system_resource_key(sc.name(), &drift.key),
                         matches: false,
                         expected: drift.expected.clone(),
                         actual: drift.actual.clone(),

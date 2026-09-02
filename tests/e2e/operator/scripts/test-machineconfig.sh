@@ -243,8 +243,8 @@ spec:
   severity: Medium
   driftDetails:
     - field: sysctl.vm.swappiness
-      expected: installed
-      actual: missing
+      expected: "10"
+      actual: "60"
 EOF
 
 # Wait for DriftAlert to be processed (owner ref set)

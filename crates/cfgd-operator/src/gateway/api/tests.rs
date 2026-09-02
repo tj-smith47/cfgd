@@ -2037,8 +2037,8 @@ async fn record_drift_event_broadcasts_to_sse() {
     let req = DriftRequest {
         details: vec![DriftDetailInput {
             field: "sysctl.vm.max_map_count".to_string(),
-            expected: "hash-a".to_string(),
-            actual: "hash-b".to_string(),
+            expected: "262144".to_string(),
+            actual: "65530".to_string(),
         }],
     };
     let _ = record_drift_event(

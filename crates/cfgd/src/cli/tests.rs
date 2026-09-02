@@ -33514,39 +33514,43 @@ fn every_fleet_drift_surface_names_the_system_settings_class() {
 /// A fleet drift row's `field` is composed once and read verbatim thereafter.
 ///
 /// The device mints it through `reconciler::system_resource_key`, the ONE
-/// composer of a `<configurator>.<key>` identity, and every surface between
-/// that mint and the screen — the gateway's DriftAlert builder, its event rows,
-/// the web dashboard — copies the value it was handed. A second `format!` mints
-/// a spelling the CRD's `x-kubernetes-list-map-keys: [field]` merge cannot
-/// reconcile with the first, and a hand-rolled split re-derives a configurator
-/// name the composer never promised to make recoverable.
+/// composer of a `<configurator>.<key>` identity, and the gateway's DriftAlert
+/// builder copies the value it was handed. A second `format!` mints a spelling
+/// the CRD's `x-kubernetes-list-map-keys: [field]` merge cannot reconcile with
+/// the first, and a hand-rolled split re-derives a configurator name the
+/// composer never promised to make recoverable.
+///
+/// The web dashboard is the one READER walked, because it is the only surface
+/// that names an individual `field` back out: the ingest handler serializes the
+/// whole detail list, the database stores that string in one column, and the
+/// DriftAlert controller reads a count. A hop that never names the value cannot
+/// mis-spell it, and putting it in the walk would only add a file with nothing
+/// to check.
 #[test]
 fn every_fleet_drift_field_comes_from_the_one_composer() {
-    // Each file's `field:` constructions: the device's mint, and the gateway's
-    // copy into the CRD object.
-    const EXPECTED: [(&str, usize); 2] = [
+    // Each mint file's `field:` constructions: the device's mint, and the
+    // gateway's copy into the CRD object.
+    const MINTS: [(&str, usize); 2] = [
         ("crates/cfgd-core/src/server_client/mod.rs", 1),
         ("crates/cfgd-operator/src/gateway/api/drift.rs", 1),
     ];
-    const READERS: [&str; 3] = [
-        "crates/cfgd-operator/src/gateway/api/fleet.rs",
-        "crates/cfgd-operator/src/gateway/web/mod.rs",
-        "crates/cfgd-operator/src/controllers/drift_alert.rs",
-    ];
+    const READERS: [&str; 1] = ["crates/cfgd-operator/src/gateway/web/mod.rs"];
     const HAND_PARSERS: [&str; 5] = ["split(", "splitn(", "rsplit", "strip_prefix(", "find('.')"];
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut counts: Vec<(&str, usize)> = Vec::new();
-    for rel in EXPECTED.iter().map(|(f, _)| *f).chain(READERS) {
+    for rel in MINTS.iter().map(|(f, _)| *f).chain(READERS) {
         let path = root.join(rel);
         let body = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("fleet drift surface {rel} unreadable: {e}"));
         let production = cfgd_core::test_helpers::production_slice(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        let mut checked = 0usize;
         let mut built = 0usize;
-        for (n, line) in production.lines().enumerate() {
+        for (n, line) in lines.iter().enumerate() {
             if line.trim_start().starts_with("//") || !line.contains("field") {
                 continue;
             }
+            checked += 1;
             assert!(
                 !HAND_PARSERS.iter().any(|p| line.contains(p)),
                 "{rel}:{}: a drift row's `field` is read whole, never taken \
@@ -33555,14 +33559,20 @@ fn every_fleet_drift_field_comes_from_the_one_composer() {
                 n + 1,
                 line.trim()
             );
-            // A struct's own declaration (`field: String,`) carries neither a
-            // call nor a path access; a construction always carries one.
-            if !line.contains("field:") || !(line.contains('(') || line.contains('.')) {
+            // A struct's own declaration names a TYPE where a construction
+            // names a value, and it is the only `field:` line that does.
+            let named = line.trim_start().trim_start_matches("pub ");
+            if !line.contains("field:") || named.starts_with("field: String") {
                 continue;
             }
             built += 1;
+            // rustfmt wraps a long value onto the lines below its `field:`, so
+            // the composer is looked for over the whole construction.
+            let hi = (n + 6).min(lines.len());
             assert!(
-                line.contains("system_resource_key(") || line.contains(".field"),
+                lines[n..hi]
+                    .iter()
+                    .any(|l| l.contains("system_resource_key(") || l.contains(".field")),
                 "{rel}:{}: a drift row's `field` is either composed through \
                  `reconciler::system_resource_key` or copied verbatim from the \
                  row upstream:\n  {}",
@@ -33570,8 +33580,15 @@ fn every_fleet_drift_field_comes_from_the_one_composer() {
                 line.trim()
             );
         }
-        if let Some((_, expected)) = EXPECTED.iter().find(|(f, _)| *f == rel) {
-            counts.push((rel, built));
+        // Per FILE, because a whole-walk floor cannot tell a file that stopped
+        // naming `field` from a file the production cut stopped reaching.
+        assert!(
+            checked > 0,
+            "{rel} contributed no `field` line to the fleet walk — either the \
+             surface stopped naming the value or the file's production region \
+             is being cut short of the lines that do"
+        );
+        if let Some((_, expected)) = MINTS.iter().find(|(f, _)| *f == rel) {
             assert_eq!(
                 built, *expected,
                 "{rel} builds {built} drift rows, not {expected} — a new one \
@@ -33580,7 +33597,66 @@ fn every_fleet_drift_field_comes_from_the_one_composer() {
             );
         }
     }
-    assert_eq!(counts.len(), EXPECTED.len());
+}
+
+/// Every `<configurator>.<key>` identity cfgd-core composes comes from
+/// `reconciler::system_resource_key`.
+///
+/// The crate that OWNS the composer is the one that kept hand-rolling it: a
+/// `format!("{}.{}", sc.name(), drift.key)` in the verify walk was string-
+/// matched against composer-minted rows, and the apply path spelled
+/// `system:{}.{}` where the canonical id is `system:` wrapped around the
+/// composer's output. Either drifts silently — the strings agree today and
+/// diverge the moment the composer's shape moves — which is what the debug
+/// assertion inside the composer exists to catch and a hand-rolled `format!`
+/// walks straight past.
+#[test]
+fn every_core_composed_system_identity_comes_from_the_one_composer() {
+    const HATCH: &str = "composed-id-ok:";
+    // The composed shape in either spelling rustfmt may leave it in.
+    const HAND_COMPOSED: [&str; 2] = ["{}.{}", "{configurator}.{key}"];
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cfgd-core/src/reconciler")
+        .canonicalize()
+        .expect("cfgd-core reconciler directory");
+    let mut offenders = Vec::new();
+    let mut composed = 0usize;
+    let mut files: Vec<std::path::PathBuf> = walk_rust_files(&dir);
+    files.sort();
+    for path in files {
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if line.contains("system_resource_key(") {
+                composed += 1;
+            }
+            if line.trim_start().starts_with("//")
+                || !HAND_COMPOSED.iter().any(|s| line.contains(s))
+                || line.contains(HATCH)
+                || (i > 0 && lines[i - 1].contains(HATCH))
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a `<configurator>.<key>` identity is composed by \
+         `reconciler::system_resource_key`, never spelled by hand (or carries \
+         `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        composed >= 4,
+        "the reconciler composes {composed} system identities through the one \
+         composer, fewer than the four known call sites — a lost call means a \
+         site that went back to spelling the identity itself"
+    );
 }
 
 /// `doctor` probes tooling and environment prerequisites: is `git` on PATH, is
