@@ -1481,19 +1481,21 @@ fn package_owner(
 /// exactly as its drift findings do. A key no owner claims stays loose, and
 /// its row still renders at the foot of the section.
 ///
-/// The env arm is judged by ABSOLUTENESS rather than by a `/` substring: a
-/// slash is legal inside a package name (`npm:@scope/name`,
-/// `go:github.com/foo/bar`), so a substring test hands those to the env
-/// surface — the env owner reads `Unknown` while the module that declared the
-/// package still reads `Synced`. The env producer mints its key from a real
-/// path, absolute on both host families, and no package id is.
+/// The env arm is judged by SHAPE rather than by a `/` substring: a slash is
+/// legal inside a package name (`npm:@scope/name`, `go:github.com/foo/bar`),
+/// so a substring test hands those to the env surface — the env owner reads
+/// `Unknown` while the module that declared the package still reads `Synced`.
+/// The env producer mints its key from a real path, which is absolute
+/// wherever a home directory resolved and keeps its leading `~/` where none
+/// did; both are accepted, because the tilde form is what the producer emits
+/// on a host with no `HOME`, and no package id takes either shape.
 fn check_error_owner(
     key: &str,
     output: &StatusOutput,
     profile_owner: Option<&cfgd_core::reconciler::Owner>,
 ) -> Option<cfgd_core::reconciler::Owner> {
     use cfgd_core::reconciler::{ENV_GROUP, Owner};
-    if std::path::Path::new(key).is_absolute() {
+    if std::path::Path::new(key).is_absolute() || key.starts_with("~/") {
         return Some(Owner::cfgd(ENV_GROUP));
     }
     if key.contains(':') {
@@ -4582,8 +4584,8 @@ mod tests {
             "an unanswered check outranks the drift it withheld: {nvim}"
         );
         assert!(
-            rendered.contains("neovim"),
-            "the finding under it still renders: {rendered}"
+            rendered.contains(&cfgd_core::Absence::NotInstalled.to_string()),
+            "the finding the unknown outranks still renders under it: {rendered}"
         );
 
         // A package name carrying a slash is the declaring module's, not the
