@@ -615,11 +615,12 @@ fn a_withheld_resource_is_recognized_under_every_recorded_grammar() {
         ("package", "refuse:brew", true),
         ("package", "provision:brew-cask", true),
         ("package", "provision:cargo", false),
-        // All three system spellings — keyed both ways, and the bare id a
-        // pruned Skip mints, which IS the configurator name; a configurator
-        // is withheld whole.
+        // Both system spellings — the composer's, and the bare id a pruned
+        // Skip mints, which IS the configurator name; a configurator is
+        // withheld whole. A key of its own may carry a colon, and the split
+        // must not read one as the separator.
         ("system", "gsettings.org.gnome.x key", true),
-        ("system", "gsettings:org.gnome.x key", true),
+        ("system", "windowsRegistry.HKCU:\\Software\\cfgd", false),
         ("system", "xfconf.k", false),
         ("system", "gsettings", true),
         ("system", "xfconf", false),
@@ -3214,7 +3215,7 @@ fn action_resource_info_system_set_value() {
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "system");
-    assert_eq!(rid, "sysctl:vm.swappiness");
+    assert_eq!(rid, "sysctl.vm.swappiness");
 }
 
 #[test]

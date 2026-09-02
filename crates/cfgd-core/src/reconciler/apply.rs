@@ -858,6 +858,30 @@ fn env_result_key(description: &str) -> &str {
         .unwrap_or(description)
 }
 
+/// What a system arm's result description says it DID, split off the composed
+/// id it says it did it to: `system:sysctl.vm.swappiness (60 → 10)`, and
+/// `system:sysctl (skipped)` for a configurator this host has nothing to apply
+/// through. [`None`] for every other action's description.
+///
+/// The description itself keeps the decoration — it is the wire contract — but
+/// the persisted id may not carry it, for the same reason
+/// [`ENV_SKIPPED_SUFFIX`] is stripped before one: a drift row is keyed on
+/// [`super::system_resource_key`]'s output alone, so an id carrying the
+/// transition matches no row any producer wrote and every value the setting
+/// ever held leaves its own `managed_resources` row behind. The prefix test is
+/// what keeps this off a file description, where a legal path may hold ` (`.
+fn system_result_parts(description: &str) -> Option<(&str, &str)> {
+    if !description.starts_with("system:") {
+        return None;
+    }
+    let (key, did) = description.strip_suffix(')')?.split_once(" (")?;
+    Some((key, did))
+}
+
+/// The decoration a system arm appends for a configurator it applied nothing
+/// through.
+const SYSTEM_SKIPPED_DETAIL: &str = "skipped";
+
 /// Whether an env-action description carries either "nothing was written"
 /// suffix — the general form `.contains(ENV_SKIPPED_SUFFIX)` calls used before
 /// this suffix existed, now covering both.
@@ -2089,6 +2113,16 @@ impl<'a> super::Reconciler<'a> {
             }
 
             let description = env_result_key(&result.description);
+            // A configurator that applied nothing manages nothing and heals
+            // nothing: its planned `Skip` is the record that the tool is
+            // missing, and an apply that ran it is exactly as unable as the
+            // tick that recorded it. Everything else keys on the composition
+            // alone (see `system_result_parts`).
+            let description = match system_result_parts(description) {
+                Some((_, SYSTEM_SKIPPED_DETAIL)) => continue,
+                Some((key, _)) => key,
+                None => description,
+            };
             let (rtype, rid) = parse_resource_from_description(description);
             // A manager node is cfgd's own scaffolding, never a resource the
             // user declared: a refreshed index, a provisioned manager and a
@@ -2228,9 +2262,9 @@ impl<'a> super::Reconciler<'a> {
             &resolved.merged.entry_owners,
             modules,
         );
-        // One statement for the whole merged set: `drift_events` has no index on
-        // `(resource_type, resource_id)`, so a per-entry resolve is a full table
-        // scan per declared env var and alias, inside the apply transaction.
+        // One statement for the whole merged set: a per-entry resolve is its own
+        // index seek and its own statement per declared env var and alias,
+        // inside the apply transaction, where the set-based form seeks once.
         let keys: Vec<(String, String)> = env
             .iter()
             .map(|ev| ("env-var".to_string(), ev.name.clone()))

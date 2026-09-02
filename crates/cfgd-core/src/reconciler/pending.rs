@@ -1883,7 +1883,7 @@ impl DeliveredItems {
 /// | `files.<target>` | a `File` action on that target, and the same target inside a module's `DeployFiles` batch — profile files and module files are separate surfaces that can name one path, and withholding only the profile one would still write it. The decision keeps the DECLARED spelling, the planner expands `~`, so the path is expanded and folded to `/` here to meet the id |
 /// | `packages.<mgr>.<pkg>` | that one package inside a batch — a `PackageAction::Install`/`Uninstall` for `<mgr>` or a module's `InstallPackages` (matched on its resolved name). The batch keeps its other packages and is dropped only when it empties. `packages.brew.<pkg>` also matches the `brew-cask` manager: the decision vocabulary folds casks into `brew` and cannot tell a cask from a formula. Every other manager — a brew tap under `brew-tap`, a custom manager under its own name — mints under the exact name its planned batch carries, so the match here is verbatim. A `Skip` names no package and is never withheld |
 /// | `env.<NAME>` | every `Env` action. There is no per-variable action to withhold: one `WriteEnvFile` renders every declared variable into one file, `InjectSourceLine` loads that file and `RefreshLiveSession` mirrors it — so the env surface is withheld as the unit it is generated as, and a decided variable waits with the undecided one rather than an undecided one reaching the machine. That includes the post-apply regeneration: a manager bootstrapped in a withholding tick does not get its PATH dir into `~/.cfgd.env` until the decision clears (the next non-withholding tick plans env unconditionally and converges it) |
-/// | `system.<configurator>` | every `System` action for that configurator. The decision names a whole `spec.system.<configurator>` block, one level above the `<configurator>:<key>` id an individual drift carries |
+/// | `system.<configurator>` | every `System` action for that configurator. The decision names a whole `spec.system.<configurator>` block, one level above the `<configurator>.<key>` id an individual drift carries |
 ///
 /// No pending row can withhold a `Secret` or `Script` action as a whole, and a
 /// `Module` action is withheld only by the batch arms above — the packages a
@@ -2022,8 +2022,8 @@ impl DecisionExclusions {
             // against is the same derivation the drift row and the journal use.
             Action::File(_) => self.files.contains(&action_resource_info(action).1),
             Action::Env(_) => self.withholds_env_surface(),
-            // Matched on the typed field rather than on the rendered
-            // `<configurator>:<key>` id: splitting an id back apart at the match
+            // Matched on the typed field rather than on the composed
+            // `<configurator>.<key>` id: splitting an id back apart at the match
             // site would be a second grammar living outside this type.
             Action::System(SystemAction::SetValue { configurator, .. })
             | Action::System(SystemAction::Skip { configurator, .. }) => {
@@ -2115,11 +2115,13 @@ impl DecisionExclusions {
                     rest.split(',').any(|p| self.withholds_package(manager, p))
                 })
             }
-            // Every system grammar — the CLI's `<cfg>.<key>`, the daemon's
-            // `<cfg>:<key>`, and the daemon's bare `<cfg>` (a planned
-            // `SystemAction::Skip`, which the prune removes whole); a
-            // configurator is withheld whole.
-            "system" => match resource_id.split_once(['.', ':']) {
+            // Both system grammars — the composed `<cfg>.<key>` every producer
+            // mints, and the bare `<cfg>` of a planned `SystemAction::Skip`
+            // (which the prune removes whole); a configurator is withheld
+            // whole. Split on the dot alone: a KEY may carry a colon
+            // (`windowsRegistry.HKCU:\Software\…`), and reading that as the
+            // separator would look up a configurator nobody registered.
+            "system" => match resource_id.split_once('.') {
                 Some((configurator, _)) => self.system.contains(configurator),
                 None => self.system.contains(resource_id),
             },

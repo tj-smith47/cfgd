@@ -3039,6 +3039,74 @@ fn legacy_manager_provision_rows_meet_the_package_grammar_on_open() {
     );
 }
 
+#[test]
+fn legacy_colon_spelled_system_rows_meet_the_composer_grammar_on_open() {
+    // The daemon tick recorded `('system', '<configurator>:<key>')` while
+    // every resolver matches the composer's `<configurator>.<key>`, so an
+    // apply that converged the setting never touched the row. Opening the
+    // store respells the lone rows and resolves the ones whose dot twin
+    // already stands. The split is on the FIRST colon and only where the
+    // segment before it holds no dot: a KEY may carry a colon, and an id that
+    // is already dot-spelled must come through untouched.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        for (rtype, rid) in [
+            ("system", "gsettings:org.gnome.interface"),
+            ("system", "sysctl.vm.swappiness"),
+            ("system", "windowsRegistry.HKCU:\\Software\\cfgd"),
+            ("system", "shell:aliases"),
+            ("system", "shell.aliases"),
+            // Another type's row of the same shape: the sweep is scoped to
+            // `system`, and `<mgr>:<pkg>` is a package row's own grammar.
+            ("package", "brew:ripgrep"),
+        ] {
+            store.record_drift(rtype, rid, None, None, "local").unwrap();
+        }
+        rewind_schema_version(&store, 23);
+    }
+
+    let store = StateStore::open(&path).unwrap();
+    let mut standing: Vec<(String, String)> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    standing.sort_unstable();
+    assert_eq!(
+        standing,
+        vec![
+            ("package".to_string(), "brew:ripgrep".to_string()),
+            (
+                "system".to_string(),
+                "gsettings.org.gnome.interface".to_string()
+            ),
+            ("system".to_string(), "shell.aliases".to_string()),
+            ("system".to_string(), "sysctl.vm.swappiness".to_string()),
+            (
+                "system".to_string(),
+                "windowsRegistry.HKCU:\\Software\\cfgd".to_string()
+            ),
+        ],
+        "the lone colon row is respelled, the twinned one resolves, and every \
+         other row is untouched"
+    );
+    let resolved_rows: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM drift_events WHERE resolved_at IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        resolved_rows, 1,
+        "exactly the duplicate colon row resolves; nothing else is touched"
+    );
+}
+
 // --- concurrent in-memory stores ---
 
 #[test]

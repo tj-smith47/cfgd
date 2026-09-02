@@ -34014,6 +34014,12 @@ fn every_core_composed_system_identity_comes_from_the_one_composer() {
     const HATCH: &str = "composed-id-ok:";
     // The composed shape in either spelling rustfmt may leave it in.
     const HAND_COMPOSED: [&str; 2] = ["{}.{}", "{configurator}.{key}"];
+    // The same identity joined the OTHER way, which is how the daemon's tick
+    // spelled it for six migrations' worth of stored rows. A colon join is a
+    // legal composition for half the ids in this directory, so the shape alone
+    // cannot condemn a line — it is an offender only where the arguments are a
+    // configurator and its key.
+    const COLON_COMPOSED: [&str; 2] = ["{}:{}", "{configurator}:{key}"];
 
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../cfgd-core/src/reconciler")
@@ -34033,8 +34039,12 @@ fn every_core_composed_system_identity_comes_from_the_one_composer() {
             if line.contains("system_resource_key(") {
                 composed += 1;
             }
+            let window = lines[i.saturating_sub(2)..(i + 3).min(lines.len())].join(" ");
+            let hand_composed = HAND_COMPOSED.iter().any(|s| line.contains(s))
+                || (COLON_COMPOSED.iter().any(|s| line.contains(s))
+                    && window.contains("configurator"));
             if line.trim_start().starts_with("//")
-                || !HAND_COMPOSED.iter().any(|s| line.contains(s))
+                || !hand_composed
                 || line.contains(HATCH)
                 || (i > 0 && lines[i - 1].contains(HATCH))
             {

@@ -204,7 +204,7 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 - `script_run_subject` / `module_script_subject` / `hook_script_subject` / `bare_script_subject` (same file) — the partial views for callers holding a script's parts; never rebuild `"{marker}: {body}"` by hand.
 - `condense_action_desc_for_display(action, desc)` (same file) — the narrower gate for a raw description string that is not an action subject; never apply it to a value you persist.
 - `compose_in_flight_subject(theme, text)` (`output/spinner.rs`) — the ONE composition of an in-flight label, over all five live entry points: it FOLDS and paints the text, never edits it — a trailing `…` is part of the subject. `no_in_flight_label_carries_a_trailing_ellipsis` walks call sites for decorative ones.
-- `system_resource_key(configurator, key)` (same file) — the ONE composition of a system setting's `<configurator>.<key>` identity; three surfaces mint and match it.
+- `system_resource_key(configurator, key)` (same file) — the ONE composition of a system setting's `<configurator>.<key>` identity, the daemon tick's recorded id included; every surface minting or matching one asks it, and a KEY may carry a colon, so nothing splits one at a `:`.
 - `system_key_doubling_error(configurator, key)` (same file) — the ONE statement of the no-self-prefix rule and its diagnostic.
 - `pre_skip_doubling_error(subject, reason)` (same file) — the third member of that family, for a withheld row's two slots: a subject never repeats the noun its reason opens on (`no_pre_skip_reason_repeats_a_noun_its_subject_already_names` holds the table).
 - `compliance::snapshot_content_hash(snapshot)` — the ONE serialize-and-digest for a compliance snapshot, dropping the volatile timestamp.
