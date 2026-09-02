@@ -31065,7 +31065,8 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
     let rendered = cfgd_core::test_helpers::captured_text(&buf);
 
     for (i, s) in stored.iter().enumerate() {
-        let (word, _) = cfgd_core::state::module_status_display(s, false);
+        let (word, _) =
+            cfgd_core::state::module_status_display(s, cfgd_core::state::DriftVerdict::Clean);
         let row = rendered
             .lines()
             .find(|l| l.contains(&format!("module:m{i}")))

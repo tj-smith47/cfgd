@@ -791,9 +791,10 @@ render only.
 The payload carries two words for the module itself. `status` is the token the
 state store holds (`installed`, `error`, or one of the no-record spellings).
 `state` is the verdict the human Status row shows, always present, one of
-`Synced`, `Drifted`, `Failed`, `NotApplied`. `Drifted` needs a live scan: both
-words come from one derivation, so a `state` of `Drifted` always has the
-findings under `drift` to back it.
+`Synced`, `Drifted`, `Unknown`, `Failed`, `NotApplied`. `Drifted` needs a live
+scan: both words come from one derivation, so a `state` of `Drifted` always has
+the findings under `drift` to back it, and a `state` of `Unknown` always has the
+rows under `systemErrors` that say which check could not run.
 
 `pendingDecisions` lists the same rows `cfgd decide` offers, including
 classified-but-unrecorded items with `id: 0` (see [`cfgd plan`](#cfgd-plan)).

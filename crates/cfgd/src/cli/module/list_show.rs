@@ -44,10 +44,12 @@ fn source_role(source: &str) -> Option<Role> {
 }
 
 /// The Status cell: the display word and its tint, both from the workspace's
-/// one module-state vocabulary. No row here can read `Drifted` — that verdict
-/// comes from a live scan, and `module list` reports recorded state only.
+/// one module-state vocabulary. No row here can read `Drifted` or `Unknown` —
+/// both come from a check, and `module list` runs none: it reports recorded
+/// state only.
 fn status_cell(status: &str) -> (String, Option<Role>) {
-    let (word, role) = cfgd_core::state::module_status_display(status, false);
+    let (word, role) =
+        cfgd_core::state::module_status_display(status, cfgd_core::state::DriftVerdict::Clean);
     (word.to_string(), Some(role))
 }
 
@@ -170,7 +172,10 @@ pub fn build_module_show_doc(
 
     if let Some(state_rec) = &output.state {
         // Recorded state only, same as the list table — see `status_cell`.
-        let (word, role) = cfgd_core::state::module_status_display(&state_rec.status, false);
+        let (word, role) = cfgd_core::state::module_status_display(
+            &state_rec.status,
+            cfgd_core::state::DriftVerdict::Clean,
+        );
         rows.push(KvPair::role_valued("Status", word, role));
         // The age, not the recorded instant: `-o json`'s `state.installedAt`
         // carries the exact moment, and the row a person reads answers how

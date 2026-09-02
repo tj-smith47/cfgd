@@ -30,7 +30,7 @@ pub use pending_config::{
 pub use sources::ConfigSourceUpsert;
 pub use types::{
     ApplyRecord, ApplyStatus, ApplySummary, BackupRunDraft, BackupRunRecord, BackupRunStatus,
-    ComplianceHistoryRow, ConfigSourceRecord, DriftEvent, ENV_SESSION_RESOURCE_ID,
+    ComplianceHistoryRow, ConfigSourceRecord, DriftEvent, DriftVerdict, ENV_SESSION_RESOURCE_ID,
     FileBackupRecord, JournalEntry, MODULE_STATUS_ERROR, MODULE_STATUS_INSTALLED, ManagedResource,
     ModuleFileRecord, ModuleStateRecord, PendingDecision, SOURCE_STATUS_ACTIVE,
     SOURCE_STATUS_ERROR, SourceConfigHash, SourceConflictRecord, backup_run_status_display,
