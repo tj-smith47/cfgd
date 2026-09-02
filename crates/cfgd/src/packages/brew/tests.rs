@@ -723,6 +723,31 @@ mod brew_shim {
         assert_eq!(git.version, "2.40.1");
     }
 
+    /// The cask listing is what makes the cask comparator reachable: without
+    /// it no cask version is ever read, and a declared floor on one is judged
+    /// against nothing.
+    #[test]
+    #[serial]
+    fn brew_cask_installed_packages_with_versions_lists_casks_with_their_builds() {
+        let shim = ToolShim::install(SHIM_ENV, 0, "google-chrome 133.0.6943.98,1234\n", "");
+        let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        let pkgs = BrewCaskManager
+            .installed_packages_with_versions(&cx)
+            .expect("Ok");
+        let chrome = pkgs
+            .iter()
+            .find(|p| p.name == "google-chrome")
+            .expect("the cask is listed");
+        assert_eq!(chrome.version, "133.0.6943.98,1234");
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("list --cask --versions"),
+            "the cask listing asks brew for casks with versions: {argv}"
+        );
+    }
+
     // --- BrewTapManager ---
 
     #[test]

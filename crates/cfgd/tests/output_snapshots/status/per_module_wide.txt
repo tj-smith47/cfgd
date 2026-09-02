@@ -22,3 +22,5 @@ Scripts
   preApply  — set -euo pipefail …
   postApply — nvim --headless '+Lazy! sync' +qa
   postApply — echo done
+
+→ Run `cfgd apply --module dev-tools` to reconcile

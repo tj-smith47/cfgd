@@ -1475,18 +1475,25 @@ fn package_owner(
 /// owner's verdict states the unknown instead of a word only an answered
 /// check earns.
 ///
-/// One arm per key grammar the three producers mint: a package floor's
-/// `<manager>:<package>` drift id, the managed env file's own path, and a
-/// system configurator's bare name — which belongs to the profile that
-/// declared it, exactly as its drift findings do. A key no owner claims stays
-/// loose, and its row still renders at the foot of the section.
+/// One arm per key grammar the three producers mint: the managed env file's
+/// own path, a package floor's `<manager>:<package>` drift id, and a system
+/// configurator's bare name — which belongs to the profile that declared it,
+/// exactly as its drift findings do. A key no owner claims stays loose, and
+/// its row still renders at the foot of the section.
+///
+/// The env arm is judged by ABSOLUTENESS rather than by a `/` substring: a
+/// slash is legal inside a package name (`npm:@scope/name`,
+/// `go:github.com/foo/bar`), so a substring test hands those to the env
+/// surface — the env owner reads `Unknown` while the module that declared the
+/// package still reads `Synced`. The env producer mints its key from a real
+/// path, absolute on both host families, and no package id is.
 fn check_error_owner(
     key: &str,
     output: &StatusOutput,
     profile_owner: Option<&cfgd_core::reconciler::Owner>,
 ) -> Option<cfgd_core::reconciler::Owner> {
     use cfgd_core::reconciler::{ENV_GROUP, Owner};
-    if key.contains('/') {
+    if std::path::Path::new(key).is_absolute() {
         return Some(Owner::cfgd(ENV_GROUP));
     }
     if key.contains(':') {
@@ -1923,17 +1930,23 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
         .heading_title("Status", &output.name)
         .kv_rows(rows);
 
+    // The freshest evidence any of this report's verdicts stands on: the
+    // machine-wide stamp and the recorded rows' own timestamps. Both views
+    // read it — the wide one has no Drift section to date, but its closing
+    // hint turns on the same staleness.
+    let freshest = freshest_check_stamp(
+        output.last_scan_at.as_deref(),
+        output.drift.iter().map(|d| d.event.timestamp.as_str()),
+    );
+    let stale = !output.drift_checked_live
+        && freshest.is_none_or(|ts| cfgd_core::is_stale_since(ts, now, SCAN_STALENESS_SECS));
+
     doc = match view {
         ModuleStatusView::Compact => {
             // Same split as the fleet dashboard: only the recorded branch
-            // dates its Drift section, freshest of the machine-wide stamp
-            // and the recorded rows' own timestamps. The stamp alone stays
-            // the empty section's `verified` claim — only the full walk it
-            // dates covered this module's files and packages too.
-            let freshest = freshest_check_stamp(
-                output.last_scan_at.as_deref(),
-                output.drift.iter().map(|d| d.event.timestamp.as_str()),
-            );
+            // dates its Drift section. The stamp alone stays the empty
+            // section's `verified` claim — only the full walk it dates
+            // covered this module's files and packages too.
             let (verified, note) = if output.drift_checked_live {
                 (true, None)
             } else {
@@ -1942,32 +1955,14 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
                     Some(drift_checked_note(false, freshest, now)),
                 )
             };
-            let doc = render_module_drift_section(
+            render_module_drift_section(
                 doc,
                 &output.drift,
                 &output.system_errors,
                 output.drift_checked_live,
                 verified,
                 note.as_deref(),
-            );
-            // Same rule as the fleet report, same staleness gate: a scan that
-            // FOUND drift earns the heal hint (the looking has been done),
-            // and a recorded view invites a check only once its freshest
-            // evidence has gone stale — a fresh record re-invited the look
-            // it was just handed.
-            let stale = !output.drift_checked_live
-                && freshest
-                    .is_none_or(|ts| cfgd_core::is_stale_since(ts, now, SCAN_STALENESS_SECS));
-            if !output.drift.is_empty() && !stale {
-                // The report shows drift a standing check found, so it closes
-                // on the command that heals it, scoped to the module the
-                // report is about.
-                doc.hint(super::heal_drift_hint(Some(&output.name)))
-            } else if stale {
-                doc.hint(SCAN_HINT)
-            } else {
-                doc
-            }
+            )
         }
         // No Drift section: every finding is already an inline verdict on the
         // inventory row for the thing it was found on, and repeating it below
@@ -1975,6 +1970,20 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
         ModuleStatusView::Inventory { show_values } => {
             render_module_inventories(doc, output, show_values)
         }
+    };
+
+    // Same rule as the fleet report, same staleness gate, and it belongs to
+    // the REPORT rather than to either view: the wide view states its drifted
+    // verdicts on the inventory rows instead of in a section, and a report
+    // showing drift owes the reader the healing command either way. A
+    // recorded view invites a check only once its freshest evidence has gone
+    // stale — a fresh record re-invited the look it was just handed.
+    doc = if !output.drift.is_empty() && !stale {
+        doc.hint(super::heal_drift_hint(Some(&output.name)))
+    } else if stale {
+        doc.hint(SCAN_HINT)
+    } else {
+        doc
     };
 
     doc.with_data(ModuleStatusPayload {
@@ -4481,25 +4490,37 @@ mod tests {
     /// The fleet twin of the headline rule: a Component Health row is the same
     /// verdict slot, one per owner, and an owner holding an unresolved
     /// erroring check has not been found clean either.
+    ///
+    /// Both owners render from ONE output, so a downgrade that reached the
+    /// wrong owner — or every owner — fails here rather than passing two
+    /// separate renders. `npm:@scope/pkg` is the key grammar that proves the
+    /// attribution is by the producers' grammars: a package name holding a
+    /// slash belongs to the module that declared it, never to the env surface.
     #[test]
     fn no_component_health_row_claims_synced_over_its_owners_erroring_check() {
+        let module = |name: &str, package: Option<(&str, &str)>| ModuleStatusEntry {
+            name: name.to_string(),
+            packages: usize::from(package.is_some()),
+            files: 0,
+            scripts: 0,
+            status: "installed".to_string(),
+            platform_skip_reason: None,
+            declared: ModuleDeclared {
+                package_managers: package
+                    .map(|(pkg, mgr)| [(pkg.to_string(), [mgr.to_string()].into())].into())
+                    .unwrap_or_default(),
+                ..Default::default()
+            },
+        };
         let output = StatusOutput {
             last_apply: None,
             drift: Vec::new(),
             sources: Vec::new(),
             pending_decisions: Vec::new(),
-            modules: vec![ModuleStatusEntry {
-                name: "nvim".to_string(),
-                packages: 1,
-                files: 0,
-                scripts: 0,
-                status: "installed".to_string(),
-                platform_skip_reason: None,
-                declared: ModuleDeclared {
-                    package_managers: [("neovim".to_string(), ["brew".to_string()].into())].into(),
-                    ..Default::default()
-                },
-            }],
+            modules: vec![
+                module("nvim", Some(("neovim", "brew"))),
+                module("zsh", None),
+            ],
             managed_resources: Vec::new(),
             warnings: Vec::new(),
             classification_degraded: false,
@@ -4512,42 +4533,85 @@ mod tests {
                 error: "brew reports neovim at 0.12.5_1".to_string(),
             }],
         };
+        let health_row = |rendered: &str, owner: &str| -> String {
+            rendered
+                .lines()
+                .find(|l| l.contains(owner))
+                .unwrap_or_else(|| panic!("{owner} has a health row: {rendered}"))
+                .to_string()
+        };
         let rendered = dashboard(&output);
-        let row = rendered
-            .lines()
-            .find(|l| l.contains("module:nvim"))
-            .unwrap_or_else(|| panic!("the module has a health row: {rendered}"));
+        let nvim = health_row(&rendered, "module:nvim");
         assert!(
-            !row.contains("Synced"),
-            "the owner of an erroring check claims no clean verdict: {row}"
+            !nvim.contains("Synced"),
+            "the owner of an erroring check claims no clean verdict: {nvim}"
         );
         assert!(
-            row.contains("Unknown"),
-            "the row states that the check could not answer: {row}"
+            nvim.contains("Unknown"),
+            "the row states that the check could not answer: {nvim}"
+        );
+        // Same render: the ranking is per owner, never a blanket downgrade of
+        // the dashboard, and never a downgrade that lands on the wrong row.
+        let zsh = health_row(&rendered, "module:zsh");
+        assert!(
+            zsh.contains("Synced"),
+            "an owner the failed check does not name still reads clean: {zsh}"
         );
 
-        // An owner no check error names keeps its own verdict: the ranking is
-        // per owner, never a blanket downgrade of the whole dashboard.
-        let other = StatusOutput {
-            modules: vec![ModuleStatusEntry {
-                name: "zsh".to_string(),
-                packages: 1,
-                files: 0,
-                scripts: 0,
-                status: "installed".to_string(),
-                platform_skip_reason: None,
-                declared: ModuleDeclared::default(),
+        // A drift finding UNDER an erroring check: the row states the unknown
+        // that outranks it, and the finding it withheld still renders below.
+        let drifted = StatusOutput {
+            drift: vec![cfgd_core::state::DriftEvent {
+                id: 1,
+                timestamp: "2026-05-14T10:02:00Z".to_string(),
+                resource_type: "package".to_string(),
+                resource_id: "brew:neovim".to_string(),
+                expected: Some("installed".to_string()),
+                actual: Some(cfgd_core::Absence::NotInstalled.to_string()),
+                resolved_by: None,
+                source: LOCAL_LAYER.to_string(),
+                want: None,
+                have: None,
             }],
             ..output
         };
-        let rendered = dashboard(&other);
-        let row = rendered
-            .lines()
-            .find(|l| l.contains("module:zsh"))
-            .unwrap_or_else(|| panic!("the module has a health row: {rendered}"));
+        let rendered = dashboard(&drifted);
+        let nvim = health_row(&rendered, "module:nvim");
         assert!(
-            row.contains("Synced"),
-            "an owner the failed check does not name still reads clean: {row}"
+            nvim.contains("Unknown"),
+            "an unanswered check outranks the drift it withheld: {nvim}"
+        );
+        assert!(
+            rendered.contains("neovim"),
+            "the finding under it still renders: {rendered}"
+        );
+
+        // A package name carrying a slash is the declaring module's, not the
+        // env surface's: the substring test that once claimed it downgraded
+        // `cfgd:env` and left the real owner reading clean.
+        let scoped = StatusOutput {
+            modules: vec![
+                module("node", Some(("@scope/pkg", "npm"))),
+                module("zsh", None),
+            ],
+            system_errors: vec![super::super::output_types::SystemCheckError {
+                key: "npm:@scope/pkg".to_string(),
+                error: "npm reports a version this manager cannot compare".to_string(),
+            }],
+            ..drifted
+        };
+        let rendered = dashboard(&StatusOutput {
+            drift: Vec::new(),
+            ..scoped
+        });
+        let node = health_row(&rendered, "module:node");
+        assert!(
+            node.contains("Unknown"),
+            "the module declaring the scoped package owns its check error: {node}"
+        );
+        assert!(
+            !rendered.contains("cfgd:env"),
+            "no env owner is invented for a package name holding a slash: {rendered}"
         );
     }
 
