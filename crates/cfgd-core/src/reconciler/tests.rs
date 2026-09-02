@@ -2041,19 +2041,22 @@ fn the_strictest_declared_floor_survives_the_effective_dedup() {
 #[test]
 fn an_unreadable_floor_survives_the_dedup_so_its_check_error_reaches_the_reader() {
     let resolved = make_empty_resolved();
-    let malformed = module_one_pinned_pkg("base", "brew", "ripgrep", ">=1.2");
-    let readable = module_one_pinned_pkg("dev", "brew", "ripgrep", "1.5");
-
-    for order in [
-        vec![malformed.clone(), readable.clone()],
-        vec![readable, malformed],
-    ] {
-        let effective = crate::effective::effective_desired_packages(&resolved.merged, &order);
-        assert_eq!(
-            effective[0].min_version.as_deref(),
-            Some(">=1.2"),
-            "the floor nobody can read survives whichever module declared it: {effective:?}"
-        );
+    // Both shapes the dedup must carry: a range expression, and a typo no
+    // grammar reads either. It judges neither — it hands both to the manager.
+    for floor in [">=1.2", "1..2"] {
+        let malformed = module_one_pinned_pkg("base", "brew", "ripgrep", floor);
+        let readable = module_one_pinned_pkg("dev", "brew", "ripgrep", "1.5");
+        for order in [
+            vec![malformed.clone(), readable.clone()],
+            vec![readable, malformed],
+        ] {
+            let effective = crate::effective::effective_desired_packages(&resolved.merged, &order);
+            assert_eq!(
+                effective[0].min_version.as_deref(),
+                Some(floor),
+                "the floor nobody can read survives whichever module declared it: {effective:?}"
+            );
+        }
     }
 
     // And what survives is what the check reports: a declaration no manager

@@ -161,6 +161,19 @@ pub fn declared_floor_is_range_shaped(floor: &str) -> bool {
         .any(|c| matches!(c, '>' | '<' | '=' | '~' | '^' | '*' | '|') || c.is_whitespace())
 }
 
+/// Whether the shared loose-semver parser can read a declared floor at all.
+///
+/// The weakest of the three floor questions, and the only one a seam holding
+/// no manager can honestly ask: it says nothing about whether some family's
+/// comparator could read the string, only whether the SHARED parser can.
+/// [`declared_floor_is_range_shaped`] refuses what no grammar allows;
+/// [`floor_comparable`](crate::providers::PackageManager::floor_comparable)
+/// refuses what one family cannot read; this one carries DOUBT — a `false`
+/// means "ask the manager", never "reject".
+pub fn declared_floor_parses(floor: &str) -> bool {
+    parse_loose_version(declared_floor_version(floor)).is_some()
+}
+
 /// Whether `version` clears a declared `>=` floor.
 ///
 /// Every floor comparison in the workspace reads the declaration through
@@ -203,6 +216,31 @@ mod tests {
             );
         }
         assert!(version_meets_floor("v0.16.2", "v0.16.2"));
+    }
+
+    /// The three floor questions are ordered by strength, and the ordering is
+    /// what lets the dedup ask only the weakest one: a range expression fails
+    /// the shared parse too, so carrying doubt forward at a seam holding no
+    /// manager loses nothing the tells check would have caught.
+    #[test]
+    fn a_range_shaped_floor_also_fails_the_shared_parse() {
+        for floor in [">=1.2", "^1", "1.*", "1.2 || 2.0", "~1.2.3", "1.2 "] {
+            assert!(
+                declared_floor_is_range_shaped(floor),
+                "{floor} carries a range tell"
+            );
+            assert!(
+                !declared_floor_parses(floor),
+                "{floor} is unreadable to the shared parser as well"
+            );
+        }
+        // The floors a family reads and the shared parser does not: doubt, not
+        // refusal — these must reach the manager to be compared.
+        for floor in ["1:2.30", "0.12.5_1", "1.2.3,4567", "1..2"] {
+            assert!(!declared_floor_is_range_shaped(floor));
+            assert!(!declared_floor_parses(floor));
+        }
+        assert!(declared_floor_parses("v1.2"));
     }
 
     /// No caller composes its own `>=` requirement out of a declared floor:
