@@ -3640,12 +3640,16 @@ pub fn freeze_last_scan_at(
 ///
 /// So this is a strip, not a suffix cut: a trailing test module is only the
 /// common case, and a file may hold several inline siblings (`output/mod.rs` has
-/// five). A declaration survives — it carries no test text — and so does every
+/// six). A declaration survives — it carries no test text — and so does every
 /// line between and after the blocks.
 ///
 /// The shape relied on is rustfmt's, which every file in this workspace is
 /// formatted by: the attribute alone at column 0, and the module's closing `}`
-/// alone at column 0. Each anchor drops through the next such line.
+/// alone at column 0. Each anchor drops through the next such line. The one way
+/// that assumption breaks is a multi-line raw string inside a test module whose
+/// body carries a bare `}` at column 0, which would end the strip early — no
+/// such literal exists today, and `cli::tests::production_body` assumes the same
+/// shape.
 ///
 /// A walk over several files pairs this with a per-file floor on what it found,
 /// so a future re-blinding fails rather than passes quietly.
