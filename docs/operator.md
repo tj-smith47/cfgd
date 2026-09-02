@@ -147,7 +147,7 @@ aggregate counts of a compliance summary, never as findings.
 apiVersion: cfgd.io/v1alpha1
 kind: DriftAlert
 metadata:
-  name: drift-abc123-20260319t143000z
+  name: drift-abc123-20260319143000
   namespace: teams
 spec:
   deviceId: "abc123"
