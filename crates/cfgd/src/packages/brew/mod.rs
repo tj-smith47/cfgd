@@ -311,6 +311,33 @@ impl PackageManager for BrewCaskManager {
             "brew-cask",
         )
     }
+
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        // `--cask` pins the same population `installed_packages` lists, and the
+        // line shape is the formula listing's, so both parse through one
+        // reader. Without this the versioned enumeration fell back to the
+        // trait's identity-only answer and every cask floor was a check that
+        // could not run.
+        let output = run_pkg_cmd(
+            "brew-cask",
+            brew_cmd().args(["list", "--cask", "--versions"]),
+            "list",
+        )?;
+        Ok(parse_brew_versions(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
+
+    fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
+        super::versions::brew_version_meets_minimum(available, min_version)
+    }
+
+    fn version_comparable(&self, version: &str) -> bool {
+        super::versions::brew_comparable(version)
+    }
 }
 
 impl PackageManager for BrewManager {
@@ -536,6 +563,14 @@ impl PackageManager for BrewManager {
         Ok(parse_brew_versions(&String::from_utf8_lossy(
             &output.stdout,
         )))
+    }
+
+    fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
+        super::versions::brew_version_meets_minimum(available, min_version)
+    }
+
+    fn version_comparable(&self, version: &str) -> bool {
+        super::versions::brew_comparable(version)
     }
 }
 

@@ -534,3 +534,113 @@ fn drift_with_every_check_answered_still_exits_drift_detected() {
         );
     }
 }
+
+/// A `brew` stand-in for a converged machine: the formula is installed at
+/// `0.12.5_1` — Homebrew's `<upstream>_<revision>` grammar — and offered at
+/// `0.12.5`, so a declared `minVersion: 0.11` is met.
+fn converged_brew(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let shim = dir.join("brew-holds-neovim");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\ncase \"$*\" in\n  *--versions*) echo 'neovim 0.12.5_1' ;;\n  *info*) printf '{\"formulae\":[{\"versions\":{\"stable\":\"0.12.5\"}}]}' ;;\n  *list*) echo 'neovim' ;;\n  *) echo 'Homebrew 4.0.0' ;;\nesac\nexit 0\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&shim).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&shim, perms).unwrap();
+    shim
+}
+
+/// One module pinning a floor the installed brew formula clears.
+fn write_brew_pinned_config(dir: &Path) {
+    let module_dir = dir.join("modules").join("pinned");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pinned\nspec:\n  packages:\n    - name: neovim\n      minVersion: \"0.11\"\n      prefer: [brew]\n",
+    )
+    .unwrap();
+    let profiles_dir = dir.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("tiny.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  modules:\n    - pinned\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n",
+    )
+    .unwrap();
+}
+
+/// The healed end state of the version class: a manager whose own grammar
+/// carries a packaging suffix answers its floor instead of erroring it, and
+/// the same comparator keeps the package out of the plan. A machine holding
+/// `neovim 0.12.5_1` against `minVersion: 0.11` is converged on every surface
+/// — no check error, no drift, and nothing left to install.
+#[test]
+fn a_brew_formula_clearing_its_floor_is_converged_on_every_surface() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    write_brew_pinned_config(config_tmp.path());
+    let brew = converged_brew(config_tmp.path());
+
+    for args in EXIT_CODE_SURFACES {
+        let state_tmp = tempfile::tempdir().unwrap();
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let out = cmd
+            .args(args)
+            .arg("--config")
+            .arg(config_tmp.path().join("cfgd.yaml"))
+            .arg("--state-dir")
+            .arg(state_tmp.path())
+            .env("HOME", home_tmp.path())
+            .env("CFGD_BREW_BIN", &brew)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "cfgd {args:?}: a met floor is neither drift nor an erroring check, got: {text}"
+        );
+        assert!(
+            !text.contains("error checking drift"),
+            "cfgd {args:?}: the manager's own grammar is comparable, got: {text}"
+        );
+    }
+
+    // The same comparator decides the plan: a package the machine holds above
+    // its floor is elided, so a converged machine plans nothing at all.
+    let state_tmp = tempfile::tempdir().unwrap();
+    let mut cmd = Command::cargo_bin("cfgd").unwrap();
+    let out = cmd
+        .args(["plan"])
+        .arg("--config")
+        .arg(config_tmp.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_tmp.path())
+        .env("HOME", home_tmp.path())
+        .env("CFGD_BREW_BIN", &brew)
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !text.contains("brew install neovim"),
+        "a converged formula is never re-planned: {text}"
+    );
+    assert!(
+        text.contains("Nothing to do"),
+        "a converged machine reaches the up-to-date verdict: {text}"
+    );
+}

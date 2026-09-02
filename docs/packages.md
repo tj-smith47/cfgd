@@ -345,7 +345,9 @@ cfgd picks the first available manager that satisfies the version constraint, us
 
 A `minVersion` is a standing declaration, not a one-time resolution check: every drift surface (`cfgd diff`, `cfgd status --scan`, `cfgd verify`, and each of their `--module` scoped forms) compares the version the manager reports INSTALLED against the floor, so a package that ages out of its constraint is drift rather than convergence. A manager that cannot state an installed version (apk, pacman, zypper and FreeBSD `pkg` list names only) makes that floor unanswerable: the surfaces report it as a check that could not run and exit `1`, never as clean. The same holds for a version stated in a form nothing can compare against (a `git-20240101` snapshot tag, say).
 
-Distro managers do not report upstream versions: `apt` states `vim` as `2:8.2.3995-1ubuntu2`, where `2:` is dpkg's epoch and `-1ubuntu2` the distro's own packaging revision. Neither part is the software's version, so for the distro families (`apt`, `dnf`, `yum`, `apk`, `pacman`, `zypper`) cfgd compares the upstream part alone: `minVersion: "8.2"` is met by `2:8.2.3995-1ubuntu2`. Semver-native managers (`brew`, `cargo`, `npm`, `pipx`, …) keep full semver ordering, prereleases included, so `1.0.0-rc1` still loses to `minVersion: "1.0.0"`.
+Distro managers do not report upstream versions: `apt` states `vim` as `2:8.2.3995-1ubuntu2`, where `2:` is dpkg's epoch and `-1ubuntu2` the distro's own packaging revision. Neither part is the software's version, so for the distro families (`apt`, `dnf`, `yum`, `apk`, `pacman`, `zypper`) cfgd compares the upstream part alone: `minVersion: "8.2"` is met by `2:8.2.3995-1ubuntu2`.
+
+Homebrew states its own packaging fields the same way: a formula carries the tap's revision as `neovim 0.12.5_1` and a cask the vendor's build as `1.2.3,4567`. Those are compared on the upstream part too, so `minVersion: "0.11"` is met by `0.12.5_1`. Semver-native managers (`cargo`, `npm`, `pipx`, `go`, …) keep full semver ordering, prereleases included, so `1.0.0-rc1` still loses to `minVersion: "1.0.0"`.
 
 ## Declarative removal
 

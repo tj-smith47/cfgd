@@ -4274,3 +4274,158 @@ fn the_uncached_entry_point_never_reuses_a_parse() {
     resolve_manifest_packages(&mut second, dir.path()).unwrap();
     assert_eq!(resolved_apt(second), vec!["ab", "cdefg"]);
 }
+
+/// How one registered manager states the versions it lists, which is what
+/// decides whether the trait's loose-semver comparator can judge a declared
+/// `minVersion` against them.
+enum VersionGrammar {
+    /// Plain semver (or no versions at all): the trait default is correct.
+    Semver,
+    /// A packaging grammar carrying fields semver reads as a prerelease or
+    /// refuses outright. `sample` is a real listing string of this family and
+    /// `floor` a declaration it must clear.
+    Packaged {
+        sample: &'static str,
+        floor: &'static str,
+    },
+    /// The tool owns the comparison end to end (the manager shells out to its
+    /// own comparator), so only comparability is answerable without it.
+    ToolOwned { sample: &'static str },
+}
+
+/// Every registered manager against its real version grammar. A manager whose
+/// listings carry packaging fields needs its own comparator, or every package
+/// it holds with a declared floor reports a check that could not run AND is
+/// re-planned as an install on a converged machine — the defect brew shipped
+/// with while its distro siblings were being swept.
+///
+/// A newly registered manager fails this walk until it is classified here,
+/// which is the mechanism that keeps the next family honest.
+const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
+    // Homebrew: `<upstream>_<revision>` for a formula, `<version>,<build>`
+    // for a cask. A tap has no versions, so the default never judges one.
+    (
+        "brew",
+        VersionGrammar::Packaged {
+            sample: "0.12.5_1",
+            floor: "0.11",
+        },
+    ),
+    (
+        "brew-cask",
+        VersionGrammar::Packaged {
+            sample: "1.2.3,4567",
+            floor: "1.2",
+        },
+    ),
+    ("brew-tap", VersionGrammar::Semver),
+    // The distro families: `[<epoch>:]<upstream>[-<revision>]`.
+    (
+        "apt",
+        VersionGrammar::Packaged {
+            sample: "1:2.34-0ubuntu3.4",
+            floor: "2",
+        },
+    ),
+    (
+        "dnf",
+        VersionGrammar::Packaged {
+            sample: "1.2.3-2",
+            floor: "1.2",
+        },
+    ),
+    (
+        "yum",
+        VersionGrammar::Packaged {
+            sample: "1.2.3-2",
+            floor: "1.2",
+        },
+    ),
+    (
+        "apk",
+        VersionGrammar::Packaged {
+            sample: "3.0.0-r0",
+            floor: "2",
+        },
+    ),
+    (
+        "pacman",
+        VersionGrammar::Packaged {
+            sample: "1.2.3-2",
+            floor: "1.2",
+        },
+    ),
+    (
+        "zypper",
+        VersionGrammar::Packaged {
+            sample: "1.2.3-2",
+            floor: "1.2",
+        },
+    ),
+    // FreeBSD carries PORTEPOCH and PORTREVISION and defers to `pkg version -t`.
+    (
+        "pkg",
+        VersionGrammar::ToolOwned {
+            sample: "1.2.0_1,1",
+        },
+    ),
+    // Language and app-store managers publish plain semver (`cargo search`,
+    // `npm view`, PyPI, `go list -m`, nix, snap, flatpak) or vendor versions
+    // the shared parser reads as-is (winget, chocolatey, scoop).
+    ("cargo", VersionGrammar::Semver),
+    ("npm", VersionGrammar::Semver),
+    ("pipx", VersionGrammar::Semver),
+    ("go", VersionGrammar::Semver),
+    ("nix", VersionGrammar::Semver),
+    ("snap", VersionGrammar::Semver),
+    ("flatpak", VersionGrammar::Semver),
+    ("winget", VersionGrammar::Semver),
+    ("chocolatey", VersionGrammar::Semver),
+    ("scoop", VersionGrammar::Semver),
+];
+
+#[test]
+fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
+    for mgr in all_package_managers() {
+        let (_, grammar) = MANAGER_VERSION_GRAMMARS
+            .iter()
+            .find(|(name, _)| *name == mgr.name())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: classify this manager's version grammar — a packaging \
+                     suffix the default comparator cannot read makes every \
+                     declared minVersion an erroring check",
+                    mgr.name()
+                )
+            });
+        match grammar {
+            VersionGrammar::Semver => {
+                assert!(
+                    mgr.version_meets_minimum("1.2.3", "1.2"),
+                    "{}: plain semver clears a floor below it",
+                    mgr.name()
+                );
+            }
+            VersionGrammar::Packaged { sample, floor } => {
+                assert!(
+                    mgr.version_comparable(sample),
+                    "{}: {sample} is this family's own listing shape, not an \
+                     unreadable version",
+                    mgr.name()
+                );
+                assert!(
+                    mgr.version_meets_minimum(sample, floor),
+                    "{}: {sample} clears a declared floor of {floor}",
+                    mgr.name()
+                );
+            }
+            VersionGrammar::ToolOwned { sample } => {
+                assert!(
+                    mgr.version_comparable(sample),
+                    "{}: the tool's own comparator reads everything it lists",
+                    mgr.name()
+                );
+            }
+        }
+    }
+}

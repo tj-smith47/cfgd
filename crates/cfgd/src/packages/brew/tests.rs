@@ -377,6 +377,67 @@ fn parse_brew_info_version_errors_attribute_correct_manager() {
     );
 }
 
+/// A brew formula version names its upstream release and then Homebrew's own
+/// packaging revision (`0.12.5_1`), which loose semver reads as a prerelease
+/// and refuses — so every formula carrying a revision both errored its floor
+/// check and re-planned as an install on a converged machine.
+#[test]
+fn a_brew_formula_version_compares_on_its_upstream_part() {
+    for (installed, floor) in [
+        ("0.12.5_1", "0.11"),
+        ("0.12.5_1", "0.12.5"),
+        ("2.43.0", "2.43"),
+        ("1.2.3_4", "1.2.3"),
+    ] {
+        assert!(
+            BrewManager.version_meets_minimum(installed, floor),
+            "brew {installed} clears a minVersion of {floor}"
+        );
+        assert!(
+            BrewManager.version_comparable(installed),
+            "brew {installed} is comparable, not an erroring check"
+        );
+    }
+    assert!(
+        !BrewManager.version_meets_minimum("0.10.9_2", "0.11"),
+        "the upstream part is still what decides the floor"
+    );
+    assert!(
+        !BrewManager.version_comparable("HEAD-a1b2c3d"),
+        "a HEAD build states no upstream version to compare"
+    );
+}
+
+/// A cask states its build after a comma (`1.2.3,4567`), a grammar no formula
+/// uses; the build identifies the vendor's artifact, never a release ordering,
+/// so the floor is judged on the version before it.
+#[test]
+fn a_brew_cask_version_compares_on_the_part_before_its_build() {
+    for (installed, floor) in [("1.2.3,4567", "1.2"), ("2.0.0,build9", "2"), ("2.0.0", "2")] {
+        assert!(
+            BrewCaskManager.version_meets_minimum(installed, floor),
+            "cask {installed} clears a minVersion of {floor}"
+        );
+        assert!(
+            BrewCaskManager.version_comparable(installed),
+            "cask {installed} is comparable, not an erroring check"
+        );
+    }
+    assert!(
+        !BrewCaskManager.version_meets_minimum("1.2.3,4567", "2"),
+        "the version before the build is what decides the floor"
+    );
+    assert!(
+        !BrewCaskManager.version_comparable("latest"),
+        "a cask tracking `latest` states no version to compare"
+    );
+    assert!(
+        !BrewCaskManager.version_comparable("133.0.6943.98"),
+        "a four-part vendor version is beyond the shared comparator, so the \
+         floor is a check that could not run rather than an invented verdict"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // PackageManager-impl tests via the CFGD_BREW_BIN ToolShim. Drive every
 // install / uninstall / update / list / available_version branch without a
