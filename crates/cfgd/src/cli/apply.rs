@@ -392,6 +392,7 @@ pub fn run_apply(
     let reconciler = Reconciler::new(&registry, state)
         .with_config_dir(&config_dir)
         .withholding_env_surface(exclusions.withholds_env_surface())
+        .withholding_rows(&exclusions)
         .diffing_installed(&pkg_cx)
         // What the recorded apply says this run was scoped to. An isolated
         // module run resolved no profile, so it names the modules instead of
