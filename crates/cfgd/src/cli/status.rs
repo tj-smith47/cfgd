@@ -259,8 +259,17 @@ impl ModuleStatus {
     /// rows the fallback renders — so the verdict word and the section can
     /// never disagree, and this surface cannot call a module `Installed`
     /// while the fleet's Component Health calls the same rows `Drifted`.
+    /// `Unknown` comes from the same section's erroring checks, for the same
+    /// reason: the Drift section prints them, so the headline above it cannot
+    /// claim the verdict they withheld.
     fn state_display(&self) -> (&'static str, Role) {
-        cfgd_core::state::module_status_display(&self.status, !self.drift.is_empty())
+        cfgd_core::state::module_status_display(
+            &self.status,
+            cfgd_core::state::DriftVerdict::from_checks(
+                !self.drift.is_empty(),
+                !self.system_errors.is_empty(),
+            ),
+        )
     }
 }
 
@@ -1420,6 +1429,69 @@ enum FindingSlot {
     OwnerVerdict,
 }
 
+/// Which owner a `<manager>:<names>` package row belongs to: the module whose
+/// current resolution declares one of the names under that manager, then the
+/// profile when the profile's own recorded package rows hold one of them.
+///
+/// A package NOBODY declares gets no owner at all — pinning it on the profile
+/// reported a wrong owner as drifted while the real one read clean. Shared by
+/// the finding walk and the erroring-check walk, which mint the same id.
+fn package_owner(
+    resource_id: &str,
+    output: &StatusOutput,
+    profile_owner: Option<&cfgd_core::reconciler::Owner>,
+) -> Option<cfgd_core::reconciler::Owner> {
+    use cfgd_core::reconciler::Owner;
+    // The id's own producer owns its grammar; a hand-guessed separator here is
+    // how a declared package rendered loose while its owner read clean.
+    let (manager, names) = cfgd_core::reconciler::split_package_drift_resource_id(resource_id)?;
+    let names = || names.iter().map(|name| name.trim());
+    let declaring = output.modules.iter().find(|m| {
+        names().any(|name| {
+            m.declared
+                .package_managers
+                .get(name)
+                .is_some_and(|managers| managers.contains(manager))
+        })
+    });
+    if let Some(m) = declaring {
+        return Some(Owner::module(&m.name));
+    }
+    // The profile's declaration is its own recorded package rows, read back
+    // through the same split their producer's composer is pinned against.
+    let profile_declares = output.managed_resources.iter().any(|r| {
+        package_id_parts(&r.resource_type, &r.resource_id).is_some_and(|(m, declared)| {
+            m == manager
+                && names().any(|name| declared.split(',').map(str::trim).any(|d| d == name))
+        })
+    });
+    profile_declares.then(|| profile_owner.cloned()).flatten()
+}
+
+/// Which Component Health owner a check that could not run belongs to, so the
+/// owner's verdict states the unknown instead of a word only an answered
+/// check earns.
+///
+/// One arm per key grammar the three producers mint: a package floor's
+/// `<manager>:<package>` drift id, the managed env file's own path, and a
+/// system configurator's bare name — which belongs to the profile that
+/// declared it, exactly as its drift findings do. A key no owner claims stays
+/// loose, and its row still renders at the foot of the section.
+fn check_error_owner(
+    key: &str,
+    output: &StatusOutput,
+    profile_owner: Option<&cfgd_core::reconciler::Owner>,
+) -> Option<cfgd_core::reconciler::Owner> {
+    use cfgd_core::reconciler::{ENV_GROUP, Owner};
+    if key.contains('/') {
+        return Some(Owner::cfgd(ENV_GROUP));
+    }
+    if key.contains(':') {
+        return package_owner(key, output, profile_owner);
+    }
+    profile_owner.cloned()
+}
+
 /// Which Component Health owner one unresolved recorded finding belongs to,
 /// the drifted-noun its shortfall counts under — `None` noun for a
 /// whole-module verdict, which flips the row without a countable unit — and
@@ -1481,7 +1553,7 @@ fn finding_owner(
             )
         }
         "package" => {
-            let Some((manager, names)) = event.resource_id.split_once(':') else {
+            let Some((manager, _)) = event.resource_id.split_once(':') else {
                 return (
                     profile_owner.cloned(),
                     Some("package"),
@@ -1495,43 +1567,11 @@ fn finding_owner(
                     FindingSlot::Child(None),
                 );
             }
-            let names_match = |declared: &str| {
-                names
-                    .split(',')
-                    .map(str::trim)
-                    .any(|name| declared.split(',').map(str::trim).any(|d| d == name))
-            };
-            let declaring = output.modules.iter().find(|m| {
-                names.split(',').map(str::trim).any(|name| {
-                    m.declared
-                        .package_managers
-                        .get(name)
-                        .is_some_and(|managers| managers.contains(manager))
-                })
-            });
-            // The profile's declaration is its own recorded package rows,
-            // read back through the same split their producer's composer is
-            // pinned against — a hand-guessed separator here is how a
-            // declared package rendered loose while the profile read Synced.
-            let profile_declares = || {
-                output.managed_resources.iter().any(|r| {
-                    package_id_parts(&r.resource_type, &r.resource_id)
-                        .is_some_and(|(m, declared)| m == manager && names_match(declared))
-                })
-            };
-            match declaring {
-                Some(m) => (
-                    Some(Owner::module(&m.name)),
-                    Some("package"),
-                    FindingSlot::Child(None),
-                ),
-                None if profile_declares() => (
-                    profile_owner.cloned(),
-                    Some("package"),
-                    FindingSlot::Child(None),
-                ),
-                None => (None, Some("package"), FindingSlot::Child(None)),
-            }
+            (
+                package_owner(&event.resource_id, output, profile_owner),
+                Some("package"),
+                FindingSlot::Child(None),
+            )
         }
         other => {
             // `display_type`'s singulars, restated on `'static` literals so a
@@ -1641,10 +1681,25 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
         }
     }
 
+    // The same walk over the checks that could not run: an owner one of them
+    // names has not been found clean, whatever its findings say, so its row
+    // states the unknown rather than a word only an answered check earns.
+    let unanswered: std::collections::BTreeSet<String> = output
+        .system_errors
+        .iter()
+        .filter_map(|err| check_error_owner(&err.key, output, profile_owner.as_ref()))
+        .map(|owner| owner.token())
+        .collect();
+
     let mut owners: Vec<Owner> = Vec::with_capacity(recorded.len() + output.modules.len());
     owners.extend(recorded.keys().filter_map(|token| owner_from_token(token)));
     owners.extend(output.modules.iter().map(|m| Owner::module(&m.name)));
     owners.extend(findings.keys().filter_map(|token| owner_from_token(token)));
+    owners.extend(
+        unanswered
+            .iter()
+            .filter_map(|token| owner_from_token(token)),
+    );
     Owner::order(&mut owners);
     owners.dedup_by_key(|o| o.token());
 
@@ -1657,14 +1712,17 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
             let own_findings = findings.remove(&token);
             let is_drifted = own_findings.is_some();
             let own_findings = own_findings.unwrap_or_default();
+            let drift = cfgd_core::state::DriftVerdict::from_checks(
+                is_drifted,
+                unanswered.contains(&token),
+            );
             let shortfall = drifted.get(&token).filter(|kinds| !kinds.is_empty());
             let module = (owner.kind == cfgd_core::reconciler::OwnerKind::Module)
                 .then(|| output.modules.iter().find(|m| m.name == owner.name))
                 .flatten();
             let (verdict, role, counts) = match module {
                 Some(m) => {
-                    let (word, role) =
-                        cfgd_core::state::module_status_display(&m.status, is_drifted);
+                    let (word, role) = cfgd_core::state::module_status_display(&m.status, drift);
                     let totals = [
                         ("package", m.packages),
                         ("file", m.files),
@@ -1683,7 +1741,7 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
                 None => {
                     let (word, role) = cfgd_core::state::module_status_display(
                         cfgd_core::state::MODULE_STATUS_INSTALLED,
-                        is_drifted,
+                        drift,
                     );
                     let inventory = recorded.get(&token);
                     let counts = match shortfall {
@@ -4337,6 +4395,155 @@ mod tests {
         assert!(
             !undetermined.starts_with(&tick),
             "diff paints no tick over an unverified fact either: {undetermined}"
+        );
+    }
+
+    /// A module whose own report carries an unresolved erroring check has not
+    /// been found clean — the check that would have said so never ran. The
+    /// headline is the slot a reader scans first, so it obeys the ranking
+    /// `--exit-code` already encodes: unknown outranks known, and `Synced` is
+    /// a claim only an answered check can earn.
+    #[test]
+    fn no_module_headline_claims_synced_over_an_erroring_check() {
+        let errored = ModuleStatus {
+            name: "nvim".to_string(),
+            packages: 1,
+            files: 0,
+            env: 0,
+            aliases: 0,
+            scripts: Vec::new(),
+            system: Vec::new(),
+            depends: Vec::new(),
+            declared: cfgd_core::modules::ModuleSurfaces::default(),
+            status: "installed".to_string(),
+            last_applied: None,
+            scope: None,
+            package_state: Vec::new(),
+            deployed_files: Vec::new(),
+            drift_checked_live: true,
+            last_scan_at: None,
+            system_errors: vec![super::super::output_types::SystemCheckError {
+                key: "brew:neovim".to_string(),
+                error: "brew reports neovim at 0.12.5_1".to_string(),
+            }],
+            drift: Vec::new(),
+        };
+        let report = |output: &ModuleStatus| {
+            let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+            printer.emit(build_module_status_doc(
+                output,
+                ModuleStatusView::Compact,
+                "2026-05-14T10:05:00Z",
+            ));
+            drop(printer);
+            cfgd_core::test_helpers::captured_text(&buf)
+        };
+        // The `Status: <module>` heading names the report; the row under it
+        // is the verdict slot.
+        let status_row = |rendered: &str| -> Option<String> {
+            rendered
+                .lines()
+                .map(str::trim)
+                .find(|l| l.starts_with("Status") && !l.starts_with("Status:"))
+                .map(str::to_string)
+        };
+        let rendered = report(&errored);
+        let headline = status_row(&rendered)
+            .unwrap_or_else(|| panic!("the report carries a Status row: {rendered}"));
+        assert!(
+            !headline.contains("Synced"),
+            "a headline never claims a verdict its own erroring check withheld: {headline}"
+        );
+        assert!(
+            headline.contains("Unknown"),
+            "the headline states the check could not answer: {headline}"
+        );
+
+        // The must-not-regress half: the same module with every check
+        // answered still reads its clean verdict.
+        let answered = ModuleStatus {
+            system_errors: Vec::new(),
+            ..errored
+        };
+        let clean = report(&answered);
+        let headline = status_row(&clean)
+            .unwrap_or_else(|| panic!("the report carries a Status row: {clean}"));
+        assert!(
+            headline.contains("Synced"),
+            "an answered check still earns the clean verdict: {headline}"
+        );
+    }
+
+    /// The fleet twin of the headline rule: a Component Health row is the same
+    /// verdict slot, one per owner, and an owner holding an unresolved
+    /// erroring check has not been found clean either.
+    #[test]
+    fn no_component_health_row_claims_synced_over_its_owners_erroring_check() {
+        let output = StatusOutput {
+            last_apply: None,
+            drift: Vec::new(),
+            sources: Vec::new(),
+            pending_decisions: Vec::new(),
+            modules: vec![ModuleStatusEntry {
+                name: "nvim".to_string(),
+                packages: 1,
+                files: 0,
+                scripts: 0,
+                status: "installed".to_string(),
+                platform_skip_reason: None,
+                declared: ModuleDeclared {
+                    package_managers: [("neovim".to_string(), ["brew".to_string()].into())].into(),
+                    ..Default::default()
+                },
+            }],
+            managed_resources: Vec::new(),
+            warnings: Vec::new(),
+            classification_degraded: false,
+            classification_degraded_code: None,
+            classification_degraded_reason: None,
+            drift_checked_live: true,
+            last_scan_at: None,
+            system_errors: vec![super::super::output_types::SystemCheckError {
+                key: "brew:neovim".to_string(),
+                error: "brew reports neovim at 0.12.5_1".to_string(),
+            }],
+        };
+        let rendered = dashboard(&output);
+        let row = rendered
+            .lines()
+            .find(|l| l.contains("module:nvim"))
+            .unwrap_or_else(|| panic!("the module has a health row: {rendered}"));
+        assert!(
+            !row.contains("Synced"),
+            "the owner of an erroring check claims no clean verdict: {row}"
+        );
+        assert!(
+            row.contains("Unknown"),
+            "the row states that the check could not answer: {row}"
+        );
+
+        // An owner no check error names keeps its own verdict: the ranking is
+        // per owner, never a blanket downgrade of the whole dashboard.
+        let other = StatusOutput {
+            modules: vec![ModuleStatusEntry {
+                name: "zsh".to_string(),
+                packages: 1,
+                files: 0,
+                scripts: 0,
+                status: "installed".to_string(),
+                platform_skip_reason: None,
+                declared: ModuleDeclared::default(),
+            }],
+            ..output
+        };
+        let rendered = dashboard(&other);
+        let row = rendered
+            .lines()
+            .find(|l| l.contains("module:zsh"))
+            .unwrap_or_else(|| panic!("the module has a health row: {rendered}"));
+        assert!(
+            row.contains("Synced"),
+            "an owner the failed check does not name still reads clean: {row}"
         );
     }
 

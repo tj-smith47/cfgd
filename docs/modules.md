@@ -576,14 +576,19 @@ Each module is tracked independently. cfgd stores a hash of the resolved package
 - **File drift:** do deployed files still match the source content?
 - **Git source drift:** for modules with git file sources, have new commits appeared upstream since the last apply?
 
-A module reads as one of four states:
+A module reads as one of five states:
 
 | State | Meaning | Where it can appear |
 |---|---|---|
-| `Synced` | converged | any status surface |
+| `Synced` | converged, with every check behind it answered | any status surface |
 | `Drifted` | a live scan found a package missing or a file diverged | only `--scan` (and `--exit-code`, which implies it) |
+| `Unknown` | a check of its own could not run, so no verdict was reached | any surface reporting an erroring check |
 | `Failed` | its last apply had a failing action | any status surface |
 | `NotApplied` | no apply has recorded it | any status surface |
+
+`Unknown` outranks `Drifted`, the same ranking `--exit-code` encodes when it
+exits `1` (a check that could not run) ahead of `5` (drift): what a check never
+answered is not a state the report may summarize away.
 
 The `-o json` payload's `status` field carries the stored token instead
 (`installed`, `error`, `not applied`).

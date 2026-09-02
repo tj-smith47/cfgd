@@ -471,6 +471,40 @@ pub const MODULE_STATUS_INSTALLED: &str = "installed";
 /// failed on its last apply.
 pub const MODULE_STATUS_ERROR: &str = "error";
 
+/// What the report rendering a module's verdict knows about the checks behind
+/// it — the ONE input [`module_status_display`] derives the drift half of its
+/// word from.
+///
+/// A check that could not run is a first-class row everywhere else in cfgd
+/// (`--exit-code` ranks `Error` ahead of `DriftDetected`: unknown outranks
+/// known), and the verdict slot obeys the same ranking. `Clean` is therefore a
+/// claim only an answered check earns — a report that renders an erroring
+/// check for an owner and calls the same owner `Synced` two lines later states
+/// a verdict nothing established.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriftVerdict {
+    /// Every check behind this owner answered, and none found anything.
+    Clean,
+    /// A check answered with an unresolved finding.
+    Drifted,
+    /// A check that would have answered could not run.
+    Unknown,
+}
+
+impl DriftVerdict {
+    /// The verdict two facts a caller already holds settle on: whether any
+    /// unresolved finding names this owner, and whether any check of its
+    /// could not run. The ranking lives HERE, so no surface can order the two
+    /// facts its own way.
+    pub fn from_checks(drifted: bool, check_errored: bool) -> Self {
+        match (check_errored, drifted) {
+            (true, _) => Self::Unknown,
+            (false, true) => Self::Drifted,
+            (false, false) => Self::Clean,
+        }
+    }
+}
+
 /// The human vocabulary for a module's state — the ONE derivation of the word
 /// a person reads from the token the state store holds, so `cfgd status`,
 /// `cfgd status --module` and `cfgd module list` can never call one machine
@@ -483,22 +517,26 @@ pub const MODULE_STATUS_ERROR: &str = "error";
 /// (`not applied`, `pending`, `available`) — a consumer matching on any of
 /// them sees exactly what it saw before.
 ///
-/// `drifted` is the caller's drift verdict — a live scan's findings, or the
-/// unresolved RECORDED rows the same report renders — read from the very rows
-/// that fill the report's drift slots, so `Drifted` can never contradict the
-/// findings beneath it. It is deliberately never stored as a token: the store
-/// holds the finding rows themselves, and the word is re-derived from them at
-/// every render, so resolving the last row is what clears the word.
+/// `drift` is the caller's [`DriftVerdict`] — read from the very rows that
+/// fill the report's own drift slots (a live scan's findings, the unresolved
+/// RECORDED rows, and the checks that could not run), so the word can never
+/// contradict what the report prints beneath it. It is deliberately never
+/// stored as a token: the store holds the finding rows themselves, and the
+/// word is re-derived from them at every render, so resolving the last row is
+/// what clears the word.
 ///
 /// Everything the store does not recognise reads `NotApplied` — the honest
 /// answer about a module no apply has recorded. `cfgd module list`'s
 /// `pending` / `available` split lands there too; the row's `Active` column
 /// already says which of the two it is.
-pub fn module_status_display(stored: &str, drifted: bool) -> (&'static str, Role) {
-    match stored {
-        MODULE_STATUS_ERROR => ("Failed", Role::Fail),
-        MODULE_STATUS_INSTALLED if drifted => ("Drifted", Role::Warn),
-        MODULE_STATUS_INSTALLED => ("Synced", Role::Ok),
+pub fn module_status_display(stored: &str, drift: DriftVerdict) -> (&'static str, Role) {
+    match (stored, drift) {
+        // A failed apply outranks either drift answer: the module is broken,
+        // not merely out of date or unchecked.
+        (MODULE_STATUS_ERROR, _) => ("Failed", Role::Fail),
+        (MODULE_STATUS_INSTALLED, DriftVerdict::Unknown) => ("Unknown", Role::Warn),
+        (MODULE_STATUS_INSTALLED, DriftVerdict::Drifted) => ("Drifted", Role::Warn),
+        (MODULE_STATUS_INSTALLED, DriftVerdict::Clean) => ("Synced", Role::Ok),
         _ => ("NotApplied", Role::Pending),
     }
 }
@@ -704,39 +742,68 @@ mod module_status_tests {
     #[test]
     fn module_status_display_words_are_a_pinned_wire_contract() {
         assert_eq!(
-            module_status_display(MODULE_STATUS_INSTALLED, false).0,
+            module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Clean).0,
             "Synced"
         );
         assert_eq!(
-            module_status_display(MODULE_STATUS_INSTALLED, true).0,
+            module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Drifted).0,
             "Drifted"
         );
         assert_eq!(
-            module_status_display(MODULE_STATUS_ERROR, false).0,
+            module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Unknown).0,
+            "Unknown"
+        );
+        assert_eq!(
+            module_status_display(MODULE_STATUS_ERROR, DriftVerdict::Clean).0,
             "Failed"
         );
-        assert_eq!(module_status_display("", false).0, "NotApplied");
+        assert_eq!(
+            module_status_display("", DriftVerdict::Clean).0,
+            "NotApplied"
+        );
     }
 
     #[test]
     fn a_stored_token_maps_to_one_display_word_and_one_role() {
         assert_eq!(
-            module_status_display(MODULE_STATUS_INSTALLED, false),
+            module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Clean),
             ("Synced", Role::Ok)
         );
         assert_eq!(
-            module_status_display(MODULE_STATUS_INSTALLED, true),
+            module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Drifted),
             ("Drifted", Role::Warn)
         );
         assert_eq!(
-            module_status_display(MODULE_STATUS_ERROR, false),
+            module_status_display(MODULE_STATUS_ERROR, DriftVerdict::Clean),
             ("Failed", Role::Fail)
         );
         // A failed apply outranks a drift finding: the module is broken, not
         // merely out of date.
         assert_eq!(
-            module_status_display(MODULE_STATUS_ERROR, true),
+            module_status_display(MODULE_STATUS_ERROR, DriftVerdict::Drifted),
             ("Failed", Role::Fail)
+        );
+    }
+
+    /// A check that could not run outranks the drift answer it withheld, and
+    /// is the one input that can take a `Synced` off a module that recorded a
+    /// clean apply — the same ranking `--exit-code` encodes when it exits
+    /// `Error` (1) ahead of `DriftDetected` (5).
+    #[test]
+    fn an_unanswered_check_outranks_the_drift_verdict_it_withheld() {
+        assert_eq!(DriftVerdict::from_checks(false, false), DriftVerdict::Clean);
+        assert_eq!(
+            DriftVerdict::from_checks(true, false),
+            DriftVerdict::Drifted
+        );
+        assert_eq!(
+            DriftVerdict::from_checks(false, true),
+            DriftVerdict::Unknown
+        );
+        assert_eq!(DriftVerdict::from_checks(true, true), DriftVerdict::Unknown);
+        assert_eq!(
+            module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Unknown),
+            ("Unknown", Role::Warn)
         );
     }
 
@@ -773,7 +840,7 @@ mod module_status_tests {
     fn every_no_record_spelling_reads_not_applied() {
         for stored in ["not applied", "not yet applied", "pending", "available", ""] {
             assert_eq!(
-                module_status_display(stored, false),
+                module_status_display(stored, DriftVerdict::Clean),
                 ("NotApplied", Role::Pending),
                 "{stored:?} should read NotApplied"
             );
