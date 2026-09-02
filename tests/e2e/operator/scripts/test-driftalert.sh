@@ -44,8 +44,8 @@ spec:
   severity: Medium
   driftDetails:
     - field: sysctl.vm.max_map_count
-      expected: installed
-      actual: missing
+      expected: "262144"
+      actual: "65530"
 EOF
 
 # Wait for DriftAlert controller to mark MC as drifted (via DriftDetected condition)

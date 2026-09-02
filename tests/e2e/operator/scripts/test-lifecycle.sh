@@ -241,8 +241,8 @@ spec:
   severity: High
   driftDetails:
     - field: sysctl.net.ipv4.ip_forward
-      expected: installed
-      actual: missing
+      expected: "1"
+      actual: "0"
 EOF
 
 # Wait for controller to set status conditions

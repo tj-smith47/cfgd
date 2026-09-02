@@ -60,6 +60,7 @@ pub fn declared_decision_fingerprints(merged: &MergedProfile) -> BTreeMap<String
         };
         for pkg in config::desired_packages_for_spec(&manager, pkgs) {
             resources.insert(
+                // composed-id-ok: a decision fingerprint key, not a system identity
                 format!("packages.{}.{}", decision_manager, pkg),
                 entry_fingerprint(&pkg),
             );

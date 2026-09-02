@@ -34,6 +34,7 @@ pub(super) const LIVE_SESSION_RESOURCE_ID: &str = "env:session:refresh";
 /// panic mid-apply over a naming defect.
 pub fn system_resource_key(configurator: &str, key: &str) -> String {
     debug_assert_system_key_undoubled(configurator, key);
+    // composed-id-ok: this IS the composer every other site routes through
     format!("{configurator}.{key}")
 }
 
@@ -652,9 +653,8 @@ fn plan_item(action: &Action) -> String {
                 origin,
                 ..
             } => format!(
-                "set {}.{}: {} → {}{}",
-                configurator,
-                key,
+                "set {}: {} → {}{}",
+                system_resource_key(configurator, key),
                 current,
                 desired,
                 provenance_suffix(origin)

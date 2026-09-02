@@ -44,8 +44,8 @@ spec:
   severity: Low
   driftDetails:
     - field: sysctl.vm.swappiness
-      expected: a
-      actual: b
+      expected: "10"
+      actual: "60"
 EOF
 )
 echo "  Empty deviceId result: $(echo "$RESULT_EMPTY_DEVICE" | tail -1)"
@@ -421,8 +421,8 @@ spec:
   severity: Medium
   driftDetails:
     - field: sysctl.vm.swappiness
-      expected: installed
-      actual: missing
+      expected: "10"
+      actual: "60"
 EOF
 )
 echo "  Result: $(echo "$RESULT" | tail -1)"
