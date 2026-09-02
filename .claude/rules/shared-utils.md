@@ -344,7 +344,7 @@ The **30-second memo convention** and the exclusion a TTL guard needs are in `ut
 - `Sha256Stream` — the incremental form (`update`, `absorb_file`, `finish_hex` / `finish_digest`), for a digest over many inputs. The seam order IS the digest: never reorder a caller's parts.
 - `parse_loose_version(s)` — 1/2/3-part version → semver `Version`.
 - `version_satisfies(version, requirement)` — semver range check.
-- `version_meets_floor(version, floor)` — the ONE composition of a declared `>=` floor, tolerating the `v` prefix `semver`'s range parser refuses; every floor comparison including the family comparators reaches it (`every_floor_comparison_composes_its_requirement_in_one_place`).
+- `declared_floor_version(floor)` / `version_meets_floor(version, floor)` — the ONE read of a declared floor (less the `v` prefix neither `semver` ranges nor `pkg version -t` can compare) and the ONE composition of the `>=` requirement over it; a tool-owned comparator strips through the first, everything else calls the second (`every_floor_comparison_composes_its_requirement_in_one_place`).
 
 ## Locks / reconcile
 

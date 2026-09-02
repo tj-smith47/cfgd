@@ -26302,6 +26302,54 @@ fn an_installed_package_meeting_its_min_version_is_elided() {
     );
 }
 
+/// The same converged machine against a floor DECLARED with a `v` prefix, the
+/// spelling a `minVersion` arrives in as often as the bare one. This is the
+/// layer the harm landed on: a floor the comparator cannot read makes the
+/// package survive elision on every run — an install planned forever on a
+/// machine that already holds it — and files a `Below` finding that no apply
+/// can heal.
+#[test]
+fn a_v_prefixed_floor_neither_replans_nor_drifts_a_package_that_clears_it() {
+    let state = test_state();
+    let printer = test_printer();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("brew").with_installed_at("neovim", "1.2.3"),
+    ));
+    let cx = test_package_context(&printer, &state);
+    let reconciler = Reconciler::new(&registry, &state).diffing_installed(&cx);
+    let resolved = make_empty_resolved();
+
+    let mut module = make_resolved_module("dev");
+    module.packages.retain(|p| p.canonical_name == "neovim");
+    module.packages[0].min_version = Some("v1.2.0".to_string());
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    let items = all_plan_items(&plan).join("\n");
+    assert!(
+        !items.contains("neovim"),
+        "a copy clearing a `v`-prefixed floor is elided like any other, got:\n{items}"
+    );
+
+    let mgr = MockPackageManager::new("brew").with_installed_at("neovim", "1.2.3");
+    let installed = cx.installed_for(&mgr).expect("the mock lists");
+    assert!(
+        matches!(
+            crate::reconciler::package_version_floor(&mgr, &installed, "neovim", Some("v1.2.0")),
+            crate::reconciler::VersionFloor::Met
+        ),
+        "and the scan files no finding against it"
+    );
+}
+
 #[test]
 fn a_module_whose_packages_are_all_installed_plans_nothing() {
     let state = test_state();

@@ -4295,8 +4295,13 @@ enum VersionGrammar {
         floor: &'static str,
     },
     /// The tool owns the comparison end to end (the manager shells out to its
-    /// own comparator), so only comparability is answerable without it.
-    ToolOwned { sample: &'static str },
+    /// own comparator), so the floor is driven through a shim: what must hold
+    /// is that the DECLARATION reaches the tool in a spelling the tool can
+    /// read.
+    ToolOwned {
+        sample: &'static str,
+        floor: &'static str,
+    },
 }
 
 /// Every registered manager against its real version grammar. A manager whose
@@ -4379,6 +4384,7 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
         "pkg",
         VersionGrammar::ToolOwned {
             sample: "1.2.0_1,1",
+            floor: "v1.2.0",
         },
     ),
     // Language and app-store managers publish plain semver (`cargo search`,
@@ -4387,7 +4393,7 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
     (
         "cargo",
         VersionGrammar::Semver {
-            sample: "1.2.3",
+            sample: "0.4.19",
             incomparable: None,
         },
     ),
@@ -4443,20 +4449,21 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
     (
         "chocolatey",
         VersionGrammar::Semver {
-            sample: "1.2.3",
-            incomparable: None,
+            sample: "21.4.0",
+            incomparable: Some("4.7.1.2019"),
         },
     ),
     (
         "scoop",
         VersionGrammar::Semver {
-            sample: "0.4.1",
+            sample: "22.0.0",
             incomparable: None,
         },
     ),
 ];
 
 #[test]
+#[serial_test::serial]
 fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
     for mgr in all_package_managers() {
         let (_, grammar) = MANAGER_VERSION_GRAMMARS
@@ -4508,10 +4515,37 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
                     mgr.name()
                 );
             }
-            VersionGrammar::ToolOwned { sample } => {
+            VersionGrammar::ToolOwned { sample, floor } => {
                 assert!(
                     mgr.version_comparable(sample),
                     "{}: the tool's own comparator reads everything it lists",
+                    mgr.name()
+                );
+                // The tool answers `=`, so the floor clears only if the
+                // declaration reached it in a spelling it can read: this
+                // manager's `version_comparable` is unconditionally true, so a
+                // floor it misreads invents drift rather than erroring.
+                let shim = cfgd_core::test_helpers::ToolShim::install(
+                    super::versions::PKG_BIN_ENV,
+                    0,
+                    "=\n",
+                    "",
+                );
+                assert!(
+                    mgr.version_meets_minimum(sample, floor),
+                    "{}: a floor declared {floor} clears when the tool says `=`",
+                    mgr.name()
+                );
+                let argv = shim.argv_log();
+                assert!(
+                    argv.contains("version -t"),
+                    "{}: the comparison really reached the tool: {argv}",
+                    mgr.name()
+                );
+                assert!(
+                    !argv.contains(" v"),
+                    "{}: the declared floor reaches the tool with no `v` for it \
+                     to compare against a digit: {argv}",
                     mgr.name()
                 );
             }
