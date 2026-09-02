@@ -812,7 +812,7 @@ pub(super) fn build_drift_alert_conditions(
             condition_type: "Acknowledged".to_string(),
             status: "False".to_string(),
             reason: "NotAcknowledged".to_string(),
-            message: "Drift alert has not been acknowledged".to_string(),
+            message: "This DriftAlert has not been acknowledged".to_string(),
             last_transition_time: now.to_string(),
             observed_generation,
         },

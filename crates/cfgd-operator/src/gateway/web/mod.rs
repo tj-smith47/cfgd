@@ -212,11 +212,11 @@ async fn dashboard(State(state): State<SharedState>) -> Result<Html<String>, Gat
             </div>
             <div class="stat-card healthy">
                 <div class="value">{healthy}</div>
-                <div class="label">Healthy</div>
+                <div class="label">No System Settings Drift</div>
             </div>
             <div class="stat-card drifted">
                 <div class="value">{drifted}</div>
-                <div class="label">Drifted</div>
+                <div class="label">System Settings Drift</div>
             </div>
             <div class="stat-card offline">
                 <div class="value">{offline}</div>
@@ -494,7 +494,7 @@ async fn device_detail(
                 <label>Type:
                     <select id="filter-type" onchange="applyFilters()">
                         <option value="all">All</option>
-                        <option value="drift">System settings drift</option>
+                        <option value="drift">System Settings Drift</option>
                         <option value="checkin">Check-in</option>
                     </select>
                 </label>
@@ -752,7 +752,7 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
                     <option value="all">All</option>
                     <option value="checkin">Check-in</option>
                     <option value="config-changed">Config Changed</option>
-                    <option value="drift">System settings drift</option>
+                    <option value="drift">System Settings Drift</option>
                 </select>
             </label>
             <button class="btn" onclick="clearFleetFilters()">Clear</button>

@@ -203,7 +203,7 @@ async fn device_detail_with_drift_events() {
         .db
         .record_drift_event(
             "dev-1",
-            r#"[{"field":"net.ipv4.ip_forward","expected":"1","actual":"0"}]"#,
+            r#"[{"field":"kernelModules.overlay","expected":"loaded","actual":"absent"}]"#,
         )
         .await
         .expect("drift");
@@ -211,10 +211,11 @@ async fn device_detail_with_drift_events() {
     let html = result.unwrap().0;
     // Should not say "no drift"
     assert!(!html.contains("No system settings drift reported by this device."));
-    // Should contain parsed drift detail fields
-    assert!(html.contains("net.ipv4.ip_forward"));
-    assert!(html.contains("1"));
-    assert!(html.contains("0"));
+    // Distinctive operands: a bare "1"/"0" would also match the page's own
+    // ids, CSS and timestamps, so the assertion could not fail.
+    assert!(html.contains("kernelModules.overlay"));
+    assert!(html.contains("loaded"));
+    assert!(html.contains("absent"));
     // The section names the class of drift a device reports, and counts it
     assert!(html.contains("System Settings Drift (1)"));
 }

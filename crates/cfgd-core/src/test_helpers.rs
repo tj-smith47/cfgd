@@ -3626,11 +3626,57 @@ pub fn freeze_last_scan_at(
     store.freeze_last_scan_at(timestamp)
 }
 
+/// The production region of a Rust source file a walk-style pin reads, cut at
+/// the TRAILING test module.
+///
+/// A pin that scans source has to drop the file's own `#[cfg(test)]` block,
+/// which describes the surface rather than rendering it. The cut anchors on the
+/// module DECLARATION (`\n#[cfg(test)]\nmod `), taken from the END of the file,
+/// because a bare `#[cfg(test)]` anchor is not the test module: a mid-file
+/// `#[cfg(test)] use` import or a test-only `impl` block carries the attribute
+/// too, and cutting at the first one blinds the walk to every line below it —
+/// silently, since a walk that reads nothing reports nothing. Files with no
+/// test module come back whole.
+///
+/// A walk over several files pairs this with a per-file floor on what it found,
+/// so a future re-blinding fails rather than passes quietly.
+pub fn production_slice(src: &str) -> &str {
+    src.rfind("\n#[cfg(test)]\nmod ").map_or(src, |i| &src[..i])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::providers::FileManager;
     use secrecy::ExposeSecret;
+
+    #[test]
+    fn production_slice_cuts_at_the_trailing_test_module_not_an_early_attribute() {
+        // The attribute is composed rather than written out: a literal one here
+        // is a `#[cfg(test)]` at the start of a line, which the audit's own
+        // test-block stripper would take for this file's test module.
+        let attr = format!("#[cfg({})]", "test");
+        let src = format!(
+            "use a::b;\n{attr}\nuse c::d;\n\
+             pub const RENDERED: &str = \"a literal a walk must see\";\n\
+             {attr}\nmod tests;\npub const HIDDEN: &str = \"below the cut\";\n"
+        );
+        let production = production_slice(&src);
+        assert!(
+            production.contains("a literal a walk must see"),
+            "the cut must keep the production code between an early \
+             `#[cfg(test)]` import and the trailing test module: {production}"
+        );
+        assert!(
+            !production.contains("below the cut"),
+            "the trailing test module must be cut away: {production}"
+        );
+        assert_eq!(
+            production_slice("pub fn only_production() {}\n"),
+            "pub fn only_production() {}\n",
+            "a file with no test module comes back whole"
+        );
+    }
 
     /// The guard's exclusion is the reason no window-pinning test carries a
     /// serial attribute for it, so the exclusion has to be observable rather
