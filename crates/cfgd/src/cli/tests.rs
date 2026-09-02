@@ -13954,6 +13954,164 @@ fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
         );
     }
 
+    // The recorded-state reads of `cfgd status` belong to the same
+    // population, and this walk missed them: the one state where the reader
+    // is actually looking at pending work — a dashboard of unresolved
+    // RECORDED findings, with a check recent enough to stand behind them —
+    // closed on nothing at all, while the clean read closed on the scan hint
+    // and the `--scan` read on the heal.
+    let recorded_drift = |timestamp: &str| {
+        vec![cfgd_core::state::DriftEvent {
+            id: 1,
+            timestamp: timestamp.to_string(),
+            resource_type: "file".to_string(),
+            resource_id: "~/.gitconfig".to_string(),
+            expected: Some("hash-desired".to_string()),
+            actual: Some("hash-actual".to_string()),
+            resolved_by: None,
+            source: "local".to_string(),
+            want: None,
+            have: None,
+        }]
+    };
+    // (name, the read, the line it must close on)
+    let heal = crate::cli::heal_drift_hint(None);
+    let status_states: Vec<(&str, super::status::StatusOutput, &str)> = vec![
+        (
+            "recorded drift, checked recently",
+            super::status::StatusOutput {
+                drift: recorded_drift("2026-05-14T10:02:00Z"),
+                ..component_health_fixture()
+            },
+            heal.as_str(),
+        ),
+        (
+            "live drift",
+            super::status::StatusOutput {
+                drift: recorded_drift("2026-05-14T10:02:00Z"),
+                drift_checked_live: true,
+                ..component_health_fixture()
+            },
+            heal.as_str(),
+        ),
+        (
+            // The record is older than a daemon would ever let it get, so the
+            // reader is told to look again before acting on it.
+            "recorded drift, evidence gone stale",
+            super::status::StatusOutput {
+                drift: recorded_drift("2026-05-13T10:02:00Z"),
+                last_scan_at: Some("2026-05-13T10:02:00Z".to_string()),
+                ..component_health_fixture()
+            },
+            super::status::SCAN_HINT,
+        ),
+        (
+            "no drift, evidence gone stale",
+            super::status::StatusOutput {
+                last_scan_at: Some("2026-05-13T10:02:00Z".to_string()),
+                ..component_health_fixture()
+            },
+            super::status::SCAN_HINT,
+        ),
+    ];
+    for (name, output, closing) in status_states {
+        for wide in [false, true] {
+            // `-o wide` widens the table, never the reader's obligation: both
+            // widths close on the same command.
+            let (printer, buf) = test_printer_capture();
+            printer.emit(super::status::build_fleet_status_doc(
+                &output,
+                &cfgd_core::output::ConfigHeader {
+                    config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
+                    sources: &[],
+                    profile: Some("base"),
+                    profile_inherits: &[],
+                    modules: &[],
+                },
+                &[],
+                "2026-05-14T10:05:00Z",
+                &Default::default(),
+                &super::status::ManagedResourceDetail {
+                    wide,
+                    ..Default::default()
+                },
+            ));
+            printer.flush();
+            drop(printer);
+            let out = cfgd_core::test_helpers::captured_text(&buf);
+            assert!(
+                out.contains(closing),
+                "{name} (wide={wide}): the read closes on `{closing}`, got:\n{out}"
+            );
+        }
+    }
+
+    // The module report is the same read, one owner narrower, and closes on
+    // the same command scoped to the module it is about.
+    let module_drift = |timestamp: &str| super::status::ModuleStatus {
+        name: "nvim".to_string(),
+        packages: 0,
+        files: 1,
+        env: 0,
+        aliases: 0,
+        scripts: Vec::new(),
+        system: Vec::new(),
+        depends: Vec::new(),
+        declared: Default::default(),
+        status: "installed".to_string(),
+        last_applied: None,
+        scope: None,
+        package_state: Vec::new(),
+        deployed_files: Vec::new(),
+        drift_checked_live: false,
+        last_scan_at: Some(timestamp.to_string()),
+        system_errors: Vec::new(),
+        drift: vec![super::status::ModuleDrift {
+            event: cfgd_core::state::DriftEvent {
+                id: 1,
+                timestamp: timestamp.to_string(),
+                resource_type: "file".to_string(),
+                resource_id: "~/.config/nvim/init.lua".to_string(),
+                expected: None,
+                actual: None,
+                resolved_by: None,
+                source: "local".to_string(),
+                want: None,
+                have: None,
+            },
+            owner: "nvim".to_string(),
+            surface: super::status::SURFACE_FILES,
+            item: "~/.config/nvim/init.lua".to_string(),
+        }],
+    };
+    let module_states = [
+        (
+            "recorded drift, checked recently",
+            "2026-05-14T10:02:00Z",
+            { crate::cli::heal_drift_hint(Some("nvim")) },
+        ),
+        (
+            "recorded drift, evidence gone stale",
+            "2026-05-13T10:02:00Z",
+            super::status::SCAN_HINT.to_string(),
+        ),
+    ];
+    for (name, timestamp, closing) in module_states {
+        let (printer, buf) = test_printer_capture();
+        printer.emit(super::status::build_module_status_doc(
+            &module_drift(timestamp),
+            super::status::ModuleStatusView::Compact,
+            "2026-05-14T10:05:00Z",
+        ));
+        printer.flush();
+        drop(printer);
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains(&closing),
+            "module report, {name}: closes on `{closing}`, got:\n{out}"
+        );
+    }
+
     // The hint is scoped as the preview was: a bare `cfgd apply` after a
     // filtered preview performs work the reader was never shown.
     let module = vec!["nvim".to_string()];
