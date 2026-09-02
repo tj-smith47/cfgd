@@ -121,20 +121,22 @@ pub fn effective_system_map(profile: &MergedProfile, modules: &[ResolvedModule])
 /// The stricter of two declared floors: `None` loses to `Some`, and between two
 /// floors the winner is the one the OTHER does not satisfy.
 ///
-/// With `mgr` in hand and BOTH floors readable in that family's grammar, the
-/// family's own comparator answers which is stricter — an apt epoch `1:2.30`
-/// loses to `9.0` because `dpkg`'s upstream part of the first is `2.30`. Asking
-/// the shared parser there would hand the win to whichever floor it happened to
-/// choke on, dropping a real constraint with no check error anywhere.
+/// With `mgr` in hand the family owns the whole question, both halves of it.
+/// Two floors it can read are compared by its own comparator — an apt epoch
+/// `1:2.30` loses to `9.0` because `dpkg`'s upstream part of the first is
+/// `2.30`. One it cannot read WINS, whichever side declared it, and travels to
+/// the seam that reports it: `1:2.30` against `>=1.2` must settle on `>=1.2` in
+/// both declaration orders, or the malformed floor vanishes with no check error
+/// in one of them.
 ///
-/// Without a manager — or with one that cannot read a floor — the dedup judges
-/// no readability of its own. The floor the shared parser cannot read
-/// ([`declared_floor_parses`](crate::declared_floor_parses)) WINS instead of
-/// being compared, and travels to the seam that HOLDS the manager: comparing it
-/// here would answer `false` for the parse rather than for the constraint, and
-/// the readable floor would quietly outrank a declaration that — claimed alone
-/// by one module — is a check error the reader must see. Between two floors
-/// neither parses, the CLAIMED one stays: both error identically at the manager.
+/// Without a manager the dedup judges no readability of its own, and the same
+/// carry-the-doubt rule falls to the shared parser
+/// ([`declared_floor_parses`](crate::declared_floor_parses)): comparing an
+/// unparseable floor here would answer `false` for the parse rather than for
+/// the constraint, and the readable floor would quietly outrank a declaration
+/// that — claimed alone by one module — is a check error the reader must see.
+/// Between two floors neither parses, the CLAIMED one stays: both error
+/// identically at the manager.
 fn stricter_floor(
     claimed: &Option<String>,
     candidate: &Option<String>,
@@ -144,17 +146,22 @@ fn stricter_floor(
         (_, None) => claimed.clone(),
         (None, Some(_)) => candidate.clone(),
         (Some(a), Some(b)) => {
-            let family = mgr.filter(|m| m.floor_comparable(a) && m.floor_comparable(b));
-            let winner = if let Some(m) = family {
-                if m.version_meets_minimum(a, b) { a } else { b }
-            } else if !crate::declared_floor_parses(a) {
-                a
-            } else if !crate::declared_floor_parses(b) {
-                b
-            } else if crate::version_meets_floor(a, b) {
-                a
-            } else {
-                b
+            let winner = match mgr {
+                Some(m) => match (m.floor_comparable(a), m.floor_comparable(b)) {
+                    (true, true) => {
+                        if m.version_meets_minimum(a, b) {
+                            a
+                        } else {
+                            b
+                        }
+                    }
+                    (false, _) => a,
+                    (_, false) => b,
+                },
+                None if !crate::declared_floor_parses(a) => a,
+                None if !crate::declared_floor_parses(b) => b,
+                None if crate::version_meets_floor(a, b) => a,
+                None => b,
             };
             Some(winner.clone())
         }
