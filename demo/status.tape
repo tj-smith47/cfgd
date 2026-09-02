@@ -117,13 +117,13 @@ Sleep 4s
 
 # Beat 6: converged again, at full granularity — `-o wide` blows the file
 # aggregate into one row per deployed file and fills the Method column for
-# every row that has one. `--scan` because a verdict is only ever as fresh as
-# the check behind it: beat 5 healed the file, but the record beat 4 read was
-# written by beat 3's scan and still holds that finding until something looks
-# again. Cleared first: the render is taller than half the frame.
+# every row that has one. No `--scan`: the apply that healed the file resolved
+# that file's own drift row on its way out, so the fast read off the record is
+# already the converged truth. Cleared first: the render is taller than half
+# the frame.
 Type "clear"
 Enter
-Type "cfgd status -o wide --scan"
+Type "cfgd status -o wide"
 Enter
 Wait@60s /cfgd\$$/
 Sleep 6s
