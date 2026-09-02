@@ -13,7 +13,7 @@ API group: `cfgd.io/v1alpha1`
 | `MachineConfig` | Namespaced | [spec](spec/machineconfig.md) | Desired machine state — hostname, profile, packages, files, module refs |
 | `ConfigPolicy` | Namespaced | [spec](spec/configpolicy.md) | Team-level policy mandates — required packages, modules, settings |
 | `ClusterConfigPolicy` | Cluster | [spec](spec/clusterconfigpolicy.md) | Cluster-wide mandates across selected namespaces, plus module-provenance policy |
-| `DriftAlert` | Namespaced | [spec](spec/driftalert.md) | Reported drift from devices — severity, expected vs actual |
+| `DriftAlert` | Namespaced | [spec](spec/driftalert.md) | Drifted system settings reported by devices — severity, expected vs actual |
 | `Module` | Cluster | [spec](spec/module.md) | Reusable configuration bundle — packages, files, env, scripts; OCI-distributable |
 
 ### Installing the CRDs
@@ -138,7 +138,10 @@ spec:
 
 ### DriftAlert
 
-Created by the operator when a device reports drift during checkin.
+Created by the gateway when a device reports drifted **system settings** during check-in. A
+device's report covers the answers of its system configurators alone: packages, managed files,
+env vars and aliases are checked on the device by `cfgd diff` and reach the fleet only as the
+aggregate counts of a compliance summary, never as findings.
 
 ```yaml
 apiVersion: cfgd.io/v1alpha1
@@ -311,7 +314,11 @@ CFGD_SERVER_DB_PATH=/data/cfgd-gateway.db \
 
 ### Checkin API
 
-Devices running `cfgd daemon` periodically check in to report their current applied profile, packages, drift events, module status, and system information (OS, arch, hostname).
+A check-in carries the device identity (id, hostname, OS, arch) and the hash of its
+desired system configuration. `cfgd checkin` adds a compliance summary when
+[`spec.compliance`](spec/config.md#speccompliance) is enabled, and posts any drifted **system
+settings** it finds to `/api/v1/devices/{id}/drift`. The daemon's own periodic check-in sends
+the identity and hash only.
 
 ```sh
 cfgd checkin --server-url https://cfgd.acme.com --api-key <key>
@@ -368,7 +375,10 @@ cfgd enroll --server-url https://cfgd.acme.com --gpg-key ABCD1234
 
 ### Web Dashboard
 
-Device inventory, drift status, and compliance posture at a glance.
+Device inventory, reported system-settings drift, and compliance posture at a glance. The
+`Drifted` count is devices whose last report named a drifted system setting — a drifted package
+or file is never reported as a finding, so `Healthy` means "nothing reported", not "verified in
+sync".
 
 ### SSE Streaming
 

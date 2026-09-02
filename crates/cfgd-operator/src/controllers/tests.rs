@@ -1243,7 +1243,7 @@ fn build_drift_alert_conditions_critical_severity() {
     assert_eq!(conditions[1].condition_type, "Resolved");
     assert_eq!(conditions[1].status, "False");
     assert!(conditions[1].message.contains("dev-1"));
-    assert!(conditions[1].message.contains("5 details"));
+    assert!(conditions[1].message.contains("5 drifted system settings"));
     // Critical is escalated
     assert_eq!(conditions[2].condition_type, "Escalated");
     assert_eq!(conditions[2].status, "True");
@@ -1463,7 +1463,7 @@ fn build_drift_alert_conditions_medium_not_escalated() {
     assert_eq!(conditions[1].condition_type, "Resolved");
     assert_eq!(conditions[1].status, "False");
     assert!(conditions[1].message.contains("dev-2"));
-    assert!(conditions[1].message.contains("2 details"));
+    assert!(conditions[1].message.contains("2 drifted system settings"));
     // Medium is NOT escalated
     assert_eq!(conditions[2].condition_type, "Escalated");
     assert_eq!(conditions[2].status, "False");
@@ -1486,7 +1486,10 @@ fn build_drift_alert_conditions_resolved_zero_details() {
     );
     assert_eq!(conditions[1].status, "True");
     assert_eq!(conditions[1].reason, "DriftResolved");
-    assert_eq!(conditions[1].message, "Drift has been resolved");
+    assert_eq!(
+        conditions[1].message,
+        "The device no longer reports these drifted system settings"
+    );
     assert!(conditions[0].observed_generation.is_none());
 }
 
@@ -2614,8 +2617,8 @@ fn build_drift_alert_conditions_active_message_includes_details_count() {
         .find(|c| c.condition_type == "Resolved")
         .unwrap();
     assert!(
-        resolved.message.contains("42 details"),
-        "message should include detail count: {}",
+        resolved.message.contains("42 drifted system settings"),
+        "message should include the drifted-setting count: {}",
         resolved.message
     );
     assert!(

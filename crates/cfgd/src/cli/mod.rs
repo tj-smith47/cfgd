@@ -1184,7 +1184,7 @@ pub enum Command {
 
     /// Check system health and dependencies
     #[command(
-        long_about = "Diagnose environment prerequisites, tool versions, and config validity.\n\nExamples:\n  cfgd doctor\n  cfgd --output json doctor"
+        long_about = "Diagnose environment prerequisites, tool versions, and config validity.\n\nChecks what cfgd needs in order to run here: config validity, required tools, secret backends, declared package managers, module resolution, profile layout, and cfgd's own state store. It does not compare your managed files, env vars or system settings against the machine — run `cfgd diff` or `cfgd status` for that.\n\nExamples:\n  cfgd doctor\n  cfgd --output json doctor"
     )]
     Doctor,
 
@@ -1513,7 +1513,10 @@ pub enum ComplianceCommand {
         #[arg(long)]
         since: Option<String>,
     },
-    /// Show diff between two snapshots
+    /// Compare two recorded compliance snapshots
+    #[command(
+        long_about = "Compare two recorded compliance snapshots.\n\nCompares snapshot history out of the state store — it reads nothing off the machine. Run `cfgd diff` to compare the machine against its declared config.\n\nExamples:\n  cfgd compliance diff 42 47\n  cfgd compliance diff 42 47 -o json"
+    )]
     Diff {
         /// Base snapshot ID (the reference to compare against)
         #[arg(value_name = "BASE_ID")]

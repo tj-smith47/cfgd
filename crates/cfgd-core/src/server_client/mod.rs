@@ -316,7 +316,13 @@ impl ServerClient {
         })
     }
 
-    /// Report drift events to the device gateway.
+    /// Report drifted system settings to the device gateway.
+    ///
+    /// The gateway's whole drift picture is what this method sends, and every
+    /// element is a [`SystemDrift`] — one system configurator's setting whose
+    /// live value diverged from the declared one. Packages, files, env vars and
+    /// aliases are never carried here, so the narration names the class rather
+    /// than letting a fleet reader take a settings report for a machine verdict.
     pub fn report_drift(&self, drifts: &[SystemDrift], printer: &Printer) -> Result<()> {
         if drifts.is_empty() {
             return Ok(());
@@ -334,6 +340,7 @@ impl ServerClient {
         let body = DriftReport { details };
         let body_json = serde_json::to_string(&body).map_err(|e| {
             CfgdError::Io(std::io::Error::other(format!(
+                // fleet-drift-ok: an internal serialization failure, not a claim
                 "failed to serialize drift report: {}",
                 e
             )))
@@ -342,14 +349,17 @@ impl ServerClient {
         let path = format!("/api/v1/devices/{}/drift", self.device_id);
         // One binding for the permanent line and the bar beneath it: the two
         // name the same request and must never drift apart.
-        let label = format!("Reporting {} drift events to device gateway", drifts.len());
+        let label = format!(
+            "Reporting {} to device gateway",
+            crate::pluralize(drifts.len(), "drifted system setting")
+        );
         printer.status_simple(Role::Info, label.clone());
 
         self.post_with_retry(&path, &body_json, printer, &label)
             .map_err(|e| {
                 CfgdError::Io(std::io::Error::new(
                     std::io::ErrorKind::ConnectionRefused,
-                    format!("device gateway drift report failed: {}", e),
+                    format!("device gateway system settings drift report failed: {}", e),
                 ))
             })?;
 

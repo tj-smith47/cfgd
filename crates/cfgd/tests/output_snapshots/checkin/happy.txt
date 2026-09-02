@@ -3,4 +3,5 @@ Checkin
 Gateway
   ✓ Checked in — server status ok, config unchanged
 
-◉ No drift to report
+System Settings
+  ◉ No system settings drift to report

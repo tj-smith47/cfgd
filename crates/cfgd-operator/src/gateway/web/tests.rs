@@ -174,7 +174,7 @@ async fn device_detail_existing_device() {
     // Breadcrumb navigation
     assert!(html.contains("Fleet Dashboard"));
     // No drift/checkin events by default
-    assert!(html.contains("No drift events recorded"));
+    assert!(html.contains("No system settings drift reported by this device."));
     assert!(html.contains("No check-in events recorded"));
     // Push config section
     assert!(html.contains("Push Configuration"));
@@ -203,20 +203,20 @@ async fn device_detail_with_drift_events() {
         .db
         .record_drift_event(
             "dev-1",
-            r#"[{"field":"packages","expected":"vim","actual":"missing"}]"#,
+            r#"[{"field":"net.ipv4.ip_forward","expected":"1","actual":"0"}]"#,
         )
         .await
         .expect("drift");
     let result = device_detail(State(state), Path("dev-1".to_string())).await;
     let html = result.unwrap().0;
-    // Should not say "no drift events"
-    assert!(!html.contains("No drift events recorded"));
+    // Should not say "no drift"
+    assert!(!html.contains("No system settings drift reported by this device."));
     // Should contain parsed drift detail fields
-    assert!(html.contains("packages"));
-    assert!(html.contains("vim"));
-    assert!(html.contains("missing"));
-    // Drift events count
-    assert!(html.contains("Drift Events (1)"));
+    assert!(html.contains("net.ipv4.ip_forward"));
+    assert!(html.contains("1"));
+    assert!(html.contains("0"));
+    // The section names the class of drift a device reports, and counts it
+    assert!(html.contains("System Settings Drift (1)"));
 }
 
 #[tokio::test]

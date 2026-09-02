@@ -1,4 +1,7 @@
 //! DriftAlert CRD creation in Kubernetes, called by the device drift-event handler.
+//!
+//! A device reports its system settings alone, so every alert minted here names
+//! that class rather than a whole-machine verdict.
 
 use super::*;
 /// Create a DriftAlert CRD in Kubernetes with retry and exponential backoff.
@@ -73,6 +76,7 @@ pub(super) async fn create_drift_alert_crd(
             name = %alert_name,
             device_id = %device_id,
             error = %e,
+            // fleet-drift-ok: a journal line naming the row it fell back to
             "driftAlert CRD could not be serialized; not sent — drift recorded in database only"
         );
         return Ok(());
@@ -137,6 +141,7 @@ pub(super) async fn create_drift_alert_crd(
             device_id = %device_id,
             error = %e,
             attempts = retry.max_attempts,
+            // fleet-drift-ok: a journal line naming the row it fell back to
             "failed to create DriftAlert CRD after all attempts — drift recorded in database only"
         );
     }

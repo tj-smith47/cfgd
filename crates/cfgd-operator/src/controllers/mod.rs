@@ -793,16 +793,16 @@ pub(super) fn build_drift_alert_conditions(
         (
             "True",
             "DriftResolved",
-            "Drift has been resolved".to_string(),
+            "The device no longer reports these drifted system settings".to_string(),
         )
     } else {
         (
             "False",
             "DriftActive",
             format!(
-                "Drift active on device {} — {}",
+                "Device {} reports {}",
                 device_id,
-                cfgd_core::pluralize(details_count, "detail")
+                cfgd_core::pluralize(details_count, "drifted system setting")
             ),
         )
     };

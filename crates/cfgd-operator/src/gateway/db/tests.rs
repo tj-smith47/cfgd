@@ -252,7 +252,7 @@ async fn fleet_events_combined() {
         .expect("checkin failed");
     db.record_drift_event(
         "dev-1",
-        r#"[{"field":"pkg","expected":"vim","actual":"missing"}]"#,
+        r#"[{"field":"net.ipv4.ip_forward","expected":"1","actual":"0"}]"#,
     )
     .await
     .expect("drift failed");

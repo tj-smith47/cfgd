@@ -316,14 +316,14 @@ fn report_drift_multiple_drifts() {
     let printer = test_printer();
     let drifts = vec![
         SystemDrift {
-            key: "file.zshrc".into(),
-            expected: "abc".into(),
-            actual: "xyz".into(),
+            key: "net.ipv4.ip_forward".into(),
+            expected: "1".into(),
+            actual: "0".into(),
         },
         SystemDrift {
-            key: "pkg.curl".into(),
-            expected: "installed".into(),
-            actual: "missing".into(),
+            key: "vm.swappiness".into(),
+            expected: "10".into(),
+            actual: "60".into(),
         },
     ];
     let result = client.report_drift(&drifts, &printer);
@@ -849,14 +849,14 @@ mod bridge {
         let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
         let drifts = vec![
             SystemDrift {
-                key: "file.zshrc".into(),
-                expected: "abc".into(),
-                actual: "xyz".into(),
+                key: "net.ipv4.ip_forward".into(),
+                expected: "1".into(),
+                actual: "0".into(),
             },
             SystemDrift {
-                key: "pkg.curl".into(),
-                expected: "installed".into(),
-                actual: "missing".into(),
+                key: "vm.swappiness".into(),
+                expected: "10".into(),
+                actual: "60".into(),
             },
         ];
 
@@ -867,7 +867,10 @@ mod bridge {
             drift_count: drifts.len(),
         };
         let doc = Doc::new()
-            .status(Role::Warn, format!("{} drift items reported", drifts.len()))
+            .status(
+                Role::Warn,
+                format!("Reported {} drifted system settings", drifts.len()),
+            )
             .with_data(&summary);
         printer.emit(doc);
         drop(printer);

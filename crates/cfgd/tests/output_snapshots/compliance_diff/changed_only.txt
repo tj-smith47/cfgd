@@ -1,6 +1,6 @@
-Compliance Diff: #3 → #4
-  Snapshot 1  2026-05-14T09:00:00Z
-  Snapshot 2  2026-05-14T12:00:00Z
+Compliance Snapshot Diff: #3 → #4
+  Base Snapshot    #3 (2026-05-14T09:00:00Z)
+  Target Snapshot  #4 (2026-05-14T12:00:00Z)
 
 Changed
   ✗ file:/etc/hosts (Compliant → Violation) — hash drift detected

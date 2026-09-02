@@ -1,5 +1,10 @@
-//! Fleet-level event endpoints: drift events per device, fleet-wide event log,
-//! force-reconcile, and the SSE event stream.
+//! Fleet-level event endpoints: system-settings drift events per device,
+//! fleet-wide event log, force-reconcile, and the SSE event stream.
+//!
+//! A device's drift report is produced by `cfgd checkin`, whose payload is the
+//! answers of the machine's system CONFIGURATORS alone. Nothing here has ever
+//! seen a package, file, env or alias finding, so every surface reading these
+//! rows names the class instead of implying a whole-machine verdict.
 
 use super::*;
 pub(super) async fn list_drift_events(
@@ -21,6 +26,7 @@ pub(super) async fn record_drift_event(
     enforce_device_access(&auth, &id)?;
 
     let details_str = serde_json::to_string(&req.details)
+        // fleet-drift-ok: an internal serialization failure, not a claim
         .map_err(|e| GatewayError::Internal(format!("failed to serialize drift details: {e}")))?;
 
     let db = state.db.clone();
@@ -46,6 +52,7 @@ pub(super) async fn record_drift_event(
         device_id = %id,
         event_id = %event.id,
         details_count = req.details.len(),
+        // fleet-drift-ok: a journal line, whose event_type field is the wire word
         "drift event recorded"
     );
 

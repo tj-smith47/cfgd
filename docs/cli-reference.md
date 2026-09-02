@@ -1039,11 +1039,19 @@ not "clean" (see [Exit Codes](#exit-codes)).
 
 ### `cfgd doctor`
 
-Check system health: available package managers, configurators, module status, dependency versions.
+Check what cfgd needs in order to run on this machine: config validity, required tools, secret
+backends, declared package managers, module resolution, profile layout, cfgd's own state store,
+and whether each configured source is cached.
 
 ```sh
 cfgd doctor -o json   # structured health report
 ```
+
+`doctor` reads prerequisites, not managed state. It does not compare your managed files, env
+vars, aliases or system settings against the machine, and it records nothing — use
+[`cfgd diff`](#cfgd-diff) or [`cfgd status`](#cfgd-status) for that. The one place it does look
+at the machine is package presence: a module's declared packages are queried through their
+manager so a missing prerequisite is named before an apply hits it.
 
 Exits non-zero when the verdict fails (an invalid config, a config missing at an
 explicitly-given `--config`/`CFGD_CONFIG`/`--config-dir` path, an unresolvable module, or a
@@ -2138,7 +2146,7 @@ cfgd compliance                          # collect and store a snapshot, print t
 cfgd compliance export                   # write the newest snapshot out
 cfgd compliance history                  # list stored snapshots, newest first
 cfgd compliance history --since 30d      # only snapshots newer than a duration
-cfgd compliance diff <base-id> <target-id>   # what changed between two snapshots
+cfgd compliance diff <base-id> <target-id>   # what changed between two RECORDED snapshots
 ```
 
 | Flag | Meaning |
@@ -2149,6 +2157,11 @@ cfgd compliance diff <base-id> <target-id>   # what changed between two snapshot
 machine's content hash changed, so **history records changes, not ticks**; see
 [spec.compliance](spec/config.md#speccompliance) before treating row arrival as a liveness signal.
 Snapshot IDs for `diff` come from `history`.
+
+`cfgd compliance diff` compares two records out of that history and reads nothing off the
+machine — despite sitting one word away from [`cfgd diff`](#cfgd-diff), which is the live
+comparison. Its report is headed `Compliance Snapshot Diff` and names both operands (`Base
+Snapshot`, `Target Snapshot`) for the same reason.
 
 ## Image Commands
 
@@ -2249,11 +2262,21 @@ The generated workflow's change detection covers both profile manifest forms, th
 
 ### `cfgd checkin`
 
-Check in with the device gateway.
+Check in with the device gateway: report this machine's identity and desired-config hash, and
+report any drifted **system settings** it finds.
 
 ```sh
 cfgd checkin --server-url https://cfgd.acme.com --api-key <key>
 ```
+
+The drift half of a check-in covers system settings only — the answers of the system
+configurators the profile declares (`sysctl`, `kernelModules`, `macosDefaults`,
+`windowsRegistry`, ...), which is why the report is headed `System Settings`. Managed files,
+packages, env vars and aliases are checked locally by [`cfgd diff`](#cfgd-diff) and reach the
+gateway only as the aggregate counts of the compliance summary a check-in carries when
+[`spec.compliance`](spec/config.md#speccompliance) is enabled — never as findings. A device the
+fleet dashboard shows as healthy is a device whose system settings matched, not a device proven
+in sync.
 
 | Flag | Description |
 |---|---|

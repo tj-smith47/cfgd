@@ -156,7 +156,7 @@ Written by the operator when a reconciliation pass changes it. Do not set manual
 |-------|------|-------------|
 | `lastReconciled` | string (ISO 8601) | Timestamp of the last status **change**, not of the last reconcile. |
 | `observedGeneration` | int | The `metadata.generation` that was last processed by the controller. |
-| `conditions` | list | Standard Kubernetes condition list. Drift is reported here as a `DriftDetected` condition. See [status.conditions[]](#statusconditions). |
+| `conditions` | list | Standard Kubernetes condition list. A device's drifted **system settings** are reported here as a `DriftDetected` condition. See [status.conditions[]](#statusconditions). |
 | `packageVersions` | map | Reported installed versions keyed by package name (e.g. `{"kubectl": "1.28.3"}`). Versions are loose semver: `1.28`, `1.28.3`. |
 
 The operator patches `status` only when the pass observed something different,
@@ -175,7 +175,7 @@ Follows the standard Kubernetes condition convention.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | string | Condition type identifier (e.g. `Reconciled`, `DriftDetected`, `Ready`). A `DriftDetected` condition with status `"True"` means the last reconciliation found divergence between desired and actual state. |
+| `type` | string | Condition type identifier (e.g. `Reconciled`, `DriftDetected`, `Ready`). A `DriftDetected` condition with status `"True"` means a device reported drifted system settings (see [DriftAlert](driftalert.md)) — it says nothing about the machine's packages, files, env vars or aliases, which are checked on the device by `cfgd diff` and never travel to the cluster. |
 | `status` | string | `"True"`, `"False"`, or `"Unknown"`. |
 | `reason` | string | Short CamelCase reason token. |
 | `message` | string | Human-readable explanation. |

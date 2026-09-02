@@ -104,17 +104,21 @@ pub(super) async fn reconcile_machine_config(
 
     let now = cfgd_core::utc_now_iso8601();
 
+    // A DriftAlert carries the answers of a device's system CONFIGURATORS and
+    // nothing else, so the absence of one is not a machine proven in sync: the
+    // message says which class was reported, and the negative says which class
+    // went unreported rather than claiming a clean machine.
     let (drift_status, drift_reason, drift_message) = if has_drift {
         (
             "True",
             "DriftActive",
-            format!("MachineConfig {} has detected drift on device", name),
+            format!("A device reported drifted system settings for MachineConfig {name}"),
         )
     } else {
         (
             "False",
             "NoDrift",
-            format!("No drift detected for MachineConfig {}", name),
+            format!("No device reported drifted system settings for MachineConfig {name}"),
         )
     };
 
@@ -240,7 +244,7 @@ pub(super) async fn reconcile_machine_config(
             &obj.object_ref(&()),
             EventType::Warning,
             "DriftDetected",
-            format!("Drift detected on device for MachineConfig {}", name),
+            format!("A device reported drifted system settings for MachineConfig {name}"),
             "DriftCheck",
         )
         .await;

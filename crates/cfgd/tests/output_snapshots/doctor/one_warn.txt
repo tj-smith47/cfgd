@@ -25,7 +25,7 @@ Modules
     ✓ bat 0.24.0 (cargo, bat)
     ✓ ripgrep 14.1.0 (cargo, ripgrep)
 
-System
+Installation
   ✓ State store: accessible
   ✓ Profiles directory: /home/test/.config/cfgd/profiles (2 profiles)
 

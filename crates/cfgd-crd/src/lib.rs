@@ -266,6 +266,15 @@ pub struct MachineConfigReference {
     pub namespace: Option<String>,
 }
 
+/// Drifted system settings a device reported at check-in.
+///
+/// A device's report covers its system settings alone — the answers of the
+/// system configurators its profile declares (`sysctl`, `kernelModules`,
+/// `macosDefaults`, `windowsRegistry`, ...). Packages, managed files, env vars
+/// and aliases are checked on the device by `cfgd diff` and reach the fleet only
+/// as the aggregate counts of a compliance summary, never as findings — so a
+/// device with no DriftAlert is a device whose system settings matched, not a
+/// device proven in sync.
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "cfgd.io",
@@ -286,8 +295,8 @@ pub struct DriftAlertSpec {
     pub device_id: String,
     /// The MachineConfig whose desired state the device diverged from.
     pub machine_config_ref: MachineConfigReference,
-    /// One entry per diverging field, each carrying what was expected and what
-    /// was found.
+    /// One entry per drifted system setting, each carrying what was declared and
+    /// what the device found.
     #[serde(default)]
     pub drift_details: Vec<DriftDetail>,
     /// How serious the divergence is: `Low`, `Medium`, `High`, or `Critical`.
@@ -304,12 +313,12 @@ pub struct DriftAlertStatus {
     pub conditions: Vec<Condition>,
 }
 
-/// One diverging field in a drift report.
+/// One system setting whose live value diverged from its declared value.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DriftDetail {
-    /// Resource id of the field that diverged (e.g.
-    /// `system:sysctl.net.ipv4.ip_forward`).
+    /// The setting's key within its system configurator, as the device reported
+    /// it (e.g. `net.ipv4.ip_forward`).
     pub field: String,
     /// The value the MachineConfig declares.
     pub expected: String,

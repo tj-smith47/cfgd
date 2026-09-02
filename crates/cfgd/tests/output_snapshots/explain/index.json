@@ -7405,13 +7405,13 @@
             "type": "string"
           },
           {
-            "description": "Resource id of the field that diverged (e.g. `system:sysctl.net.ipv4.ip_forward`).",
+            "description": "The setting's key within its system configurator, as the device reported it (e.g. `net.ipv4.ip_forward`).",
             "name": "field",
             "required": true,
             "type": "string"
           }
         ],
-        "description": "One entry per diverging field, each carrying what was expected and what was found.",
+        "description": "One entry per drifted system setting, each carrying what was declared and what the device found.",
         "name": "driftDetails",
         "required": false,
         "type": "[]object",

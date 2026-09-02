@@ -3,5 +3,5 @@ Checkin
 Gateway
   ✓ Checked in — server status ok, config unchanged
 
-Drift
-  ✓ 3 drift items reported
+System Settings
+  ✓ Reported 3 drifted system settings
