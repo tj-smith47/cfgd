@@ -4279,8 +4279,14 @@ fn the_uncached_entry_point_never_reuses_a_parse() {
 /// decides whether the trait's loose-semver comparator can judge a declared
 /// `minVersion` against them.
 enum VersionGrammar {
-    /// Plain semver (or no versions at all): the trait default is correct.
-    Semver,
+    /// Plain semver: the trait default is correct. `sample` is a real
+    /// listing string of this manager, and `incomparable` a shape the default
+    /// deliberately refuses — a floor against it is an honest check error
+    /// rather than an invented verdict.
+    Semver {
+        sample: &'static str,
+        incomparable: Option<&'static str>,
+    },
     /// A packaging grammar carrying fields semver reads as a prerelease or
     /// refuses outright. `sample` is a real listing string of this family and
     /// `floor` a declaration it must clear.
@@ -4318,7 +4324,13 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
             floor: "1.2",
         },
     ),
-    ("brew-tap", VersionGrammar::Semver),
+    (
+        "brew-tap",
+        VersionGrammar::Semver {
+            sample: "1.0.0",
+            incomparable: None,
+        },
+    ),
     // The distro families: `[<epoch>:]<upstream>[-<revision>]`.
     (
         "apt",
@@ -4372,16 +4384,76 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
     // Language and app-store managers publish plain semver (`cargo search`,
     // `npm view`, PyPI, `go list -m`, nix, snap, flatpak) or vendor versions
     // the shared parser reads as-is (winget, chocolatey, scoop).
-    ("cargo", VersionGrammar::Semver),
-    ("npm", VersionGrammar::Semver),
-    ("pipx", VersionGrammar::Semver),
-    ("go", VersionGrammar::Semver),
-    ("nix", VersionGrammar::Semver),
-    ("snap", VersionGrammar::Semver),
-    ("flatpak", VersionGrammar::Semver),
-    ("winget", VersionGrammar::Semver),
-    ("chocolatey", VersionGrammar::Semver),
-    ("scoop", VersionGrammar::Semver),
+    (
+        "cargo",
+        VersionGrammar::Semver {
+            sample: "1.2.3",
+            incomparable: None,
+        },
+    ),
+    (
+        "npm",
+        VersionGrammar::Semver {
+            sample: "10.9.2",
+            incomparable: None,
+        },
+    ),
+    (
+        "pipx",
+        VersionGrammar::Semver {
+            sample: "24.0.1",
+            incomparable: None,
+        },
+    ),
+    (
+        "go",
+        VersionGrammar::Semver {
+            sample: "v0.16.2",
+            incomparable: None,
+        },
+    ),
+    (
+        "nix",
+        VersionGrammar::Semver {
+            sample: "0.10.0",
+            incomparable: None,
+        },
+    ),
+    (
+        "snap",
+        VersionGrammar::Semver {
+            sample: "2.61.3",
+            incomparable: None,
+        },
+    ),
+    (
+        "flatpak",
+        VersionGrammar::Semver {
+            sample: "2.10.36",
+            incomparable: None,
+        },
+    ),
+    (
+        "winget",
+        VersionGrammar::Semver {
+            sample: "1.22.10580",
+            incomparable: Some("133.0.6943.98"),
+        },
+    ),
+    (
+        "chocolatey",
+        VersionGrammar::Semver {
+            sample: "1.2.3",
+            incomparable: None,
+        },
+    ),
+    (
+        "scoop",
+        VersionGrammar::Semver {
+            sample: "0.4.1",
+            incomparable: None,
+        },
+    ),
 ];
 
 #[test]
@@ -4399,12 +4471,29 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
                 )
             });
         match grammar {
-            VersionGrammar::Semver => {
+            VersionGrammar::Semver {
+                sample,
+                incomparable,
+            } => {
                 assert!(
-                    mgr.version_meets_minimum("1.2.3", "1.2"),
-                    "{}: plain semver clears a floor below it",
+                    mgr.version_comparable(sample),
+                    "{}: {sample} is this manager's own listing shape",
                     mgr.name()
                 );
+                assert!(
+                    mgr.version_meets_minimum(sample, sample),
+                    "{}: {sample} clears a floor of itself",
+                    mgr.name()
+                );
+                if let Some(refused) = incomparable {
+                    assert!(
+                        !mgr.version_comparable(refused),
+                        "{}: {refused} is a shape this comparator cannot judge, so \
+                         a floor against it is an erroring check rather than an \
+                         invented verdict",
+                        mgr.name()
+                    );
+                }
             }
             VersionGrammar::Packaged { sample, floor } => {
                 assert!(

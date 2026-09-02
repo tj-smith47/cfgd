@@ -124,6 +124,21 @@ pub fn parse_loose_version(s: &str) -> Option<semver::Version> {
     None
 }
 
+/// Whether `version` clears a declared `>=` floor.
+///
+/// The floor is a value somebody AUTHORED — a `minVersion`, a module's
+/// declared requirement — so it arrives in the same spellings
+/// [`parse_loose_version`] tolerates on the version side, a leading `v` above
+/// all. `semver`'s RANGE parser refuses that prefix, so a caller composing
+/// `>={floor}` straight from the declaration turns `minVersion: v1.2.0` into a
+/// floor nothing ever clears: invented drift on a converged machine, and a
+/// package re-planned as an upgrade forever. Every floor comparison in the
+/// workspace composes its requirement here, the family comparators included.
+pub fn version_meets_floor(version: &str, floor: &str) -> bool {
+    let floor = floor.strip_prefix(['v', 'V']).unwrap_or(floor);
+    version_satisfies(version, &format!(">={floor}")) // floor-composer: the one home
+}
+
 /// Check whether `version_str` satisfies `requirement_str` (semver range).
 pub fn version_satisfies(version_str: &str, requirement_str: &str) -> bool {
     let req = match semver::VersionReq::parse(requirement_str) {
@@ -138,6 +153,71 @@ pub fn version_satisfies(version_str: &str, requirement_str: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A declared floor is authored by hand and reaches the comparator in the
+    /// spellings a version takes, `v1.2.0` included. `semver`'s range parser
+    /// refuses the prefix the version parser strips, so a floor composed
+    /// straight into `>={floor}` was satisfied by nothing at all.
+    #[test]
+    fn a_declared_floor_clears_in_every_spelling_a_version_takes() {
+        for floor in ["1.2.0", "v1.2.0", "V1.2.0", "1.2", "v1.2"] {
+            assert!(
+                version_meets_floor("1.2.3", floor),
+                "1.2.3 clears a floor written {floor}"
+            );
+            assert!(
+                !version_meets_floor("1.1.9", floor),
+                "1.1.9 does not clear a floor written {floor}"
+            );
+        }
+        assert!(version_meets_floor("v0.16.2", "v0.16.2"));
+    }
+
+    /// No caller composes its own `>=` requirement out of a declared floor:
+    /// the one that did turned a `v`-prefixed `minVersion` into invented
+    /// drift, and every family comparator would have to remember the same
+    /// leniency on its own.
+    #[test]
+    fn every_floor_comparison_composes_its_requirement_in_one_place() {
+        fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    rust_files(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crate sits under crates/");
+        let mut files = Vec::new();
+        rust_files(crates, &mut files);
+        assert!(
+            files.len() > 100,
+            "the walk found {} files, so it proves nothing",
+            files.len()
+        );
+        let offenders: Vec<String> = files
+            .iter()
+            .filter_map(|path| {
+                let src = std::fs::read_to_string(path).ok()?;
+                let body = crate::test_helpers::production_slice(&src);
+                body.lines()
+                    .find(|line| line.contains("format!(\">=") && !line.contains("floor-composer:"))
+                    .map(|line| format!("{}: {}", path.display(), line.trim()))
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "a floor comparison composes through `version_meets_floor`:\n{}",
+            offenders.join("\n")
+        );
+    }
 
     /// The type's whole contract: the seam between two `update` calls adds
     /// nothing to the digest, so a caller that replaced a buffered

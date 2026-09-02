@@ -777,7 +777,7 @@ pub trait PackageManager: Send + Sync {
     /// PORTREVISION (`_N`) suffixes — override this to defer to the manager's
     /// own version comparator so the floor is evaluated correctly.
     fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
-        crate::version_satisfies(available, &format!(">={min_version}"))
+        crate::version_meets_floor(available, min_version)
     }
 
     /// Whether [`version_meets_minimum`](Self::version_meets_minimum) can judge

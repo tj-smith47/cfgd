@@ -126,7 +126,7 @@ fn stricter_floor(claimed: &Option<String>, candidate: &Option<String>) -> Optio
         (_, None) => claimed.clone(),
         (None, Some(_)) => candidate.clone(),
         (Some(a), Some(b)) => {
-            if crate::version_satisfies(a, &format!(">={b}")) {
+            if crate::version_meets_floor(a, b) {
                 Some(a.clone())
             } else {
                 Some(b.clone())
