@@ -146,7 +146,15 @@ pub fn resolve_package(
             }));
         }
 
-        if let Some(ref min_ver) = entry.min_version {
+        // A floor the manager cannot read rejects nothing: making every
+        // candidate `continue` on it would delete the package from the plan
+        // over a declaration whose only real problem is that nobody can parse
+        // it. The verify pass owns that report (`VersionFloor::Unreadable`).
+        let floor = entry
+            .min_version
+            .as_deref()
+            .filter(|min| mgr.floor_comparable(min));
+        if let Some(min_ver) = floor {
             match mgr.available_version_memoized(&resolved_name) {
                 Ok(Some(ver)) => {
                     // Manager-aware: pkg (FreeBSD) versions are not semver, so the

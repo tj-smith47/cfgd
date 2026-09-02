@@ -2033,6 +2033,45 @@ fn the_strictest_declared_floor_survives_the_effective_dedup() {
     );
 }
 
+/// The same dedup against a floor nothing can parse: unknown outranks known
+/// here too. Comparing a range expression answers `false` for the PARSE, so
+/// the readable floor quietly outranked a declaration that — claimed alone —
+/// is a check error; the unreadable one now survives and the verify pass names
+/// it.
+#[test]
+fn an_unreadable_floor_survives_the_dedup_so_its_check_error_reaches_the_reader() {
+    let resolved = make_empty_resolved();
+    let malformed = module_one_pinned_pkg("base", "brew", "ripgrep", ">=1.2");
+    let readable = module_one_pinned_pkg("dev", "brew", "ripgrep", "1.5");
+
+    for order in [
+        vec![malformed.clone(), readable.clone()],
+        vec![readable, malformed],
+    ] {
+        let effective = crate::effective::effective_desired_packages(&resolved.merged, &order);
+        assert_eq!(
+            effective[0].min_version.as_deref(),
+            Some(">=1.2"),
+            "the floor nobody can read survives whichever module declared it: {effective:?}"
+        );
+    }
+
+    // And what survives is what the check reports: a declaration no manager
+    // can read is an erroring check, never a verdict about the machine.
+    let mgr = MockPackageManager::new("brew").with_installed_at("ripgrep", "1.9.0");
+    let state = test_state();
+    let printer = test_printer();
+    let cx = test_package_context(&printer, &state);
+    let installed = cx.installed_for(&mgr).expect("the mock lists");
+    assert!(
+        matches!(
+            crate::reconciler::package_version_floor(&mgr, &installed, "ripgrep", Some(">=1.2")),
+            crate::reconciler::VersionFloor::Unreadable { .. }
+        ),
+        "the surviving floor is reported as the check it broke"
+    );
+}
+
 #[test]
 fn verify_module_package_not_installed_is_package_drift() {
     // A module-only package the host lacks must surface as a `package`

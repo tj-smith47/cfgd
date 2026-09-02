@@ -291,6 +291,18 @@ impl PackageManager for SimpleManager {
         // manager lists is uncomparable to it.
         self.mgr_name == "pkg" || distro_comparable(version)
     }
+
+    fn floor_comparable(&self, floor: &str) -> bool {
+        if self.mgr_name != "pkg" {
+            return distro_comparable(floor);
+        }
+        // The tool owns FreeBSD's grammar, so a floor is refused only for what
+        // NO version grammar allows: `pkg version -t` settles a range
+        // expression by collation and answers `<` or `>` with equal
+        // confidence, which is an arbitrary verdict rather than a comparison.
+        // A letter suffix stays comparable — pkg orders `1.2.x` itself.
+        !cfgd_core::declared_floor_is_range_shaped(floor)
+    }
 }
 
 // --- SimpleManager constructors ---
