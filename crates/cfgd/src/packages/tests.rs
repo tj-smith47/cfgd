@@ -4529,10 +4529,17 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
                     mgr.name()
                 );
             }
-            VersionGrammar::ToolOwned { sample, .. } => {
+            VersionGrammar::ToolOwned { sample, floor } => {
                 assert!(
                     mgr.version_comparable(sample),
                     "{}: the tool's own comparator reads everything it lists",
+                    mgr.name()
+                );
+                assert!(
+                    mgr.floor_comparable(floor),
+                    "{}: {floor} is a declaration this family carries to its tool \
+                     rather than refusing, or the floor the tool half drives \
+                     through the shim would never reach it",
                     mgr.name()
                 );
                 // The tool owns this family's grammar, so the shapes it reads
