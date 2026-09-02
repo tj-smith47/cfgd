@@ -792,6 +792,26 @@ pub trait PackageManager: Send + Sync {
         crate::parse_loose_version(version).is_some()
     }
 
+    /// The symmetric twin of [`version_comparable`](Self::version_comparable),
+    /// asked of the DECLARED floor rather than of the installed copy.
+    ///
+    /// A `minVersion` is authored by hand, so it arrives in shapes no
+    /// comparator can read — `>=1.2`, `1.2.x`, a typo. Guarding only the
+    /// installed side made such a floor a permanent `Below`: the comparator
+    /// answered `false` because it could not parse its own argument, and every
+    /// scan reported drift no apply could ever heal. A floor nothing can
+    /// compare against is a check that could not RUN.
+    ///
+    /// Asked of the MANAGER rather than of a blanket parse, because a family
+    /// whose comparator reads packaging fields reads them on this side too: an
+    /// apt floor of `1:2.30` and a cask floor of `1.2.3,4567` are both
+    /// genuinely comparable, and a blanket refusal would turn two working
+    /// declarations into check errors. The `v` prefix every comparator's parse
+    /// already tolerates needs no strip here.
+    fn floor_comparable(&self, floor: &str) -> bool {
+        self.version_comparable(floor)
+    }
+
     /// Directories to add to PATH after bootstrap. Empty for managers
     /// that are already on the system PATH (apt, dnf, etc.).
     ///
