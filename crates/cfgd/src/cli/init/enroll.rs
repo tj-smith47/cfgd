@@ -38,17 +38,18 @@ pub struct EnrollOutput {
 /// Remediation hint for an enrollment error `kind`, rendered in human mode.
 /// Shared by [`build_enroll_error`] and the `signing_failed` ctx carrier so the
 /// hint text stays in one place.
-fn enroll_error_hint(kind: &str) -> Option<HintCommands> {
+pub(in crate::cli) fn enroll_error_hint(kind: &str) -> Option<HintCommands> {
     match kind {
+        // The failure itself is the message's to state; a hint says only what
+        // the reader does about it, so neither one restates the other.
         "method_mismatch" => Some(HintCommands::new(
-            "This server uses bootstrap token enrollment. Re-run with:",
+            "Re-run with a bootstrap token:",
             ["cfgd enroll --server-url <url> --token <token>"],
         )),
         // Two flags, one re-run: the reader picks a key kind, not a command,
         // so the alternatives collapse into the one line they differ inside.
         "no_key" => Some(HintCommands::new(
-            "No signing key found — checked the SSH agent, ~/.ssh/id_ed25519, id_rsa, id_ecdsa. \
-             Re-run with one:",
+            "Re-run naming a key:",
             ["cfgd enroll [--ssh-key <path> | --gpg-key <id>]"],
         )),
         "signing_failed" => {
@@ -129,7 +130,7 @@ pub(crate) fn cmd_enroll(
         return Err(build_enroll_error(
             server_url,
             "method_mismatch",
-            "This server uses bootstrap token enrollment. Run: `cfgd enroll --server-url <url> --token <token>`",
+            "This server uses bootstrap token enrollment, not key-based enrollment",
             serde_json::json!({
                 "serverUrl": server_url,
                 "serverMethod": info.method,
@@ -149,8 +150,8 @@ pub(crate) fn cmd_enroll(
                 return Err(build_enroll_error(
                     &device_id,
                     "no_key",
-                    "no SSH key found — provide --ssh-key <path> or --gpg-key <id>\n\
-                     Checked: SSH agent, ~/.ssh/id_ed25519, ~/.ssh/id_rsa, ~/.ssh/id_ecdsa",
+                    "no signing key found — checked the SSH agent, ~/.ssh/id_ed25519, \
+                     ~/.ssh/id_rsa, ~/.ssh/id_ecdsa",
                     serde_json::json!({
                         "checked": [
                             "ssh-agent",

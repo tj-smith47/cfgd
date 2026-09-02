@@ -454,7 +454,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                             cfgd_core::output::collapse_to_subject_line(&e),
                         ),
                     );
-                    printer.hint("Install later with: `cfgd daemon install`");
+                    printer.hint_commands("Install later with:", &["cfgd daemon install"]);
                 }
             }
         }
@@ -464,7 +464,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 Role::Warn,
                 "Daemon service installation is not supported on this platform",
             );
-            printer.hint("Run the daemon directly with: `cfgd daemon`");
+            printer.hint_commands("Run the daemon directly with:", &["cfgd daemon"]);
         }
     }
 

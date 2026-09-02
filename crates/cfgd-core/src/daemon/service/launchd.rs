@@ -186,7 +186,10 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
         printer
             .status(Role::Warn, "launchctl not found") // name-row-ok: the init system's own tool name, which is lowercase
             .detail(super::INSTALLED_NOT_STARTED);
-        printer.hint("Start it later from a GUI login session with: `cfgd daemon install`");
+        printer.hint_commands(
+            "Start it later from a GUI login session with:",
+            &["cfgd daemon install"],
+        );
         return Ok(false);
     }
 
@@ -213,8 +216,10 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
                     crate::output::collapse_to_subject_line(&detail)
                 ),
             );
-            printer
-                .hint("Run from a GUI login session, or start later with: `cfgd daemon install`");
+            printer.hint_commands(
+                "Run from a GUI login session, or start later with:",
+                &["cfgd daemon install"],
+            );
             return Ok(false);
         }
         Err(e) => {
@@ -225,8 +230,10 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
                     crate::output::collapse_to_subject_line(&e)
                 ),
             );
-            printer
-                .hint("Run from a GUI login session, or start later with: `cfgd daemon install`");
+            printer.hint_commands(
+                "Run from a GUI login session, or start later with:",
+                &["cfgd daemon install"],
+            );
             return Ok(false);
         }
     }
