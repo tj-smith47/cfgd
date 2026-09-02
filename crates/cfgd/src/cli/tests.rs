@@ -14097,19 +14097,26 @@ fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
         ),
     ];
     for (name, timestamp, closing) in module_states {
-        let (printer, buf) = test_printer_capture();
-        printer.emit(super::status::build_module_status_doc(
-            &module_drift(timestamp),
+        // The wide view states its verdicts on the inventory rows rather than
+        // in a Drift section, and closes on the same command for it.
+        for view in [
             super::status::ModuleStatusView::Compact,
-            "2026-05-14T10:05:00Z",
-        ));
-        printer.flush();
-        drop(printer);
-        let out = cfgd_core::test_helpers::captured_text(&buf);
-        assert!(
-            out.contains(&closing),
-            "module report, {name}: closes on `{closing}`, got:\n{out}"
-        );
+            super::status::ModuleStatusView::Inventory { show_values: false },
+        ] {
+            let (printer, buf) = test_printer_capture();
+            printer.emit(super::status::build_module_status_doc(
+                &module_drift(timestamp),
+                view,
+                "2026-05-14T10:05:00Z",
+            ));
+            printer.flush();
+            drop(printer);
+            let out = cfgd_core::test_helpers::captured_text(&buf);
+            assert!(
+                out.contains(&closing),
+                "module report, {name} ({view:?}): closes on `{closing}`, got:\n{out}"
+            );
+        }
     }
 
     // The hint is scoped as the preview was: a bare `cfgd apply` after a
