@@ -215,18 +215,16 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
         registry.add_system_configurator(Box::new(WindowsServiceConfigurator));
     }
 
-    // SSH key configurator — available unconditionally (ssh-keygen on all platforms)
+    // The three cross-platform tool-backed configurators, registered
+    // unconditionally: `is_available()` is the one answer to "can this host run
+    // it" and every consumer filters through `available_system_configurators`.
+    // A probe here asks the same question in a spelling that misses the
+    // configurator's own `CFGD_*_BIN` seam, so the configurator is dropped
+    // before its seam is read, and `plan` calls it "not registered" rather than
+    // "not available on this host".
     registry.add_system_configurator(Box::new(SshKeysConfigurator));
-
-    // GPG key configurator — available on any platform where gpg is installed
-    if cfgd_core::command_available("gpg") {
-        registry.add_system_configurator(Box::new(GpgKeysConfigurator));
-    }
-
-    // Git configurator — cross-platform, gated on git being available at runtime
-    if cfgd_core::command_available("git") {
-        registry.add_system_configurator(Box::new(GitConfigurator));
-    }
+    registry.add_system_configurator(Box::new(GpgKeysConfigurator));
+    registry.add_system_configurator(Box::new(GitConfigurator));
 
     // Node/infrastructure system configurators (Linux-only, gated at compile time)
     #[cfg(unix)]
