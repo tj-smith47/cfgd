@@ -3988,12 +3988,17 @@ mod enroll_mockito {
             let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
             let err = result.unwrap_err().to_string();
             assert!(
-                err.contains("no SSH key found"),
+                err.contains("no signing key found"),
                 "expected no-SSH-key bail, got: {err}"
             );
+            // The message states what happened; the hint is the ONE place the
+            // re-run naming a key appears, so neither restates the other.
+            let hint = super::enroll::enroll_error_hint("no_key").expect("`no_key` carries a hint");
             assert!(
-                err.contains("--ssh-key") && err.contains("--gpg-key"),
-                "expected help text naming both flags, got: {err}"
+                hint.commands
+                    .iter()
+                    .any(|c| c.contains("--ssh-key") && c.contains("--gpg-key")),
+                "expected the hint to name both key flags, got: {hint:?}"
             );
         });
     }

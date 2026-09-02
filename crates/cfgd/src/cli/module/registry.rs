@@ -706,7 +706,7 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
             Doc::new()
                 .heading_title("Search Modules", query)
                 .status(Role::Info, NO_REGISTRIES_MSG)
-                .hint("Add a registry: `cfgd module registry add <git-url>`")
+                .hint_commands("Add a registry:", &["cfgd module registry add <git-url>"])
                 .with_data(serde_json::json!([])),
         );
         return Ok(());
@@ -1154,7 +1154,7 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
             Doc::new()
                 .heading("Module Registries")
                 .status(Role::Info, NO_REGISTRIES_MSG)
-                .hint("Add one: `cfgd module registry add <git-url>`")
+                .hint_commands("Add one:", &["cfgd module registry add <git-url>"])
                 .with_data(serde_json::json!([])),
         );
         return Ok(());

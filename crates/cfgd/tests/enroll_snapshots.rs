@@ -78,7 +78,7 @@ fn enroll_not_found_method_human() {
     let err = build_enroll_error(
         "https://gateway.example.com",
         "method_mismatch",
-        "This server uses bootstrap token enrollment. Run: cfgd enroll --server-url <url> --token <token>",
+        "This server uses bootstrap token enrollment, not key-based enrollment",
         serde_json::json!({
             "serverUrl": "https://gateway.example.com",
             "serverMethod": "token",

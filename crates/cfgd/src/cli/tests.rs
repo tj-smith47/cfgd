@@ -16504,38 +16504,11 @@ fn foreign_command_is_complete(command: &str) -> Option<bool> {
     }
 }
 
-/// Every hint `success_next_step` composes names the command that comes next,
-/// in backticks — the same shape `every_closing_hint_names_a_command` holds
-/// literal hints to, which cannot see a text built here. Walks every variant,
-/// so a new one lands under the rule.
-///
-/// A hint that spells the verb that JUST RAN is a re-run, and a re-run is
-/// either a `<placeholder>` template or a lie: `module push`'s hint once
-/// recomposed the push from the directory and the artifact alone, dropping
-/// `--sign --key`, `--platform` and `--attest`, so following it re-pushed a
-/// fresh digest the cosign signature did not cover. Each variant names the
-/// verbs that produce it; a backticked command opening on one of them must
-/// carry a placeholder rather than the arguments the reader already typed.
-///
-/// Nor may a hint name a FILE the verb that just ran consumes, in any spelling
-/// its placeholder substitutes to. `module push`'s hint read `kubectl apply -f
-/// <module>.yaml`, and `module.yaml` is this verb's own required input —
-/// `kind: Module`, carrying the pushed module's `metadata.name`, and on screen
-/// two lines above the hint. Applying it succeeds and replaces the Module with
-/// one holding no `ociArtifact` and no signature, silently undoing the push and
-/// the signing the rows above just reported.
-///
-/// And every backticked span is COMPLETE as printed, once its placeholders are
-/// substituted: dropping the file left `kubectl apply`, which exits 1 on
-/// `must specify one of -f and -k` without contacting a cluster, three lines
-/// above the operator hand-typing the `-f` the hint had dropped. A span
-/// opening on `cfgd` round-trips through [`Cli::try_parse_from`]; one opening
-/// on a foreign tool is judged by [`foreign_command_is_complete`], whose table
-/// a new foreign command trips by being absent from. A span that is a bare
-/// flag (`--apply`) is named, not claimed typeable on its own.
-#[test]
-fn every_composed_next_step_names_a_command() {
-    let mutations: &[(Mutation<'_>, &[&str])] = &[
+/// Every shape [`success_next_step`] can be handed, paired with the verbs
+/// that produce it: the enumerated population, so a new variant lands under
+/// both walks that read it rather than under whichever one thought of it.
+fn walked_mutations() -> &'static [(Mutation<'static>, &'static [&'static str])] {
+    &[
         (Mutation::SourceSubscribed, &["cfgd source add"]),
         (
             Mutation::SourceUpdated {
@@ -16622,7 +16595,41 @@ fn every_composed_next_step_names_a_command() {
             Mutation::BackupRolledBack { unit: "notes" },
             &["cfgd backup rollback"],
         ),
-    ];
+    ]
+}
+
+/// Every hint `success_next_step` composes names the command that comes next,
+/// in backticks — the same shape `every_closing_hint_names_a_command` holds
+/// literal hints to, which cannot see a text built here. Walks every variant,
+/// so a new one lands under the rule.
+///
+/// A hint that spells the verb that JUST RAN is a re-run, and a re-run is
+/// either a `<placeholder>` template or a lie: `module push`'s hint once
+/// recomposed the push from the directory and the artifact alone, dropping
+/// `--sign --key`, `--platform` and `--attest`, so following it re-pushed a
+/// fresh digest the cosign signature did not cover. Each variant names the
+/// verbs that produce it; a backticked command opening on one of them must
+/// carry a placeholder rather than the arguments the reader already typed.
+///
+/// Nor may a hint name a FILE the verb that just ran consumes, in any spelling
+/// its placeholder substitutes to. `module push`'s hint read `kubectl apply -f
+/// <module>.yaml`, and `module.yaml` is this verb's own required input —
+/// `kind: Module`, carrying the pushed module's `metadata.name`, and on screen
+/// two lines above the hint. Applying it succeeds and replaces the Module with
+/// one holding no `ociArtifact` and no signature, silently undoing the push and
+/// the signing the rows above just reported.
+///
+/// And every backticked span is COMPLETE as printed, once its placeholders are
+/// substituted: dropping the file left `kubectl apply`, which exits 1 on
+/// `must specify one of -f and -k` without contacting a cluster, three lines
+/// above the operator hand-typing the `-f` the hint had dropped. A span
+/// opening on `cfgd` round-trips through [`Cli::try_parse_from`]; one opening
+/// on a foreign tool is judged by [`foreign_command_is_complete`], whose table
+/// a new foreign command trips by being absent from. A span that is a bare
+/// flag (`--apply`) is named, not claimed typeable on its own.
+#[test]
+fn every_composed_next_step_names_a_command() {
+    let mutations = walked_mutations();
     let source = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
     )
@@ -30540,8 +30547,10 @@ fn every_closing_hint_names_a_command() {
             {
                 continue;
             }
+            // Judged by the block walk instead, and NOT counted here: a floor
+            // that counts what it never asserted on can be met by hints this
+            // walk no longer reaches.
             if line.contains(".hint_commands(") {
-                checked += 1;
                 continue;
             }
             let Some(at) = line.find(".hint(").or_else(|| line.find("next_step(")) else {
@@ -30568,7 +30577,7 @@ fn every_closing_hint_names_a_command() {
         }
     }
     assert!(
-        checked >= 25,
+        checked >= 24,
         "the walk no longer reaches the hints it exists to hold — it found {checked}"
     );
     assert!(
@@ -30591,6 +30600,14 @@ fn every_closing_hint_names_a_command() {
 /// backticks left over from the sentence it came out of, and no trailing
 /// punctuation. `HintCommands` holds the parts; `Renderer::render_hint` spells
 /// the indent and the `$ `, once, for every surface.
+///
+/// The other half is which hints belong in the block at all, and the answer is
+/// grammatical: a colon INTRODUCES what follows it, so a backticked command
+/// after one is a payload the sentence already promised, while a command named
+/// mid-sentence is part of the sentence and keeps its backticks. Eight shipped
+/// hints (`Add a registry: \`cfgd module registry add <git-url>\`` and its
+/// siblings) read the first way and rendered the second, which is why the walk
+/// flags a `: \`` in a hint's own text.
 #[test]
 fn every_hint_command_block_line_comes_from_the_one_composer() {
     let walked: Vec<(std::path::PathBuf, String)> = cli_production_sources()
@@ -30615,6 +30632,18 @@ fn every_hint_command_block_line_comes_from_the_one_composer() {
                         if lit.contains("\\n") || lit.contains("$ ") {
                             offenders.push(format!(
                                 "{}:{}: a hint hand-builds a command line: {lit}",
+                                path.display(),
+                                n + 1
+                            ));
+                        }
+                        // A colon INTRODUCES what follows it, so a backticked
+                        // command after one is the hint's payload, not a name
+                        // dropped mid-sentence.
+                        if lit.contains(": `") {
+                            offenders.push(format!(
+                                "{}:{}: a colon-introduced command is the hint's payload — \
+                                 `hint_commands(<prose ending on the colon>, &[<command>])`: \
+                                 {lit}",
                                 path.display(),
                                 n + 1
                             ));
@@ -30668,6 +30697,84 @@ fn every_hint_command_block_line_comes_from_the_one_composer() {
          commands:\n{}",
         offenders.join("\n")
     );
+
+    // Reading literals cannot see a composer that hands its commands over as
+    // a value (`HintCommands::new(MSG_ANSWER_DECISIONS, commands)`), so every
+    // composed hint is judged as one: the colon and the block promise each
+    // other, in both directions.
+    for (subject, hint) in composed_hints() {
+        assert_eq!(
+            hint.text.trim_end().ends_with(':'),
+            !hint.commands.is_empty(),
+            "{subject}: a colon promises a `$` block under it and a block \
+             promises the colon that introduced it: {hint:?}"
+        );
+    }
+}
+
+/// Every hint the four composers can produce, each with the case that produced
+/// it, so a walk judges the whole population rather than the arms it thought
+/// of. Enumerated from the composers' own populations — `Mutation`'s walked
+/// shapes, `PullFailureKind::ALL`, the kinds `enroll_error_hint` answers, and
+/// a decision count either side of the bulk form's threshold.
+fn composed_hints() -> Vec<(String, cfgd_core::output::HintCommands)> {
+    use cfgd_core::daemon::{PullFailure, PullFailureKind};
+
+    let mut out: Vec<(String, cfgd_core::output::HintCommands)> = walked_mutations()
+        .iter()
+        .map(|(mutation, _)| (format!("{mutation:?}"), success_next_step(*mutation)))
+        .collect();
+    for kind in PullFailureKind::ALL {
+        let failure = PullFailure {
+            kind: *kind,
+            message: "whatever libgit2 said".to_string(),
+        };
+        out.push((
+            format!("{kind:?}"),
+            super::local_pull_next_step(&failure, "cfgd sync"),
+        ));
+    }
+    for kind in enroll_error_hint_kinds() {
+        if let Some(hint) = crate::cli::init::enroll::enroll_error_hint(&kind) {
+            out.push((format!("enroll {kind}"), hint));
+        }
+    }
+    for pending in [1usize, 2] {
+        out.push((
+            format!("{pending} pending decisions"),
+            cfgd_core::reconciler::answer_decisions_hint(pending),
+        ));
+    }
+    assert!(
+        out.len() >= 33,
+        "the composed-hint population shrank to {} — a composer stopped being \
+         walked",
+        out.len()
+    );
+    out
+}
+
+/// The `kind` strings `enroll_error_hint` answers, read off its own match arms:
+/// a kind added there is walked without being listed twice.
+fn enroll_error_hint_kinds() -> Vec<String> {
+    let body = cli_file_body("init/enroll.rs");
+    let lines: Vec<&str> = body.lines().collect();
+    let arms =
+        fn_body(&lines, "enroll_error_hint").expect("enroll.rs declares `enroll_error_hint`");
+    let kinds: Vec<String> = arms
+        .lines()
+        .filter(|l| l.contains("=>"))
+        .flat_map(|l| {
+            string_literal_spans(l)
+                .into_iter()
+                .map(move |(s, e)| l[s..e].to_string())
+        })
+        .collect();
+    assert!(
+        kinds.len() >= 3,
+        "the enrollment failures with a hint of their own are not being read: {kinds:?}"
+    );
+    kinds
 }
 
 /// A `Sources` row is not always a declared `spec.sources[]` entry: the daemon

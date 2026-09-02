@@ -707,6 +707,22 @@ impl Emitting<'_> {
         self.push_line_undrained(depth, body, trailer, trailer_column);
     }
 
+    /// [`Self::push_line`] with no wrap: ONE physical line, however wide.
+    ///
+    /// A hint's `$ ` block line is the exact text the reader copies, so a wrap
+    /// splicing a newline and a hang indent into the middle of it hands them
+    /// something else. A terminal soft-wraps the line instead, which costs a
+    /// visual row and keeps the command whole. Only content whose BYTES are
+    /// the promise belongs here; ordinary prose wraps.
+    pub(crate) fn push_line_unwrapped(&mut self, depth: usize, body: &str) {
+        // Drained under the real width: a kv row emptied out of the buffer on
+        // the way past is still ordinary content and still wraps.
+        self.drain_buffers();
+        let wrap_cols = self.wrap_cols.take();
+        self.push_line_undrained(depth, body, None, None);
+        self.wrap_cols = wrap_cols;
+    }
+
     /// Empty both deferred buffers, oldest content first.
     ///
     /// A section's pending statuses are always older than whatever is still in
@@ -1202,7 +1218,9 @@ impl Renderer {
     /// `commands` drops the hint's payload onto its own indented `$ ` lines
     /// (see [`crate::output::HintCommands`]) — the ONE place that indent and
     /// that prompt are spelled, so no call site hand-builds either and the
-    /// home fold below reaches the block lines too.
+    /// home fold below reaches the block lines too. A block line is pushed
+    /// UNWRAPPED, because the bytes are the promise: a hard wrap would splice
+    /// a newline and a hang indent into the command the reader copies.
     ///
     /// The ONE seam every hint reaches — `Printer::hint`, `SectionGuard::hint`
     /// and the `Component::Hint` a `Doc` / `SectionBuilder` carries all render
@@ -1243,7 +1261,7 @@ impl Renderer {
             e.open_top_group(TopGroup::Hint);
             e.push_line(depth, &body);
             for line in &block {
-                e.push_line(depth + 1, line);
+                e.push_line_unwrapped(depth + 1, line);
             }
             e.mark_top_level_group(TopGroup::Hint);
         });
@@ -1739,6 +1757,31 @@ mod tests {
         assert!(
             s.contains("$ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/"),
             "got: {s:?}"
+        );
+    }
+
+    /// A block line's whole point is that what follows the `$ ` is what the
+    /// reader copies, so it is the one hint line that must not hard-wrap: the
+    /// 79-column `launchctl bootout` command under an 80-column terminal came
+    /// back with a newline and a hang indent spliced into the middle of a path.
+    /// Soft-wrapping costs a visual row and leaves the bytes alone. Only the
+    /// emulated screen can answer this — it is the one capture whose sink
+    /// reports a width at all.
+    #[test]
+    fn a_hint_command_line_is_never_hard_wrapped() {
+        let cmd = "launchctl bootout gui/$(id -u) \
+                   ~/Library/LaunchAgents/com.cfgd.daemon.plist";
+        let (printer, screen) = crate::output::Printer::for_test_live_terminal(24, 60);
+        printer.hint_commands("Stop it later, from a GUI login session:", &[cmd]);
+        drop(printer);
+        // Soft wrap breaks a row at the terminal's edge and resumes at column
+        // zero, so the rows rejoin into the command; a hard wrap would leave
+        // its hang indent behind in the middle.
+        let rejoined = screen.contents().replace('\n', "");
+        assert!(
+            rejoined.contains(cmd),
+            "the command came back broken: {:?}",
+            screen.contents()
         );
     }
 

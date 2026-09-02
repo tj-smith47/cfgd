@@ -118,7 +118,7 @@ pub fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
     if entries.is_empty() {
         doc = doc
             .status(Role::Info, "No signing keys found")
-            .hint("Generate with: `cfgd module keys generate`");
+            .hint_commands("Generate with:", &["cfgd module keys generate"]);
     } else {
         let pairs: Vec<(String, String)> = entries
             .iter()
