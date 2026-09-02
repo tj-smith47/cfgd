@@ -1,4 +1,3 @@
-#![cfg(unix)]
 #![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation
 
 //! Exit-code contract for every drift surface that takes `--exit-code`
@@ -18,6 +17,7 @@
 use std::path::Path;
 
 use assert_cmd::Command;
+use cfgd_core::test_helpers::{ShimArm, write_tool_shim};
 
 /// Every surface taking `--exit-code`, each spelled as the argv that arms it.
 const EXIT_CODE_SURFACES: [&[&str]; 3] = [
@@ -40,13 +40,11 @@ const SCOPED_EXIT_CODE_SURFACES: [&[&str]; 2] = [
 /// A gpg stand-in that always fails, so the gpgKeys configurator's own
 /// keyring probe errors (gpg exit codes other than 0/2 are probe errors).
 fn failing_gpg(dir: &Path) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let shim = dir.join("gpg-fails");
-    std::fs::write(&shim, "#!/bin/sh\necho 'keyring unavailable' >&2\nexit 1\n").unwrap();
-    let mut perms = std::fs::metadata(&shim).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&shim, perms).unwrap();
-    shim
+    write_tool_shim(
+        dir,
+        "gpg-fails",
+        &[ShimArm::always("", "keyring unavailable\n", 1)],
+    )
 }
 
 /// Config + profile demanding one gpg key (the check that will error) and,
@@ -98,7 +96,10 @@ fn run(
         .arg(config.join("cfgd.yaml"))
         .arg("--state-dir")
         .arg(state)
-        .env("HOME", home);
+        .env("HOME", home)
+        // Windows resolves `~` from USERPROFILE first, so a child left holding
+        // the invoking account's profile would write to the real home.
+        .env("USERPROFILE", home);
     if let Some(gpg) = gpg {
         cmd.env("CFGD_GPG_BIN", gpg);
     }
@@ -181,17 +182,18 @@ fn an_erroring_check_outranks_real_drift_on_every_exit_code_surface() {
 /// `list_with_versions` override. A pinned package this manager holds can
 /// therefore be neither met nor missed, which is the check-error case.
 fn versionless_apk(dir: &Path) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let shim = dir.join("apk-versionless");
-    std::fs::write(
-        &shim,
-        "#!/bin/sh\ncase \"$1\" in\n  list) echo 'demo-3.0.0-r0 x86_64 {demo} (MIT) [installed]' ;;\n  policy) printf 'demo policy:\\n  3.0.0:\\n    https://example.invalid/alpine/main\\n' ;;\nesac\nexit 0\n",
+    write_tool_shim(
+        dir,
+        "apk-versionless",
+        &[
+            ShimArm::on("list", "demo-3.0.0-r0 x86_64 {demo} (MIT) [installed]\n"),
+            ShimArm::on(
+                "policy",
+                "demo policy:\n  3.0.0:\n    https://example.invalid/alpine/main\n",
+            ),
+            ShimArm::always("", "", 0),
+        ],
     )
-    .unwrap();
-    let mut perms = std::fs::metadata(&shim).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&shim, perms).unwrap();
-    shim
 }
 
 /// One module pinning a package's version onto the versionless manager above,
@@ -240,6 +242,7 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_every_exit_code_su
             .arg("--state-dir")
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
+            .env("USERPROFILE", home_tmp.path())
             .env("CFGD_APK_BIN", &apk)
             .output()
             .unwrap();
@@ -263,22 +266,19 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_every_exit_code_su
 /// A `dnf`/`rpm` pair that OFFERS `demo` at 3.0.0 and reports 1.0.0 installed
 /// — a machine holding a package whose declared floor it no longer meets.
 fn below_floor_dnf(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
-    use std::os::unix::fs::PermissionsExt;
-    let write = |name: &str, body: &str| {
-        let shim = dir.join(name);
-        std::fs::write(&shim, body).unwrap();
-        let mut perms = std::fs::metadata(&shim).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&shim, perms).unwrap();
-        shim
-    };
-    let dnf = write(
+    let dnf = write_tool_shim(
+        dir,
         "dnf-offers-3",
-        "#!/bin/sh\ncase \"$1\" in\n  info) printf 'Name : demo\\nVersion : 3.0.0\\n' ;;\n  list) echo 'demo.x86_64  1.0.0-1  @main' ;;\nesac\nexit 0\n",
+        &[
+            ShimArm::on("info", "Name : demo\nVersion : 3.0.0\n"),
+            ShimArm::on("list", "demo.x86_64  1.0.0-1  @main\n"),
+            ShimArm::always("", "", 0),
+        ],
     );
-    let rpm = write(
+    let rpm = write_tool_shim(
+        dir,
         "rpm-holds-1",
-        "#!/bin/sh\nprintf 'demo\\t1.0.0\\n'\nexit 0\n",
+        &[ShimArm::always("demo\t1.0.0\n", "", 0)],
     );
     (dnf, rpm)
 }
@@ -303,6 +303,7 @@ fn a_pinned_package_below_its_floor_exits_drift_detected_on_every_surface() {
             .arg("--state-dir")
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
+            .env("USERPROFILE", home_tmp.path())
             .env("CFGD_DNF_BIN", &dnf)
             .env("CFGD_RPM_BIN", &rpm)
             .output()
@@ -356,6 +357,7 @@ fn a_pinned_package_below_its_floor_is_drift_on_both_scoped_surfaces() {
             .arg("--state-dir")
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
+            .env("USERPROFILE", home_tmp.path())
             .env("CFGD_DNF_BIN", &dnf)
             .env("CFGD_RPM_BIN", &rpm)
             .output()
@@ -394,6 +396,7 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_both_scoped_surfac
             .arg("--state-dir")
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
+            .env("USERPROFILE", home_tmp.path())
             .env("CFGD_APK_BIN", &apk)
             .output()
             .unwrap();
@@ -435,6 +438,7 @@ fn a_scoped_run_does_not_heal_a_version_row_the_machine_still_holds() {
             .arg("--state-dir")
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
+            .env("USERPROFILE", home_tmp.path())
             .env("CFGD_DNF_BIN", &dnf)
             .env("CFGD_RPM_BIN", &rpm)
             .output()
@@ -480,9 +484,15 @@ fn a_scoped_env_probe_failure_is_reported_and_escalates_on_both_scoped_surfaces(
     let home_tmp = tempfile::tempdir().unwrap();
     write_module_config(config_tmp.path());
     // The primary managed env file EXISTS but cannot be read — a directory
-    // at its path fails `read_to_string` with EISDIR on every host, root
-    // included (a permission bit would not).
-    std::fs::create_dir(home_tmp.path().join(".cfgd.env")).unwrap();
+    // at its path fails `read_to_string` on every host, root included (a
+    // permission bit would not).
+    let env_file = cfgd_core::reconciler::primary_env_file(home_tmp.path());
+    std::fs::create_dir(&env_file).unwrap();
+    let env_file_name = env_file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap()
+        .to_string();
 
     for args in SCOPED_EXIT_CODE_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
@@ -504,7 +514,7 @@ fn a_scoped_env_probe_failure_is_reported_and_escalates_on_both_scoped_surfaces(
             "cfgd {args:?}: a probe that could not run exits Error on the scoped surface too, got: {text}"
         );
         assert!(
-            text.contains("error checking drift") && text.contains(".cfgd.env"),
+            text.contains("error checking drift") && text.contains(&env_file_name),
             "cfgd {args:?}: the failed probe renders as its own row naming the file, got: {text}"
         );
     }
@@ -611,17 +621,19 @@ fn drift_with_every_check_answered_still_exits_drift_detected() {
 /// `0.12.5_1` — Homebrew's `<upstream>_<revision>` grammar — and offered at
 /// `0.12.5`, so a declared `minVersion: 0.11` is met.
 fn converged_brew(dir: &Path) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let shim = dir.join("brew-holds-neovim");
-    std::fs::write(
-        &shim,
-        "#!/bin/sh\ncase \"$*\" in\n  *--versions*) echo 'neovim 0.12.5_1' ;;\n  *info*) printf '{\"formulae\":[{\"versions\":{\"stable\":\"0.12.5\"}}]}' ;;\n  *list*) echo 'neovim' ;;\n  *) echo 'Homebrew 4.0.0' ;;\nesac\nexit 0\n",
+    write_tool_shim(
+        dir,
+        "brew-holds-neovim",
+        &[
+            ShimArm::on("--versions", "neovim 0.12.5_1\n"),
+            ShimArm::on(
+                "info",
+                "{\"formulae\":[{\"versions\":{\"stable\":\"0.12.5\"}}]}",
+            ),
+            ShimArm::on("list", "neovim\n"),
+            ShimArm::always("Homebrew 4.0.0\n", "", 0),
+        ],
     )
-    .unwrap();
-    let mut perms = std::fs::metadata(&shim).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&shim, perms).unwrap();
-    shim
 }
 
 /// One module pinning a floor the installed brew formula clears.
@@ -669,6 +681,7 @@ fn a_brew_formula_clearing_its_floor_is_converged_on_every_surface() {
             .arg("--state-dir")
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
+            .env("USERPROFILE", home_tmp.path())
             .env("CFGD_BREW_BIN", &brew)
             .output()
             .unwrap();
@@ -699,6 +712,7 @@ fn a_brew_formula_clearing_its_floor_is_converged_on_every_surface() {
         .arg("--state-dir")
         .arg(state_tmp.path())
         .env("HOME", home_tmp.path())
+        .env("USERPROFILE", home_tmp.path())
         .env("CFGD_BREW_BIN", &brew)
         .output()
         .unwrap();

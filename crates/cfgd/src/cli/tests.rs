@@ -33620,7 +33620,6 @@ fn every_docs_pointer_the_cli_renders_goes_through_the_linked_slot() {
 
 /// A profile whose only system demand is a gpg key, so pointing
 /// `CFGD_GPG_BIN` at a failing shim makes the gpgKeys probe itself error.
-#[cfg(unix)]
 const GPG_CHECK_PROFILE_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
 kind: Profile
 metadata:
@@ -33638,7 +33637,6 @@ spec:
 /// over a machine whose check never ran. The error is its own row, worded
 /// as `diff` words it.
 #[test]
-#[cfg(unix)]
 #[serial_test::serial]
 fn a_status_scan_reports_an_erroring_system_check_as_its_own_row() {
     let _shim = cfgd_core::test_helpers::ToolShim::install(
@@ -33658,7 +33656,6 @@ fn a_status_scan_reports_an_erroring_system_check_as_its_own_row() {
 /// The same failed check must reach a `-o json` consumer: an empty `drift`
 /// array beside no error entry is indistinguishable from a clean scan.
 #[test]
-#[cfg(unix)]
 #[serial_test::serial]
 fn a_status_scan_carries_an_erroring_check_in_its_json_payload() {
     let _shim = cfgd_core::test_helpers::ToolShim::install(
@@ -33686,7 +33683,6 @@ fn a_status_scan_carries_an_erroring_check_in_its_json_payload() {
 /// either surface — including when one check errors: both report it, and
 /// neither records it as drift.
 #[test]
-#[cfg(unix)]
 #[serial_test::serial]
 fn diff_and_scan_agree_on_the_findings() {
     let _shim = cfgd_core::test_helpers::ToolShim::install(

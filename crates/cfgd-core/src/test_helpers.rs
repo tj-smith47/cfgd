@@ -1525,24 +1525,163 @@ impl ProbePath {
     }
 }
 
-/// Owns a tempdir holding a `/bin/sh` shim binary plus the env-vars that
-/// route a single `tool_cmd(env_var, default)` factory at it. The shim
+/// One argv-dispatch arm of a shim written by [`write_tool_shim`].
+///
+/// `matches` is a substring of the invocation's space-joined argv; the FIRST
+/// arm whose substring is present answers the call. An empty `matches` always
+/// answers, so it is how a shim spells its fallback behaviour — an arm after
+/// one is unreachable.
+pub struct ShimArm<'a> {
+    /// The argv substring this arm answers; `""` answers every invocation.
+    pub matches: &'a str,
+    /// Written verbatim to stdout — no trailing newline is added.
+    pub stdout: &'a str,
+    /// Written verbatim to stderr — no trailing newline is added.
+    pub stderr: &'a str,
+    /// The status the shim exits with once this arm has answered.
+    pub exit_code: i32,
+}
+
+impl<'a> ShimArm<'a> {
+    /// An arm answering every invocation naming `matches` with `stdout` and a
+    /// zero exit — a stand-in that fakes one subcommand's listing.
+    pub fn on(matches: &'a str, stdout: &'a str) -> Self {
+        Self {
+            matches,
+            stdout,
+            stderr: "",
+            exit_code: 0,
+        }
+    }
+
+    /// The fallback arm: answers every invocation no earlier arm claimed.
+    pub fn always(stdout: &'a str, stderr: &'a str, exit_code: i32) -> Self {
+        Self {
+            matches: "",
+            stdout,
+            stderr,
+            exit_code,
+        }
+    }
+}
+
+/// Write an executable stand-in for an external tool into `dir` and return the
+/// path to invoke it by. Every invocation appends its space-joined argv as one
+/// line to `<dir>/argv.log`, then the first matching [`ShimArm`] decides what
+/// the shim writes and what it exits with.
+///
+/// Two arms, one per host family, with identical observable behaviour:
+///
+/// - **Unix** — a `/bin/sh` script, `chmod 0755`, named `name`. Canned output
+///   is emitted through `printf '%s'`, single-quote-escaped into the script.
+/// - **Windows** — a `@echo off` batch file named `<name>.cmd`, which
+///   `std::process::Command` executes through `cmd.exe` when it is named by an
+///   absolute path (as a `CFGD_*_BIN` seam names it). Canned output lives in
+///   sidecar files beside the script and is emitted with `type`, because
+///   `echo` would append CRLF and demand `^`-escaping of everything a package
+///   listing contains; argv dispatch is `findstr /C:` over the command line.
+///
+/// Two Windows-only quirks a caller must respect, both inherited from `cmd`:
+/// an `matches` substring may not contain `"`, and an argv carrying `&`, `|`,
+/// `<`, `>` or `%` corrupts the log line (nothing cfgd spawns a tool with
+/// does).
+pub fn write_tool_shim(dir: &Path, name: &str, arms: &[ShimArm<'_>]) -> std::path::PathBuf {
+    let log_path = dir.join("argv.log");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Single-quote-safe escaping: replace ' with '\''.
+        let sq = |s: &str| s.replace('\'', "'\\''");
+        let mut script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
+            sq(&log_path.display().to_string())
+        );
+        let mut answered = false;
+        for arm in arms {
+            let (out, err, code) = (sq(arm.stdout), sq(arm.stderr), arm.exit_code);
+            if arm.matches.is_empty() {
+                script.push_str(&format!(
+                    "printf '%s' '{out}'\nprintf '%s' '{err}' 1>&2\nexit {code}\n"
+                ));
+                answered = true;
+                break;
+            }
+            script.push_str(&format!(
+                "case \"$*\" in\n*'{}'*) printf '%s' '{out}'; printf '%s' '{err}' 1>&2; exit {code} ;;\nesac\n",
+                sq(arm.matches)
+            ));
+        }
+        if !answered {
+            script.push_str("exit 0\n");
+        }
+
+        let bin_path = dir.join(name);
+        std::fs::write(&bin_path, script).expect("write shim");
+        let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin_path, perms).expect("chmod");
+        bin_path
+    }
+
+    #[cfg(windows)]
+    {
+        // `echo(` (rather than `echo `) prints an empty line for an empty
+        // argv instead of `ECHO is off.`.
+        let mut script = format!("@echo off\r\n>>\"{}\" echo(%*\r\n", log_path.display());
+        let emit = |script: &mut String, arm: &ShimArm<'_>, idx: usize| {
+            for (stream, body, redirect) in [("out", arm.stdout, ""), ("err", arm.stderr, " 1>&2")]
+            {
+                if body.is_empty() {
+                    continue;
+                }
+                let side = dir.join(format!("{name}.{idx}.{stream}"));
+                std::fs::write(&side, body).expect("write shim output");
+                script.push_str(&format!("type \"{}\"{redirect}\r\n", side.display()));
+            }
+            script.push_str(&format!("exit /b {}\r\n", arm.exit_code));
+        };
+
+        let mut answered = false;
+        for (idx, arm) in arms.iter().enumerate() {
+            if arm.matches.is_empty() {
+                emit(&mut script, arm, idx);
+                answered = true;
+                break;
+            }
+            script.push_str(&format!(
+                "echo(%*| findstr /C:\"{}\" >nul\r\nif errorlevel 1 goto cfgd_arm{idx}\r\n",
+                arm.matches
+            ));
+            emit(&mut script, arm, idx);
+            script.push_str(&format!(":cfgd_arm{idx}\r\n"));
+        }
+        if !answered {
+            script.push_str("exit /b 0\r\n");
+        }
+
+        let bin_path = dir.join(format!("{name}.cmd"));
+        std::fs::write(&bin_path, script).expect("write shim");
+        bin_path
+    }
+}
+
+/// Owns a tempdir holding a [`write_tool_shim`] stand-in plus the env-vars
+/// that route a single `tool_cmd(env_var, default)` factory at it. The shim
 /// records its full argv to a log file and exits with a chosen status,
 /// optionally writing canned stdout/stderr.
 ///
 /// Construct with [`ToolShim::install`]. Drops the env-vars and tempdir on
 /// drop, even when a test panics — env state never leaks across tests.
 ///
-/// Unix-only: the shim is a `/bin/sh` script. Tests using this helper should
-/// be gated behind `#[cfg(unix)]`.
-#[cfg(unix)]
+/// Cross-platform: a `/bin/sh` script on Unix, a `.cmd` batch file on Windows.
 pub struct ToolShim {
     _tmp: tempfile::TempDir,
     env_var: String,
     log_path: std::path::PathBuf,
 }
 
-#[cfg(unix)]
 impl ToolShim {
     /// Install a shim that records argv to a log and exits with `exit_code`,
     /// emitting `stdout` to stdout and `stderr` to stderr. The shim is pointed
@@ -1554,39 +1693,7 @@ impl ToolShim {
     /// installed last. `argv` is appended one line per invocation so
     /// multi-call tests can assert ordering.
     pub fn install(env_var: &str, exit_code: i32, stdout: &str, stderr: &str) -> Self {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let bin_path = tmp.path().join(format!("shim-{env_var}"));
-        let log_path = tmp.path().join("argv.log");
-
-        // Single-quote-safe escaping: replace ' with '\''.
-        let stdout_lit = stdout.replace('\'', "'\\''");
-        let stderr_lit = stderr.replace('\'', "'\\''");
-
-        let log_lit = log_path.display().to_string().replace('\'', "'\\''");
-        let script = format!(
-            "#!/bin/sh\n\
-             printf '%s\\n' \"$*\" >> '{log_lit}'\n\
-             printf '%s' '{stdout_lit}'\n\
-             printf '%s' '{stderr_lit}' 1>&2\n\
-             exit {exit_code}\n",
-        );
-        std::fs::write(&bin_path, script).expect("write shim");
-        let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&bin_path, perms).expect("chmod");
-
-        // SAFETY: callers wrap with `serial_test::serial`, so no concurrent
-        // reader observes a mid-update env state.
-        unsafe {
-            std::env::set_var(env_var, &bin_path);
-        }
-
-        Self {
-            _tmp: tmp,
-            env_var: env_var.to_string(),
-            log_path,
-        }
+        Self::with_arms(env_var, &[ShimArm::always(stdout, stderr, exit_code)])
     }
 
     /// Install a shim that exits non-zero (emitting `stderr`) **only** when its
@@ -1594,27 +1701,23 @@ impl ToolShim {
     /// like [`ToolShim::install`]. Use to exercise batch-then-per-package
     /// fallbacks where one package in a batch is invalid but the rest are valid.
     pub fn install_failing_on(env_var: &str, fail_substr: &str, stderr: &str) -> Self {
-        use std::os::unix::fs::PermissionsExt;
+        Self::with_arms(
+            env_var,
+            &[
+                ShimArm {
+                    matches: fail_substr,
+                    stdout: "",
+                    stderr,
+                    exit_code: 1,
+                },
+                ShimArm::always("", "", 0),
+            ],
+        )
+    }
+
+    fn with_arms(env_var: &str, arms: &[ShimArm<'_>]) -> Self {
         let tmp = tempfile::TempDir::new().expect("tempdir");
-        let bin_path = tmp.path().join(format!("shim-{env_var}"));
-        let log_path = tmp.path().join("argv.log");
-
-        let stderr_lit = stderr.replace('\'', "'\\''");
-        let substr_lit = fail_substr.replace('\'', "'\\''");
-
-        let log_lit = log_path.display().to_string().replace('\'', "'\\''");
-        let script = format!(
-            "#!/bin/sh\n\
-             printf '%s\\n' \"$*\" >> '{log_lit}'\n\
-             case \"$*\" in\n\
-             *'{substr_lit}'*) printf '%s' '{stderr_lit}' 1>&2; exit 1 ;;\n\
-             esac\n\
-             exit 0\n",
-        );
-        std::fs::write(&bin_path, script).expect("write shim");
-        let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&bin_path, perms).expect("chmod");
+        let bin_path = write_tool_shim(tmp.path(), &format!("shim-{env_var}"), arms);
 
         // SAFETY: callers wrap with `serial_test::serial`, so no concurrent
         // reader observes a mid-update env state.
@@ -1623,16 +1726,24 @@ impl ToolShim {
         }
 
         Self {
+            log_path: tmp.path().join("argv.log"),
             _tmp: tmp,
             env_var: env_var.to_string(),
-            log_path,
         }
     }
 
     /// Read the captured argv. Each line is the space-joined argv of one
     /// invocation, in order.
+    ///
+    /// `cmd` hands a batch file its arguments individually quoted, so the
+    /// Windows log is stripped of `"` to read as the same unquoted join
+    /// `"$*"` gives on Unix.
     pub fn argv_log(&self) -> String {
-        std::fs::read_to_string(&self.log_path).unwrap_or_default()
+        let raw = std::fs::read_to_string(&self.log_path).unwrap_or_default();
+        #[cfg(windows)]
+        return raw.replace('"', "");
+        #[cfg(not(windows))]
+        raw
     }
 
     /// Number of times the shim was invoked.
@@ -1658,7 +1769,6 @@ impl ToolShim {
     }
 }
 
-#[cfg(unix)]
 impl Drop for ToolShim {
     fn drop(&mut self) {
         // SAFETY: see `install`.
