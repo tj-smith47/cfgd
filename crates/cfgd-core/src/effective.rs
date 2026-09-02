@@ -127,7 +127,9 @@ pub fn effective_system_map(profile: &MergedProfile, modules: &[ResolvedModule])
 /// `2.30`. One it cannot read WINS, whichever side declared it, and travels to
 /// the seam that reports it: `1:2.30` against `>=1.2` must settle on `>=1.2` in
 /// both declaration orders, or the malformed floor vanishes with no check error
-/// in one of them.
+/// in one of them. When it can read NEITHER, the CLAIMED floor is the one
+/// carried: both spellings error identically at verify, so the choice is
+/// stated rather than left to fall out of the comparison.
 ///
 /// Without a manager the dedup judges no readability of its own, and the same
 /// carry-the-doubt rule falls to the shared parser
