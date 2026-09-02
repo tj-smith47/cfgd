@@ -43,10 +43,11 @@ pub fn recorded_manager_path_dirs(
     profile: &MergedProfile,
     modules: &[ResolvedModule],
 ) -> Vec<ManagerPathDir> {
-    let named: HashSet<String> = crate::effective::effective_desired_packages(profile, modules)
-        .into_iter()
-        .map(|ep| ep.manager)
-        .collect();
+    let named: HashSet<String> =
+        crate::effective::effective_desired_packages(profile, modules, None)
+            .into_iter()
+            .map(|ep| ep.manager)
+            .collect();
     if named.is_empty() {
         return Vec::new();
     }

@@ -121,24 +121,33 @@ pub fn effective_system_map(profile: &MergedProfile, modules: &[ResolvedModule])
 /// The stricter of two declared floors: `None` loses to `Some`, and between two
 /// floors the winner is the one the OTHER does not satisfy.
 ///
-/// The dedup judges no readability of its own. A floor the shared parser
-/// cannot read ([`declared_floor_parses`](crate::declared_floor_parses)) WINS
-/// instead of being compared, and travels to the seam that HOLDS the manager:
-/// comparing it here would answer `false` for the parse rather than for the
-/// constraint, and the readable floor would quietly outrank a declaration
-/// that — claimed alone by one module — is a check error the reader must see.
-/// Downstream,
-/// [`floor_comparable`](crate::providers::PackageManager::floor_comparable)
-/// settles it per family, so a packaging-grammar floor (`1:2.30`,
-/// `0.12.5_1`, `1.2.3,4567`) is compared cleanly rather than refused, and a
-/// `1..2` surfaces as the check error it is. Between two floors neither
-/// parses, the CLAIMED one stays: both error identically at the manager.
-fn stricter_floor(claimed: &Option<String>, candidate: &Option<String>) -> Option<String> {
+/// With `mgr` in hand and BOTH floors readable in that family's grammar, the
+/// family's own comparator answers which is stricter — an apt epoch `1:2.30`
+/// loses to `9.0` because `dpkg`'s upstream part of the first is `2.30`. Asking
+/// the shared parser there would hand the win to whichever floor it happened to
+/// choke on, dropping a real constraint with no check error anywhere.
+///
+/// Without a manager — or with one that cannot read a floor — the dedup judges
+/// no readability of its own. The floor the shared parser cannot read
+/// ([`declared_floor_parses`](crate::declared_floor_parses)) WINS instead of
+/// being compared, and travels to the seam that HOLDS the manager: comparing it
+/// here would answer `false` for the parse rather than for the constraint, and
+/// the readable floor would quietly outrank a declaration that — claimed alone
+/// by one module — is a check error the reader must see. Between two floors
+/// neither parses, the CLAIMED one stays: both error identically at the manager.
+fn stricter_floor(
+    claimed: &Option<String>,
+    candidate: &Option<String>,
+    mgr: Option<&dyn crate::providers::PackageManager>,
+) -> Option<String> {
     match (claimed, candidate) {
         (_, None) => claimed.clone(),
         (None, Some(_)) => candidate.clone(),
         (Some(a), Some(b)) => {
-            let winner = if !crate::declared_floor_parses(a) {
+            let family = mgr.filter(|m| m.floor_comparable(a) && m.floor_comparable(b));
+            let winner = if let Some(m) = family {
+                if m.version_meets_minimum(a, b) { a } else { b }
+            } else if !crate::declared_floor_parses(a) {
                 a
             } else if !crate::declared_floor_parses(b) {
                 b
@@ -164,9 +173,15 @@ fn stricter_floor(claimed: &Option<String>, candidate: &Option<String>) -> Optio
 ///
 /// The result lists every *configured* manager's packages and is host-agnostic;
 /// callers intersect it with registry availability (see the module docs).
+///
+/// `managers` is [`crate::providers::ProviderRegistry::manager_map`], supplied by
+/// every caller that holds a registry: it is read only to settle a `minVersion`
+/// dedup in the owning family's grammar. A caller with
+/// no registry in hand passes `None` and gets the manager-agnostic rule.
 pub fn effective_desired_packages(
     profile: &MergedProfile,
     modules: &[ResolvedModule],
+    managers: Option<&std::collections::HashMap<String, &dyn crate::providers::PackageManager>>,
 ) -> Vec<EffectivePackage> {
     // Drive the shared claiming primitive directly so the rules (module wins,
     // earlier-module wins, `script` exempt) stay in one implementation without
@@ -193,7 +208,11 @@ pub fn effective_desired_packages(
                 // through `package_survives_elision`). The strictest one
                 // therefore survives the dedup, or the live check would be
                 // blind to a floor the apply still acts on.
-                claimed.min_version = stricter_floor(&claimed.min_version, &pkg.min_version);
+                claimed.min_version = stricter_floor(
+                    &claimed.min_version,
+                    &pkg.min_version,
+                    managers.and_then(|m| m.get(&pkg.manager)).copied(),
+                );
             }
         }
     }
@@ -471,7 +490,7 @@ mod tests {
         let mut profile = empty_profile();
         profile.packages.dnf = vec!["ripgrep".into(), "fd".into()];
 
-        let pkgs = effective_desired_packages(&profile, &[]);
+        let pkgs = effective_desired_packages(&profile, &[], None);
 
         assert_eq!(pkgs.len(), 2);
         assert!(pkgs.iter().all(|p| p.manager == "dnf"));
@@ -486,7 +505,7 @@ mod tests {
         let mut m = module("dev");
         m.packages = vec![pkg("cargo", "ripgrep")];
 
-        let pkgs = effective_desired_packages(&profile, &[m]);
+        let pkgs = effective_desired_packages(&profile, &[m], None);
 
         assert_eq!(pkgs.len(), 1);
         assert_eq!(pkgs[0].manager, "cargo");
@@ -501,7 +520,7 @@ mod tests {
         let mut m = module("dev");
         m.packages = vec![pkg("dnf", "ripgrep")];
 
-        let pkgs = effective_desired_packages(&profile, &[m]);
+        let pkgs = effective_desired_packages(&profile, &[m], None);
 
         // Same (manager, name) in both: one entry, attributed to the module.
         assert_eq!(pkgs.len(), 1);
@@ -517,7 +536,7 @@ mod tests {
         let mut m = module("dev");
         m.packages = vec![pkg("cargo", "ripgrep")];
 
-        let pkgs = effective_desired_packages(&profile, &[m]);
+        let pkgs = effective_desired_packages(&profile, &[m], None);
 
         // Same name, different manager: both kept.
         assert_eq!(pkgs.len(), 2);
@@ -539,7 +558,7 @@ mod tests {
         let mut b = module("b");
         b.packages = vec![pkg("script", "setup")];
 
-        let pkgs = effective_desired_packages(&profile, &[a, b]);
+        let pkgs = effective_desired_packages(&profile, &[a, b], None);
 
         // script is exempt from dedup: both same-named scripts survive, each
         // attributed to its own module.
@@ -560,7 +579,7 @@ mod tests {
         let mut b = module("b");
         b.packages = vec![pkg("brew", "fd")];
 
-        let pkgs = effective_desired_packages(&profile, &[a, b]);
+        let pkgs = effective_desired_packages(&profile, &[a, b], None);
 
         // Same (manager, name) in two modules: one entry, attributed to the
         // earlier module in slice order.

@@ -222,7 +222,11 @@ pub(super) fn scoped_version_drift(
     Vec<VerifyResult>,
     Vec<super::output_types::SystemCheckError>,
 )> {
-    let effective = cfgd_core::effective::effective_desired_packages(&resolved.merged, modules);
+    let effective = cfgd_core::effective::effective_desired_packages(
+        &resolved.merged,
+        modules,
+        Some(&registry.manager_map()),
+    );
     cfgd_core::reconciler::package_version_drift(&effective, registry, cx)
 }
 
@@ -582,7 +586,11 @@ fn live_drift_results_inner(
     // pinned package whose manager states no version is an erroring check, and
     // its recorded rows are kept from the resolve below.
     sp.set_message("Scanning: package versions");
-    let effective = cfgd_core::effective::effective_desired_packages(&resolved.merged, modules);
+    let effective = cfgd_core::effective::effective_desired_packages(
+        &resolved.merged,
+        modules,
+        Some(&registry.manager_map()),
+    );
     let (version_drift, package_check_errors) =
         cfgd_core::reconciler::package_version_drift(&effective, registry, cx)?;
     drift.extend(version_drift);

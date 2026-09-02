@@ -4611,23 +4611,95 @@ fn a_family_grammar_floor_propagates_through_the_dedup_and_compares_clean() {
     };
     let modules = vec![pinned("base", "1:2.30"), pinned("dev", "2.5")];
 
-    let effective = cfgd_core::effective::effective_desired_packages(&resolved.merged, &modules);
-    assert_eq!(
-        effective[0].min_version.as_deref(),
-        Some("1:2.30"),
-        "the dedup carries the floor it cannot itself read: {effective:?}"
-    );
-
     let apt = all_package_managers()
         .into_iter()
         .find(|m| m.name() == "apt")
         .expect("apt is a registered manager");
-    assert!(
-        apt.floor_comparable("1:2.30"),
-        "an epoch floor is a comparison the distro family makes, never a check error"
+    let managers: HashMap<String, &dyn PackageManager> =
+        std::iter::once(("apt".to_string(), apt.as_ref())).collect();
+
+    let effective = cfgd_core::effective::effective_desired_packages(
+        &resolved.merged,
+        &modules,
+        Some(&managers),
     );
-    assert!(
-        apt.version_meets_minimum("2:8.2.3995-1ubuntu2", "1:2.30"),
-        "and the comparison itself folds both sides to their upstream parts"
+    assert_eq!(
+        effective[0].min_version.as_deref(),
+        Some("1:2.30"),
+        "the epoch floor is the stricter of the two in its family's grammar: {effective:?}"
     );
+
+    // And the whole check, not two detached trait halves: a shimmed dpkg-query
+    // listing driven through the engine `cfgd verify` and the live scan both
+    // read. A guard added here that asked the SHARED parser would turn the
+    // `8.2`/`0.11` floors `docs/packages.md` promises into check errors.
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        super::versions::DPKG_QUERY_BIN_ENV,
+        0,
+        "vim\t2:8.2.3995-1ubuntu2\n",
+        "",
+    );
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = PackageContext::new(&printer, &state);
+    let installed = cx.installed_for(apt.as_ref()).expect("the shim lists");
+    assert!(
+        matches!(
+            cfgd_core::reconciler::package_version_floor(
+                apt.as_ref(),
+                &installed,
+                "vim",
+                Some("1:2.30"),
+            ),
+            cfgd_core::reconciler::VersionFloor::Met
+        ),
+        "an epoch floor is a comparison the family makes, never a check error"
+    );
+}
+
+/// The other direction of the same rule, and the one the round-5 propagate rule
+/// got wrong on its own: `1:2.30` is unreadable to the SHARED parser but
+/// perfectly comparable to apt, and `9.0` is stricter in that family's grammar
+/// (upstream `2.30` < `9.0`). Letting the unparseable floor win here would drop
+/// a real constraint with no check error anywhere to show for it.
+#[test]
+#[serial_test::serial]
+fn a_stricter_readable_floor_beats_a_family_grammar_one_the_manager_can_read() {
+    let resolved = cfgd_core::test_helpers::make_empty_resolved();
+    let pinned = |name: &str, floor: &str| {
+        let mut m = cfgd_core::test_helpers::make_resolved_module(name);
+        m.packages = vec![cfgd_core::modules::ResolvedPackage {
+            canonical_name: "vim".to_string(),
+            resolved_name: "vim".to_string(),
+            manager: "apt".to_string(),
+            manager_declared: false,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: Some(floor.to_string()),
+        }];
+        m
+    };
+    let apt = all_package_managers()
+        .into_iter()
+        .find(|m| m.name() == "apt")
+        .expect("apt is a registered manager");
+    let managers: HashMap<String, &dyn PackageManager> =
+        std::iter::once(("apt".to_string(), apt.as_ref())).collect();
+
+    for order in [["1:2.30", "9.0"], ["9.0", "1:2.30"]] {
+        let modules = vec![pinned("base", order[0]), pinned("dev", order[1])];
+        let effective = cfgd_core::effective::effective_desired_packages(
+            &resolved.merged,
+            &modules,
+            Some(&managers),
+        );
+        assert_eq!(
+            effective[0].min_version.as_deref(),
+            Some("9.0"),
+            "the strictest floor in the family's own grammar survives: {effective:?}"
+        );
+    }
 }

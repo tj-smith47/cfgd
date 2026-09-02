@@ -162,7 +162,11 @@ pub fn plan_packages_observed(
     // so this planner sees exactly what every other read/write surface does.
     // With `modules` empty this equals the profile's own desired packages, so
     // the profile-scoped write path is unchanged.
-    let effective = effective_desired_packages(profile, modules);
+    let manager_map: HashMap<String, &dyn PackageManager> = managers
+        .iter()
+        .map(|m| (m.name().to_string(), *m))
+        .collect();
+    let effective = effective_desired_packages(profile, modules, Some(&manager_map));
     // Grouped once, ahead of both passes: each pass asks every manager what it
     // wants, and a per-manager filter over the whole effective list walks it
     // twice per manager — quadratic in a config whose modules declare a few
