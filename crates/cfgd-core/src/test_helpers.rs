@@ -3638,10 +3638,31 @@ pub fn freeze_last_scan_at(
 /// silently, since a walk that reads nothing reports nothing. Files with no
 /// test module come back whole.
 ///
+/// The cut point is an INLINE module — a `mod` line opening a brace block — and
+/// never a `#[cfg(test)] mod tests;` DECLARATION, whose tests live in a separate
+/// file and whose line is followed by the rest of this one. An aggregator
+/// `mod.rs` declares `mod tests;` beside its sibling `mod x;` lines near the
+/// top, so cutting at a declaration drops the `pub use` block and every function
+/// below it (93% of `reconciler/mod.rs`, 59% of `daemon/mod.rs`) — the same
+/// silent blinding, one level down. A file whose only match is a declaration
+/// comes back whole.
+///
 /// A walk over several files pairs this with a per-file floor on what it found,
 /// so a future re-blinding fails rather than passes quietly.
 pub fn production_slice(src: &str) -> &str {
-    src.rfind("\n#[cfg(test)]\nmod ").map_or(src, |i| &src[..i])
+    const ANCHOR: &str = "\n#[cfg(test)]\nmod ";
+    let mut searched = src.len();
+    while let Some(at) = src[..searched].rfind(ANCHOR) {
+        let mod_line = src[at + ANCHOR.len() - "mod ".len()..]
+            .lines()
+            .next()
+            .unwrap_or_default();
+        if mod_line.trim_end().ends_with('{') {
+            return &src[..at];
+        }
+        searched = at;
+    }
+    src
 }
 
 #[cfg(test)]
@@ -3659,8 +3680,10 @@ mod tests {
         let src = format!(
             "use a::b;\n{attr}\nuse c::d;\n\
              pub const RENDERED: &str = \"a literal a walk must see\";\n\
-             {attr}\nmod tests;\npub const HIDDEN: &str = \"below the cut\";\n"
-        );
+             {attr}\nmod tests_inline #OPEN#\n    fn hidden() #OPEN##CLOSE#\n#CLOSE#\n"
+        )
+        .replace("#OPEN#", "{")
+        .replace("#CLOSE#", "}");
         let production = production_slice(&src);
         assert!(
             production.contains("a literal a walk must see"),
@@ -3668,13 +3691,62 @@ mod tests {
              `#[cfg(test)]` import and the trailing test module: {production}"
         );
         assert!(
-            !production.contains("below the cut"),
+            !production.contains("fn hidden"),
             "the trailing test module must be cut away: {production}"
         );
         assert_eq!(
-            production_slice("pub fn only_production() {}\n"),
-            "pub fn only_production() {}\n",
+            production_slice("pub fn only_production() -> u8 { 1 }\n"),
+            "pub fn only_production() -> u8 { 1 }\n",
             "a file with no test module comes back whole"
+        );
+    }
+
+    /// The shape of an aggregator `mod.rs`: `mod tests;` is a one-line
+    /// DECLARATION sitting beside its sibling `mod x;` lines, and the file's
+    /// real content follows it. Cutting there is the blinding the helper exists
+    /// to prevent, so the whole source survives.
+    #[test]
+    fn production_slice_keeps_a_file_whose_test_module_is_a_mid_file_declaration() {
+        let attr = format!("#[cfg({})]", "test");
+        let src = format!(
+            "mod plan;\nmod verify;\n{attr}\nmod tests;\n\
+             pub use plan::Plan;\n\
+             pub const RENDERED: &str = \"a literal a walk must see\";\n"
+        );
+        assert_eq!(
+            production_slice(&src),
+            src,
+            "a `mod tests;` declaration is not the end of the file, so nothing \
+             below it may be cut away"
+        );
+    }
+
+    /// Both shapes in one file: the declaration is skipped and the search
+    /// continues to the inline block, which is where the cut lands.
+    #[test]
+    fn production_slice_cuts_at_the_inline_block_past_a_mid_file_declaration() {
+        let attr = format!("#[cfg({})]", "test");
+        let src = format!(
+            "mod plan;\n{attr}\nmod tests;\n\
+             pub const RENDERED: &str = \"a literal a walk must see\";\n\
+             {attr}\nmod inline_tests #OPEN#\n    fn hidden() #OPEN##CLOSE#\n#CLOSE#\n"
+        )
+        .replace("#OPEN#", "{")
+        .replace("#CLOSE#", "}");
+        let production = production_slice(&src);
+        assert!(
+            production.contains("a literal a walk must see"),
+            "the code between the declaration and the inline block must \
+             survive: {production}"
+        );
+        assert!(
+            production.contains("mod tests;"),
+            "the declaration itself is production text, not a cut point: \
+             {production}"
+        );
+        assert!(
+            !production.contains("fn hidden"),
+            "the inline test module is where the cut lands: {production}"
         );
     }
 
