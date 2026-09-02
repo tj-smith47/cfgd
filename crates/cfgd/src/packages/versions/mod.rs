@@ -228,6 +228,52 @@ pub(super) fn distro_comparable(raw: &str) -> bool {
     cfgd_core::parse_loose_version(distro_upstream_version(raw)).is_some()
 }
 
+/// The UPSTREAM part of a Homebrew version — the part a `minVersion`
+/// declaration is written against.
+///
+/// Homebrew states two things after the upstream release, and neither orders
+/// releases: a formula carries the tap's own packaging revision as `_<n>`
+/// (`neovim 0.12.5_1`), and a cask carries the vendor's build after a comma
+/// (`1.2.3,4567`). Loose semver reads the revision as a PRERELEASE — which
+/// never satisfies a comparator that has none — and the build as unparseable,
+/// so before this fold every brew package with a declared floor both reported
+/// an erroring check and re-planned as an install on a converged machine.
+///
+/// One fold serves both managers: the two grammars use disjoint separators, so
+/// a formula version is untouched by the comma arm and a cask by the revision
+/// one. Deliberately NOT a change to `parse_loose_version`, which is shared
+/// with the self-upgrade and release-tag paths where `-rc1` ordering is
+/// load-bearing.
+pub(super) fn brew_upstream_version(raw: &str) -> &str {
+    let before_build = raw.split_once(',').map_or(raw, |(version, _)| version);
+    match before_build.rsplit_once('_') {
+        Some((upstream, revision))
+            if !upstream.is_empty()
+                && !revision.is_empty()
+                && revision.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            upstream
+        }
+        _ => before_build,
+    }
+}
+
+/// Whether a Homebrew version clears a `min_version` floor, comparing
+/// [`brew_upstream_version`] of each.
+pub(super) fn brew_version_meets_minimum(available: &str, min_version: &str) -> bool {
+    cfgd_core::version_satisfies(
+        brew_upstream_version(available),
+        &format!(">={}", brew_upstream_version(min_version)),
+    )
+}
+
+/// Whether a Homebrew version can be compared at all: a `HEAD-<sha>` build or
+/// a cask tracking `latest` states no upstream release to judge, which is a
+/// check that could not run rather than a floor that was missed.
+pub(super) fn brew_comparable(raw: &str) -> bool {
+    cfgd_core::parse_loose_version(brew_upstream_version(raw)).is_some()
+}
+
 /// Parse `dpkg-query -W -f='${Package}\t${Version}\n'` output into PackageInfo.
 /// Parse tab-separated `NAME\tVERSION` output into PackageInfo.
 /// Used by both apt (dpkg-query) and rpm (rpm -qa --queryformat) parsers.
