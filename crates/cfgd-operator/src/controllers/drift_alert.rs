@@ -171,10 +171,15 @@ pub(super) async fn reconcile_drift_alert(
                     "DriftDetected",
                     "True",
                     "DriftActive",
+                    // The condition TYPE is the API's word; the message is what a
+                    // reader sees, and a device reports its system settings alone.
                     &format!(
-                        "Drift detected on device {} — {}",
+                        "Device {} reported {}",
                         obj.spec.device_id,
-                        cfgd_core::pluralize(obj.spec.drift_details.len(), "detail")
+                        cfgd_core::pluralize(
+                            obj.spec.drift_details.len(),
+                            "drifted system setting"
+                        )
                     ),
                     &now,
                     mc.meta().generation,
@@ -194,12 +199,13 @@ pub(super) async fn reconcile_drift_alert(
                     .await
                     .map_err(|e| {
                         OperatorError::Reconciliation(format!(
-                            "failed to update drift status for MachineConfig {mc_name}: {e}"
+                            "failed to update the DriftDetected condition of MachineConfig {mc_name}: {e}"
                         ))
                     })?;
 
                 info!(
                     machine_config = %mc_name,
+                    // fleet-drift-ok: a journal line naming the condition it patched
                     "machineConfig drift condition set"
                 );
 
@@ -209,9 +215,12 @@ pub(super) async fn reconcile_drift_alert(
                     EventType::Warning,
                     "DriftDetected",
                     format!(
-                        "Drift detected from device {} — {} details",
+                        "Device {} reported {}",
                         obj.spec.device_id,
-                        obj.spec.drift_details.len()
+                        cfgd_core::pluralize(
+                            obj.spec.drift_details.len(),
+                            "drifted system setting"
+                        )
                     ),
                     "DriftCheck",
                 )

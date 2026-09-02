@@ -15217,6 +15217,7 @@ const RESULT_LINE_VERBS: &[&str] = &[
     "Removed",
     "Renamed",
     "Replaced",
+    "Reported",
     "Restored",
     "Rolled",
     "Rotated",
@@ -33422,6 +33423,176 @@ fn every_exit_code_surface_reports_an_erroring_check() {
             "tests/drift_exit_code.rs no longer holds the `{spelling}` cell — \
              every --exit-code surface, flag-scoped variants included, keeps \
              its erroring-check matrix row"
+        );
+    }
+}
+
+/// The device gateway is fed by ONE producer — `cfgd checkin`, whose payload is
+/// `compliance::system_drifts(collect_system_diffs(..))`. That walk asks the
+/// available system CONFIGURATORS and nothing else: no package, file, env or
+/// alias finding has ever reached a fleet surface. Every reader-facing string on
+/// that path therefore names the class it carries, or the fleet reads a
+/// system-settings report as a whole-machine verdict and calls a device with
+/// drifted packages healthy.
+///
+/// A candidate is a quoted literal in which the word `drift` sits next to
+/// another word — prose a person reads, as opposed to the wire values
+/// (`"drift"`, `"drifted"`), ids (`"drift-section"`) and CSS class lists the
+/// same files carry. A candidate names `system setting`, or carries
+/// `// fleet-drift-ok: <why>` on its line or the line above.
+#[test]
+fn every_fleet_drift_surface_names_the_system_settings_class() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let files = [
+        "crates/cfgd/src/cli/checkin.rs",
+        "crates/cfgd-core/src/server_client/mod.rs",
+        "crates/cfgd-operator/src/gateway/api/fleet.rs",
+        "crates/cfgd-operator/src/gateway/api/drift.rs",
+        "crates/cfgd-operator/src/gateway/web/mod.rs",
+        "crates/cfgd-operator/src/controllers/drift_alert.rs",
+        "crates/cfgd-operator/src/controllers/machine_config.rs",
+        "crates/cfgd-operator/src/controllers/mod.rs",
+    ];
+
+    let mut checked = 0usize;
+    for rel in files {
+        let path = root.join(rel);
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("fleet drift surface {rel} unreadable: {e}"));
+        // A `#[cfg(test)]` module describes the surface rather than rendering it.
+        let production = body.split("\n#[cfg(test)]").next().unwrap_or(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            // `mod tests` inside these files describes the surface rather than
+            // rendering it.
+            if line.trim_start().starts_with("//") || !line.contains('"') {
+                continue;
+            }
+            let lowered = line.to_ascii_lowercase();
+            // A word is a run of identifier characters, so `drift-section`,
+            // `driftCount` and `drift_status` are single tokens that never read
+            // as the English word — only a bare `drift`/`drifted`/`drifts` does,
+            // and only when it touches a space rather than a quote or a tag.
+            let word_char = |c: u8| (c as char).is_ascii_alphanumeric() || c == b'_' || c == b'-';
+            let bytes = lowered.as_bytes();
+            let mut prose = false;
+            let mut start = 0usize;
+            while start < bytes.len() {
+                if !word_char(bytes[start]) {
+                    start += 1;
+                    continue;
+                }
+                let mut end = start;
+                while end < bytes.len() && word_char(bytes[end]) {
+                    end += 1;
+                }
+                // A CSS class list (`class="stat-card drifted"`) touches a space
+                // and is still not prose — and, sitting inside a raw HTML block,
+                // it could not carry a Rust hatch comment anyway.
+                let in_class_attr = lowered[..start].rfind("=\"").is_some_and(|eq| {
+                    !lowered[eq + 2..start].contains('"') && lowered[..eq].ends_with("class")
+                });
+                // Running text: the word sits beside another WORD, not beside a
+                // tag, an operator or a quote. `>Drift Events (` is prose;
+                // `DeviceStatus::Drifted => "drifted"` and `<div>Drifted</div>`
+                // are not.
+                let in_running_text = lowered[..start]
+                    .strip_suffix(' ')
+                    .is_some_and(|s| s.ends_with(|c: char| c.is_ascii_alphabetic()))
+                    || lowered[end..]
+                        .strip_prefix(' ')
+                        .is_some_and(|s| s.starts_with(|c: char| c.is_ascii_alphabetic()));
+                if matches!(&lowered[start..end], "drift" | "drifted" | "drifts")
+                    && in_running_text
+                    && !in_class_attr
+                {
+                    prose = true;
+                    break;
+                }
+                start = end;
+            }
+            if !prose {
+                continue;
+            }
+            checked += 1;
+            let hatched = |s: &str| s.contains("fleet-drift-ok:");
+            if lowered.contains("system setting") || hatched(line) || n > 0 && hatched(lines[n - 1])
+            {
+                continue;
+            }
+            panic!(
+                "{rel}:{} names drift to a reader without naming the class the \
+                 gateway actually carries — the checkin payload is system-\
+                 configurator drift only, so say `system settings` or hatch the \
+                 line with `// fleet-drift-ok: <why>`:\n  {}",
+                n + 1,
+                line.trim()
+            );
+        }
+    }
+    assert!(
+        checked >= 6,
+        "the fleet drift walk found only {checked} reader-facing drift strings — \
+         the candidate scan stopped matching, not the surfaces stopped saying it"
+    );
+}
+
+/// `doctor` probes tooling and environment prerequisites: is `git` on PATH, is
+/// the state store writable, do the declared managers exist, do the declared
+/// packages resolve. It checks no file, env var, alias or system setting against
+/// its declared value, records nothing and heals nothing — so its frame may not
+/// borrow the register `status` and `diff` earn with those checks. The collision
+/// this pin was written for is literal: `diff` renders a `System` section
+/// holding system-configurator drift, and `doctor` rendered a `System` section
+/// holding its own state store and profiles directory.
+#[test]
+fn no_doctor_section_or_verdict_borrows_the_managed_resource_vocabulary() {
+    let body = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/doctor.rs"),
+    )
+    .expect("doctor.rs unreadable");
+    // The words `status`/`diff` spend on a resource they CHECKED, plus the
+    // section name `diff` reserves for configurator drift.
+    const RESERVED: &[&str] = &[
+        "system",
+        "drift",
+        "drifted",
+        "synced",
+        "in sync",
+        "up to date",
+        "managed resources",
+    ];
+
+    let mut names: Vec<String> = Vec::new();
+    for line in body.lines() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        for opener in [".section(", ".section_if_nonempty(", ".heading("] {
+            let Some(at) = line.find(opener) else {
+                continue;
+            };
+            let rest = &line[at + opener.len()..];
+            if !rest.starts_with('"') {
+                continue;
+            }
+            if let Some(end) = rest[1..].find('"') {
+                names.push(rest[1..1 + end].to_string());
+            }
+        }
+    }
+    assert!(
+        names.iter().any(|n| n == "Config"),
+        "the doctor section walk found no sections: {names:?}"
+    );
+
+    for name in &names {
+        let lowered = name.to_ascii_lowercase();
+        assert!(
+            !RESERVED.contains(&lowered.as_str()),
+            "doctor's `{name}` section borrows the managed-resource vocabulary \
+             `status`/`diff` earn by checking a declared resource against the \
+             machine — doctor checks prerequisites, so name what it examines"
         );
     }
 }

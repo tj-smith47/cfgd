@@ -328,7 +328,7 @@ async fn device_detail(
     }
 
     let drift_html = if drift_events.is_empty() {
-        r#"<p class="muted">No drift events recorded for this device.</p>"#.to_string()
+        r#"<p class="muted">No system settings drift reported by this device. Devices report drifted system settings only; a drifted package or file is never reported here.</p>"#.to_string()
     } else {
         format!(
             r#"<table>
@@ -494,7 +494,7 @@ async fn device_detail(
                 <label>Type:
                     <select id="filter-type" onchange="applyFilters()">
                         <option value="all">All</option>
-                        <option value="drift">Drift</option>
+                        <option value="drift">System settings drift</option>
                         <option value="checkin">Check-in</option>
                     </select>
                 </label>
@@ -507,7 +507,7 @@ async fn device_detail(
                 <button class="btn" onclick="clearFilters()" style="margin-left:0.5rem;">Clear</button>
             </div>
 
-            <h3 style="color:#c9d1d9;font-size:1rem;margin:1rem 0 0.5rem;">Drift Events ({drift_count})</h3>
+            <h3 style="color:#c9d1d9;font-size:1rem;margin:1rem 0 0.5rem;">System Settings Drift ({drift_count})</h3>
             <div id="drift-section">
             {drift_html}
             </div>
@@ -680,7 +680,7 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
     }
 
     let events_table = if events.is_empty() {
-        r#"<div class="empty">No events recorded yet. Events will appear here as devices check in and report drift.</div>"#.to_string()
+        r#"<div class="empty">No events recorded yet. Events will appear here as devices check in and report system settings drift.</div>"#.to_string()
     } else {
         format!(
             r#"<table>
@@ -735,7 +735,7 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
 <body>
     <div class="container">
         <h1>cfgd Fleet Events <span id="sse-badge" class="live-badge disconnected">connecting</span></h1>
-        <p class="subtitle">Unified timeline of check-ins, config changes, and drift events</p>
+        <p class="subtitle">Unified timeline of check-ins, config changes, and system settings drift</p>
         <div class="nav">
             <a href="/">Devices</a>
             <a href="/events" class="active">Events</a>
@@ -752,7 +752,7 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
                     <option value="all">All</option>
                     <option value="checkin">Check-in</option>
                     <option value="config-changed">Config Changed</option>
-                    <option value="drift">Drift</option>
+                    <option value="drift">System settings drift</option>
                 </select>
             </label>
             <button class="btn" onclick="clearFleetFilters()">Clear</button>

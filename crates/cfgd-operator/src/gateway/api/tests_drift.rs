@@ -53,9 +53,9 @@ fn mc_for(name: &str, hostname: &str) -> MachineConfig {
 
 fn detail() -> DriftDetailInput {
     DriftDetailInput {
-        field: "packages.kubectl".to_string(),
-        expected: "1.28".to_string(),
-        actual: "1.27".to_string(),
+        field: "net.ipv4.ip_forward".to_string(),
+        expected: "1".to_string(),
+        actual: "0".to_string(),
     }
 }
 
@@ -151,7 +151,7 @@ async fn create_drift_alert_crd_uses_matched_machine_config_name_for_label_and_r
         "default severity is Medium"
     );
     assert_eq!(
-        body["spec"]["driftDetails"][0]["field"], "packages.kubectl",
+        body["spec"]["driftDetails"][0]["field"], "net.ipv4.ip_forward",
         "drift detail field is preserved verbatim"
     );
 }

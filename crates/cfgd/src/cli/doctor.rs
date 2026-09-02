@@ -545,7 +545,12 @@ pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     );
     doc = doc.section_if_nonempty("Modules", &output.modules, build_modules_section);
     doc = doc.section_if_nonempty("Profiles", &output.profiles, build_profiles_section);
-    doc = doc.section("System", |s| build_system_section(s, extras));
+    // `Installation`, never `System`: `diff` and `status` reserve a `System`
+    // section for system-configurator drift, and these rows check none of it —
+    // they are cfgd's own state store, profiles directory and update behaviour
+    // on this machine. `Environment` is spoken for too; it reads as the `spec.env`
+    // surface, which doctor equally does not check.
+    doc = doc.section("Installation", |s| build_installation_section(s, extras));
     doc = doc.section_if_nonempty(
         super::source::list::SOURCES_SECTION,
         &extras.config_sources,
@@ -786,7 +791,7 @@ fn build_module_package_status(
 }
 
 // no-next-step: the row's detail names the directory cfgd could not use
-fn build_system_section(mut s: SectionBuilder, extras: &DoctorExtras) -> SectionBuilder {
+fn build_installation_section(mut s: SectionBuilder, extras: &DoctorExtras) -> SectionBuilder {
     if let Some(ss) = extras.state_store.as_ref() {
         s = if ss.accessible {
             // name-row-ok: an inventory row naming what was checked

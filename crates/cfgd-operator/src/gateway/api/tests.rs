@@ -380,14 +380,14 @@ fn drift_detail_input_roundtrip() {
 fn drift_request_deserialization() {
     let json = r#"{
         "details": [
-            {"field": "pkg/vim", "expected": "9.0", "actual": "8.2"},
-            {"field": "file/bashrc", "expected": "hash-a", "actual": "hash-b"}
+            {"field": "net.ipv4.ip_forward", "expected": "1", "actual": "0"},
+            {"field": "overlay", "expected": "loaded", "actual": "absent"}
         ]
     }"#;
     let req: DriftRequest = serde_json::from_str(json).unwrap();
     assert_eq!(req.details.len(), 2);
-    assert_eq!(req.details[0].field, "pkg/vim");
-    assert_eq!(req.details[1].field, "file/bashrc");
+    assert_eq!(req.details[0].field, "net.ipv4.ip_forward");
+    assert_eq!(req.details[1].field, "overlay");
 }
 
 // --- SetConfigRequest deserialization ---

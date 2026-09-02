@@ -474,6 +474,16 @@ spec:
         description: Auto-generated derived type for DriftAlertSpec via `CustomResource`
         properties:
           spec:
+            description: |-
+              Drifted system settings a device reported at check-in.
+
+              A device's report covers its system settings alone — the answers of the
+              system configurators its profile declares (`sysctl`, `kernelModules`,
+              `macosDefaults`, `windowsRegistry`, ...). Packages, managed files, env vars
+              and aliases are checked on the device by `cfgd diff` and reach the fleet only
+              as the aggregate counts of a compliance summary, never as findings — so a
+              device with no DriftAlert is a device whose system settings matched, not a
+              device proven in sync.
             properties:
               deviceId:
                 description: Identifier of the device that reported the drift, as it enrolled.
@@ -481,10 +491,10 @@ spec:
               driftDetails:
                 default: []
                 description: |-
-                  One entry per diverging field, each carrying what was expected and what
-                  was found.
+                  One entry per drifted system setting, each carrying what was declared and
+                  what the device found.
                 items:
-                  description: One diverging field in a drift report.
+                  description: One system setting whose live value diverged from its declared value.
                   properties:
                     actual:
                       description: The value the device actually reported.
@@ -494,8 +504,8 @@ spec:
                       type: string
                     field:
                       description: |-
-                        Resource id of the field that diverged (e.g.
-                        `system:sysctl.net.ipv4.ip_forward`).
+                        The setting's key within its system configurator, as the device reported
+                        it (e.g. `net.ipv4.ip_forward`).
                       type: string
                   required:
                   - actual

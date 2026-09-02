@@ -738,3 +738,41 @@ fn machine_config_status_accepts_unknown_field_for_forward_compat() {
         result.err()
     );
 }
+
+/// A DriftAlert carries what `cfgd checkin` sends, and that payload is the
+/// answers of the device's system CONFIGURATORS alone — no package, file, env or
+/// alias finding has ever reached the fleet. `kubectl explain driftalert` reads
+/// these descriptions, so they name the class rather than letting an operator
+/// read a settings report as a whole-machine verdict.
+#[test]
+fn the_driftalert_schema_names_the_class_of_drift_a_device_reports() {
+    use kube::CustomResourceExt;
+    let crd = DriftAlert::crd();
+    let schema = crd.spec.versions[0]
+        .schema
+        .as_ref()
+        .and_then(|s| s.open_api_v3_schema.as_ref())
+        .expect("DriftAlert publishes a schema");
+    let spec = schema
+        .properties
+        .as_ref()
+        .and_then(|p| p.get("spec"))
+        .expect("DriftAlert spec property");
+
+    let described = spec.description.clone().unwrap_or_default();
+    assert!(
+        described.to_lowercase().contains("system setting"),
+        "the DriftAlert spec description must name the class a device reports: {described}"
+    );
+
+    let details = spec
+        .properties
+        .as_ref()
+        .and_then(|p| p.get("driftDetails"))
+        .and_then(|d| d.description.clone())
+        .unwrap_or_default();
+    assert!(
+        details.to_lowercase().contains("system setting"),
+        "driftDetails must name what each entry is: {details}"
+    );
+}

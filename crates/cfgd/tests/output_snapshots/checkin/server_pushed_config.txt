@@ -9,4 +9,5 @@ Server Config
   ✓ Saved to <PATH>
   → Run 'cfgd plan' to preview changes, then 'cfgd apply'
 
-◉ No drift to report
+System Settings
+  ◉ No system settings drift to report

@@ -312,11 +312,23 @@ pub fn build_compliance_diff_doc(
     diff: &ComplianceDiff,
     arrow: &str,
 ) -> Doc {
+    // The frame names both operands as SNAPSHOTS, and names them the way the
+    // arguments do (base, then target): this command reads the state store's
+    // history and never touches the machine, so a heading a word away from
+    // `cfgd diff` has to say which two records it compared.
     let mut doc = Doc::new()
-        .heading_title("Compliance Diff", format!("#{id1} {arrow} #{id2}"))
-        .kv_block([
-            ("Snapshot 1", snap1.timestamp.clone()),
-            ("Snapshot 2", snap2.timestamp.clone()),
+        .heading_title("Compliance Snapshot Diff", format!("#{id1} {arrow} #{id2}"))
+        .kv_rows([
+            cfgd_core::output::KvPair::annotated(
+                "Base Snapshot",
+                format!("#{id1}"),
+                snap1.timestamp.clone(),
+            ),
+            cfgd_core::output::KvPair::annotated(
+                "Target Snapshot",
+                format!("#{id2}"),
+                snap2.timestamp.clone(),
+            ),
         ]);
 
     if diff.added.is_empty() && diff.removed.is_empty() && diff.changed.is_empty() {
@@ -1042,6 +1054,98 @@ mod tests {
             snapshot.checks.len(),
             n,
             "empty violations must not add checks"
+        );
+    }
+
+    /// `cfgd compliance diff` compares two RECORDED snapshots out of the state
+    /// store's history. It reads nothing off the machine — unlike `cfgd diff`,
+    /// which it sits one word away from — so every slot framing the comparison
+    /// says which two snapshots are being compared, on both the empty and the
+    /// populated branch, and the subcommand's own help says it before the reader
+    /// has run anything.
+    #[test]
+    fn the_compliance_diff_frame_names_the_snapshots_it_compares() {
+        use clap::CommandFactory;
+
+        let render = |diff: &ComplianceDiff| {
+            let snap = sample_snapshot(vec![check(
+                "file",
+                "/etc/hosts",
+                ComplianceStatus::Compliant,
+            )]);
+            let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+            printer.emit(build_compliance_diff_doc(42, 47, &snap, &snap, diff, "->"));
+            drop(printer);
+            cfgd_core::test_helpers::captured_text(&buf)
+        };
+
+        let empty = render(&ComplianceDiff {
+            added: Vec::new(),
+            removed: Vec::new(),
+            changed: Vec::new(),
+        });
+        let heading = empty
+            .lines()
+            .find(|l| l.contains("#42"))
+            .unwrap_or_else(|| panic!("no heading rendered: {empty}"))
+            .to_string();
+        assert!(
+            heading.to_ascii_lowercase().contains("snapshot"),
+            "the heading must name what it compares: {heading}"
+        );
+        for key in ["Base Snapshot", "Target Snapshot"] {
+            assert!(
+                empty.contains(key),
+                "the header rows name the base and the target snapshot, not an \
+                 unlabelled pair: {empty}"
+            );
+            let _ = key;
+        }
+        assert!(
+            empty
+                .lines()
+                .any(|l| l.contains("No differences") && l.contains("snapshot")),
+            "the empty verdict names snapshots, never the machine: {empty}"
+        );
+
+        let populated = render(&ComplianceDiff {
+            added: vec![check("file", "/etc/motd", ComplianceStatus::Compliant)],
+            removed: Vec::new(),
+            changed: Vec::new(),
+        });
+        assert!(
+            populated
+                .lines()
+                .find(|l| l.contains("#42"))
+                .is_some_and(|l| l.to_ascii_lowercase().contains("snapshot")),
+            "the populated branch takes the same frame: {populated}"
+        );
+
+        let root = Cli::command();
+        let compliance = root
+            .get_subcommands()
+            .find(|c| c.get_name() == "compliance")
+            .expect("compliance subcommand");
+        let diff = compliance
+            .get_subcommands()
+            .find(|c| c.get_name() == "diff")
+            .expect("compliance diff subcommand");
+        let help = format!(
+            "{} {}",
+            diff.get_about().map(|s| s.to_string()).unwrap_or_default(),
+            diff.get_long_about()
+                .map(|s| s.to_string())
+                .unwrap_or_default()
+        )
+        .to_ascii_lowercase();
+        assert!(
+            help.contains("snapshot"),
+            "`compliance diff --help` must say it compares recorded snapshots: {help}"
+        );
+        assert!(
+            help.contains("`cfgd diff`"),
+            "`compliance diff --help` must point at the command that DOES read \
+             the machine: {help}"
         );
     }
 }

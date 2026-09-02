@@ -593,7 +593,7 @@ found; `-o wide` itemizes each surface instead, and `--show-values` adds the
 declared values and full script bodies (see
 [`cfgd status`](cli-reference.md#cfgd-status)).
 
-Module resources are first-class in compliance reporting, not profile-only. A module's files, packages, and system settings appear in every `cfgd compliance` surface (snapshot, export, diff, history) and in the device checkin summary, attributed to their module: the same effective profile-plus-modules view that `cfgd verify` and `cfgd diff` use. Module file checks are content-aware: a deployed module file present on disk but whose bytes drifted from its source is reported as a violation.
+Module resources are first-class in compliance reporting, not profile-only. A module's files, packages, and system settings appear in every `cfgd compliance` surface (snapshot, export, diff, history), attributed to their module, and are counted into the compliance summary a device check-in reports: the same effective profile-plus-modules view that `cfgd verify` and `cfgd diff` use. Module file checks are content-aware: a deployed module file present on disk but whose bytes drifted from its source is reported as a violation.
 
 ## Plan Output Format
 

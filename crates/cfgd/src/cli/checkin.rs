@@ -173,37 +173,45 @@ pub fn cmd_checkin(
 
     let all_drifts = cfgd_core::compliance::system_drifts(system_diffs.get_or_init(diff_system));
 
+    // The section names the CLASS this command can report, because that is all
+    // the walk above collects: `system_drifts` flattens the answers of the
+    // available system CONFIGURATORS and nothing else. A package, file or env
+    // finding never reaches the gateway, so a section headed `Drift` promised
+    // the fleet a machine-wide verdict this payload has never carried.
     let drift_status = if !all_drifts.is_empty() {
         // Same reasoning as the gateway checkin above, both halves:
         // `client.report_drift` narrates through the bare `&Printer` it's
         // handed and so needs a real section to inherit depth from, and the
         // wait itself is narrated one layer down, so this section writes only
         // the outcome.
-        let drift_sec = printer.section("Drift");
+        let drift_sec = printer.section("System Settings");
         let _inherit = printer.depth_inheritance();
         let res = client
             .report_drift(&all_drifts, printer)
-            .context("drift report to gateway failed");
+            .context("system settings drift report to gateway failed");
         match &res {
             Ok(()) => {
                 drift_sec.status_simple(
                     Role::Ok,
                     format!(
-                        "{} reported",
-                        cfgd_core::pluralize(all_drifts.len(), "drift item")
+                        "Reported {}",
+                        cfgd_core::pluralize(all_drifts.len(), "drifted system setting")
                     ),
                 );
             }
             Err(e) => {
                 drift_sec
-                    .status(Role::Fail, "Drift report failed")
+                    .status(Role::Fail, "System settings drift report failed")
                     .detail(format!("{e:#}"));
             }
         }
         res?;
         "drift_reported"
     } else {
-        printer.status_simple(Role::Info, "No drift to report");
+        // Inside the same section as the reported branch: which section a fact
+        // lands in cannot depend on whether the fact is empty.
+        let drift_sec = printer.section("System Settings");
+        drift_sec.status_simple(Role::Info, "No system settings drift to report");
         "no_drift"
     };
 
@@ -620,14 +628,16 @@ spec:
 
     /// `client.report_drift` narrates through a bare `&Printer`, so its
     /// drift spinner used to render at depth 0 unconditionally. It now runs
-    /// inside a real `printer.section("Drift")` plus `depth_inheritance()`,
-    /// so its settled line nests one level deeper than the section header
-    /// instead of sitting flush with it. Linux-only: the fixture's drift
-    /// source is the `gsettings` configurator, registered only on Linux.
+    /// inside a real `printer.section("System Settings")` plus
+    /// `depth_inheritance()`, so its settled line nests one level deeper than the
+    /// section header instead of sitting flush with it. The section names the
+    /// class rather than `Drift`, because the gateway is only ever told about
+    /// system settings. Linux-only: the fixture's drift source is the
+    /// `gsettings` configurator, registered only on Linux.
     #[cfg(target_os = "linux")]
     #[test]
     #[serial_test::serial]
-    fn cmd_checkin_drift_settle_line_nests_under_the_drift_section_header() {
+    fn cmd_checkin_drift_settle_line_nests_under_the_system_settings_section_header() {
         let shim = cfgd_core::test_helpers::ToolShim::install(
             "CFGD_GSETTINGS_BIN",
             0,
@@ -692,7 +702,11 @@ spec:
         drift.assert();
 
         let human = cfgd_core::output::strip_ansi(&cap.human());
-        crate::cli::test_support::assert_nests_under(&human, "Drift", "1 drift item reported");
+        crate::cli::test_support::assert_nests_under(
+            &human,
+            "System Settings",
+            "Reported 1 drifted system setting",
+        );
     }
 
     // Linux-only like the drift tests above: the "never scanned" negative is
