@@ -44,7 +44,11 @@ pub fn verify(
     // set so a `(manager, name)` declared in both is checked once, and the
     // module-vs-profile attribution drives the result shape.
     let available_managers = registry.available_package_managers();
-    let effective = crate::effective::effective_desired_packages(&resolved.merged, modules);
+    let effective = crate::effective::effective_desired_packages(
+        &resolved.merged,
+        modules,
+        Some(&registry.manager_map()),
+    );
     // The declared-floor pass runs FIRST, so the presence loop can leave the
     // packages it already has a verdict about alone: both passes mint the one
     // `<manager>:<name>` id, and a second row under it would answer the same

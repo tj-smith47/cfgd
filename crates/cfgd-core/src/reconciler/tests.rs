@@ -2010,6 +2010,7 @@ fn the_strictest_declared_floor_survives_the_effective_dedup() {
     let effective = crate::effective::effective_desired_packages(
         &resolved.merged,
         &[bare, pinned.clone(), stricter],
+        None,
     );
     assert_eq!(effective.len(), 1, "one entry per package: {effective:?}");
     assert_eq!(
@@ -2025,6 +2026,7 @@ fn the_strictest_declared_floor_survives_the_effective_dedup() {
             m.name = "later".to_string();
             m
         }],
+        None,
     );
     assert_eq!(
         unpinned_last[0].min_version.as_deref(),
@@ -2050,7 +2052,8 @@ fn an_unreadable_floor_survives_the_dedup_so_its_check_error_reaches_the_reader(
             vec![malformed.clone(), readable.clone()],
             vec![readable, malformed],
         ] {
-            let effective = crate::effective::effective_desired_packages(&resolved.merged, &order);
+            let effective =
+                crate::effective::effective_desired_packages(&resolved.merged, &order, None);
             assert_eq!(
                 effective[0].min_version.as_deref(),
                 Some(floor),
@@ -2073,6 +2076,45 @@ fn an_unreadable_floor_survives_the_dedup_so_its_check_error_reaches_the_reader(
         ),
         "the surviving floor is reported as the check it broke"
     );
+}
+
+/// The plan and the verify pass read ONE predicate about a declared floor.
+/// `apk`, `pacman` and `zypper` list package names with no version, so their
+/// listings stamp every row `UNKNOWN_PACKAGE_VERSION` — and a comparator asked
+/// whether "unknown" clears `1.2` answers `false` for the PARSE. Retaining on
+/// that re-planned an install on every reconcile of a machine that already
+/// held the package, for as long as the `minVersion` stood, while `cfgd verify`
+/// called the very same question a check that could not run.
+#[test]
+fn a_package_whose_manager_reports_no_version_is_not_replanned_for_its_floor() {
+    let state = test_state();
+    let printer = test_printer();
+    let cx = test_package_context(&printer, &state);
+
+    for reported in [
+        "",
+        crate::providers::UNKNOWN_PACKAGE_VERSION,
+        "HEAD-a1b2c3d",
+    ] {
+        let mgr = MockPackageManager::new("apk").with_installed_at("ripgrep", reported);
+        let installed = cx.installed_for(&mgr).expect("the mock lists");
+        let pkg = module_one_pinned_pkg("base", "apk", "ripgrep", "1.2")
+            .packages
+            .remove(0);
+
+        assert!(
+            matches!(
+                crate::reconciler::package_version_floor(&mgr, &installed, "ripgrep", Some("1.2")),
+                crate::reconciler::VersionFloor::Unreadable { .. }
+            ),
+            "the version {reported:?} is one the check cannot judge"
+        );
+        assert!(
+            !Reconciler::package_survives_elision(&mgr, &installed, &pkg, &[]),
+            "and a check that could not run is no reason to plan an install \
+             the apply can never settle: {reported:?}"
+        );
+    }
 }
 
 #[test]

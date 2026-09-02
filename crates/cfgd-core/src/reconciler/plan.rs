@@ -978,8 +978,10 @@ impl<'a> super::Reconciler<'a> {
     /// answer. Resolution checked the floor against what the manager currently
     /// OFFERS, never against what the machine holds, so a host carrying an
     /// older copy is installed-by-name and short of the floor at once. Such an
-    /// entry is KEPT, and so is one whose installed version cannot be read —
-    /// the same fail-open the unreadable-manager arm takes.
+    /// entry is KEPT — but only that one: an entry whose floor or whose
+    /// reported version cannot be READ is a check the verify pass could not
+    /// run, not work an apply could settle, so the fail-open of the
+    /// unreadable-manager arm stops at the manager.
     fn retain_uninstalled(
         &self,
         mgr: &dyn PackageManager,
@@ -1146,11 +1148,15 @@ impl<'a> super::Reconciler<'a> {
     /// that very manager (`declared_manager_routes`), so its own listing
     /// reports the tool and the installed arm applies.
     ///
-    /// A floor the manager cannot parse
-    /// ([`floor_comparable`](crate::providers::PackageManager::floor_comparable))
-    /// is not a retention reason: the plan does not invent work out of an
-    /// unreadable declaration, and the report belongs to the verify pass,
-    /// which states it as a check that could not run.
+    /// An installed entry is retained for its floor on exactly one answer from
+    /// [`crate::reconciler::package_version_floor`] — `Below` — so the plan and
+    /// the verify pass read ONE predicate. Every other answer that comparator
+    /// gives is a check that could not run: a floor the manager cannot parse,
+    /// a listing that states no version (`apk`, `pacman` and `zypper` name
+    /// packages without one), a reported version its own comparator cannot
+    /// judge (`HEAD-a1b2c3d`, a cask's `latest`). Retaining on those re-planned
+    /// an install on every run of a machine that already held the package, and
+    /// no apply could ever settle it; the report belongs to the verify pass.
     pub(super) fn package_survives_elision(
         mgr: &dyn PackageManager,
         installed: &crate::providers::InstalledPackages,
@@ -1168,21 +1174,15 @@ impl<'a> super::Reconciler<'a> {
         if !installed.contains(&identity) {
             return true;
         }
-        let Some(min) = pkg.min_version.as_deref() else {
-            return false;
-        };
-        if !mgr.floor_comparable(min) {
-            // A floor nothing can parse is a REPORT the verify pass owns
-            // (`VersionFloor::Unreadable`), never work: retaining the entry
-            // here re-planned an install on every run of a machine that
-            // already held the package, and no apply could settle it.
-            return false;
-        }
-        installed
-            .listed()
-            .iter()
-            .find(|p| mgr.listed_identity(&p.name) == identity)
-            .is_none_or(|p| !mgr.version_meets_minimum(&p.version, min))
+        matches!(
+            crate::reconciler::package_version_floor(
+                mgr,
+                installed,
+                &pkg.resolved_name,
+                pkg.min_version.as_deref(),
+            ),
+            crate::reconciler::VersionFloor::Below { .. }
+        )
     }
 
     /// Whether `package`, installed through `manager`, is one THIS run's own

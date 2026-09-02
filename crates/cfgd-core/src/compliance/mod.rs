@@ -548,7 +548,11 @@ pub fn collect_package_checks(
 
     // Group desired packages by manager, preserving origin for attribution.
     let mut by_manager: HashMap<String, Vec<(String, Origin, Option<String>)>> = HashMap::new();
-    for ep in crate::effective::effective_desired_packages(profile, modules) {
+    for ep in crate::effective::effective_desired_packages(
+        profile,
+        modules,
+        Some(&registry.manager_map()),
+    ) {
         by_manager
             .entry(ep.manager)
             .or_default()
