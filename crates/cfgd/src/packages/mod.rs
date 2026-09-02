@@ -162,6 +162,9 @@ pub fn plan_packages_observed(
     // so this planner sees exactly what every other read/write surface does.
     // With `modules` empty this equals the profile's own desired packages, so
     // the profile-scoped write path is unchanged.
+    // Keyed off the available slice rather than `ProviderRegistry::manager_map`
+    // because no registry reaches this planner; the key space is the REGISTERED
+    // name either way, which is what the dedup looks a floor's manager up by.
     let manager_map: HashMap<String, &dyn PackageManager> = managers
         .iter()
         .map(|m| (m.name().to_string(), *m))

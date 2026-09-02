@@ -4462,6 +4462,7 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
     ),
 ];
 
+#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
@@ -4590,7 +4591,9 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
 /// and then compares CLEANLY at the manager that owns the grammar. Turning the
 /// propagation into a blanket refusal would file a check error against a
 /// declaration `docs/packages.md` promises works.
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn a_family_grammar_floor_propagates_through_the_dedup_and_compares_clean() {
     let resolved = cfgd_core::test_helpers::make_empty_resolved();
     let pinned = |name: &str, floor: &str| {
@@ -4655,6 +4658,67 @@ fn a_family_grammar_floor_propagates_through_the_dedup_and_compares_clean() {
         ),
         "an epoch floor is a comparison the family makes, never a check error"
     );
+    // The contrast that makes the `Met` above non-vacuous: a package absent
+    // from the listing is `Met` too, so only a floor the listed version misses
+    // proves the shimmed row was read at all.
+    assert!(
+        matches!(
+            cfgd_core::reconciler::package_version_floor(
+                apt.as_ref(),
+                &installed,
+                "vim",
+                Some("9.0"),
+            ),
+            cfgd_core::reconciler::VersionFloor::Below { .. }
+        ),
+        "and upstream 8.2.3995 misses a 9.0 floor, so the listing really was read"
+    );
+}
+
+/// The one-unreadable case belongs to the manager arm too, and order-independently.
+/// `>=1.2` is a floor apt cannot read and `1:2.30` is one it can, so the
+/// malformed declaration must survive the dedup and reach the check that
+/// reports it — whichever module declared it. Falling to the parse ladder here
+/// let the family floor win in one order and lose in the other.
+#[test]
+fn a_floor_the_manager_cannot_read_survives_the_dedup_in_either_order() {
+    let resolved = cfgd_core::test_helpers::make_empty_resolved();
+    let pinned = |name: &str, floor: &str| {
+        let mut m = cfgd_core::test_helpers::make_resolved_module(name);
+        m.packages = vec![cfgd_core::modules::ResolvedPackage {
+            canonical_name: "vim".to_string(),
+            resolved_name: "vim".to_string(),
+            manager: "apt".to_string(),
+            manager_declared: false,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: Some(floor.to_string()),
+        }];
+        m
+    };
+    let apt = all_package_managers()
+        .into_iter()
+        .find(|m| m.name() == "apt")
+        .expect("apt is a registered manager");
+    let managers: HashMap<String, &dyn PackageManager> =
+        std::iter::once(("apt".to_string(), apt.as_ref())).collect();
+
+    for order in [["1:2.30", ">=1.2"], [">=1.2", "1:2.30"]] {
+        let modules = vec![pinned("base", order[0]), pinned("dev", order[1])];
+        let effective = cfgd_core::effective::effective_desired_packages(
+            &resolved.merged,
+            &modules,
+            Some(&managers),
+        );
+        assert_eq!(
+            effective[0].min_version.as_deref(),
+            Some(">=1.2"),
+            "the floor the manager cannot read reaches its check: {effective:?}"
+        );
+    }
 }
 
 /// The other direction of the same rule, and the one the round-5 propagate rule
@@ -4663,7 +4727,6 @@ fn a_family_grammar_floor_propagates_through_the_dedup_and_compares_clean() {
 /// (upstream `2.30` < `9.0`). Letting the unparseable floor win here would drop
 /// a real constraint with no check error anywhere to show for it.
 #[test]
-#[serial_test::serial]
 fn a_stricter_readable_floor_beats_a_family_grammar_one_the_manager_can_read() {
     let resolved = cfgd_core::test_helpers::make_empty_resolved();
     let pinned = |name: &str, floor: &str| {
