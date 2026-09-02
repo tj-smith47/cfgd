@@ -240,7 +240,7 @@ spec:
     name: e2e-lc-mc-${E2E_RUN_ID}
   severity: High
   driftDetails:
-    - field: packages.wget
+    - field: sysctl.net.ipv4.ip_forward
       expected: installed
       actual: missing
 EOF

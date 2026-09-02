@@ -43,7 +43,7 @@ spec:
     name: some-mc
   severity: Low
   driftDetails:
-    - field: test
+    - field: sysctl.vm.swappiness
       expected: a
       actual: b
 EOF
@@ -420,7 +420,7 @@ spec:
     name: ""
   severity: Medium
   driftDetails:
-    - field: packages
+    - field: sysctl.vm.swappiness
       expected: installed
       actual: missing
 EOF
@@ -453,7 +453,7 @@ spec:
     name: some-mc
   severity: Low
   driftDetails:
-    - field: sysctl
+    - field: sysctl.net.ipv4.ip_forward
       expected: "1"
       actual: "0"
 EOF

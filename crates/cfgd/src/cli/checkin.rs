@@ -174,10 +174,11 @@ pub fn cmd_checkin(
     let all_drifts = cfgd_core::compliance::system_drifts(system_diffs.get_or_init(diff_system));
 
     // The section names the CLASS this command can report, because that is all
-    // the walk above collects: `system_drifts` flattens the answers of the
-    // available system CONFIGURATORS and nothing else. A package, file or env
-    // finding never reaches the gateway, so a section headed `Drift` promised
-    // the fleet a machine-wide verdict this payload has never carried.
+    // the walk above collects: `system_drifts` pairs the answers of the
+    // available system CONFIGURATORS with their reporters and gathers nothing
+    // else. A package, file or env finding never reaches the gateway, so a
+    // section headed `Drift` promised the fleet a machine-wide verdict this
+    // payload has never carried.
     let drift_status = if !all_drifts.is_empty() {
         // Same reasoning as the gateway checkin above, both halves:
         // `client.report_drift` narrates through the bare `&Printer` it's

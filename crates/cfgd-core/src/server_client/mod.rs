@@ -44,6 +44,14 @@ struct DriftReport {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DriftDetail {
+    /// The drifted setting's identity, qualified by the configurator that
+    /// reported it (`sysctl.net.ipv4.ip_forward`), composed through
+    /// [`crate::reconciler::system_resource_key`].
+    ///
+    /// Never the bare key: two configurators may declare the same one, and the
+    /// DriftAlert CRD merges `driftDetails` by this field. Never the
+    /// `system:`-prefixed spelling either — that outer wrapper belongs to
+    /// cfgd's own resource-id grammar, not to a fleet wire field.
     field: String,
     expected: String,
     actual: String,
@@ -323,15 +331,19 @@ impl ServerClient {
     /// live value diverged from the declared one. Packages, files, env vars and
     /// aliases are never carried here, so the narration names the class rather
     /// than letting a fleet reader take a settings report for a machine verdict.
-    pub fn report_drift(&self, drifts: &[SystemDrift], printer: &Printer) -> Result<()> {
+    ///
+    /// Each drift arrives paired with the configurator that reported it, as
+    /// [`crate::compliance::system_drifts`] yields them: the wire field is the
+    /// qualified identity, so two configurators sharing a key stay two rows.
+    pub fn report_drift(&self, drifts: &[(&str, &SystemDrift)], printer: &Printer) -> Result<()> {
         if drifts.is_empty() {
             return Ok(());
         }
 
         let details: Vec<DriftDetail> = drifts
             .iter()
-            .map(|d| DriftDetail {
-                field: d.key.clone(),
+            .map(|(configurator, d)| DriftDetail {
+                field: crate::reconciler::system_resource_key(configurator, &d.key),
                 expected: d.expected.clone(),
                 actual: d.actual.clone(),
             })

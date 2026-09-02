@@ -317,8 +317,12 @@ pub struct DriftAlertStatus {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DriftDetail {
-    /// The setting's key within its system configurator, as the device reported
-    /// it (e.g. `net.ipv4.ip_forward`).
+    /// The drifted setting, named `<configurator>.<key>` as the device reported
+    /// it (e.g. `sysctl.net.ipv4.ip_forward`).
+    ///
+    /// The configurator qualifies the key because a key names a setting only
+    /// within its own configurator: two of them may declare the same one, and
+    /// this list merges by this field.
     pub field: String,
     /// The value the MachineConfig declares.
     pub expected: String,

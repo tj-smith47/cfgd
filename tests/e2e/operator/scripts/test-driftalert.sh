@@ -43,7 +43,7 @@ spec:
     name: e2e-drift-mc-${E2E_RUN_ID}
   severity: Medium
   driftDetails:
-    - field: packages.ripgrep
+    - field: sysctl.vm.max_map_count
       expected: installed
       actual: missing
 EOF

@@ -173,9 +173,68 @@ fn report_drift_sends_drift_details() {
         expected: "foo".into(),
         actual: "bar".into(),
     };
-    let result = client.report_drift(&[drift], &printer);
+    let result = client.report_drift(&[("sysctl", &drift)], &printer);
     assert!(result.is_ok());
     mock.assert();
+}
+
+/// Two configurators declaring the same key reach the fleet as two rows.
+///
+/// The DriftAlert CRD merges `driftDetails` by `field`
+/// (`x-kubernetes-list-map-keys: [field]`), so a payload naming both rows
+/// `default.exists` loses one of them server-side and the fleet reads a device
+/// as half as drifted as it is. The configurator each drift came from is the
+/// only thing that tells them apart, so it survives the walk and qualifies the
+/// wire field through `reconciler::system_resource_key`.
+#[test]
+fn two_configurators_sharing_a_key_reach_the_fleet_as_two_rows() {
+    use crate::compliance::{SystemDiff, SystemDiffOutcome, system_drifts};
+
+    let shared_key = |expected: &str, actual: &str| SystemDrift {
+        key: "default.exists".into(),
+        expected: expected.into(),
+        actual: actual.into(),
+    };
+    let diffs = [
+        SystemDiff {
+            configurator: "sshKeys".into(),
+            outcome: SystemDiffOutcome::Drifts(vec![shared_key("present", "missing")]),
+        },
+        SystemDiff {
+            configurator: "certificates".into(),
+            outcome: SystemDiffOutcome::Drifts(vec![shared_key("trusted", "absent")]),
+        },
+    ];
+    let rows = system_drifts(&diffs);
+
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("POST", "/api/v1/devices/dev-1/drift")
+        .match_body(mockito::Matcher::JsonString(
+            serde_json::json!({
+                "details": [
+                    {
+                        "field": "sshKeys.default.exists",
+                        "expected": "present",
+                        "actual": "missing",
+                    },
+                    {
+                        "field": "certificates.default.exists",
+                        "expected": "trusted",
+                        "actual": "absent",
+                    },
+                ]
+            })
+            .to_string(),
+        ))
+        .with_status(200)
+        .with_body("{}")
+        .create();
+
+    let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
+    let result = client.report_drift(&rows, &test_printer());
+    mock.assert();
+    result.unwrap();
 }
 
 #[test]
@@ -314,7 +373,7 @@ fn report_drift_multiple_drifts() {
 
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
-    let drifts = vec![
+    let drifts = [
         SystemDrift {
             key: "net.ipv4.ip_forward".into(),
             expected: "1".into(),
@@ -326,7 +385,8 @@ fn report_drift_multiple_drifts() {
             actual: "60".into(),
         },
     ];
-    let result = client.report_drift(&drifts, &printer);
+    let rows: Vec<(&str, &SystemDrift)> = drifts.iter().map(|d| ("sysctl", d)).collect();
+    let result = client.report_drift(&rows, &printer);
     assert!(result.is_ok());
     mock.assert();
 }
@@ -458,12 +518,12 @@ fn submit_verification_invalid_json_response() {
 fn report_drift_connection_refused() {
     let client = ServerClient::new("http://127.0.0.1:1", Some("key"), "dev-1");
     let printer = test_printer();
-    let drifts = vec![SystemDrift {
+    let drift = SystemDrift {
         key: "test.key".into(),
         expected: "a".into(),
         actual: "b".into(),
-    }];
-    let result = client.report_drift(&drifts, &printer);
+    };
+    let result = client.report_drift(&[("sysctl", &drift)], &printer);
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
@@ -847,7 +907,7 @@ mod bridge {
             .create();
 
         let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
-        let drifts = vec![
+        let drifts = [
             SystemDrift {
                 key: "net.ipv4.ip_forward".into(),
                 expected: "1".into(),
@@ -860,8 +920,9 @@ mod bridge {
             },
         ];
 
+        let rows: Vec<(&str, &SystemDrift)> = drifts.iter().map(|d| ("sysctl", d)).collect();
         let (printer, cap) = Printer::for_test_doc();
-        client.report_drift(&drifts, &printer).unwrap();
+        client.report_drift(&rows, &printer).unwrap();
 
         let summary = DriftSummary {
             drift_count: drifts.len(),

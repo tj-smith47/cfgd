@@ -57,7 +57,7 @@ spec:
     name: mc-${DEVICE_1}
   severity: High
   driftDetails:
-    - field: system.vm.max_map_count
+    - field: sysctl.vm.max_map_count
       expected: "262144"
       actual: "65530"
 EOF
@@ -377,7 +377,7 @@ spec:
   deviceId: e2e-compliance-device
   severity: High
   driftDetails:
-    - field: "system.sysctl.vm.max_map_count"
+    - field: "sysctl.vm.max_map_count"
       expected: "262144"
       actual: "65530"
 EOF

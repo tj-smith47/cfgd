@@ -33511,6 +33511,78 @@ fn every_fleet_drift_surface_names_the_system_settings_class() {
     }
 }
 
+/// A fleet drift row's `field` is composed once and read verbatim thereafter.
+///
+/// The device mints it through `reconciler::system_resource_key`, the ONE
+/// composer of a `<configurator>.<key>` identity, and every surface between
+/// that mint and the screen — the gateway's DriftAlert builder, its event rows,
+/// the web dashboard — copies the value it was handed. A second `format!` mints
+/// a spelling the CRD's `x-kubernetes-list-map-keys: [field]` merge cannot
+/// reconcile with the first, and a hand-rolled split re-derives a configurator
+/// name the composer never promised to make recoverable.
+#[test]
+fn every_fleet_drift_field_comes_from_the_one_composer() {
+    // Each file's `field:` constructions: the device's mint, and the gateway's
+    // copy into the CRD object.
+    const EXPECTED: [(&str, usize); 2] = [
+        ("crates/cfgd-core/src/server_client/mod.rs", 1),
+        ("crates/cfgd-operator/src/gateway/api/drift.rs", 1),
+    ];
+    const READERS: [&str; 3] = [
+        "crates/cfgd-operator/src/gateway/api/fleet.rs",
+        "crates/cfgd-operator/src/gateway/web/mod.rs",
+        "crates/cfgd-operator/src/controllers/drift_alert.rs",
+    ];
+    const HAND_PARSERS: [&str; 5] = ["split(", "splitn(", "rsplit", "strip_prefix(", "find('.')"];
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for rel in EXPECTED.iter().map(|(f, _)| *f).chain(READERS) {
+        let path = root.join(rel);
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("fleet drift surface {rel} unreadable: {e}"));
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        let mut built = 0usize;
+        for (n, line) in production.lines().enumerate() {
+            if line.trim_start().starts_with("//") || !line.contains("field") {
+                continue;
+            }
+            assert!(
+                !HAND_PARSERS.iter().any(|p| line.contains(p)),
+                "{rel}:{}: a drift row's `field` is read whole, never taken \
+                 apart — the configurator half is the composer's to write and \
+                 nobody's to re-derive:\n  {}",
+                n + 1,
+                line.trim()
+            );
+            // A struct's own declaration (`field: String,`) carries neither a
+            // call nor a path access; a construction always carries one.
+            if !line.contains("field:") || !(line.contains('(') || line.contains('.')) {
+                continue;
+            }
+            built += 1;
+            assert!(
+                line.contains("system_resource_key(") || line.contains(".field"),
+                "{rel}:{}: a drift row's `field` is either composed through \
+                 `reconciler::system_resource_key` or copied verbatim from the \
+                 row upstream:\n  {}",
+                n + 1,
+                line.trim()
+            );
+        }
+        if let Some((_, expected)) = EXPECTED.iter().find(|(f, _)| *f == rel) {
+            counts.push((rel, built));
+            assert_eq!(
+                built, *expected,
+                "{rel} builds {built} drift rows, not {expected} — a new one \
+                 means a second spelling of the fleet's row identity until it \
+                 is reviewed"
+            );
+        }
+    }
+    assert_eq!(counts.len(), EXPECTED.len());
+}
+
 /// `doctor` probes tooling and environment prerequisites: is `git` on PATH, is
 /// the state store writable, do the declared managers exist, do the declared
 /// packages resolve. It checks no file, env var, alias or system setting against

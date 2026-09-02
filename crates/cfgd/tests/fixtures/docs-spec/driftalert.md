@@ -108,17 +108,17 @@ Each entry describes a single system setting whose live value differs from its d
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `field` | string | Yes | | The setting's key within its system configurator, as the device reported it (e.g. `net.ipv4.ip_forward`). |
+| `field` | string | Yes | | The drifted setting, named `<configurator>.<key>` as the device reported it (e.g. `sysctl.net.ipv4.ip_forward`). The configurator qualifies the key because a key names a setting only within its own configurator, and this list merges by this field. |
 | `expected` | string | Yes | | The value declared in the `MachineConfig` (desired state). |
 | `actual` | string | Yes | | The value reported by the device (actual state). |
 
 **Example:**
 ```yaml
 driftDetails:
-  - field: net.ipv4.ip_forward
+  - field: sysctl.net.ipv4.ip_forward
     expected: "1"
     actual: "0"
-  - field: net.bridge.bridge-nf-call-iptables
+  - field: sysctl.net.bridge.bridge-nf-call-iptables
     expected: "1"
     actual: "0"
 ```
@@ -151,10 +151,10 @@ spec:
     name: alice-k8s-worker
   severity: High
   driftDetails:
-    - field: net.ipv4.ip_forward
+    - field: sysctl.net.ipv4.ip_forward
       expected: "1"
       actual: "0"
-    - field: overlay
+    - field: kernelModules.overlay
       expected: "loaded"
       actual: "not loaded"
 status:

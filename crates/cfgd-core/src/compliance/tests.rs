@@ -1088,7 +1088,8 @@ fn a_snapshot_handed_collected_diffs_asks_no_configurator_again() {
     // And the drift report derived from the same answers names the same drift.
     let drifts = system_drifts(&collected);
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "net.ipv4.ip_forward");
+    assert_eq!(drifts[0].0, "mock");
+    assert_eq!(drifts[0].1.key, "net.ipv4.ip_forward");
     assert_eq!(diffs.load(std::sync::atomic::Ordering::SeqCst), 1);
 
     // The check it renders is the one the un-handed path renders.
