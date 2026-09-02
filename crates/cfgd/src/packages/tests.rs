@@ -4582,3 +4582,52 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
         }
     }
 }
+
+/// The half of the floor-dedup rule a "simplification" would break. What
+/// `effective::stricter_floor` carries forward when the shared parser balks is
+/// DOUBT, not a verdict: an apt epoch (`1:2.30`) is a floor no
+/// `parse_loose_version` reads, so it wins the dedup over a floor that does —
+/// and then compares CLEANLY at the manager that owns the grammar. Turning the
+/// propagation into a blanket refusal would file a check error against a
+/// declaration `docs/packages.md` promises works.
+#[test]
+fn a_family_grammar_floor_propagates_through_the_dedup_and_compares_clean() {
+    let resolved = cfgd_core::test_helpers::make_empty_resolved();
+    let pinned = |name: &str, floor: &str| {
+        let mut m = cfgd_core::test_helpers::make_resolved_module(name);
+        m.packages = vec![cfgd_core::modules::ResolvedPackage {
+            canonical_name: "vim".to_string(),
+            resolved_name: "vim".to_string(),
+            manager: "apt".to_string(),
+            manager_declared: false,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: Some(floor.to_string()),
+        }];
+        m
+    };
+    let modules = vec![pinned("base", "1:2.30"), pinned("dev", "2.5")];
+
+    let effective = cfgd_core::effective::effective_desired_packages(&resolved.merged, &modules);
+    assert_eq!(
+        effective[0].min_version.as_deref(),
+        Some("1:2.30"),
+        "the dedup carries the floor it cannot itself read: {effective:?}"
+    );
+
+    let apt = all_package_managers()
+        .into_iter()
+        .find(|m| m.name() == "apt")
+        .expect("apt is a registered manager");
+    assert!(
+        apt.floor_comparable("1:2.30"),
+        "an epoch floor is a comparison the distro family makes, never a check error"
+    );
+    assert!(
+        apt.version_meets_minimum("2:8.2.3995-1ubuntu2", "1:2.30"),
+        "and the comparison itself folds both sides to their upstream parts"
+    );
+}
