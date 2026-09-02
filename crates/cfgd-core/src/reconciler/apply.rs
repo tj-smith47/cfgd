@@ -2125,10 +2125,72 @@ impl<'a> super::Reconciler<'a> {
                 .upsert_managed_resource(&rtype, &rid, LOCAL_LAYER, None, Some(apply_id))?;
             self.state.resolve_drift(apply_id, &rtype, &rid)?;
             if rtype == ENV_RESOURCE_TYPE {
+                // An `env:inject:<rc>` action's subject is the shell rc file,
+                // but the check that reads it records the source line under
+                // `env-rc`, not `env` — so the injected line's row stood open
+                // through the apply that wrote it. The verb is reconstructed
+                // from the target, the one reading of that split.
+                if super::recorded_env_method(&rid) == super::ENV_VERB_INJECT {
+                    self.state.resolve_drift(apply_id, "env-rc", &rid)?;
+                }
                 self.resolve_env_item_drift(apply_id, &rid, resolved, modules)?;
+            }
+            if let Some(module) =
+                super::format::module_files_description_module(&result.description)
+            {
+                self.resolve_module_file_drift(apply_id, module, modules)?;
             }
         }
         Ok(())
+    }
+
+    /// Resolve the per-file `module` drift rows a successful file deployment
+    /// converged.
+    ///
+    /// The deployment records ONE aggregate row per module
+    /// (`module:<name>:files:<n>`, keyed on the declared count so a partial
+    /// deploy lands where a full one does), while every live check records one
+    /// row per file (`<module>/<target>`). Nothing matched the two, so healing
+    /// a drifted file with `cfgd apply` left its row open until the next scan —
+    /// and `cfgd status` went on advising the very command that had just run.
+    ///
+    /// The ids come from
+    /// [`module_file_spec_resource_id`](super::module_file_spec_resource_id),
+    /// which owns the `Patch`/unexpanded-target split the finding's own id was
+    /// minted through; a hand-built one would spell a patched file two ways.
+    ///
+    /// Every DECLARED file of the module is resolved, not only the subset the
+    /// action wrote. An entry elided as already-converged is one the machine
+    /// matched before the run — the same claim a write makes, reached without
+    /// writing — so its row is as stale as the written file's. A FAILED action
+    /// resolves nothing: `record_managed_resources` skips it before reaching
+    /// here, and the machine is exactly as drifted as the check found it.
+    ///
+    /// A file whose row `withholds_recorded_row` protects is left open. The
+    /// prune edits a `DeployFiles` action's file list per target, so an action
+    /// can succeed while one of its declared files was deliberately withheld
+    /// from the run; resolving that row would heal a claim nothing checked.
+    fn resolve_module_file_drift(
+        &self,
+        apply_id: i64,
+        module: &str,
+        modules: &[ResolvedModule],
+    ) -> Result<()> {
+        let Some(resolved_module) = modules.iter().find(|m| m.name == module) else {
+            return Ok(());
+        };
+        let keys: Vec<(String, String)> = resolved_module
+            .files
+            .iter()
+            .map(|file| super::module_file_spec_resource_id(module, file))
+            .filter(|id| {
+                !self
+                    .withheld_rows
+                    .is_some_and(|x| x.withholds_recorded_row("module", id))
+            })
+            .map(|id| ("module".to_string(), id))
+            .collect();
+        self.state.resolve_drift_keys(apply_id, &keys)
     }
 
     /// Resolve the per-item `env-var`/`alias` drift rows a successful write of

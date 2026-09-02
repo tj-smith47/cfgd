@@ -137,6 +137,95 @@ fn plan_includes_script_actions() {
     assert_eq!(post_phase.action_count(), 1);
 }
 
+/// An apply that heals a drifted module file resolves that file's OWN drift
+/// row, with no re-scan in between.
+///
+/// The deployment records one aggregate row per module
+/// (`module:<name>:files:<n>`) while every live check records one row per file
+/// (`<module>/<target>`), so nothing matched the two: `cfgd apply` healed the
+/// file and `cfgd status` went on showing the drift AND advising `cfgd apply`,
+/// the command that had just run and now reported nothing to do.
+#[test]
+fn an_apply_that_deploys_a_module_file_resolves_that_files_drift_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("init.lua");
+    std::fs::write(&source, "-- fresh\n").unwrap();
+    let target = dir.path().join("deployed.lua");
+    std::fs::write(&target, "-- drifted\n").unwrap();
+
+    let file = crate::modules::ResolvedFile {
+        source: source.clone(),
+        target: target.clone(),
+        is_git_source: false,
+        strategy: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    let mut module = make_resolved_module("nvim");
+    module.files = vec![file.clone()];
+    let modules = vec![module];
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    // What a live check leaves behind for exactly this file.
+    let row_id = super::module_file_spec_resource_id("nvim", &file);
+    state
+        .record_drift(
+            "module",
+            &row_id,
+            Some("deployed"),
+            Some("content differs"),
+            crate::config::LOCAL_LAYER,
+        )
+        .unwrap();
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules.clone(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            None,
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success, "{result:?}");
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "-- fresh\n",
+        "the apply really healed the file"
+    );
+
+    let open: Vec<String> = state
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| format!("{}/{}", e.resource_type, e.resource_id))
+        .collect();
+    assert!(
+        !open.iter().any(|row| row.ends_with(&row_id)),
+        "the row the apply healed must not survive it: {open:?}"
+    );
+}
+
 #[test]
 fn apply_empty_plan_records_success() {
     let state = test_state();

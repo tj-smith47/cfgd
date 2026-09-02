@@ -877,12 +877,99 @@ pub(super) fn module_files_description(module_name: &str, declared_total: usize)
     format!("module:{module_name}:files:{declared_total}")
 }
 
+/// The module named by a [`module_files_description`], for a reader holding the
+/// recorded description alone.
+///
+/// The inverse is deliberately partial: `parse_resource_from_description` folds
+/// this string to `("module", "<name>:files:<n>")`, which is the tracking row's
+/// id and says nothing about which grammar minted it. A caller that must act on
+/// the DEPLOYMENT specifically — the apply's drift resolve — asks here, and gets
+/// `None` for every other `module:` description (`:packages:`, `:script`,
+/// `:skip`).
+pub(super) fn module_files_description_module(desc: &str) -> Option<&str> {
+    let rest = desc.strip_prefix("module:")?;
+    let (module, tail) = rest.rsplit_once(":files:")?;
+    tail.parse::<usize>().ok()?;
+    (!module.is_empty()).then_some(module)
+}
+
+/// The ONE composition of a module file's verify/drift identity.
+///
+/// `target` is posix-folded and, for a real deployed file, absolute — joining
+/// it under the module name with a bare `/` doubles up into `nvim//home/tj/…`,
+/// so the redundant leading separator is trimmed and the id reads as one path
+/// rather than two glued halves. `cfgd status <module>` composes the same
+/// string from a file the state store recorded to ask whether the scan found
+/// that file drifted; the producer and that lookup must never disagree about
+/// the spelling, or a drifted file reads clean under Deployed Files.
+pub fn module_file_resource_id(module: &str, target: &str) -> String {
+    // The keep-set split between the two producers' grammars rests on every
+    // live-minted module id carrying its `/` with a real half on each side —
+    // a bare id here would read as the daemon's whole-module spelling and be
+    // healed by a check that never looked at it.
+    debug_assert!(
+        !module.is_empty() && !target.trim_start_matches('/').is_empty(),
+        "a module-file id needs both halves: {module:?} / {target:?}"
+    );
+    format!("{}/{}", module, target.trim_start_matches('/'))
+}
+
+/// The id the live module-file check mints for one DECLARED module file,
+/// answered from the spec alone — kept beside the producer because a
+/// presenting caller probes a drifted-id set with it before the check's own
+/// record exists, and two derivations of the target half (a `Patch` target
+/// stays unexpanded; every other strategy's is `~`-expanded) would let the
+/// probe and the finding spell one file two ways.
+pub fn module_file_spec_resource_id(module: &str, file: &crate::modules::ResolvedFile) -> String {
+    let target = if file.patch.is_some() {
+        file.target.display_posix()
+    } else {
+        crate::expand_tilde(&file.target).display_posix()
+    };
+    module_file_resource_id(module, &target)
+}
+
+/// The inverse of [`module_file_resource_id`]: the module a finding belongs to
+/// and the deployed path it names.
+///
+/// A drift row names its owner and its item separately, and the id is the only
+/// place a live file finding carries either. The leading separator the id
+/// trimmed is restored unless what remains is already rooted, so a Windows
+/// `C:/Users/…` target keeps its drive instead of gaining a separator that
+/// names nothing. Judged on the string rather than through `Path::is_absolute`
+/// so one host's answer is every host's — an id is written and read on the
+/// same machine, but the round-trip is proven on whichever one runs the tests.
+pub fn split_module_file_resource_id(id: &str) -> Option<(&str, String)> {
+    let (module, rest) = id.split_once('/')?;
+    if module.is_empty() || rest.is_empty() {
+        return None;
+    }
+    let drive_rooted = matches!(rest.as_bytes(), [d, b':', ..] if d.is_ascii_alphabetic());
+    let target = if drive_rooted {
+        rest.to_string()
+    } else {
+        format!("/{rest}")
+    };
+    Some((module, target))
+}
+
 pub(super) fn parse_resource_from_description(desc: &str) -> (String, String) {
     let Some((prefix, rest)) = desc.split_once(':') else {
         return ("unknown".to_string(), desc.to_string());
     };
     if TWO_COLON_PREFIXES.contains(&prefix) {
-        let id = rest.split_once(':').map_or(rest, |(_, id)| id);
+        let id = rest.split_once(':').map_or(rest, |(verb, id)| {
+            // `file:chmod:<mode>:<target>` is the one description carrying a
+            // segment between its verb and its subject, and the subject is
+            // what a drift row and a tracking row are keyed on: dropping the
+            // verb alone left the mode glued to the path, so a permissions fix
+            // recorded `0o600:/p` and resolved a drift row nothing had.
+            if verb == "chmod" {
+                id.split_once(':').map_or(id, |(_, target)| target)
+            } else {
+                id
+            }
+        });
         (prefix.to_string(), id.to_string())
     } else {
         (prefix.to_string(), rest.to_string())

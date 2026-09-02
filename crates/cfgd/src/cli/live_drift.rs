@@ -24,7 +24,6 @@
 //! (`fold_home_in_text`, the env declared-value recompute) never reach the
 //! store.
 
-use cfgd_core::PathDisplayExt;
 use cfgd_core::config::ResolvedProfile;
 use cfgd_core::modules::ResolvedModule;
 use cfgd_core::providers::{PackageAction, ProviderRegistry};
@@ -324,68 +323,9 @@ pub(super) fn file_verify_results(
 /// target is missing OR its bytes drifted out-of-band. Module files carry no tera
 /// `origin`, so `None` is passed — consistent with how they deploy. The
 /// `resource_id` is `"<module>/<target>"` so module-file drift is attributable.
-/// The ONE composition of a module file's verify/drift identity.
-///
-/// `target` is posix-folded and, for a real deployed file, absolute — joining
-/// it under the module name with a bare `/` doubles up into `nvim//home/tj/…`,
-/// so the redundant leading separator is trimmed and the id reads as one path
-/// rather than two glued halves. `cfgd status <module>` composes the same
-/// string from a file the state store recorded to ask whether the scan found
-/// that file drifted; the producer and that lookup must never disagree about
-/// the spelling, or a drifted file reads clean under Deployed Files.
-pub(super) fn module_file_resource_id(module: &str, target: &str) -> String {
-    // The keep-set split between the two producers' grammars rests on every
-    // live-minted module id carrying its `/` with a real half on each side —
-    // a bare id here would read as the daemon's whole-module spelling and be
-    // healed by a check that never looked at it.
-    debug_assert!(
-        !module.is_empty() && !target.trim_start_matches('/').is_empty(),
-        "a module-file id needs both halves: {module:?} / {target:?}"
-    );
-    format!("{}/{}", module, target.trim_start_matches('/'))
-}
-
-/// The id [`module_file_verify_results`] mints for one DECLARED module file,
-/// answered from the spec alone — kept beside the producer because a
-/// presenting caller probes a drifted-id set with it before the check's own
-/// record exists, and two derivations of the target half (a `Patch` target
-/// stays unexpanded; every other strategy's is `~`-expanded) would let the
-/// probe and the finding spell one file two ways.
-pub(super) fn module_file_spec_resource_id(
-    module: &str,
-    file: &cfgd_core::modules::ResolvedFile,
-) -> String {
-    let target = if file.patch.is_some() {
-        file.target.display_posix()
-    } else {
-        cfgd_core::expand_tilde(&file.target).display_posix()
-    };
-    module_file_resource_id(module, &target)
-}
-
-/// The inverse of [`module_file_resource_id`]: the module a finding belongs to
-/// and the deployed path it names.
-///
-/// A drift row names its owner and its item separately, and the id is the only
-/// place a live file finding carries either. The leading separator the id
-/// trimmed is restored unless what remains is already rooted, so a Windows
-/// `C:/Users/…` target keeps its drive instead of gaining a separator that
-/// names nothing. Judged on the string rather than through `Path::is_absolute`
-/// so one host's answer is every host's — an id is written and read on the
-/// same machine, but the round-trip is proven on whichever one runs the tests.
-pub(super) fn split_module_file_resource_id(id: &str) -> Option<(&str, String)> {
-    let (module, rest) = id.split_once('/')?;
-    if module.is_empty() || rest.is_empty() {
-        return None;
-    }
-    let drive_rooted = matches!(rest.as_bytes(), [d, b':', ..] if d.is_ascii_alphabetic());
-    let target = if drive_rooted {
-        rest.to_string()
-    } else {
-        format!("/{rest}")
-    };
-    Some((module, target))
-}
+pub(super) use cfgd_core::reconciler::{
+    module_file_resource_id, module_file_spec_resource_id, split_module_file_resource_id,
+};
 
 pub(super) fn module_file_verify_results(
     fm: &CfgdFileManager,
@@ -881,6 +821,72 @@ mod tests {
     use cfgd_core::output::Printer;
 
     use super::*;
+
+    /// Every drift-row grammar a live check mints has a settled answer to
+    /// "does the apply that heals this resource resolve its row, without a
+    /// re-scan". Two of them did not, and the reader paid: a healed module
+    /// file kept its row (the aggregate `module:<name>:files:<n>` the deploy
+    /// records matches no per-file id), and an injected rc source line kept
+    /// its `env-rc` row (the action's subject is recorded under `env`).
+    ///
+    /// The table is the rule's memory. A type joining
+    /// [`FULL_CHECK_RESOLVABLE_TYPES`] with no verdict here fails this test,
+    /// so the next member is classified before it ships rather than after a
+    /// demo shows `cfgd status` advising the command that just ran.
+    #[test]
+    fn every_checked_drift_grammar_states_whether_an_apply_resolves_its_row() {
+        // (type, where the apply resolves it — `reconciler::apply`'s
+        // `record_managed_resources` unless stated)
+        const HEALED_BY_APPLY: &[(&str, &str)] = &[
+            (
+                "file",
+                "the generic resolve: `file:<verb>:<target>` parses to the same id",
+            ),
+            (
+                "module",
+                "`resolve_module_file_drift`, per DECLARED file of the deployed module",
+            ),
+            (
+                "package",
+                "the package arm, per package plus the batch spelling",
+            ),
+            (
+                "system",
+                "the generic resolve: `system:<configurator>.<key>` parses to the same id",
+            ),
+            (
+                "env",
+                "the generic resolve: `env:<verb>:<path>` parses to the same id",
+            ),
+            (
+                "env-rc",
+                "the env arm, for an `inject` whose subject IS the rc file",
+            ),
+            (
+                "env-var",
+                "`resolve_env_item_drift`, over the merged declared set",
+            ),
+            (
+                "alias",
+                "`resolve_env_item_drift`, over the merged declared set",
+            ),
+        ];
+        let classified: std::collections::HashSet<&str> =
+            HEALED_BY_APPLY.iter().map(|(t, _)| *t).collect();
+        for ty in FULL_CHECK_RESOLVABLE_TYPES {
+            assert!(
+                classified.contains(ty),
+                "{ty}: a live check records this type, so state where a successful \
+                 apply resolves its rows — or that nothing an apply does can"
+            );
+        }
+        for (ty, why) in HEALED_BY_APPLY {
+            assert!(
+                FULL_CHECK_RESOLVABLE_TYPES.contains(ty),
+                "{ty} is classified here but no live check records it: {why}"
+            );
+        }
+    }
 
     fn resolved_with_file(target: std::path::PathBuf) -> ResolvedProfile {
         let files = FilesSpec {

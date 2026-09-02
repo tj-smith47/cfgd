@@ -54,8 +54,10 @@ pub(crate) use format::debug_assert_system_key_undoubled;
 pub use format::{
     DisplaySubject, action_display_subject, action_display_subject_within, bare_script_subject,
     condense_action_desc_for_display, format_action_description, format_plan_item,
-    format_plan_items, hook_script_subject, module_script_subject, module_script_subject_within,
-    script_run_subject, script_run_subject_within, system_key_doubling_error, system_resource_key,
+    format_plan_items, hook_script_subject, module_file_resource_id, module_file_spec_resource_id,
+    module_script_subject, module_script_subject_within, script_run_subject,
+    script_run_subject_within, split_module_file_resource_id, system_key_doubling_error,
+    system_resource_key,
 };
 pub use managers::plan_managers;
 pub use packages::stale_tracked_packages;
@@ -158,6 +160,7 @@ pub struct Reconciler<'a> {
     /// still gets the surface written behind its back the moment a secret
     /// resolves an env var or a package manager is bootstrapped mid-run.
     withhold_env_surface: bool,
+    withheld_rows: Option<&'a DecisionExclusions>,
     /// Secrets resolved during THIS run, so one reference costs one spawn of
     /// its backend however many actions name it.
     ///
@@ -257,6 +260,7 @@ impl<'a> Reconciler<'a> {
             state,
             home: resolved_home(),
             withhold_env_surface: false,
+            withheld_rows: None,
             secrets: crate::providers::SecretCache::new(),
             config_dir: None,
             installed: None,
@@ -341,6 +345,21 @@ impl<'a> Reconciler<'a> {
         self
     }
 
+    /// The exclusions whose withheld resources this run's drift resolve must
+    /// leave alone.
+    ///
+    /// The keep-side twin of [`withhold_from_plan`]: a caller that pruned its
+    /// plan hands the same set here, so a row naming a resource awaiting a
+    /// source decision is not healed by an apply that deliberately did not
+    /// touch it. Read through
+    /// [`DecisionExclusions::withholds_recorded_row`], which owns the
+    /// per-grammar matching.
+    #[must_use]
+    pub fn withholding_rows(mut self, exclusions: &'a DecisionExclusions) -> Self {
+        self.withheld_rows = Some(exclusions);
+        self
+    }
+
     /// A reconciler whose env surfaces resolve against `home` instead of the
     /// invoking user's. For a caller that manages a home directory other than
     /// its own — and for tests, which must never name a real one.
@@ -354,6 +373,7 @@ impl<'a> Reconciler<'a> {
             state,
             home: home.into(),
             withhold_env_surface: false,
+            withheld_rows: None,
             secrets: crate::providers::SecretCache::new(),
             config_dir: None,
             installed: None,
