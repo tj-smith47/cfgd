@@ -510,6 +510,78 @@ fn a_scoped_env_probe_failure_is_reported_and_escalates_on_both_scoped_surfaces(
     }
 }
 
+/// A recorded row the scan KEEPS standing is rendered and priced by the scan
+/// that kept it.
+///
+/// The full check evaluates eight resource types; a `script` row is one no
+/// pass of it can re-find, so the recorder deliberately leaves it unresolved.
+/// Rendering only what the scan re-found made `status` and `status --scan`
+/// disagree about the same untouched machine — Drifted, then Synced, then
+/// Drifted — and let `status --scan --exit-code` wave a CI gate through over
+/// drift the very same invocation had just re-affirmed as standing.
+#[test]
+fn a_row_the_scan_keeps_standing_is_rendered_and_priced_by_that_scan() {
+    use cfgd_core::state::StateStore;
+
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    let state_tmp = tempfile::tempdir().unwrap();
+    write_config(config_tmp.path(), false, false);
+
+    // Recorded exactly as a daemon tick records a planned script action.
+    {
+        let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
+        state
+            .record_drift("script", "echo hook", None, Some("drift detected"), "local")
+            .unwrap();
+    }
+
+    let out = run(
+        &["status", "--scan"],
+        config_tmp.path(),
+        state_tmp.path(),
+        home_tmp.path(),
+        None,
+    );
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("echo hook"),
+        "the scan renders the row it left standing: {text}"
+    );
+
+    let out = run(
+        &["status", "--scan", "--exit-code"],
+        config_tmp.path(),
+        state_tmp.path(),
+        home_tmp.path(),
+        None,
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "the exit gate prices the standing row too: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Still standing afterwards: nothing about this scan healed it, which is
+    // what makes rendering it the honest verdict.
+    let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
+    assert_eq!(
+        state
+            .unresolved_drift()
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.resource_type, e.resource_id))
+            .collect::<Vec<_>>(),
+        vec![("script".to_string(), "echo hook".to_string())],
+    );
+}
+
 #[test]
 fn drift_with_every_check_answered_still_exits_drift_detected() {
     let config_tmp = tempfile::tempdir().unwrap();

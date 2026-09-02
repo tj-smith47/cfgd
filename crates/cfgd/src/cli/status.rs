@@ -2503,12 +2503,12 @@ pub(super) fn cmd_status(
     // edited out-of-band. So when scanning, run the LIVE scan (the same
     // checks `diff`/`verify` run — the engine records every finding and
     // resolves what it did not re-find, and the last-scan stamp this header
-    // reads back next time is written here) BEFORE emitting, fold its
-    // findings into the displayed Drift section, then exit 5 if
-    // `--exit-code` asked for it and any drift was found. This keeps the
-    // human verdict and the exit code in agreement instead of printing "No
-    // drift detected" alongside exit 5.
-    let live_drift = if let Some(mut registry) = registry {
+    // reads back next time is written here) BEFORE emitting, fold what it
+    // leaves the store holding into the displayed Drift section, then exit 5
+    // if `--exit-code` asked for it and any of it stands. This keeps the human
+    // verdict and the exit code in agreement instead of printing "No drift
+    // detected" alongside exit 5.
+    if let Some(mut registry) = registry {
         ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
         registry.set_system_config_dir(&config_dir);
         let cfgd_installed = cfgd_installed_packages(state)?;
@@ -2535,21 +2535,29 @@ pub(super) fn cmd_status(
         if let Some(stamped) = state.record_scan() {
             output.last_scan_at = Some(stamped);
         }
-        // The scan is a FULL-machine check: it just recorded its findings and
-        // resolved every recorded row it did not re-find, so the recorded
-        // rows read above are stale on this branch — a row the scan re-found
-        // is worded fresher by the scan itself, and a row it did not re-find
-        // was just resolved as healed. The displayed set IS the scan's.
+        // The scan is a FULL-machine check, so the recorded rows read above
+        // are stale on this branch: a row the scan re-found is worded fresher
+        // by the scan itself, and a row it did not re-find was just resolved
+        // as healed. What it could NOT re-check it deliberately left standing
+        // (`live_drift`'s keep-set), and those rows are still the store's
+        // answer the moment this command returns — dropping them would render
+        // and price a verdict the record contradicts. The displayed set is
+        // therefore the scan's findings plus its own keep-set, the kept rows
+        // carrying their stored producer literals unchanged. A key can appear
+        // in both (a package the presence pass found drifted whose floor check
+        // also errored), so the live wording wins on a tie.
         output.drift.clear();
         for r in &drift {
             output
                 .drift
                 .push(super::live_drift::drift_event_from(r, &merged_env_items));
         }
-        drift
-    } else {
-        Vec::new()
-    };
+        output.drift.extend(report.standing.into_iter().filter(|e| {
+            !drift
+                .iter()
+                .any(|r| r.resource_type == e.resource_type && r.resource_id == e.resource_id)
+        }));
+    }
 
     // Built from the composition this command already resolved: the rows say
     // what each withheld item would put on the machine, and re-deriving that
@@ -2583,7 +2591,11 @@ pub(super) fn cmd_status(
         if !output.system_errors.is_empty() {
             cfgd_core::exit::ExitCode::Error.exit();
         }
-        if !live_drift.is_empty() {
+        // `--exit-code` implies the scan, so this is the union the scan just
+        // rendered: its findings plus the rows it kept standing. Pricing the
+        // findings alone would exit 0 on a machine whose store — written by
+        // this very command — still holds unresolved drift.
+        if !output.drift.is_empty() {
             cfgd_core::exit::ExitCode::DriftDetected.exit();
         }
     }
