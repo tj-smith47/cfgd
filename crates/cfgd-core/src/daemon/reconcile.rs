@@ -1362,9 +1362,9 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
 ///   list, exact on both halves. A module the plan carries only as a
 ///   `ModuleActionKind::Skip` was never probed at all, so its rows are kept
 ///   the way the CLI keeps an unevaluated configurator's.
-/// * `system` `<configurator>.<key>` — the CLI's spelling
-///   ([`crate::reconciler::system_resource_key`]); the tick's own `SetValue`
-///   spells the identical fact `<configurator>:<key>`. A planned
+/// * `system` `<configurator>.<key>` — [`crate::reconciler::system_resource_key`]'s
+///   spelling, which the tick's own `SetValue` mints too, so a row is re-found
+///   by comparing the whole composed id rather than splitting it. A planned
 ///   `SystemAction::Skip` names a configurator this tick never probed (a
 ///   registered tool that left the host, a platform gate), and every row
 ///   under it is kept — the tick's twin of the CLI's `evaluated_system`
@@ -1454,7 +1454,10 @@ pub(super) fn tick_cannot_refind(
                 _ => false,
             }),
         },
-        "system" if !resource_id.contains(':') => planned.iter().any(|a| match a {
+        // Judged whole against the composer's output rather than parsed: a KEY
+        // may carry a colon (`windowsRegistry.HKCU:\Software\…`), so nothing
+        // here may read one as a separator.
+        "system" => planned.iter().any(|a| match a {
             Action::System(SystemAction::SetValue {
                 configurator, key, ..
             }) => crate::reconciler::system_resource_key(configurator, key) == resource_id,
@@ -1466,9 +1469,7 @@ pub(super) fn tick_cannot_refind(
                 .is_some_and(|rest| rest.starts_with('.')),
             _ => false,
         }),
-        "file" | "system" | "secret" | "script" | "env" | "env-rc" | "env-session" | "manager" => {
-            false
-        }
+        "file" | "secret" | "script" | "env" | "env-rc" | "env-session" | "manager" => false,
         _ => true,
     }
 }

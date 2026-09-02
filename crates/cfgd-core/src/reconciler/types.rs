@@ -1326,7 +1326,10 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
         Action::System(sa) => match sa {
             SystemAction::SetValue {
                 configurator, key, ..
-            } => ("system".to_string(), format!("{}:{}", configurator, key)),
+            } => (
+                "system".to_string(),
+                super::format::system_resource_key(configurator, key),
+            ),
             SystemAction::Skip { configurator, .. } => ("system".to_string(), configurator.clone()),
         },
         Action::Script(sa) => {

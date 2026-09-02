@@ -558,6 +558,43 @@ const MIGRATIONS: &[&str] = &[
     // carries no `uninstall_cmd` for anything to act on.
     "DELETE FROM managed_resources
        WHERE resource_type = 'file' AND resource_id GLOB '0o[0-7]*:*';",
+    // Migration 23: the `system` drift rows a daemon tick recorded under the
+    // action grammar's own `<configurator>:<key>`, where every other producer
+    // and every resolver spells `<configurator>.<key>`. Nothing matched them,
+    // so an apply that converged the setting left the row standing and the CLI
+    // scan kept it by design — on a host whose daemon has since stopped, no
+    // surface could ever resolve it. Same order and same reasoning as
+    // migrations 20/21: a row whose dot-spelled twin already stands is the
+    // duplicate and resolves, a lone one is respelled onto the grammar its
+    // healers match. Split on the FIRST colon and only where nothing before it
+    // is a dot: no registered configurator name carries either character,
+    // while a KEY carries both (`windowsRegistry.HKCU:\Software\...`), so an
+    // id already dot-spelled is left exactly as it is. Resolved rows keep
+    // their recorded id — history describes what was written.
+    "UPDATE drift_events
+         SET resolved_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+       WHERE resource_type = 'system'
+         AND instr(resource_id, ':') > 1
+         AND instr(substr(resource_id, 1, instr(resource_id, ':') - 1), '.') = 0
+         AND resolved_by IS NULL AND resolved_at IS NULL
+         AND EXISTS (SELECT 1 FROM drift_events p
+                      WHERE p.resource_type = 'system'
+                        AND p.resource_id =
+                            substr(drift_events.resource_id, 1,
+                                   instr(drift_events.resource_id, ':') - 1)
+                            || '.'
+                            || substr(drift_events.resource_id,
+                                      instr(drift_events.resource_id, ':') + 1)
+                        AND p.resolved_by IS NULL AND p.resolved_at IS NULL);
+
+     UPDATE drift_events
+         SET resource_id = substr(resource_id, 1, instr(resource_id, ':') - 1)
+                           || '.'
+                           || substr(resource_id, instr(resource_id, ':') + 1)
+       WHERE resource_type = 'system'
+         AND instr(resource_id, ':') > 1
+         AND instr(substr(resource_id, 1, instr(resource_id, ':') - 1), '.') = 0
+         AND resolved_by IS NULL AND resolved_at IS NULL;",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable

@@ -7309,8 +7309,8 @@ fn both_producers_mint_one_identity_for_a_provision_finding() {
 /// row is the bare module name (never a `/`, which the CLI's
 /// `module_file_resource_id` always carries), a daemon `package` Skip row the
 /// bare manager name (never a `:`, which every CLI-minted package id
-/// carries), a daemon `system` row the `:`-spelled key the keep predicates
-/// split the two system grammars on, and a provision or refusal the CLI's own
+/// carries), a daemon `system` row the composer's own `<configurator>.<key>`
+/// so either producer's check heals the other's, and a provision or refusal the CLI's own
 /// `package`-typed id so either producer's next check heals the other's row.
 /// The nested exhaustive matches are the trip-wire: a new inner variant of
 /// ANY action enum fails this test's compile until its recorded shape is
@@ -7366,13 +7366,17 @@ fn no_daemon_action_row_wears_the_live_checks_separator() {
                 | SecretAction::Skip { .. } => assert_eq!(rtype, "secret"),
             },
             Action::System(sa) => match sa {
-                // The `:` is the discriminator the keep predicates split the
-                // daemon's spelling from the CLI's `<configurator>.<key>` on.
-                SystemAction::SetValue { .. } => {
+                // ONE identity per setting, whichever producer minted it: the
+                // composer's output verbatim, which is what the CLI's live
+                // check records and what the apply resolves.
+                SystemAction::SetValue {
+                    configurator, key, ..
+                } => {
                     assert_eq!(rtype, "system");
-                    assert!(
-                        rid.contains(':'),
-                        "a daemon SetValue row wears the `:` spelling, got {rid:?}"
+                    assert_eq!(
+                        rid,
+                        crate::reconciler::system_resource_key(configurator, key),
+                        "a daemon SetValue row is the composer's id"
                     );
                 }
                 SystemAction::Skip { .. } => {
@@ -10212,6 +10216,93 @@ fn apply_system_set_value_calls_configurator() {
             .contains("system:sysctl"),
         "desc: {}",
         result.action_results[0].description
+    );
+}
+
+/// An apply that sets a system value resolves the drift row a DAEMON tick
+/// recorded for the same setting.
+///
+/// The two producers key one finding: the tick records through
+/// `action_resource_info`, the apply heals through the description
+/// `format_action_description` mints. A byte of divergence between them —
+/// `gsettings:org.gnome.interface` against `gsettings.org.gnome.interface` —
+/// makes the tick's row immortal: no apply resolves it, and the full CLI scan
+/// keeps every `system` row outside the prefixes it evaluated, so `cfgd
+/// status` advises work that already ran forever.
+#[test]
+fn an_apply_resolves_the_system_drift_row_a_daemon_tick_recorded() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+        vec![crate::providers::SystemDrift {
+            key: "net.ipv4.ip_forward".to_string(),
+            expected: "1".to_string(),
+            actual: "0".to_string(),
+        }],
+    )));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let mut resolved = make_empty_resolved();
+    resolved.merged.system.insert(
+        "sysctl".to_string(),
+        serde_yaml::from_str("{net.ipv4.ip_forward: 1}").unwrap(),
+    );
+
+    let action = Action::System(SystemAction::SetValue {
+        configurator: "sysctl".to_string(),
+        key: "net.ipv4.ip_forward".to_string(),
+        desired: "1".to_string(),
+        current: "0".to_string(),
+        origin: "local".to_string(),
+    });
+    // Seeded through the tick's own composer, so this pin fails the moment the
+    // two producers spell the same finding differently.
+    let (rtype, rid) = super::types::action_resource_info(&action);
+    state
+        .record_drift(
+            &rtype,
+            &rid,
+            Some("1"),
+            Some("0"),
+            crate::config::LOCAL_LAYER,
+        )
+        .unwrap();
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::System,
+            &Owner::profile("test"),
+            vec![action],
+        )],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            Some(&PhaseFilter::Phase(PhaseName::System)),
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success, "{result:?}");
+
+    let open: Vec<String> = state
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| format!("{}/{}", e.resource_type, e.resource_id))
+        .collect();
+    assert!(
+        open.is_empty(),
+        "the apply that set the value must resolve the tick's row: {open:?}"
     );
 }
 

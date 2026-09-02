@@ -126,9 +126,9 @@ pub(in crate::cli) const FULL_CHECK_RESOLVABLE_TYPES: &[&str] = &[
 /// `PackageAction::Skip`), plus comma-batched install ACTIONS this check
 /// prices one row per package; a `system` row outside the configurators
 /// this check actually evaluated — an errored probe, a tool that has since
-/// left the host, a platform-gated module — including the daemon's own
-/// `configurator:key` spelling, which no evaluated `configurator.` prefix
-/// matches; and any row whose key a check ERROR names, whichever check
+/// left the host, a platform-gated module — matched on the `<configurator>.`
+/// prefix every producer of a system id composes through
+/// `reconciler::system_resource_key`; and any row whose key a check ERROR names, whichever check
 /// minted it. That last shape is why the errors travel here at all: a
 /// pinned package whose manager states no version is checked for presence
 /// and not for its floor, so healing its recorded row on the presence answer
@@ -852,7 +852,8 @@ mod tests {
             ),
             (
                 "system",
-                "the generic resolve: `system:<configurator>.<key>` parses to the same id",
+                "the generic resolve, once the arm's `(<current> → <desired>)` \
+                 detail is split off the composed id it decorates",
             ),
             (
                 "env",
