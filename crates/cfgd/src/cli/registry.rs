@@ -218,10 +218,11 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
     // The three cross-platform tool-backed configurators, registered
     // unconditionally: `is_available()` is the one answer to "can this host run
     // it" and every consumer filters through `available_system_configurators`.
-    // A probe here asks the same question in a spelling that misses the
-    // configurator's own `CFGD_*_BIN` seam, so the configurator is dropped
-    // before its seam is read, and `plan` calls it "not registered" rather than
-    // "not available on this host".
+    // A probe here answers a different question in the same breath, so a host
+    // missing the tool got `plan`'s "no configurator registered" — which is
+    // false — instead of "not available on this host". `gpgKeys` also reads
+    // `CFGD_GPG_BIN` in its own `is_available`, so the probe dropped it before
+    // its seam was ever consulted.
     registry.add_system_configurator(Box::new(SshKeysConfigurator));
     registry.add_system_configurator(Box::new(GpgKeysConfigurator));
     registry.add_system_configurator(Box::new(GitConfigurator));
