@@ -681,12 +681,24 @@ pub fn collect_system_diffs(
         .collect()
 }
 
-/// Every drift the collected answers carry, in the order they were collected.
-pub fn system_drifts(diffs: &[SystemDiff]) -> Vec<SystemDrift> {
+/// Every drift the collected answers carry, each paired with the configurator
+/// that reported it, in the order they were collected.
+///
+/// The pairing is what makes the walk's output identifiable. A
+/// [`SystemDrift::key`] names a setting only WITHIN its own configurator, so
+/// two configurators declaring the same key (a shared `default.exists`) answer
+/// with two indistinguishable drifts. Flattening the configurator away here
+/// once left the device gateway holding one row where the machine had two, and
+/// the DriftAlert CRD merges `driftDetails` by `field` — so the collision was
+/// silent and lossy. Every consumer composes the qualified identity from the
+/// pair through [`crate::reconciler::system_resource_key`].
+pub fn system_drifts(diffs: &[SystemDiff]) -> Vec<(&str, &SystemDrift)> {
     diffs
         .iter()
         .filter_map(|d| match &d.outcome {
-            SystemDiffOutcome::Drifts(drifts) => Some(drifts.iter().cloned()),
+            SystemDiffOutcome::Drifts(drifts) => {
+                Some(drifts.iter().map(|drift| (d.configurator.as_str(), drift)))
+            }
             _ => None,
         })
         .flatten()

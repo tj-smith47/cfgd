@@ -156,9 +156,9 @@ spec:
     namespace: teams
   severity: High
   driftDetails:
-    - field: module/corp-vpn
-      expected: installed
-      actual: missing
+    - field: sysctl.net.ipv4.ip_forward
+      expected: "1"
+      actual: "0"
 ```
 
 ## Controllers

@@ -242,7 +242,7 @@ spec:
     name: e2e-ephemeral-mc-${E2E_RUN_ID}
   severity: Medium
   driftDetails:
-    - field: packages.vim
+    - field: sysctl.vm.swappiness
       expected: installed
       actual: missing
 EOF

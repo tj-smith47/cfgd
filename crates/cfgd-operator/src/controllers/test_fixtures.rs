@@ -57,7 +57,7 @@ pub(super) fn drift_alert(
                 namespace: None,
             },
             drift_details: vec![DriftDetail {
-                field: "packages.foo".to_string(),
+                field: "sysctl.vm.swappiness".to_string(),
                 expected: "1.0".to_string(),
                 actual: "1.1".to_string(),
             }],

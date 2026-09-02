@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "definitions": {
     "DriftDetail": {
-      "description": "One diverging field in a drift report.",
+      "description": "One system setting whose live value diverged from its declared value.",
       "properties": {
         "actual": {
           "description": "The value the device actually reported.",
@@ -13,7 +13,7 @@
           "type": "string"
         },
         "field": {
-          "description": "Resource id of the field that diverged (e.g. `system:sysctl.net.ipv4.ip_forward`).",
+          "description": "The drifted setting, named `<configurator>.<key>` as the device reported it (e.g. `sysctl.net.ipv4.ip_forward`). The configurator qualifies the key because a key names a setting only within its own configurator: two of them may declare the same one, and this list merges by this field.",
           "type": "string"
         }
       },
@@ -54,6 +54,7 @@
       "type": "object"
     }
   },
+  "description": "Drifted system settings a device reported at check-in. A device's report covers its system settings alone — the answers of the system configurators its profile declares (`sysctl`, `kernelModules`, `macosDefaults`, `windowsRegistry`, ...). Packages, managed files, env vars and aliases are checked on the device by `cfgd diff` and reach the fleet only as the aggregate counts of a compliance summary, never as findings — so a device with no DriftAlert is a device whose system settings matched, not a device proven in sync.",
   "properties": {
     "deviceId": {
       "description": "Identifier of the device that reported the drift, as it enrolled.",
@@ -61,7 +62,7 @@
     },
     "driftDetails": {
       "default": [],
-      "description": "One entry per diverging field, each carrying what was expected and what was found.",
+      "description": "One entry per drifted system setting, each carrying what was declared and what the device found.",
       "items": {
         "$ref": "#/definitions/DriftDetail"
       },
