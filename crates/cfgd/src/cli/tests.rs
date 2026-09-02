@@ -8553,9 +8553,6 @@ fn build_registry_has_package_managers() {
 #[test]
 fn build_registry_has_system_configurators() {
     let registry = super::build_registry();
-    // On Linux we get: shell, systemd, gsettings, kdeConfig, xfconf, environment, sshKeys,
-    // plus conditionally gpg and git (both available in CI/dev). At minimum we should have
-    // the unconditional ones.
     assert!(
         registry.system_configurators().len() >= 6,
         "registry should have at least 6 system configurators on Linux, got: {}",
@@ -8566,17 +8563,46 @@ fn build_registry_has_system_configurators() {
         .iter()
         .map(|c| c.name())
         .collect();
+    for expected in ["shell", "environment", "sshKeys", "gpgKeys", "git"] {
+        assert!(
+            names.contains(&expected),
+            "the {expected} configurator is registered on every host it compiles for, got: {names:?}"
+        );
+    }
+}
+
+/// Registration answers "does cfgd have a configurator for this key"; only
+/// `is_available()` answers "can this host run it". A tool probe in the
+/// registration block conflates the two, and it does so in a spelling that
+/// misses the configurator's own `CFGD_*_BIN` seam: `gpgKeys` was gated on a
+/// bare `command_available("gpg")`, so on a host whose gpg is off `PATH` — or
+/// pointed at by `CFGD_GPG_BIN` — every drift surface reported a clean scan
+/// over a check it never ran, and `plan` called a registered configurator
+/// "not registered" rather than "not available on this host".
+#[test]
+fn no_system_configurator_registration_is_gated_on_a_tool_probe() {
+    let body = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli/registry.rs"))
+        .unwrap();
+    let production = cfgd_core::test_helpers::production_slice(&body);
+    // The floor: an empty offender set means nothing only while the walk is
+    // still reading the block it judges.
     assert!(
-        names.contains(&"shell"),
-        "should include shell configurator"
+        production.matches("add_system_configurator").count() >= 5,
+        "the walk reads the registration block itself, not a renamed remnant"
     );
+    let offenders: Vec<&str> = production
+        .lines()
+        .filter(|l| {
+            let code = l.split("//").next().unwrap_or("");
+            code.contains("command_available")
+        })
+        .collect();
     assert!(
-        names.contains(&"sshKeys"),
-        "should include sshKeys configurator"
-    );
-    assert!(
-        names.contains(&"environment"),
-        "should include environment configurator"
+        offenders.is_empty(),
+        "a configurator's availability is `is_available()`'s answer, filtered by \
+         `available_system_configurators`; a probe in the registration block \
+         drops it before its own seam is consulted:\n{}",
+        offenders.join("\n")
     );
 }
 
