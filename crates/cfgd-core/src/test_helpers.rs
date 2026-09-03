@@ -1581,10 +1581,17 @@ impl<'a> ShimArm<'a> {
 ///   `echo` would append CRLF and demand `^`-escaping of everything a package
 ///   listing contains; argv dispatch is `findstr /C:` over the command line.
 ///
-/// Two Windows-only quirks a caller must respect, both inherited from `cmd`:
-/// an `matches` substring may not contain `"`, and an argv carrying `&`, `|`,
-/// `<`, `>` or `%` corrupts the log line (nothing cfgd spawns a tool with
-/// does).
+/// Three Windows-only limits a caller must respect:
+///
+/// - **A tool cfgd invokes with `%` or a newline in an argument cannot be
+///   shimmed here at all.** `std::process::Command` refuses those characters
+///   outright when the program is a batch file (`ErrorKind::InvalidInput`,
+///   "batch file arguments are invalid"), which is the batbadbut hardening.
+///   `rpm --queryformat "%{NAME}\t%{VERSION}\n"` is the case in this
+///   workspace; a test standing in for one stays `#[cfg(unix)]` and says so.
+/// - A `matches` substring may not contain `"` — `findstr /C:` takes it as
+///   the pattern's own terminator.
+/// - An argv carrying `&`, `|`, `<` or `>` corrupts the log line.
 pub fn write_tool_shim(dir: &Path, name: &str, arms: &[ShimArm<'_>]) -> std::path::PathBuf {
     let log_path = dir.join("argv.log");
 

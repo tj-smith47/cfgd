@@ -269,6 +269,17 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_every_exit_code_su
 
 /// A `dnf`/`rpm` pair that OFFERS `demo` at 3.0.0 and reports 1.0.0 installed
 /// — a machine holding a package whose declared floor it no longer meets.
+///
+/// The three cells built on this pair are the file's only `#[cfg(unix)]` ones,
+/// and the gate is the FIXTURE's, not the contract's: dnf's installed listing
+/// is `rpm --query --all --queryformat "%{NAME}\t%{VERSION}\n"`, and
+/// `std::process::Command` refuses both `%` and a newline in an argument to a
+/// `.cmd` (the batbadbut hardening), which is what the Windows arm of
+/// `write_tool_shim` has to be. A tool cfgd invokes with either character
+/// cannot be stood in for on Windows at all. The same drift class is proven
+/// there by `a_brew_formula_clearing_its_floor_is_converged_on_every_surface`
+/// and by the two apk cells, whose argv is plain.
+#[cfg(unix)]
 fn below_floor_dnf(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
     let dnf = write_tool_shim(
         dir,
@@ -291,6 +302,7 @@ fn below_floor_dnf(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
 /// declared floor, so every surface exits `DriftDetected` and names both
 /// operands. Presence alone would exit 0 — the package IS installed.
 #[test]
+#[cfg(unix)] // see `below_floor_dnf`: rpm's `%`-carrying argv is unshimmable on Windows
 fn a_pinned_package_below_its_floor_exits_drift_detected_on_every_surface() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
@@ -346,6 +358,7 @@ const SCOPED_PINNED_SURFACES: [&[&str]; 2] = [
 ];
 
 #[test]
+#[cfg(unix)] // see `below_floor_dnf`: rpm's `%`-carrying argv is unshimmable on Windows
 fn a_pinned_package_below_its_floor_is_drift_on_both_scoped_surfaces() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
@@ -429,6 +442,7 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_both_scoped_surfac
 /// over the very module that declared it — the machine is still below the
 /// floor, and the scoped surface says so rather than healing it.
 #[test]
+#[cfg(unix)] // see `below_floor_dnf`: rpm's `%`-carrying argv is unshimmable on Windows
 fn a_scoped_run_does_not_heal_a_version_row_the_machine_still_holds() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
