@@ -1,6 +1,5 @@
 Diff: diff-mod
-  Config   <CONFIG_DIR>/cfgd.yaml
-  Modules  diff-mod
+  Config  <CONFIG_DIR>/cfgd.yaml
 
 Files
   module:diff-mod

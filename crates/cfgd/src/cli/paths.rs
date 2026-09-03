@@ -37,13 +37,18 @@ impl Serialize for DirSource {
     }
 }
 
-/// Effective source of each of the four resolved directory roots.
+/// Effective source of each of the four resolved directory roots, and of the
+/// scope that chose the family they were resolved from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirSources {
     pub config: DirSource,
     pub state: DirSource,
     pub cache: DirSource,
     pub runtime: DirSource,
+    /// Where `--scope` came from. A scope the invocation named itself is not
+    /// restated as a row; a defaulted one is the only thing that can tell the
+    /// reader which family these roots belong to.
+    pub scope: DirSource,
 }
 
 impl DirSources {
@@ -55,6 +60,7 @@ impl DirSources {
             state: DirSource::Default,
             cache: DirSource::Default,
             runtime: DirSource::Default,
+            scope: DirSource::Default,
         }
     }
 
@@ -106,7 +112,14 @@ pub fn config_dir_source(
 #[serde(rename_all = "camelCase")]
 pub struct PathsOutput {
     /// Active installation scope: `"system"` (`--scope system`) or `"user"`.
+    ///
+    /// Always in the payload: a scripting consumer never saw the command line.
+    /// The human `Scope` row renders only when the invocation did not name it
+    /// (see [`PathsOutput::scope_named_by_invocation`]).
     pub scope: &'static str,
+    /// Display-only: whether `--scope` (or `CFGD_SCOPE`) was supplied.
+    #[serde(skip)]
+    pub scope_named_by_invocation: bool,
     pub config: ConfigPaths,
     pub state: StatePaths,
     pub cache: CachePaths,
@@ -245,6 +258,7 @@ pub(crate) fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::R
 
     Ok(PathsOutput {
         scope: if scope.is_system() { "system" } else { "user" },
+        scope_named_by_invocation: sources.scope != DirSource::Default,
         config,
         state,
         cache,
@@ -264,7 +278,11 @@ fn or_unavailable(value: &Option<String>) -> String {
 /// Build the `paths` human + structured `Doc` from a collected payload.
 pub fn build_paths_doc(output: &PathsOutput) -> Doc {
     let mut doc = Doc::new().heading("cfgd Directories");
-    doc = doc.kv("Scope", output.scope);
+    // A scope the invocation named is not restated back at the reader; a
+    // defaulted one is the only thing that says which family these roots are.
+    if !output.scope_named_by_invocation {
+        doc = doc.kv("Scope", output.scope);
+    }
 
     let config = &output.config;
     doc = doc.section("Config", |s| {
@@ -463,6 +481,7 @@ mod tests {
             state: DirSource::Flag,
             cache: DirSource::Flag,
             runtime: DirSource::Default,
+            scope: DirSource::Default,
         };
         let output = collect_paths_output(&cli, &sources).expect("collect must succeed");
 

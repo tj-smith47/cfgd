@@ -89,6 +89,16 @@ pub enum Component {
         /// `qualifier`: every current call site carries `with_data`.
         #[serde(skip_serializing_if = "Option::is_none")]
         verdict: Option<String>,
+        /// Set when the SUBJECT is an owner token, painted by the renderer
+        /// through [`OwnerLabel`]'s three slots instead of the row's single
+        /// role coat: a subject left to the role style paints `module:nvim`
+        /// entirely green on an `Ok` row, where every other surface naming
+        /// that owner renders kind / `:` / name in three.
+        ///
+        /// Never serialized — `subject` carries the plain `kind:name`, which
+        /// is what `-o json` and every colourless path already read.
+        #[serde(skip)]
+        owner: Option<OwnerLabel>,
     },
     /// A child row belonging to the Status row above it: `subject — detail`,
     /// no glyph, one depth below its parent — the buffered-`Doc` twin of the
@@ -210,19 +220,6 @@ pub struct KvPair {
     /// payload field (`docsUrl`), never through the display row.
     #[serde(skip)]
     pub link: Option<String>,
-    /// The owner tokens this row's VALUE is made of, painted by the renderer
-    /// through [`OwnerLabel`]'s three slots rather than the value's own single
-    /// coat — so a `kind:name` in a kv value reads exactly as the apply tree's
-    /// group heading and the Managed Resources Owner column render it.
-    ///
-    /// Renderer-owned for the same reason `value_role` is: the renderer folds
-    /// every value through [`crate::output::cursor_safe`], which would eat a
-    /// caller's own SGR, so the token can only be painted after the fold.
-    ///
-    /// Never serialized — `value` carries the plain `kind:name` list, which is
-    /// what a `-o json` reader and every colourless path already see.
-    #[serde(skip)]
-    pub owners: Vec<OwnerLabel>,
 }
 
 impl KvPair {
@@ -234,7 +231,6 @@ impl KvPair {
             value_role: None,
             nested: false,
             link: None,
-            owners: Vec::new(),
         }
     }
 
@@ -280,27 +276,6 @@ impl KvPair {
         Self {
             value_role: Some(role),
             ..Self::new(k, v)
-        }
-    }
-
-    /// A pair whose value is one or more owner tokens (`Scope  module:nvim`),
-    /// each painted through [`OwnerLabel`]'s three slots by the renderer.
-    ///
-    /// Several owners join with `, `, the same separator the recorded scope of
-    /// a multi-module run is stored with, so the row reads as one list.
-    pub fn owner_valued(
-        k: impl Into<String>,
-        owners: impl IntoIterator<Item = OwnerLabel>,
-    ) -> Self {
-        let owners: Vec<OwnerLabel> = owners.into_iter().collect();
-        let value = owners
-            .iter()
-            .map(OwnerLabel::plain)
-            .collect::<Vec<_>>()
-            .join(crate::reconciler::Owner::TOKEN_SEPARATOR);
-        Self {
-            owners,
-            ..Self::new(k, value)
         }
     }
 }
@@ -393,44 +368,9 @@ pub fn config_header_rows(head: &ConfigHeader<'_>) -> Vec<KvPair> {
     rows
 }
 
-/// The `Modules` header row — the ONE builder of the row naming what a
-/// resolved profile puts on this machine.
-///
-/// Sits directly under `Profile` on every surface that reports on a resolved
-/// profile: the run header, `cfgd status`, `cfgd diff`, `cfgd sync` and
-/// `cfgd daemon status`. Only the run header printed it, so the README demo
-/// opened on a `cfgd status` naming a profile and nothing it resolved to, two
-/// commands above an apply header that named `nvim`.
-///
-/// A module `skips` names contributed no work, so it leaves the value and
-/// returns as the annotation — the render of `PhaseName::Modules`, which
-/// prints no block of its own. The names and the annotation travel in separate
-/// slots because the renderer owns the muted coat and the parentheses, and
-/// folds the names, which are module-supplied. `None` when a profile resolves
-/// to nothing at all, which renders no row.
-///
-/// A surface with no plan to read skips off passes `&[]`; a row naming a COUNT
-/// of modules or a cache directory is a different fact and carries a
-/// `// modules-row-ok: <why>` marker instead.
-pub fn modules_header_row(names: &[String], skips: &[(&str, &str)]) -> Option<KvPair> {
-    let listed: Vec<&str> = names
-        .iter()
-        .map(String::as_str)
-        .filter(|name| !skips.iter().any(|(skipped, _)| skipped == name))
-        .collect();
-    let annotation = skips
-        .iter()
-        .map(|(name, reason)| format!("{name} skipped: {reason}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    if listed.is_empty() && annotation.is_empty() {
-        return None;
-    }
-    Some(KvPair::annotated("Modules", listed.join(", "), annotation))
-}
-
-/// One module a `Modules` header row names: the module itself, and the reason
-/// this host contributes no work for it.
+/// One module a `Modules` header row names: the module itself, whether a
+/// `depends:` pulled it in, and the reason this host contributes no work for
+/// it.
 ///
 /// [`HeaderModule::of_resolved`] is the ONE derivation of a header row's
 /// inputs from a resolution, and every surface reporting on a resolved profile
@@ -453,9 +393,33 @@ pub struct HeaderModule {
     /// carries, so the two renders of one gated module agree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform_skip_reason: Option<String>,
+    /// Set when a `depends:` pulled this module in rather than the profile or
+    /// the invocation naming it, as [`crate::modules::ResolvedModule`] claimed
+    /// it. Such a module is the row's ANNOTATION, never one of its names.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dep_pulled: bool,
 }
 
 impl HeaderModule {
+    /// The header's view of an ISOLATED run's resolution — a run whose
+    /// invocation named its own modules (`--module nvim`).
+    ///
+    /// Empty when the resolution added nothing to what was named: a `Modules
+    /// nvim` row under a command the reader spelled `--module nvim` states
+    /// only what they typed. A `depends:` that folded another module in, or a
+    /// `spec.platforms` gate that dropped one, is news the invocation did not
+    /// carry, so the whole row renders with its annotation.
+    pub fn of_isolate(modules: &[crate::modules::ResolvedModule]) -> Vec<Self> {
+        let rows = Self::of_resolved(modules);
+        match rows
+            .iter()
+            .any(|m| m.dep_pulled || m.platform_skip_reason.is_some())
+        {
+            true => rows,
+            false => Vec::new(),
+        }
+    }
+
     /// The header's view of a resolution, in the resolver's own order.
     pub fn of_resolved(modules: &[crate::modules::ResolvedModule]) -> Vec<Self> {
         modules
@@ -463,24 +427,60 @@ impl HeaderModule {
             .map(|module| Self {
                 name: module.name.clone(),
                 platform_skip_reason: module.platform_skip_reason.clone(),
+                dep_pulled: module.dep_pulled,
             })
             .collect()
     }
 }
 
-/// The `Modules` header row for a caller holding a resolution — what every
-/// surface but the run header reads.
+/// The `Modules` header row — the ONE builder of the row naming what a
+/// resolved profile puts on this machine.
 ///
-/// The run header keeps [`modules_header_row`] itself: its skips come from the
-/// plan's own `Skip` actions, which `Reconciler::plan` builds from the very
-/// `platform_skip_reason` this reads, so the two cannot disagree.
+/// Sits directly under `Profile` on every surface that reports on a resolved
+/// configuration: the run header, `cfgd status`, `cfgd diff`, `cfgd sync` and
+/// `cfgd daemon status`. Only the run header printed it, so the README demo
+/// opened on a `cfgd status` naming a profile and nothing it resolved to, two
+/// commands above an apply header that named `nvim`.
+///
+/// The row NAMES what was declared and ANNOTATES what the resolution added —
+/// `Modules  git, nvim (depends: plugins)` — the shape the `Profile` row
+/// already uses for its `inherits:` chain, so nesting reads the same way on
+/// both rows. A flat list hid which member nobody had asked for. A module
+/// gated out by `spec.platforms` leaves the value the same way and returns as
+/// a `skipped:` clause, after the `depends:` one when a row carries both. The
+/// names and the annotation travel in separate slots because the renderer owns
+/// the muted coat and the parentheses, and folds the names, which are
+/// module-supplied. `None` when there is nothing at all to name, which renders
+/// no row.
+///
+/// A surface with no plan to read skips off passes modules carrying none; a row
+/// naming a COUNT of modules or a cache directory is a different fact and
+/// carries a `// modules-row-ok: <why>` marker instead.
 pub fn modules_header_row_for(modules: &[HeaderModule]) -> Option<KvPair> {
-    let names: Vec<String> = modules.iter().map(|m| m.name.clone()).collect();
-    let skips: Vec<(&str, &str)> = modules
-        .iter()
-        .filter_map(|m| Some((m.name.as_str(), m.platform_skip_reason.as_deref()?)))
-        .collect();
-    modules_header_row(&names, &skips)
+    let listed = |pulled: bool| {
+        modules
+            .iter()
+            .filter(|m| m.platform_skip_reason.is_none() && m.dep_pulled == pulled)
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let named = listed(false);
+    let mut clauses: Vec<String> = Vec::new();
+    let pulled = listed(true);
+    if !pulled.is_empty() {
+        clauses.push(format!("depends: {pulled}"));
+    }
+    clauses.extend(
+        modules
+            .iter()
+            .filter_map(|m| Some((m.name.as_str(), m.platform_skip_reason.as_deref()?)))
+            .map(|(name, reason)| format!("{name} skipped: {reason}")),
+    );
+    if named.is_empty() && clauses.is_empty() {
+        return None;
+    }
+    Some(KvPair::annotated("Modules", named, clauses.join(", ")))
 }
 
 /// A `command_list` row: a shell command (or a `name <type>` pair) and its
@@ -653,6 +653,7 @@ mod tests {
             qualifier: None,
             label: None,
             verdict: None,
+            owner: None,
         };
         let json = serde_json::to_value(&c).unwrap();
         assert!(json.get("detail").is_none());
@@ -677,6 +678,7 @@ mod tests {
                 text: "[team-config]".into(),
             }),
             verdict: None,
+            owner: None,
         };
         let json = serde_json::to_value(&c).unwrap();
         let label = json.get("label").expect("label must serialize when set");
@@ -695,6 +697,7 @@ mod tests {
             qualifier: Some("missing".into()),
             label: None,
             verdict: None,
+            owner: None,
         };
         let json = serde_json::to_value(&c).unwrap();
         assert_eq!(json["qualifier"], "missing");

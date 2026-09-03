@@ -1170,8 +1170,11 @@ pub(in crate::cli) struct ComplianceDiffOutput {
 #[serde(rename_all = "camelCase")]
 pub struct ComplianceCheckChange {
     pub key: String,
-    pub old_status: String,
-    pub new_status: String,
+    /// Typed rather than the `format!("{:?}")` string it used to be: the wire
+    /// value is identical (both spell the variant), and the render slot can
+    /// then take the status's own role instead of matching on the word.
+    pub old_status: cfgd_core::compliance::ComplianceStatus,
+    pub new_status: cfgd_core::compliance::ComplianceStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
@@ -2398,8 +2401,8 @@ mod tests {
             removed: vec![],
             changed: vec![ComplianceCheckChange {
                 key: "pkg/git".to_string(),
-                old_status: "Compliant".to_string(),
-                new_status: "Violation".to_string(),
+                old_status: cfgd_core::compliance::ComplianceStatus::Compliant,
+                new_status: cfgd_core::compliance::ComplianceStatus::Violation,
                 detail: Some("missing".to_string()),
             }],
         };
@@ -2421,8 +2424,8 @@ mod tests {
     fn compliance_check_change_skips_none_detail() {
         let v = ComplianceCheckChange {
             key: "pkg/x".to_string(),
-            old_status: "Warning".to_string(),
-            new_status: "Compliant".to_string(),
+            old_status: cfgd_core::compliance::ComplianceStatus::Warning,
+            new_status: cfgd_core::compliance::ComplianceStatus::Compliant,
             detail: None,
         };
         let json = serde_json::to_value(&v).unwrap();

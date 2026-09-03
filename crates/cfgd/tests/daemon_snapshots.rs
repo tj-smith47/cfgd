@@ -89,6 +89,7 @@ fn sample_status_basic() -> DaemonStatusResponse {
         modules: ["base", "dev-tools"]
             .into_iter()
             .map(|name| cfgd_core::output::HeaderModule {
+                dep_pulled: false,
                 name: name.to_string(),
                 platform_skip_reason: None,
             })

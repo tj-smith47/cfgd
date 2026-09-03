@@ -1,6 +1,6 @@
 Sync
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  tiny
-  Modules  core, editor
+  Modules  editor (depends: core)
 
 ✓ Synced

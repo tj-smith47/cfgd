@@ -325,6 +325,7 @@ pub fn cmd_module_create(
         let header_modules = vec![cfgd_core::output::HeaderModule {
             name: name.to_string(),
             platform_skip_reason: None,
+            dep_pulled: false,
         }];
         let declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
         let ctx = cfgd_core::reconciler::RunContext {

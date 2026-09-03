@@ -51,7 +51,7 @@ pub fn cmd_source_priority(
 
             printer.emit(
                 Doc::new()
-                    .status_with(Role::Ok, OwnerLabel::new("source", name).plain(), |f| {
+                    .status_owner_with(Role::Ok, OwnerLabel::new("source", name), |f| {
                         f.detail(format!(
                             "priority updated: {old_priority} {} {new_priority}",
                             printer.arrow()

@@ -336,7 +336,12 @@ pub fn run_apply(
         })?
     };
 
-    let header_modules = cfgd_core::output::HeaderModule::of_resolved(&resolved_modules);
+    // An isolate names its own modules on the command line, so its row renders
+    // only what the resolution ADDED to them.
+    let header_modules = match module_only {
+        true => cfgd_core::output::HeaderModule::of_isolate(&resolved_modules),
+        false => cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
+    };
 
     // A resource awaiting (or declined by) a source decision is not this run's
     // to touch, in any mode: the confirm prompt, `--yes` and `--dry-run` all

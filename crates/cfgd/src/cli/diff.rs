@@ -93,10 +93,12 @@ pub fn cmd_diff(
         // The scoped run's header, the same rows `apply --module` opens on: a
         // title that owns no rows would put its blank line straight under the
         // heading, which no other titled run does.
-        // The isolate resolves no profile, so it names the one module it is
-        // about and no `Profile` row — but the config it read still declares
-        // its subscriptions, and those are a fact about where this run's
-        // configuration comes from whether or not a profile resolved.
+        // The isolate resolves no profile, so it carries no `Profile` row — and
+        // no `Modules` row either: the heading above already names the module
+        // the invocation named, and a row restating it tells the reader only
+        // what they typed. The config it read still declares its subscriptions,
+        // and those are a fact about where this run's configuration comes from
+        // whether or not a profile resolved.
         let declared =
             cfgd_core::reconciler::ComposedSource::from_declared(&ctx.config()?.spec.sources);
         printer.kv_rows(cfgd_core::output::config_header_rows(
@@ -105,10 +107,7 @@ pub fn cmd_diff(
                 sources: &declared,
                 profile: None,
                 profile_inherits: &[],
-                modules: &[cfgd_core::output::HeaderModule {
-                    name: mod_name.to_string(),
-                    platform_skip_reason: None,
-                }],
+                modules: &[],
             },
         ));
         return cmd_diff_module(&ctx, mod_name, exit_code);

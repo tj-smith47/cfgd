@@ -756,8 +756,8 @@ impl Owner {
     }
 
     /// What joins several owner tokens into one string, wherever a slot holds a
-    /// list of them: the recorded scope of a `--module` run, and the kv value
-    /// [`crate::output::KvPair::owner_valued`] renders it back as. Beside
+    /// list of them: the recorded scope of a `--module` run, which `-o json`
+    /// carries and `cli::status::derivable_profile` reads back. Beside
     /// [`Owner::token`] because the writer and the reader of that column both
     /// have to agree with it — spelled by hand at either end, a one-byte change
     /// stops the reader parsing what the writer wrote.

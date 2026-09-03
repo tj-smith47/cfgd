@@ -58,12 +58,39 @@ pub struct ComplianceCheck {
     pub value: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ComplianceStatus {
     #[default]
     Compliant,
     Warning,
     Violation,
+}
+
+impl ComplianceStatus {
+    /// The word a person reads for this status, WITH the role that colours it.
+    ///
+    /// One producer of both halves, for the same reason `ApplyStatus` has one:
+    /// a slot taking the pair cannot render a title-cased status word colour-
+    /// less, and no call site has to match on the word to recover its severity.
+    pub fn human_display(self) -> (&'static str, crate::output::Role) {
+        match self {
+            Self::Compliant => ("Compliant", crate::output::Role::Ok),
+            Self::Warning => ("Warning", crate::output::Role::Warn),
+            Self::Violation => ("Violation", crate::output::Role::Fail),
+        }
+    }
+
+    /// The word alone, for a slot that carries the role separately (a status
+    /// row's own role, a `-o json` payload).
+    pub fn human_str(self) -> &'static str {
+        self.human_display().0
+    }
+}
+
+impl std::fmt::Display for ComplianceStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.human_str())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

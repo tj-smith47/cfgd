@@ -169,6 +169,15 @@ pub struct ResolvedModule {
     pub on_change_scripts: Vec<crate::config::ScriptEntry>,
     pub on_drift_scripts: Vec<crate::config::ScriptEntry>,
     pub depends: Vec<String>,
+    /// Set when nothing REQUESTED this module and a `depends:` pulled it into
+    /// the resolution.
+    ///
+    /// Claimed by the resolver, which is the one place both lists are in hand,
+    /// so no surface re-derives it: a `Modules` header row names what the
+    /// invocation or the profile declared and annotates what came in behind
+    /// them (`Modules  nvim (depends: plugins)`), exactly as the `Profile` row
+    /// annotates an `inherits:` chain.
+    pub dep_pulled: bool,
     /// Module directory — used as working directory for module scripts.
     pub dir: PathBuf,
     /// Set when the module is gated out by its `spec.platforms` on the current
@@ -204,6 +213,7 @@ impl ResolvedModule {
             aliases: _,
             system: _,
             depends: _,
+            dep_pulled: _,
             dir: _,
             platform_skip_reason: _,
             origin: _,
@@ -227,6 +237,7 @@ impl ResolvedModule {
         name: String,
         dir: PathBuf,
         depends: Vec<String>,
+        dep_pulled: bool,
         reason: String,
         origin: Option<String>,
     ) -> Self {
@@ -244,6 +255,7 @@ impl ResolvedModule {
             on_change_scripts: Vec::new(),
             on_drift_scripts: Vec::new(),
             depends,
+            dep_pulled,
             dir,
             platform_skip_reason: Some(reason),
             origin,

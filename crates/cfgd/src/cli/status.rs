@@ -677,26 +677,6 @@ pub(super) fn recorded_scope_row(recorded: &str) -> Option<(&'static str, &str)>
     })
 }
 
-/// The `Scope` row of a per-module report: the recorded owner tokens painted
-/// through [`cfgd_core::reconciler::Owner::label`], the tri-colour `kind:name`
-/// form the apply tree's group headings and the Managed Resources Owner column
-/// already render — one owner spelled one way, whichever surface names it.
-///
-/// The recorded column holds one token or the `, `-joined list an isolated run
-/// over several modules writes. A token that does not read back as an owner
-/// keeps the recorded string, so nothing a run recorded is dropped from the
-/// row for being unparseable.
-fn scope_row(recorded: &str) -> KvPair {
-    let owners: Option<Vec<cfgd_core::output::OwnerLabel>> = recorded
-        .split(cfgd_core::reconciler::Owner::TOKEN_SEPARATOR)
-        .map(|token| owner_from_token(token).map(|owner| owner.label()))
-        .collect();
-    match owners {
-        Some(owners) => KvPair::owner_valued("Scope", owners),
-        None => KvPair::new("Scope", recorded),
-    }
-}
-
 /// The recorded-state header's staleness threshold: a daemon's default
 /// reconcile interval. Past this age, the recorded drift a plain `cfgd status`
 /// shows could easily be older than a live daemon would ever let it get, so
@@ -827,7 +807,7 @@ pub fn build_fleet_status_doc(
                         counts,
                         findings,
                     } = row;
-                    let s = s.status_with(role, owner.token(), |f| {
+                    let s = s.status_owner_with(role, owner.label(), |f| {
                         let f = f.verdict(verdict);
                         match counts {
                             Some(counts) => f.detail(counts),
@@ -1868,14 +1848,10 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
     // `kv_rows` can carry, and `kv_rows` does not coalesce with a preceding
     // `kv` block — so every row of the header is built here.
     let (state_word, role) = output.state_display();
+    // No Scope row: a report the invocation named the module for cannot tell
+    // the reader anything by naming it back. The recorded scope stays in
+    // `-o json` for a consumer that never saw the command line.
     let mut rows = vec![KvPair::role_valued("Status", state_word, role)];
-    // Directly under `Status`, so the two rows a reader scans for the module's
-    // standing lead the block together. Only an isolated run's scope:
-    // `recorded_scope_row` answers `Profile` for a profile-wide apply, which
-    // belongs to `cfgd status` rather than to one module's report.
-    if let Some(("Scope", scope)) = output.scope.as_deref().and_then(recorded_scope_row) {
-        rows.push(scope_row(scope));
-    }
     if let Some(last) = &output.last_applied {
         // The age, not the recorded instant: `-o json`'s `lastApplied` carries
         // the exact moment, and the row a person reads answers how long ago.
@@ -2222,6 +2198,7 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
         last_scan_at: None,
         system_errors: Vec::new(),
     };
+    // status-word-ok: the payload's own field; this branch renders no state
     let (state_word, _) = payload.state_display();
     Doc::new()
         .heading_title("Status", name)
@@ -3205,7 +3182,6 @@ pub(super) fn cmd_status_module(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfgd_core::output::OwnerLabel;
     use cfgd_core::output::Printer;
     use cfgd_core::output::Verbosity;
     use cfgd_core::state::{ApplyRecord, ApplyStatus};
@@ -3838,7 +3814,9 @@ mod tests {
         drop(printer);
         let diff = cfgd_core::test_helpers::captured_text(&buf);
 
-        let expected = "Modules core, editor (off-host skipped: platform not matched \
+        // `core` is `editor`'s dependency, so it is the row's ANNOTATION, not
+        // one of its names — the `Profile` row's own `inherits:` shape.
+        let expected = "Modules editor (depends: core, off-host skipped: platform not matched \
                         (requires: windows))";
         let expected = if cfg!(windows) {
             expected.replace("windows", "linux")
@@ -4058,22 +4036,25 @@ mod tests {
             crate::cli::apply::run_apply(&cli, p, &args).unwrap();
         });
         for (surface, rows, module) in [
-            ("module create --apply", &created, "scratch"),
-            ("diff --module", &diff_isolate, "editor"),
-            // The apply's own plan expands `editor`'s `depends`, so it names
-            // the set it will really act on rather than the name it was given.
-            ("apply --module", &apply_isolate, "core, editor"),
+            ("module create --apply", &created, Some("scratch")),
+            // Ruled 2026-09-03: an isolate states only what its invocation did
+            // not. `editor` pulls nothing in, so its row says nothing.
+            ("diff --module", &diff_isolate, None),
+            // `editor`'s `depends` IS new information, and it renders in the
+            // `Profile` row's own annotated shape.
+            (
+                "apply --module",
+                &apply_isolate,
+                Some("editor (depends: core)"),
+            ),
         ] {
+            let mut expected = vec![config_row.clone(), sources_row.clone()];
+            expected.extend(module.map(|m| format!("Modules {m}")));
             assert_eq!(
-                rows,
-                &vec![
-                    config_row.clone(),
-                    sources_row.clone(),
-                    format!("Modules {module}"),
-                ],
+                rows, &expected,
                 "`cfgd {surface}` names its config, the subscriptions that config \
-                 declares and the module it is about, and no `Profile` row — it \
-                 resolves none: {rows:?}"
+                 declares and whatever its invocation did not already state, and no \
+                 `Profile` row — it resolves none: {rows:?}"
             );
         }
 
@@ -7207,82 +7188,38 @@ mod tests {
         cfgd_core::test_helpers::captured_text(&buf)
     }
 
-    /// A module's report names the scope of the run that last applied it, but
-    /// only when that run was isolated to modules: a profile-wide apply is a
-    /// fact about the machine, which `cfgd status` already states, and
-    /// repeating it here would answer a question nobody asked about this
-    /// module.
+    /// The `Status` row leads a module's report — nothing between it and the
+    /// recorded `Last Applied`.
+    ///
+    /// A `Scope` row sat under it until the 2026-09-03 ruling that a scoped
+    /// command never echoes its invocation-named scope back as an annotation:
+    /// `cfgd status nvim` naming `module:nvim` told the reader only what they
+    /// had just typed. The recorded scope stays in `-o json`.
     #[test]
-    fn a_module_report_names_an_isolated_runs_scope_and_no_other() {
-        let isolated = module_status_render(Some("module:nvim"));
-        assert!(
-            isolated.contains("Scope") && isolated.contains("module:nvim"),
-            "an isolated run's scope is named: {isolated}"
-        );
-
-        for recorded in [Some("base"), Some("unknown"), Some(""), None] {
+    fn the_status_row_leads_a_module_report() {
+        for recorded in [Some("module:nvim"), Some("base"), Some(""), None] {
             let out = module_status_render(recorded);
             assert!(
                 !out.contains("Scope"),
                 "no Scope row for a recorded {recorded:?}: {out}"
             );
         }
-    }
 
-    /// The `Scope` row carries owner TOKENS, not a string: the renderer paints
-    /// each one through `OwnerLabel`'s three slots, the same coat the apply
-    /// tree's group headings and the Managed Resources Owner column wear, so
-    /// one owner is spelled one way whichever surface names it. An isolated run
-    /// over several modules recorded a `, `-joined list, and every member of it
-    /// is its own token.
-    #[test]
-    fn a_scope_row_carries_the_owner_tokens_it_names() {
-        let one = super::scope_row("module:nvim");
-        assert_eq!(one.value, "module:nvim", "the plain value is the token");
-        assert_eq!(
-            one.owners.iter().map(OwnerLabel::plain).collect::<Vec<_>>(),
-            vec!["module:nvim".to_string()],
-            "the row carries the owner the token names"
-        );
-
-        let many = super::scope_row("module:nvim, module:zsh");
-        assert_eq!(
-            many.owners
-                .iter()
-                .map(OwnerLabel::plain)
-                .collect::<Vec<_>>(),
-            vec!["module:nvim".to_string(), "module:zsh".to_string()],
-            "every member of a multi-module scope is its own token"
-        );
-        assert_eq!(many.value, "module:nvim, module:zsh");
-
-        // Nothing a run recorded is dropped for being unreadable: a token no
-        // owner kind claims keeps the recorded string rather than losing the row.
-        let unreadable = super::scope_row("whatever");
-        assert!(unreadable.owners.is_empty());
-        assert_eq!(unreadable.value, "whatever");
-    }
-
-    /// The two rows a reader scans for a module's standing lead its report:
-    /// `Status`, then `Scope`, and only then the recorded `Last Applied` and
-    /// the counts under it.
-    #[test]
-    fn the_status_and_scope_rows_lead_a_module_report() {
         let out = module_status_render(Some("module:nvim"));
-        let row = |key: &str| {
-            out.lines()
-                .position(|l| l.trim_start().starts_with(key))
-                .unwrap_or_else(|| panic!("the {key} row renders: {out}"))
-        };
         // `Status: nvim` is the heading, so the Status ROW is the one indented
         // under it — the first line whose trimmed text opens on the key alone.
         let status = out
             .lines()
             .position(|l| l.trim_start().starts_with("Status "))
             .unwrap_or_else(|| panic!("the Status row renders: {out}"));
+        let last_applied = out
+            .lines()
+            .position(|l| l.trim_start().starts_with("Last Applied"))
+            .unwrap_or_else(|| panic!("the Last Applied row renders: {out}"));
+        assert!(status < last_applied, "Status, then Last Applied: {out}");
         assert!(
-            status < row("Scope") && row("Scope") < row("Last Applied"),
-            "Status, then Scope, then Last Applied: {out}"
+            !out.contains("Scope"),
+            "a report the invocation scoped names no Scope row: {out}"
         );
     }
 

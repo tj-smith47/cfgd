@@ -463,6 +463,9 @@ pub fn resolve_modules(
 
     let order = resolve_dependency_order(&resolved_names, &all_modules)
         .map_err(|e| enrich_not_found(e, source_roots))?;
+    // Claimed here because this is the one place both lists are in hand: the
+    // set the caller asked for, and the order a `depends:` walk grew out of it.
+    let dep_pulled = |name: &String| !resolved_names.contains(name);
 
     // Determine platform-skipped modules up front so an active module that
     // depends on a skipped one can be rejected as a config error before any
@@ -499,6 +502,7 @@ pub fn resolve_modules(
                     name.clone(),
                     module.dir.clone(),
                     module.spec.depends.clone(),
+                    dep_pulled(name),
                     format!(
                         "platform not matched (requires: {})",
                         module.spec.platforms.join(", ")
@@ -543,6 +547,7 @@ pub fn resolve_modules(
                 on_change_scripts,
                 on_drift_scripts,
                 depends: module.spec.depends.clone(),
+                dep_pulled: dep_pulled(name),
                 dir: module.dir.clone(),
                 platform_skip_reason: None,
                 origin: module.origin.clone(),

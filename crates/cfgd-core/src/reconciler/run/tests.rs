@@ -1298,6 +1298,7 @@ fn header_omits_every_empty_row_and_skips_the_modules_phase() {
         phase(PhaseName::Files, vec![create("/tmp/one")]),
     ]);
     let modules = vec![crate::output::HeaderModule {
+        dep_pulled: false,
         name: "nvim".to_string(),
         platform_skip_reason: None,
     }];
@@ -1337,6 +1338,75 @@ fn header_omits_every_empty_row_and_skips_the_modules_phase() {
     assert!(
         !out.contains("Phases   Modules") && !out.contains("Modules, Files"),
         "the Modules phase must never appear in the Phases row: {out:?}"
+    );
+}
+
+/// Ruled 2026-09-03: a scoped command never echoes its invocation-named scope
+/// back as an annotation. `--phase files` puts `Files` on the command line, so
+/// a `Phases   Files` row states nothing the reader did not just type.
+///
+/// The row survives wherever it is still news: an unfiltered run named no
+/// phase, and `--phase modules` is an owner filter spanning every phase module
+/// work can land in, so WHICH of them held work is the answer.
+#[test]
+fn a_phases_row_states_only_what_the_invocation_did_not() {
+    // Module-owned in both phases, so `--phase modules` selects work in each
+    // and the row has two names to report.
+    let plan = plan_of(vec![
+        phase(
+            PhaseName::Files,
+            vec![module_install("nvim", "brew", "ripgrep")],
+        ),
+        phase(
+            PhaseName::PostScripts,
+            vec![module_install("nvim", "brew", "fd")],
+        ),
+    ]);
+    let header = |filter: Option<&PhaseFilter>| {
+        let run = ApplyRun::new(
+            RunContext {
+                title: RunTitle::Apply,
+                config_path: None,
+                profile: None,
+                sources: &[],
+                modules: &[],
+                profile_inherits: &[],
+                trigger: None,
+                subject: None,
+                unit_source: None,
+            },
+            &plan,
+        )
+        .with_filter(filter);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        run.header(&printer);
+        drop(printer);
+        crate::test_helpers::captured_text(&buf)
+    };
+
+    let named = header(Some(&PhaseFilter::Phase(PhaseName::Files)));
+    assert!(
+        !named.contains("Phases"),
+        "`--phase files` renders one phase it already named: {named:?}"
+    );
+    let selector = header(Some(&PhaseFilter::Selector(
+        PhaseName::Files,
+        "module:nvim".to_string(),
+    )));
+    assert!(
+        !selector.contains("Phases"),
+        "a selector narrows within the phase it named: {selector:?}"
+    );
+
+    let unfiltered = header(None);
+    assert!(
+        unfiltered.contains("Phases   Files, Post-Scripts"),
+        "an unfiltered run names every phase it will print: {unfiltered:?}"
+    );
+    let owners = header(Some(&PhaseFilter::ModuleOwners));
+    assert!(
+        owners.contains("Phases   Files, Post-Scripts"),
+        "`--phase modules` named no phase, so which ones held work is news: {owners:?}"
     );
 }
 
