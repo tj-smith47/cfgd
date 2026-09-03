@@ -145,6 +145,7 @@ fn clean_output() -> StatusOutput {
         drift_checked_live: false,
         last_scan_at: Some("2026-05-14T10:00:00Z".into()),
         system_errors: Vec::new(),
+        standing: Vec::new(),
     }
 }
 
@@ -238,6 +239,7 @@ fn drift_output() -> StatusOutput {
         drift_checked_live: false,
         last_scan_at: Some("2026-05-14T08:00:00Z".into()),
         system_errors: Vec::new(),
+        standing: Vec::new(),
     }
 }
 
@@ -327,6 +329,7 @@ fn per_module_output() -> ModuleStatus {
         drift: Vec::new(),
         drift_checked_live: false,
         system_errors: Vec::new(),
+        standing: Vec::new(),
         last_scan_at: None,
     }
 }
@@ -439,6 +442,7 @@ fn per_module_scanned_output() -> ModuleStatus {
         ],
         drift_checked_live: true,
         system_errors: Vec::new(),
+        standing: Vec::new(),
         last_scan_at: None,
     }
 }

@@ -7421,6 +7421,7 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         drift_checked_live: false,
         last_scan_at: None,
         system_errors: Vec::new(),
+        standing: Vec::new(),
     };
     let now = "2026-05-14T12:00:00Z";
     let mut surfaces: Vec<(&str, String)> = Vec::new();

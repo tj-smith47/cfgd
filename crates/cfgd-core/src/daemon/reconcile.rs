@@ -750,54 +750,23 @@ fn reconcile_tick(
         }
     };
 
-    // The `package` rows a per-module tick may speak for: the ones this
-    // module's own group carries into the narrowed plan. A package an EARLIER
-    // resolved module also declares is dedup'd onto that module's group
-    // (`dedup_module_packages`, module-order walk), so it leaves this tick's
-    // plan entirely and a row for it would be healed by a tick that never
-    // planned it.
-    let module_scoped_packages: std::collections::HashSet<String> = match module_filter {
-        None => std::collections::HashSet::new(),
+    // The scope a per-module tick may speak for: its own group's packages
+    // (module-order dedup — a package an earlier resolved module also
+    // declares is dedup'd onto that module's group, `dedup_module_packages`)
+    // plus the env-var/alias names it declares. Looked up once for the whole
+    // scoped set: the identity fold inside `module_scope` asks per package,
+    // and a linear registry scan there is quadratic in a module declaring a
+    // few hundred packages.
+    let module_scope: crate::reconciler::ModuleScope = match module_filter {
+        None => crate::reconciler::ModuleScope::default(),
         Some(name) => {
-            // Looked up once for the whole scoped set: the identity fold below
-            // asks per package, and a linear scan of the registry inside that
-            // map is quadratic in a module declaring a few hundred packages.
-            let managers: std::collections::HashMap<
-                &str,
-                &Box<dyn crate::providers::PackageManager>,
-            > = registry
-                .package_managers()
-                .iter()
-                .map(|m| (m.name(), m))
-                .collect();
-            let claimed_earlier: std::collections::HashSet<(&str, &str)> = resolved_modules_ref
-                .iter()
-                .take_while(|m| m.name != name)
-                .flat_map(|m| {
-                    m.packages
-                        .iter()
-                        .map(|p| (p.manager.as_str(), p.resolved_name.as_str()))
-                })
-                .collect();
-            resolved_modules_ref
-                .iter()
-                .find(|m| m.name == name)
-                .into_iter()
-                .flat_map(|m| m.packages.iter())
-                .filter(|p| {
-                    !claimed_earlier.contains(&(p.manager.as_str(), p.resolved_name.as_str()))
-                })
-                .map(|p| {
-                    crate::reconciler::package_entry_drift_id(
-                        &p.manager,
-                        &p.resolved_name,
-                        managers
-                            .get(p.manager.as_str())
-                            .copied()
-                            .map(std::convert::AsRef::as_ref),
-                    )
-                })
-                .collect()
+            let managers: std::collections::HashMap<&str, &dyn crate::providers::PackageManager> =
+                registry
+                    .package_managers()
+                    .iter()
+                    .map(|m| (m.name(), m.as_ref()))
+                    .collect();
+            crate::reconciler::module_scope(resolved_modules_ref.as_slice(), name, &managers)
         }
     };
 
@@ -805,17 +774,14 @@ fn reconcile_tick(
     // may heal only rows attributable to that module by identity: every
     // `module` row under its name — the per-file `<name>/<target>` rows and the
     // `<name>:script` / `<name>:skip` spellings its own actions mint — plus the
-    // per-package rows of the packages its group carries. Everything else —
+    // per-package and per-shell rows its group carries. Everything else —
     // other modules', the machine-wide surfaces — stands for the next
     // profile-wide tick to judge.
     let outside_tick_scope = |rtype: &str, rid: &str| match module_filter {
         None => false,
-        Some(name) => !crate::reconciler::row_attributable_to_module(
-            rtype,
-            rid,
-            name,
-            &module_scoped_packages,
-        ),
+        Some(name) => {
+            !crate::reconciler::row_attributable_to_module(rtype, rid, name, &module_scope)
+        }
     };
     // The rows this tick cannot vouch for either way, spelled as extra
     // members of the "current" set so the complement-resolve leaves them

@@ -14092,6 +14092,7 @@ fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
         drift_checked_live: false,
         last_scan_at: Some(timestamp.to_string()),
         system_errors: Vec::new(),
+        standing: Vec::new(),
         drift: vec![super::status::ModuleDrift {
             event: cfgd_core::state::DriftEvent {
                 id: 1,
@@ -31732,6 +31733,7 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
         drift_checked_live: false,
         last_scan_at: None,
         system_errors: Vec::new(),
+        standing: Vec::new(),
     };
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     printer.emit(super::status::build_fleet_status_doc(
@@ -31902,6 +31904,7 @@ fn component_health_fixture() -> super::status::StatusOutput {
         drift_checked_live: false,
         last_scan_at: Some("2026-05-14T10:02:00Z".into()),
         system_errors: Vec::new(),
+        standing: Vec::new(),
     }
 }
 
@@ -32566,6 +32569,7 @@ fn last_apply_leads_on_its_verdict() {
         drift_checked_live: false,
         last_scan_at: None,
         system_errors: Vec::new(),
+        standing: Vec::new(),
     };
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     printer.emit(super::status::build_fleet_status_doc(
@@ -33987,6 +33991,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         drift_checked_live: false,
         last_scan_at: None,
         system_errors: Vec::new(),
+        standing: Vec::new(),
     };
     let module = super::status::ModuleStatus {
         name: "nvim".into(),
@@ -34015,6 +34020,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         drift_checked_live: true,
         last_scan_at: None,
         system_errors: Vec::new(),
+        standing: Vec::new(),
     };
     let source_show = super::output_types::SourceShowOutput {
         name: "team".into(),
