@@ -983,6 +983,12 @@ ALLOWED_FN_PAIRS=(
     # ::check` keeps the budget as the cosign signature verdict for a
     # reference, an unrelated question sharing only the verb.
     "check crates/cfgd-operator/src/gateway/rate_limit.rs"
+    # `ApplyStatus::human_display` keeps the budget as the (word, Role) pair
+    # convention (shared-utils.md, "A Title-Cased status word renders with its
+    # role, everywhere"); `ComplianceStatus::human_display` is the same
+    # convention for a compliance snapshot's verdict, a second sanctioned
+    # vocabulary rather than a duplicate to hunt down.
+    "human_display crates/cfgd-core/src/compliance/mod.rs"
 )
 allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
@@ -998,7 +1004,7 @@ fn_dupes=$(while IFS= read -r -d '' rsfile; do
         | grep -E '^\S+:[0-9]+:\s*(pub[^ ]*\s+)?(async\s+)?fn [a-z0-9_]+[(<]' \
         | sed 's|^\([^:]*\):[0-9]*:.*fn \([a-z0-9_]*\)[(<].*|\2 \1|' \
         || true
-done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
+done < <(audit_scan_files) \
     | sort -u | grep -vxF -f "$allowed_pairs_file" \
     | awk '{print $1}' | sort | uniq -c | sort -rn \
     | awk '$1 > 1 && \
