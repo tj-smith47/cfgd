@@ -511,12 +511,7 @@ pub fn drift_terse_cause(resource_type: &str, expected: &str, actual: &str) -> S
     if actual.starts_with("content differs") {
         return "content differs".to_string();
     }
-    if resource_type == "package"
-        && !matches!(
-            expected,
-            crate::PACKAGE_WANT_INSTALLED | crate::PACKAGE_WANT_ABSENT
-        )
-    {
+    if resource_type == "package" && !crate::is_package_presence_want(expected) {
         return "version mismatch".to_string();
     }
     actual

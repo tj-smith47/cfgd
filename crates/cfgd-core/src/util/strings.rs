@@ -699,6 +699,19 @@ pub const PACKAGE_WANT_INSTALLED: &str = "installed";
 /// The removal half of [`PACKAGE_WANT_INSTALLED`]'s pair.
 pub const PACKAGE_WANT_ABSENT: &str = "absent";
 
+/// Whether a package drift row's `expected` word came from the PRESENCE pass
+/// rather than the declared-floor one — the one reading of the pair above.
+///
+/// Two callers ask it for two reasons and must not answer differently: a
+/// surface filing rows by shape (`cli::live_drift::is_presence_package_row`)
+/// would render a package the machine HAS under the presence pass's
+/// `not installed` wording, and [`crate::output::drift_terse_cause`] would
+/// word a missing package as a version mismatch.
+#[must_use]
+pub fn is_package_presence_want(expected: &str) -> bool {
+    matches!(expected, PACKAGE_WANT_INSTALLED | PACKAGE_WANT_ABSENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

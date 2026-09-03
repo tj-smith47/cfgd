@@ -279,9 +279,13 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_every_exit_code_su
 /// std neutralizes those.) The distro grammar this pair carries — an
 /// `<epoch>:<upstream>-<revision>` version compared on its upstream part — is
 /// reachable nowhere else, so the trio stays here rather than moving to a
-/// manager Windows can shim. What Windows loses is only the GRAMMAR: the
-/// below-floor outcome itself is proven there by
-/// `a_brew_formula_below_its_floor_exits_drift_detected_on_every_surface`.
+/// manager Windows can shim. What Windows loses is only the GRAMMAR: each of
+/// the three cells has a brew twin proving the same outcome there — the
+/// unscoped walk in
+/// `a_brew_formula_below_its_floor_exits_drift_detected_on_every_surface`, the
+/// scoped pass in `a_brew_formula_below_its_floor_is_drift_on_both_scoped_surfaces`,
+/// and the non-heal in
+/// `a_scoped_brew_run_does_not_heal_a_version_row_the_machine_still_holds`.
 #[cfg(unix)]
 fn below_floor_dnf(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
     let dnf = write_tool_shim(
@@ -305,7 +309,7 @@ fn below_floor_dnf(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
 /// declared floor, so every surface exits `DriftDetected` and names both
 /// operands. Presence alone would exit 0 — the package IS installed.
 #[test]
-#[cfg(unix)] // see `below_floor_dnf`: rpm's `%`-carrying argv is unshimmable on Windows
+#[cfg(unix)] // see `below_floor_dnf`: rpm's newline-bearing argv is unshimmable on Windows
 fn a_pinned_package_below_its_floor_exits_drift_detected_on_every_surface() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
@@ -361,7 +365,7 @@ const SCOPED_PINNED_SURFACES: [&[&str]; 2] = [
 ];
 
 #[test]
-#[cfg(unix)] // see `below_floor_dnf`: rpm's `%`-carrying argv is unshimmable on Windows
+#[cfg(unix)] // see `below_floor_dnf`: rpm's newline-bearing argv is unshimmable on Windows
 fn a_pinned_package_below_its_floor_is_drift_on_both_scoped_surfaces() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
@@ -445,7 +449,7 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_both_scoped_surfac
 /// over the very module that declared it — the machine is still below the
 /// floor, and the scoped surface says so rather than healing it.
 #[test]
-#[cfg(unix)] // see `below_floor_dnf`: rpm's `%`-carrying argv is unshimmable on Windows
+#[cfg(unix)] // see `below_floor_dnf`: rpm's newline-bearing argv is unshimmable on Windows
 fn a_scoped_run_does_not_heal_a_version_row_the_machine_still_holds() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
@@ -832,4 +836,100 @@ fn a_brew_formula_below_its_floor_exits_drift_detected_on_every_surface() {
             "cfgd {args:?}: the version finding names its package and its cause, got: {text}"
         );
     }
+}
+
+/// The scoped twin of the cell above, on the same every-host manager: a
+/// `--module` surface resolves its own floors through
+/// `cli::live_drift::scoped_version_drift`, a different pass from the full
+/// walk's, so the scoped path needs its own Windows-reachable cell or the
+/// outcome is proven only where the dnf fixture runs.
+#[test]
+fn a_brew_formula_below_its_floor_is_drift_on_both_scoped_surfaces() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    write_brew_pinned_config(config_tmp.path());
+    let brew = below_floor_brew(config_tmp.path());
+
+    for args in SCOPED_PINNED_SURFACES {
+        let state_tmp = tempfile::tempdir().unwrap();
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let out = cmd
+            .args(args)
+            .arg("--config")
+            .arg(config_tmp.path().join("cfgd.yaml"))
+            .arg("--state-dir")
+            .arg(state_tmp.path())
+            .env("HOME", home_tmp.path())
+            .env("USERPROFILE", home_tmp.path())
+            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
+            .env("CFGD_BREW_BIN", &brew)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(5),
+            "cfgd {args:?}: a scoped surface checks the floors it resolves, got: {text}"
+        );
+        assert!(
+            !text.contains("error checking drift"),
+            "cfgd {args:?}: brew's own grammar reads `0.10.2_1`, so this is drift and not an unanswered check, got: {text}"
+        );
+        assert!(
+            text.contains("neovim"),
+            "cfgd {args:?}: the finding names its package, got: {text}"
+        );
+    }
+}
+
+/// The erasure guard on the every-host manager: `record_scoped_scan_findings`
+/// resolves every key a scoped run re-checked and did not re-find, so a
+/// standing version row must survive a `--module` run over the very module
+/// that declared it while the machine is still below the floor.
+#[test]
+fn a_scoped_brew_run_does_not_heal_a_version_row_the_machine_still_holds() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    let state_tmp = tempfile::tempdir().unwrap();
+    write_brew_pinned_config(config_tmp.path());
+    let brew = below_floor_brew(config_tmp.path());
+
+    let run_one = |args: &[&str]| {
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let out = cmd
+            .args(args)
+            .arg("--config")
+            .arg(config_tmp.path().join("cfgd.yaml"))
+            .arg("--state-dir")
+            .arg(state_tmp.path())
+            .env("HOME", home_tmp.path())
+            .env("USERPROFILE", home_tmp.path())
+            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
+            .env("CFGD_BREW_BIN", &brew)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.code(), text)
+    };
+
+    let (code, text) = run_one(&["diff", "--exit-code"]);
+    assert_eq!(code, Some(5), "the full walk records the row: {text}");
+    let (code, text) = run_one(&["diff", "--module", "pinned", "--exit-code"]);
+    assert_eq!(code, Some(5), "the scoped run re-finds it: {text}");
+    // The RECORDED read: no `--scan`, so this reports what the two runs above
+    // left in the store.
+    let (code, text) = run_one(&["status", "--exit-code"]);
+    assert_eq!(
+        code,
+        Some(5),
+        "the recorded row survived the scoped run: {text}"
+    );
 }
