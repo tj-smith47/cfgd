@@ -357,6 +357,7 @@ pub fn build_compliance_diff_doc(
                     cfgd_core::fold_home_in_text(&c.key),
                     c.old_status.human_display(),
                     c.new_status.human_display(),
+                    arrow,
                     |sf| sf.detail_opt(c.detail.as_deref()),
                 )
             })
@@ -509,7 +510,10 @@ pub fn build_compliance_export_doc(
         .heading("Compliance Export")
         .status(
             Role::Ok,
-            format!("Wrote compliance snapshot to {}", export_path.posix()),
+            format!(
+                "Wrote compliance snapshot to {}",
+                cfgd_core::fold_home_in_text(&export_path.posix().to_string())
+            ),
         )
         .section("Summary", |s| {
             s.kv("Compliant", snapshot.summary.compliant.to_string())

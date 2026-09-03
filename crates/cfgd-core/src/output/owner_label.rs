@@ -46,29 +46,33 @@ pub struct StatusTransition {
     subject: String,
     old: (String, Role),
     new: (String, Role),
+    arrow: String,
 }
 
 impl StatusTransition {
-    pub fn new(subject: impl Into<String>, old: (&str, Role), new: (&str, Role)) -> Self {
+    /// `arrow` is the caller's own [`Theme::arrow`], so the plain form and the
+    /// styled one cannot spell the relationship with two different glyphs on a
+    /// theme that overrides it.
+    pub fn new(
+        subject: impl Into<String>,
+        old: (&str, Role),
+        new: (&str, Role),
+        arrow: impl Into<String>,
+    ) -> Self {
         Self {
             subject: subject.into(),
             old: (old.0.to_string(), old.1),
             new: (new.0.to_string(), new.1),
+            arrow: arrow.into(),
         }
     }
 
-    /// The structural fallback: the row RENDERS through [`Self::styled`] on
-    /// every path, colour-disabled included (a `ThemedStyle` emits nothing
-    /// there), and this surface's `-o json` is its own typed payload — so the
-    /// theme's arrow reaches every string a reader or a script sees, and this
-    /// form only ever stands in for a component nothing asked to paint.
+    /// The uncoloured form, for the paths that render a component without
+    /// painting it.
     fn plain(&self) -> String {
         format!(
             "{} ({} {} {})",
-            self.subject,
-            self.old.0,
-            Theme::default().arrow(),
-            self.new.0
+            self.subject, self.old.0, self.arrow, self.new.0
         )
     }
 
@@ -83,7 +87,7 @@ impl StatusTransition {
             "{} ({} {} {})",
             super::cursor_safe(&self.subject),
             paint(self.old.1, &self.old.0),
-            theme.arrow(),
+            self.arrow,
             paint(self.new.1, &self.new.0)
         )
     }
@@ -157,6 +161,21 @@ impl OwnerLabel {
 mod tests {
     use super::*;
     use crate::output::strip_ansi;
+
+    /// Both forms spell the relationship with the arrow the CALLER passed —
+    /// the plain one cannot fall back to a default theme's glyph while the
+    /// styled one renders an override.
+    #[test]
+    fn a_transitions_two_forms_spell_one_arrow() {
+        let t = StatusTransition::new(
+            "file:conf",
+            ("Compliant", Role::Ok),
+            ("Warning", Role::Warn),
+            "=>",
+        );
+        assert_eq!(t.plain(), "file:conf (Compliant => Warning)");
+        assert!(strip_ansi(&t.styled(&Theme::default())).contains("(Compliant => Warning)"));
+    }
 
     #[test]
     fn plain_is_kind_colon_name() {

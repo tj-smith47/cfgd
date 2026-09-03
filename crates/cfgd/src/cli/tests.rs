@@ -17588,10 +17588,12 @@ fn every_run_that_renders_the_rollup_also_renders_the_run_header() {
 /// `as_str` at any visibility — the stored-state vocabulary; `ApplyStatus`
 /// keeps its own `pub(in crate::state)`, and a token narrow enough that no
 /// surface can reach it today is one `pub` away from being read. A display
-/// counterpart is
-/// either a `display_str` / `human_str` in the same `impl`, or a free
+/// counterpart is either a `display_str` in the same `impl`, or a free
 /// `<snake_case_name>_display` function in the module (the shape a stored token
-/// with no typed value at the call site takes).
+/// with no typed value at the call site takes). A word-alone `human_str` does
+/// NOT count: a status vocabulary hands its word out only paired with the role
+/// that tints it, which is what
+/// `every_title_cased_status_word_renders_role_styled` refuses at the source.
 #[test]
 fn every_stored_enum_has_a_display_counterpart() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -17617,15 +17619,10 @@ fn every_stored_enum_has_a_display_counterpart() {
         }
         checked.push(name.clone());
         let free_form = format!("pub fn {}_display", to_snake_case(&name));
-        if block.contains("pub fn display_str")
-            || block.contains("pub fn human_str")
-            || body.contains(&free_form)
-        {
+        if block.contains("pub fn display_str") || body.contains(&free_form) {
             continue;
         }
-        offenders.push(format!(
-            "{name}: no display_str/human_str and no {free_form}"
-        ));
+        offenders.push(format!("{name}: no display_str and no {free_form}"));
     }
     for witness in ["ApplyStatus", "BackupRunStatus"] {
         assert!(
@@ -32538,31 +32535,26 @@ fn every_title_cased_status_word_renders_role_styled() {
 
     let mut offenders: Vec<String> = Vec::new();
     let mut word_alone: Vec<String> = Vec::new();
-    let mut producers_walked: Vec<String> = Vec::new();
     for (path, body) in cli_production_sources()
         .into_iter()
         .chain(core_production_sources())
     {
+        // The word-alone guard runs over EVERY file, not just the two that
+        // hold a vocabulary today: a third one minted elsewhere would offer
+        // the same roleless spelling, and a rename of these two must not
+        // quietly take the guard with it.
+        for (n, code) in word_alone_spellings(&body) {
+            word_alone.push(format!("{}:{n}: {code}", path.display()));
+        }
         // The producers themselves are where the words and their roles are
-        // spelled; every other site reads them from here. What they may NOT
-        // do is offer the word alone.
+        // spelled; every other site reads them from here.
         if path.ends_with("state/types.rs") || path.ends_with("compliance/mod.rs") {
-            producers_walked.push(cfgd_core::to_posix_string(&path));
-            for (n, code) in word_alone_spellings(&body) {
-                word_alone.push(format!("{}:{n}: {code}", path.display()));
-            }
             continue;
         }
         for (n, code) in offenders_in(&body) {
             offenders.push(format!("{}:{n}: {code}", path.display()));
         }
     }
-    assert_eq!(
-        producers_walked.len(),
-        2,
-        "the producer guard no longer reaches both vocabulary files — it walked \
-         {producers_walked:?}"
-    );
     assert!(
         word_alone.is_empty(),
         "a status vocabulary offers its word only paired with the role that \
@@ -33535,7 +33527,58 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         state: None,
         spec: Default::default(),
     };
+    // The compliance surfaces name a checked file by its `<category>:<target>`
+    // key, and the export line names the file it wrote.
+    let check =
+        |status: cfgd_core::compliance::ComplianceStatus| cfgd_core::compliance::ComplianceCheck {
+            category: "file".into(),
+            target: Some(under_home("perm-conf")),
+            status,
+            detail: Some("permissions 0o600, expected 0o644".into()),
+            ..Default::default()
+        };
+    let snapshot = |status| cfgd_core::compliance::ComplianceSnapshot {
+        timestamp: "2026-05-14T12:00:00Z".into(),
+        machine: cfgd_core::compliance::MachineInfo {
+            hostname: "host".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        },
+        profile: "base".into(),
+        sources: Vec::new(),
+        checks: vec![check(status)],
+        summary: cfgd_core::compliance::ComplianceSummary {
+            compliant: 0,
+            warning: 1,
+            violation: 0,
+        },
+    };
+    let before = snapshot(cfgd_core::compliance::ComplianceStatus::Compliant);
+    let after = snapshot(cfgd_core::compliance::ComplianceStatus::Warning);
+
     let docs: Vec<(&str, cfgd_core::output::Doc)> = vec![
+        (
+            "cfgd compliance snapshot",
+            super::compliance::build_compliance_summary_doc(&after, now),
+        ),
+        (
+            "cfgd compliance export",
+            super::compliance::build_compliance_export_doc(
+                &after,
+                &std::path::Path::new(&under_home("compliance")).join("snapshot.json"),
+            ),
+        ),
+        (
+            "cfgd compliance diff",
+            super::compliance::build_compliance_diff_doc(
+                1,
+                2,
+                &before,
+                &after,
+                &super::compliance::compute_compliance_diff(&before, &after),
+                "->",
+            ),
+        ),
         (
             "cfgd status",
             super::status::build_fleet_status_doc(
@@ -33605,60 +33648,6 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
             payload.contains(&home_posix),
             "{surface}'s `-o json` payload keeps the absolute path:\n{payload}"
         );
-        surfaces.push((surface, cap.human()));
-    }
-
-    // The two compliance surfaces name a checked file by its `<category>:
-    // <target>` key. They render no payload of their own — `-o json` on
-    // `compliance diff` serializes the diff, not this Doc — so they join the
-    // human-text assert below rather than the payload loop above.
-    let check =
-        |status: cfgd_core::compliance::ComplianceStatus| cfgd_core::compliance::ComplianceCheck {
-            category: "file".into(),
-            target: Some(under_home("perm-conf")),
-            status,
-            detail: Some("permissions 0o600, expected 0o644".into()),
-            ..Default::default()
-        };
-    let snapshot = |status| cfgd_core::compliance::ComplianceSnapshot {
-        timestamp: "2026-05-14T12:00:00Z".into(),
-        machine: cfgd_core::compliance::MachineInfo {
-            hostname: "host".into(),
-            os: "linux".into(),
-            arch: "x86_64".into(),
-        },
-        profile: "base".into(),
-        sources: Vec::new(),
-        checks: vec![check(status)],
-        summary: cfgd_core::compliance::ComplianceSummary {
-            compliant: 0,
-            warning: 1,
-            violation: 0,
-        },
-    };
-    let before = snapshot(cfgd_core::compliance::ComplianceStatus::Compliant);
-    let after = snapshot(cfgd_core::compliance::ComplianceStatus::Warning);
-    let compliance_docs = [
-        (
-            "cfgd compliance export",
-            super::compliance::build_compliance_summary_doc(&after, now),
-        ),
-        (
-            "cfgd compliance diff",
-            super::compliance::build_compliance_diff_doc(
-                1,
-                2,
-                &before,
-                &after,
-                &super::compliance::compute_compliance_diff(&before, &after),
-                "->",
-            ),
-        ),
-    ];
-    for (surface, doc) in compliance_docs {
-        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
-        printer.emit(doc);
-        drop(printer);
         surfaces.push((surface, cap.human()));
     }
 

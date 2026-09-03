@@ -628,11 +628,12 @@ impl SectionBuilder {
         subject: impl Into<String>,
         old: (&str, Role),
         new: (&str, Role),
+        arrow: &str,
         build: impl FnOnce(StatusFields) -> StatusFields,
     ) -> Self {
         let f = build(StatusFields::default());
         let role = new.1;
-        let painted = PaintedSubject::Transition(StatusTransition::new(subject, old, new));
+        let painted = PaintedSubject::Transition(StatusTransition::new(subject, old, new, arrow));
         self.children
             .push(status_component(role, painted.plain(), Some(painted), f));
         self
