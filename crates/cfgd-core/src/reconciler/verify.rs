@@ -690,6 +690,10 @@ pub struct MergedEnvItems {
     aliases: Vec<crate::config::ShellAlias>,
     origins: EnvOrigins,
     path: Option<super::env_engine::FoldedPath>,
+    // Read back only by `managed_env_files`, which exists for the tests that
+    // re-render a managed env file; a shipped build stores nothing it cannot
+    // read.
+    #[cfg(any(test, feature = "test-helpers"))]
     path_dirs: Vec<ManagerPathDir>,
 }
 
@@ -722,6 +726,7 @@ impl MergedEnvItems {
             aliases,
             origins,
             path,
+            #[cfg(any(test, feature = "test-helpers"))]
             path_dirs: path_dirs.to_vec(),
         }
     }
