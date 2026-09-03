@@ -72,8 +72,15 @@ pub fn is_unmanaged_file(target: &Path, config_dir: &Path, state: &StateStore) -
         if link_target.starts_with(config_dir) {
             return false;
         }
-        let module_cache = crate::expand_tilde(Path::new("~/.cache/cfgd/modules"));
-        if link_target.starts_with(&module_cache) {
+        // Off the resolved cache root, never a `~/.cache` literal: the root is
+        // `%LOCALAPPDATA%\cfgd` on Windows and `~/Library/Caches/cfgd` on
+        // macOS, so a hand-spelled POSIX path answers about a directory that
+        // exists on Linux alone and cfgd's own deployment reads as a
+        // stranger's everywhere else. An unresolvable cache root leaves the
+        // question unanswered here, exactly as an unreadable link does.
+        if let Ok(module_cache) = crate::modules::default_module_cache_dir()
+            && link_target.starts_with(&module_cache)
+        {
             return false;
         }
     }

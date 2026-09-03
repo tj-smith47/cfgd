@@ -168,7 +168,7 @@ pub fn default_module_cache_dir_for(scope: crate::Scope) -> Result<PathBuf> {
             url: String::new(),
             message: e.to_string(),
         })?
-        .join("modules"))
+        .join(crate::MODULE_CACHE_SEGMENT))
 }
 
 /// Resolve optional subdir within a cache directory with traversal validation.

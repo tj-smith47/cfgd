@@ -963,10 +963,7 @@ pub fn default_state_dir_for(scope: Scope) -> Result<PathBuf> {
     // is unset, resolving a home that config discovery cannot — the two
     // subsystems must agree.
     if crate::home_dir_var().is_none() {
-        return Err(StateError::DirectoryNotWritable {
-            path: PathBuf::from("~/.local/state/cfgd"),
-        }
-        .into());
+        return Err(StateError::HomeDirectoryUnresolved { role: "state" }.into());
     }
     let base = directories::BaseDirs::new()
         .ok_or(StateError::HomeDirectoryUnresolved { role: "state" })?;

@@ -772,6 +772,31 @@ fn open_file_based_store() {
     assert_eq!(last.profile, "test");
 }
 
+/// Every `HomeDirectoryUnresolved` names the directory it could not place.
+///
+/// The variant carries a `role` because the two subsystems that can hit it —
+/// the state store and the cache — fail for the same reason on hosts where
+/// only one of them is even in play, and "no home directory found" alone
+/// leaves the reader with nothing to act on. The role is a `&'static str`, so
+/// only a pin can keep it in the sentence: a `#[error]` rewritten to drop the
+/// interpolation still compiles.
+#[test]
+fn every_home_directory_unresolved_names_the_directory_it_could_not_place() {
+    for role in ["state", "cache"] {
+        let rendered =
+            crate::errors::CfgdError::State(StateError::HomeDirectoryUnresolved { role })
+                .to_string();
+        assert!(
+            rendered.contains(role),
+            "the sentence must name the {role} directory: {rendered}"
+        );
+        assert!(
+            rendered.contains("no home directory found"),
+            "the sentence must say why: {rendered}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn open_in_dir_readonly_dir_yields_directory_not_writable_naming_path() {

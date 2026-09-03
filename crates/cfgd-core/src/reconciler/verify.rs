@@ -648,7 +648,7 @@ fn verify_env_items_in(
             // seam stores each result's operands verbatim in `drift_events`,
             // which flows on to the device gateway. A display surface that
             // wants the actual line recomputes it from the declared config at
-            // render time — see `env_item_declared_line`.
+            // render time — see `MergedEnvItems::declared_line`.
             expected: "current".to_string(),
             actual: if matches {
                 "current".to_string()
@@ -690,6 +690,7 @@ pub struct MergedEnvItems {
     aliases: Vec<crate::config::ShellAlias>,
     origins: EnvOrigins,
     path: Option<super::env_engine::FoldedPath>,
+    path_dirs: Vec<ManagerPathDir>,
 }
 
 impl MergedEnvItems {
@@ -721,7 +722,56 @@ impl MergedEnvItems {
             aliases,
             origins,
             path,
+            path_dirs: path_dirs.to_vec(),
         }
+    }
+
+    /// Every managed env FILE this host's engine writes for `scope`, as
+    /// `(path, content)` — the whole-file counterpart of [`Self::declared_line`],
+    /// and the only thing a fixture may reproduce a generated env file from.
+    ///
+    /// Both halves of that file are the running platform's: the name
+    /// (`~/.cfgd.env` on POSIX, `~/.cfgd-env.ps1` on Windows) and every line's
+    /// dialect. A fixture spelling either by hand writes where nothing reads,
+    /// or a line the check can never match — and because the surfaces that
+    /// broke assert an ABSENCE, the fixture passes anyway, blind rather than
+    /// red. Which is also why the return is a LIST: Windows emits the
+    /// PowerShell file always and the bash one too when Git Bash is on PATH, so
+    /// a caller writing only the primary file leaves the second reading stale.
+    ///
+    /// Gated behind `test-helpers` on the [`with_env_host_probe_override_guard`]
+    /// precedent: the feature is enabled in consumers' `[dev-dependencies]`
+    /// only, so no shipped binary compiles it, and no production caller may
+    /// take a shortcut past `env_targets`, which stays the one target set the
+    /// planner and the verifier both read.
+    ///
+    /// [`with_env_host_probe_override_guard`]: super::with_env_host_probe_override_guard
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn managed_env_files(
+        &self,
+        home: &std::path::Path,
+        scope: crate::config::EnvScope,
+    ) -> Vec<(std::path::PathBuf, String)> {
+        super::env_engine::env_targets(
+            super::env_engine::EnvContent::new(
+                &self.env,
+                &self.aliases,
+                &self.path_dirs,
+                &self.origins,
+            ),
+            scope,
+            home,
+            &super::env_engine::EnvHostProbe::detect(home),
+            EnvPlatform::current(),
+        )
+        .into_iter()
+        .filter_map(|t| match t {
+            super::env_engine::EnvTarget::ManagedFile { path, content, .. } => {
+                Some((path, content))
+            }
+            _ => None,
+        })
+        .collect()
     }
 
     /// The line a declared env var or alias renders as, for a DISPLAY surface

@@ -5790,7 +5790,7 @@ mod tests {
         .unwrap();
         // The declared line's dialect is platform-dependent (bash `export`
         // vs PowerShell `$env:`), so the expected needle is derived from
-        // `env_item_declared_line` — production's own per-item renderer for
+        // `MergedEnvItems::declared_line` — production's own per-item renderer for
         // the running platform — rather than a hardcoded POSIX literal.
         let declared_env = vec![cfgd_core::config::EnvVar {
             name: "EDITOR".to_string(),

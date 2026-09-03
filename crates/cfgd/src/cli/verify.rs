@@ -516,7 +516,7 @@ mod tests {
         )
         .unwrap();
         // The declared line's dialect is platform-dependent, so the expected
-        // needle is derived from `env_item_declared_line` (production's own
+        // needle is derived from `MergedEnvItems::declared_line` (production's own
         // per-item renderer for the running platform) rather than a
         // hardcoded POSIX literal.
         let declared_env = vec![cfgd_core::config::EnvVar {
