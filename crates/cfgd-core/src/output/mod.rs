@@ -491,6 +491,16 @@ fn drift_operand(resource_type: &str, operand: &str) -> String {
 /// two lengths and must agree about the absence word they reach for. Anything
 /// outside the known shapes keeps the producer's own phrasing rather than
 /// being flattened into a word that would describe it wrongly.
+///
+/// Which KIND a row is comes from its `resource_type` and its producer's own
+/// `expected` word, never from re-parsing the operands. Only a `package` row
+/// carries versions, and a package row carries them exactly when it is not a
+/// presence row ([`PACKAGE_WANT_INSTALLED`](crate::PACKAGE_WANT_INSTALLED) /
+/// [`PACKAGE_WANT_ABSENT`](crate::PACKAGE_WANT_ABSENT)); the manager's own
+/// comparator already judged the pair, and asking the shared parser instead
+/// would word every packaging grammar it cannot read (`0.10.2_1`,
+/// `2:8.2.3995-1ubuntu2`) as a bare value with no verdict in it — and would
+/// call a sysctl's `0` → `1` a version mismatch.
 #[must_use]
 pub fn drift_terse_cause(resource_type: &str, expected: &str, actual: &str) -> String {
     let actual = drift_operand(resource_type, actual);
@@ -501,8 +511,11 @@ pub fn drift_terse_cause(resource_type: &str, expected: &str, actual: &str) -> S
     if actual.starts_with("content differs") {
         return "content differs".to_string();
     }
-    if crate::parse_loose_version(expected).is_some()
-        && crate::parse_loose_version(&actual).is_some()
+    if resource_type == "package"
+        && !matches!(
+            expected,
+            crate::PACKAGE_WANT_INSTALLED | crate::PACKAGE_WANT_ABSENT
+        )
     {
         return "version mismatch".to_string();
     }
@@ -803,6 +816,23 @@ mod drift_vocabulary_tests {
             drift_terse_cause("package", "14.1.0", "13.0.0"),
             "version mismatch"
         );
+        // A packaging grammar the SHARED parser cannot read is still the
+        // version pair its own manager compared, and a removal row's
+        // `expected` word keeps it out of the version arm.
+        assert_eq!(
+            drift_terse_cause("package", "0.11", "0.10.2_1"),
+            "version mismatch"
+        );
+        assert_eq!(
+            drift_terse_cause("package", "2:8.2", "2:8.1.3995-1ubuntu2"),
+            "version mismatch"
+        );
+        assert_eq!(
+            drift_terse_cause("package", "absent", "to remove"),
+            "to remove"
+        );
+        // A numeric system setting is a value change, not a version bump.
+        assert_eq!(drift_terse_cause("system", "0", "1"), "1");
         assert_eq!(
             drift_terse_cause("file", "present", "unreadable: permission denied"),
             "unreadable: permission denied"

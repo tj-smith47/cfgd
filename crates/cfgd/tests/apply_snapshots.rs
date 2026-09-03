@@ -33,7 +33,6 @@ use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
 use pretty_assertions::assert_eq;
 
-#[cfg(unix)]
 use common::profile_with_packages_setup;
 use common::{
     apply_args, apply_args_dry_run, cli_for, plan_args, profile_with_one_failure_setup,
@@ -86,10 +85,6 @@ fn normalize_duration(raw: &str) -> String {
 /// temp dir. A golden pinning structure, order and labels must not also pin
 /// that; the column itself is a renderer unit test
 /// (`output::renderer::status`), where the subjects are literals.
-///
-/// Its one caller is `cfg(unix)`, so the gate travels with it: unqualified,
-/// the helper is dead code on Windows and `-D warnings` fails the build.
-#[cfg(unix)]
 fn collapse_alignment_padding(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for line in raw.split_inclusive('\n') {
@@ -280,7 +275,6 @@ fn apply_with_failures_human() {
 /// under the profile's own label, and a serial `Files` phase below both. The
 /// golden pins structure, order and labels — a capture sink never wraps, so
 /// the per-line alignment budget stays a renderer unit test.
-#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn apply_phase_tree_human() {

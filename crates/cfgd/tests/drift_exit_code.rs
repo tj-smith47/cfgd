@@ -272,13 +272,16 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_every_exit_code_su
 ///
 /// The three cells built on this pair are the file's only `#[cfg(unix)]` ones,
 /// and the gate is the FIXTURE's, not the contract's: dnf's installed listing
-/// is `rpm --query --all --queryformat "%{NAME}\t%{VERSION}\n"`, and
-/// `std::process::Command` refuses both `%` and a newline in an argument to a
-/// `.cmd` (the batbadbut hardening), which is what the Windows arm of
-/// `write_tool_shim` has to be. A tool cfgd invokes with either character
-/// cannot be stood in for on Windows at all. The same drift class is proven
-/// there by `a_brew_formula_clearing_its_floor_is_converged_on_every_surface`
-/// and by the two apk cells, whose argv is plain.
+/// is `rpm --query --all --queryformat "%{NAME}\t%{VERSION}\n"`, whose
+/// trailing newline `std::process::Command` refuses to pass to a `.cmd` — a
+/// newline truncates a `cmd.exe` command line, and a `.cmd` is what the
+/// Windows arm of `write_tool_shim` has to be. (The `%` is not the problem;
+/// std neutralizes those.) The distro grammar this pair carries — an
+/// `<epoch>:<upstream>-<revision>` version compared on its upstream part — is
+/// reachable nowhere else, so the trio stays here rather than moving to a
+/// manager Windows can shim. What Windows loses is only the GRAMMAR: the
+/// below-floor outcome itself is proven there by
+/// `a_brew_formula_below_its_floor_exits_drift_detected_on_every_surface`.
 #[cfg(unix)]
 fn below_floor_dnf(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
     let dnf = write_tool_shim(
@@ -658,6 +661,26 @@ fn converged_brew(dir: &Path) -> std::path::PathBuf {
     )
 }
 
+/// The same shape as [`converged_brew`] one floor lower: the formula is
+/// installed at `0.10.2_1` against a declared `minVersion: 0.11`. Every argv
+/// brew is asked here is plain, so this is the below-floor fixture Windows can
+/// reach — see [`below_floor_dnf`] for the one it cannot.
+fn below_floor_brew(dir: &Path) -> std::path::PathBuf {
+    write_tool_shim(
+        dir,
+        "brew-holds-old-neovim",
+        &[
+            ShimArm::on("--versions", "neovim 0.10.2_1\n"),
+            ShimArm::on(
+                "info",
+                "{\"formulae\":[{\"versions\":{\"stable\":\"0.12.5\"}}]}",
+            ),
+            ShimArm::on("list", "neovim\n"),
+            ShimArm::always("Homebrew 4.0.0\n", "", 0),
+        ],
+    )
+}
+
 /// One module pinning a floor the installed brew formula clears.
 fn write_brew_pinned_config(dir: &Path) {
     let module_dir = dir.join("modules").join("pinned");
@@ -753,4 +776,60 @@ fn a_brew_formula_clearing_its_floor_is_converged_on_every_surface() {
         text.contains("Nothing to do"),
         "a converged machine reaches the up-to-date verdict: {text}"
     );
+}
+
+/// The below-floor outcome on a manager every host can shim: every check is
+/// answered, one of them below its declared floor, so every surface exits
+/// `DriftDetected` and names the package. Presence alone would exit 0 — the
+/// formula IS installed. The dnf twin proves the same outcome over the distro
+/// version grammar; this one is what keeps the outcome itself from being
+/// Unix-only.
+#[test]
+fn a_brew_formula_below_its_floor_exits_drift_detected_on_every_surface() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    write_brew_pinned_config(config_tmp.path());
+    let brew = below_floor_brew(config_tmp.path());
+
+    for args in EXIT_CODE_SURFACES {
+        let state_tmp = tempfile::tempdir().unwrap();
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let out = cmd
+            .args(args)
+            .arg("--config")
+            .arg(config_tmp.path().join("cfgd.yaml"))
+            .arg("--state-dir")
+            .arg(state_tmp.path())
+            .env("HOME", home_tmp.path())
+            .env("USERPROFILE", home_tmp.path())
+            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
+            .env("CFGD_BREW_BIN", &brew)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(5),
+            "cfgd {args:?}: an installed formula below its floor is drift, got: {text}"
+        );
+        assert!(
+            !text.contains("error checking drift"),
+            "cfgd {args:?}: brew's own grammar reads `0.10.2_1`, so this is drift and not an unanswered check, got: {text}"
+        );
+        // Each surface states the one finding in its own register: `diff` and
+        // `verify` print both operands, `status` the terse cause. Brew's
+        // `0.10.2_1` is a version only brew's own comparator reads, so a terse
+        // cause derived by re-parsing the operands would render the bare value
+        // here and say nothing.
+        assert!(
+            text.contains("brew:neovim")
+                && (text.contains("version mismatch")
+                    || (text.contains("want: 0.11") && text.contains("have: 0.10.2_1"))),
+            "cfgd {args:?}: the version finding names its package and its cause, got: {text}"
+        );
+    }
 }

@@ -107,9 +107,9 @@ pub fn verify(
             resource_type: "package".to_string(),
             resource_id,
             matches: ok,
-            expected: "installed".to_string(),
+            expected: crate::PACKAGE_WANT_INSTALLED.to_string(),
             actual: if ok {
-                "installed".to_string()
+                crate::PACKAGE_WANT_INSTALLED.to_string()
             } else {
                 // The stored literal for a missing package is the ONE
                 // `Absence::NotInstalled` spelling every producer of this
@@ -231,9 +231,11 @@ pub enum VersionFloor {
     Met,
     /// Installed below the declared floor. The two strings are the operands a
     /// drift row STORES: the floor exactly as the declaration spells it, and
-    /// the version the manager reported — both parseable as versions, which is
-    /// what lets a terse report read the pair as `version mismatch` rather
-    /// than echoing one operand.
+    /// the version the manager reported — comparable to EACH OTHER under that
+    /// manager's own grammar, which is often one the shared parser cannot read
+    /// (`0.10.2_1`, `2:8.2.3995-1ubuntu2`). A terse report therefore reads the
+    /// pair as `version mismatch` off the row's non-presence `expected` word,
+    /// never by re-parsing either operand.
     Below { floor: String, installed: String },
     /// Installed, and the manager stated no version at all
     /// ([`UNKNOWN_PACKAGE_VERSION`](crate::providers::UNKNOWN_PACKAGE_VERSION),
