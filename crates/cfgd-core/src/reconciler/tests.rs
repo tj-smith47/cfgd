@@ -7465,64 +7465,78 @@ fn no_daemon_action_row_wears_the_live_checks_separator() {
 
 /// The post-apply env regeneration heals the key its own action stands for.
 ///
-/// It is the one heal not driven by a planned action: the regeneration mints
-/// its key from the description it just wrote rather than from
-/// [`action_drift_rows`], so nothing but this agreement keeps the two
-/// spellings one. Both env surfaces are walked, because the file write and
-/// the rc injection compose their descriptions apart — and the rc file's row
-/// is typed `env-rc` by the check that records it, a split the apply closes
-/// with a twin resolve rather than a second key.
+/// It is the one heal not driven by a planned action, so the surface it just
+/// rewrote has to be named the way the tick that recorded the finding named
+/// it. All three env surfaces are walked, because each composes its
+/// description apart and only one of the three parses back to the id its own
+/// row carries: the rc injection's description types `env` where its row is
+/// `env-rc`, and the session refresh's parses to `("env", "refresh")` where
+/// its row is `("env-session", ENV_SESSION_RESOURCE_ID)` — a description is a
+/// wire contract, not a key, and reading one as a key heals a row nobody
+/// recorded while the recorded one stands.
 #[test]
 fn the_post_apply_env_regeneration_heals_the_key_its_action_stands_for() {
     use crate::reconciler::EnvAction;
 
     let empty = ProviderRegistry::new();
-    for action in [
-        Action::Env(EnvAction::WriteEnvFile {
-            path: PathBuf::from("/home/u/.cfgd.env"),
-            content: "export A=1\n".to_string(),
-            vars: 1,
-            aliases: 0,
-        }),
-        Action::Env(EnvAction::InjectSourceLine {
-            rc_path: PathBuf::from("/home/u/.zshrc"),
-            line: "source ~/.cfgd.env".to_string(),
-        }),
+    for (action, expected) in [
+        (
+            Action::Env(EnvAction::WriteEnvFile {
+                path: PathBuf::from("/home/u/.cfgd.env"),
+                content: "export A=1\n".to_string(),
+                vars: 1,
+                aliases: 0,
+            }),
+            ("env", "/home/u/.cfgd.env"),
+        ),
+        (
+            Action::Env(EnvAction::InjectSourceLine {
+                rc_path: PathBuf::from("/home/u/.zshrc"),
+                line: "source ~/.cfgd.env".to_string(),
+            }),
+            ("env-rc", "/home/u/.zshrc"),
+        ),
+        (
+            Action::Env(EnvAction::RefreshLiveSession {
+                vars: vec![("A".to_string(), "1".to_string())],
+            }),
+            ("env-session", crate::state::ENV_SESSION_RESOURCE_ID),
+        ),
     ] {
         let mut results: Vec<ActionResult> = Vec::new();
         super::apply::merge_env_result(
             &mut results,
+            &action,
+            &empty,
             crate::reconciler::format_action_description(&action),
             true,
         );
-        let planned = crate::reconciler::action_drift_rows(&action, &empty)
+        let planned: Vec<(String, String)> = crate::reconciler::action_drift_rows(&action, &empty)
             .into_iter()
             .map(|row| row.key())
-            .next()
-            .unwrap_or_else(|| panic!("an env action stands for a row: {action:?}"));
+            .collect();
         let healed = &results[0].drift_rows;
         assert_eq!(
-            healed.len(),
-            1,
-            "one regenerated surface, one healed key: {healed:?}"
+            healed, &planned,
+            "the regeneration heals exactly the rows the Env phase's own \
+             action stands for: {action:?}"
         );
-        assert_eq!(
-            healed[0].1, planned.1,
-            "the regeneration heals the surface the Env phase's own action \
-             stands for: {action:?}"
-        );
-        // The rc injection's own description types as `env` — the tracking
-        // grammar — while the row a check records for it is `env-rc`. The
-        // twin resolve in `record_managed_resources` closes that split, keyed
-        // on this same id, so the verb it reconstructs must still read as the
-        // injection this description carried.
-        if healed[0].0 != planned.0 {
-            assert_eq!(planned.0, "env-rc", "the only typed split: {action:?}");
-            assert_eq!(
-                crate::reconciler::recorded_env_method(&healed[0].1),
-                crate::reconciler::ENV_VERB_INJECT
+        // A host with no session manager pre-skips the refresh, so the
+        // producer stands for nothing and the replay heals nothing — which is
+        // the agreement, not an exception to it.
+        if planned.is_empty() {
+            assert!(
+                matches!(action, Action::Env(EnvAction::RefreshLiveSession { .. }))
+                    && !crate::session_manager_available(),
+                "only a pre-skipped action stands for no row: {action:?}"
             );
+            continue;
         }
+        assert_eq!(
+            (planned[0].0.as_str(), planned[0].1.as_str()),
+            expected,
+            "the row grammar this surface is recorded under: {action:?}"
+        );
     }
 }
 
@@ -7636,7 +7650,9 @@ fn every_row_the_tick_records_is_healed_by_the_apply_that_converges_it() {
                     crate::reconciler::module_row_names_a_file(&row.resource_id)
                         || row.resource_id.ends_with(":script")
                         || row.resource_id.ends_with(":skip"),
-                    "a module row names a file, a script or a skipped block —                      never an aggregate over a list no check can re-find:                      {row:?} from {action:?}"
+                    "a module row names a file, a script or a skipped block — \
+                     never an aggregate over a list no check can re-find: \
+                     {row:?} from {action:?}"
                 );
             }
         }

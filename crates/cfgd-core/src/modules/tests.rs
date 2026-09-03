@@ -130,7 +130,80 @@ fn a_module_name_carrying_a_drift_id_separator_is_refused() {
         .unwrap_or_else(|| panic!("a module named {name:?} must be refused"))
         .to_string();
     assert!(
-        err.contains("must not contain"),
+        err.contains("module name"),
+        "the refusal names the rule: {err}"
+    );
+}
+
+/// A module a SOURCE delivers answers the same refusal as one on disk.
+///
+/// A source's manifest names the modules it offers, and cfgd both joins that
+/// name onto the checkout to find the body and keys the module map by it — so
+/// an offered `acme/tool` reaches outside the directory it was offered under
+/// AND attributes its rows to a module called `acme`. Nothing about the name
+/// came from this machine, which is exactly why the refusal cannot live in the
+/// directory scan alone.
+#[test]
+fn a_source_delivered_module_name_carrying_a_separator_is_refused() {
+    for name in ["a:b", "acme/tool"] {
+        let dir = tempfile::tempdir().unwrap();
+        let modules_dir = dir.path().join("modules");
+        let body = modules_dir.join(name);
+        std::fs::create_dir_all(&body).unwrap();
+        // The body names itself plainly: what the source manifest OFFERED is
+        // the only thing carrying the separator, and it is the map key rows
+        // are attributed by whether or not the body agrees with it.
+        std::fs::write(
+            body.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: tool\nspec: {}\n",
+        )
+        .unwrap();
+        let root = crate::modules::SourceModuleRoot {
+            source_name: "acme".to_string(),
+            priority: 10,
+            modules_dir,
+            offered: vec![name.to_string()],
+            scripts_permitted: true,
+        };
+
+        let mut modules = HashMap::new();
+        let err = crate::modules::load_source_modules(&[root], &mut modules)
+            .err()
+            .unwrap_or_else(|| panic!("a source offering {name:?} must be refused"))
+            .to_string();
+        assert!(
+            err.contains("module name"),
+            "the refusal names the rule: {err}"
+        );
+        assert!(modules.is_empty(), "a refused name composes nothing");
+    }
+}
+
+/// A module BODY naming itself with a separator is refused where every loader
+/// meets it.
+///
+/// `load_module` is the seam the remote-lockfile and source-delivered paths
+/// both reach a body through, and it takes `metadata.name` as the module's
+/// name with no directory to compare against — so a body whose own metadata
+/// carries a separator is refused here, whatever the directory it arrived in
+/// was called.
+#[test]
+fn a_module_body_naming_itself_with_a_separator_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = dir.path().join("plain-directory");
+    std::fs::create_dir_all(&body).unwrap();
+    std::fs::write(
+        body.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: acme/tool\nspec: {}\n",
+    )
+    .unwrap();
+
+    let err = crate::modules::load_module(&body)
+        .err()
+        .unwrap_or_else(|| panic!("a body naming itself `acme/tool` must be refused"))
+        .to_string();
+    assert!(
+        err.contains("module name"),
         "the refusal names the rule: {err}"
     );
 }

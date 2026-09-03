@@ -23,7 +23,9 @@ use super::types::{
     ModuleAction, ModuleActionKind, Owner, OwnerKind, PhaseFilter, PhaseName, Plan,
     ReconcileContext, ScriptAction, ScriptPhase, SystemAction,
 };
-use crate::providers::{ActionNote, FileAction, NoteSink, PackageAction, SecretAction};
+use crate::providers::{
+    ActionNote, FileAction, NoteSink, PackageAction, ProviderRegistry, SecretAction,
+};
 
 /// One action's line in the execution tree, resolved where the outcome is known
 /// and written either immediately (a streaming phase) or at phase close
@@ -926,6 +928,8 @@ pub(super) fn path_dirs_changed(
 /// the error.
 pub(super) fn merge_env_result(
     results: &mut Vec<ActionResult>,
+    action: &Action,
+    registry: &ProviderRegistry,
     description: String,
     changed: bool,
 ) {
@@ -946,12 +950,14 @@ pub(super) fn merge_env_result(
         };
         return;
     }
-    // The post-apply regeneration carries no planned action, so its heal key
-    // comes off the description it just minted — the same `("env", <path>)`
-    // the Env phase's own action stands for.
-    let drift_rows = vec![super::format::parse_resource_from_description(
-        env_result_key(&description),
-    )];
+    // The regeneration is not in the plan, but it replays a real action, so the
+    // row it heals comes from the same producer the tick records through — a
+    // key derived from the description instead would be a third spelling, and
+    // the session surface's own row is not the one its description parses to.
+    let drift_rows = super::action_drift_rows(action, registry)
+        .into_iter()
+        .map(|row| row.key())
+        .collect();
     results.push(ActionResult {
         // These are env actions no matter which late input triggered them, and a
         // caller filtering results by phase must find them where every other
@@ -1762,7 +1768,13 @@ impl<'a> super::Reconciler<'a> {
                     match Self::apply_env_action(ea, printer, NoteSink::discarded()) {
                         Ok(desc) => {
                             let changed = !env_result_unchanged(&desc);
-                            merge_env_result(&mut results, desc, changed);
+                            merge_env_result(
+                                &mut results,
+                                env_action,
+                                self.registry,
+                                desc,
+                                changed,
+                            );
                         }
                         Err(e) => {
                             printer

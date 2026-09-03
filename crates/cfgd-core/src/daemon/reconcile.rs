@@ -805,8 +805,9 @@ fn reconcile_tick(
     // may heal only rows attributable to that module by identity: every
     // `module` row under its name — the per-file `<name>/<target>` rows and the
     // `<name>:script` / `<name>:skip` spellings its own actions mint — plus the
-    // per-package rows of the packages its group carries. Everything else — other modules', the machine-wide surfaces —
-    // stands for the next profile-wide tick to judge.
+    // per-package rows of the packages its group carries. Everything else —
+    // other modules', the machine-wide surfaces — stands for the next
+    // profile-wide tick to judge.
     let outside_tick_scope = |rtype: &str, rid: &str| match module_filter {
         None => false,
         Some(name) => match rtype {
@@ -1492,6 +1493,7 @@ pub(super) fn tick_cannot_refind(
                 .is_some_and(|rest| rest.starts_with('.')),
             _ => false,
         }),
+        // script-literal-ok: resource TYPES, not manager names
         "file" | "secret" | "script" | "env" | "env-rc" | "env-session" | "manager" => false,
         _ => true,
     }

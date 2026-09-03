@@ -14,10 +14,6 @@ use super::types::{
     Action, DeclaredProvision, ManagerAction, ModuleAction, ModuleActionKind, PhaseName, Plan,
 };
 
-/// The manager name a module package carries when its "install" is an inline
-/// script rather than a manager command. It names no registry entry.
-const SCRIPT_SENTINEL: &str = "script";
-
 /// What the run has to do about one manager.
 enum MemberState {
     /// Present already — refresh its index.
@@ -107,7 +103,7 @@ pub(super) fn declared_manager_routes(
             }
             // An inline script names no registry entry, so there is no
             // installer to route a provision through.
-            if pkg.manager == SCRIPT_SENTINEL {
+            if pkg.manager == crate::SCRIPT_SENTINEL {
                 continue;
             }
             // A manager cannot install itself: `cargo install cargo` needs the
@@ -401,7 +397,7 @@ fn wanted_managers(
             continue;
         };
         for pkg in resolved {
-            if pkg.manager == SCRIPT_SENTINEL {
+            if pkg.manager == crate::SCRIPT_SENTINEL {
                 continue;
             }
             wanted.insert(node_manager(registry, &pkg.manager).to_string());
@@ -752,7 +748,7 @@ fn surviving_consumers(plan: &Plan) -> BTreeSet<String> {
 }
 
 fn note_consumer(consumers: &mut BTreeSet<String>, manager: &str) {
-    if manager == SCRIPT_SENTINEL {
+    if manager == crate::SCRIPT_SENTINEL {
         return;
     }
     consumers.insert(manager.to_string());

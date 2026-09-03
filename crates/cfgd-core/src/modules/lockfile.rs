@@ -172,6 +172,10 @@ pub fn load_locked_modules(
         if modules.contains_key(&entry.name) {
             continue;
         }
+        // The entry name becomes both a cache directory component and the map
+        // key rows are attributed by, and the body's own `metadata.name` need
+        // not equal it.
+        super::validate_module_name(&entry.name)?;
 
         let git_src = parse_git_source(&entry.url)?;
 
@@ -238,6 +242,10 @@ pub fn load_source_modules(
             if modules.contains_key(name) {
                 continue;
             }
+            // A source names the modules it offers in its own manifest, and the
+            // name is joined onto the checkout to find the body as well as
+            // becoming the map key.
+            super::validate_module_name(name)?;
             let module_yaml = root.modules_dir.join(name).join("module.yaml");
             // Recorded BEFORE the existence test, and so recorded even when the
             // answer is "nothing there": an offered module whose body arrives on
@@ -297,7 +305,7 @@ fn module_script_kind(module: &LoadedModule) -> Option<String> {
         }
     }
     for pkg in &module.spec.packages {
-        if pkg.prefer.iter().any(|p| p == "script") {
+        if pkg.prefer.iter().any(|p| p == crate::SCRIPT_SENTINEL) {
             return Some(format!(
                 "a 'prefer: [script]' install for package '{}'",
                 pkg.name
