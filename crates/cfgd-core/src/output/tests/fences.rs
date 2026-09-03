@@ -1063,31 +1063,120 @@ fn names_identifier(func: &str, ident: &str) -> bool {
     })
 }
 
+/// The walk's masking state across physical lines: whatever a line sits
+/// inside of that makes its text NOT source — a raw literal, an ordinary
+/// `"…"` literal (a `\`-continued one included: the escape arm keeps
+/// `in_plain` latched across the break), or a block comment.
+#[derive(Default)]
+struct LineMask {
+    raw_hashes: Option<usize>,
+    in_plain: bool,
+    comment_depth: usize,
+}
+
+impl LineMask {
+    /// Whether the NEXT line begins inside a literal or comment.
+    fn masked(&self) -> bool {
+        self.raw_hashes.is_some() || self.in_plain || self.comment_depth > 0
+    }
+
+    /// Advance across one physical line: raw literals by the fold layer's own
+    /// open/close arithmetic, ordinary literals escape-aware (`\"` does not
+    /// close one, `\\` does not escape what follows), char literals whole
+    /// (`'"'` must not open plain-string state, while a lifetime's lone `'`
+    /// is left alone), `//` cutting the line and `/* … */` nesting across
+    /// lines.
+    fn advance(&mut self, line: &str) {
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if let Some(open) = self.raw_hashes {
+                if crate::test_helpers::raw_string_closes(bytes, i, open) {
+                    self.raw_hashes = None;
+                    i += 1 + open;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+            if self.in_plain {
+                match bytes[i] {
+                    b'\\' => i += 2,
+                    b'"' => {
+                        self.in_plain = false;
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+                continue;
+            }
+            if self.comment_depth > 0 {
+                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    self.comment_depth -= 1;
+                    i += 2;
+                } else if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                    self.comment_depth += 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+            match bytes[i] {
+                b'"' => {
+                    self.in_plain = true;
+                    i += 1;
+                }
+                b'\'' => {
+                    if bytes.get(i + 1) == Some(&b'\\') {
+                        i = bytes[i + 2..]
+                            .iter()
+                            .position(|b| *b == b'\'')
+                            .map_or(bytes.len(), |p| i + 3 + p);
+                    } else if bytes.get(i + 2) == Some(&b'\'') {
+                        i += 3;
+                    } else {
+                        i += 1;
+                    }
+                }
+                b'/' if bytes.get(i + 1) == Some(&b'/') => return,
+                b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                    self.comment_depth += 1;
+                    i += 2;
+                }
+                _ => {
+                    if let Some(open) = crate::test_helpers::raw_string_open(bytes, i) {
+                        self.raw_hashes = Some(open);
+                        i += 2 + open;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The functions a source's `fn` lines cut it into, each paired with its
 /// opening line number.
 ///
-/// A line is an opener only OUTSIDE every string literal: a fixture spelling
-/// `fn f() {` at the start of a raw-string or `\`-continued line would
-/// otherwise split the enclosing function around it, and a split severs a
-/// folded tell from its opening line or a tell from the producer token that
-/// exempts it — the silent direction. The string awareness is the fold
-/// layer's own: raw interiors from the scan `logical_source_lines` uses, and
-/// continuation lines as the ones it assigns no entry of their own. An
-/// ordinary literal spanning lines with NO trailing `\` shares the fold
-/// layer's boundary and is not tracked.
+/// A line is an opener only OUTSIDE every string literal and comment: a
+/// fixture spelling `fn f() {` on a line of a multi-line literal — raw,
+/// `\`-continued, or a plain `"…"` spanning lines — would otherwise split the
+/// enclosing function around it, and a split severs a folded tell from its
+/// opening line or a tell from the producer token that exempts it, the
+/// silent direction. [`LineMask`] holds that state; what remains unmasked is
+/// only a declaration sharing its physical line with the CLOSE of a literal
+/// or comment, a shape rustfmt does not emit — the same formatting assumption
+/// `production_slice` documents.
 fn source_functions(body: &str) -> Vec<(usize, String)> {
     let lines: Vec<&str> = body.lines().collect();
-    let logical_opens: std::collections::HashSet<usize> =
-        crate::test_helpers::logical_source_lines(body)
-            .into_iter()
-            .map(|(n, _)| n - 1)
-            .collect();
-    let mut raw_hashes: Option<usize> = None;
+    let mut mask = LineMask::default();
     let mut opens: Vec<usize> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        let inside_raw = raw_hashes.is_some();
-        crate::test_helpers::scan_raw_literals(line, &mut raw_hashes);
-        if !inside_raw && logical_opens.contains(&i) && opens_function(line) {
+        let masked = mask.masked();
+        mask.advance(line);
+        if !masked && opens_function(line) {
             opens.push(i);
         }
     }
@@ -1271,6 +1360,30 @@ fn a_fn_spelled_inside_a_string_literal_does_not_open_a_slice() {
     assert_eq!(funcs[1].0, 8);
 }
 
+/// The offender shape a PLAIN multi-line literal could hide: a fixture whose
+/// banner spells `fn looks_like_an_fn() {` on a line of its own, with the
+/// hand-spelled tell AFTER it. A false open there would put the tell in a
+/// slice the literal's own text opened — reported off the fake line, or
+/// exempted by whatever tokens that bogus slice happened to inherit — so the
+/// offender must come back as ONE scan unit holding its opening line and its
+/// tell together.
+#[test]
+fn an_offender_spelling_an_fn_line_inside_a_plain_literal_stays_one_scan_unit() {
+    let tell = format!("join(\"{}\")", ".cfgd.env");
+    let body = format!(
+        "fn offender() {{\n    let banner = \"\nfn looks_like_an_fn() {{\n\";\n    \
+         let p = home.{tell};\n}}\nfn sibling() {{}}\n"
+    );
+    let funcs = source_functions(&body);
+    assert_eq!(funcs.len(), 2, "{funcs:?}");
+    assert_eq!(funcs[0].0, 1, "the offender opens at its own line");
+    assert!(
+        funcs[0].1.contains("looks_like_an_fn") && funcs[0].1.contains(&tell),
+        "the literal AND the tell stay inside the offender's slice: {funcs:?}"
+    );
+    assert_eq!(funcs[1].0, 7);
+}
+
 /// The producer-tell matcher reads whole identifiers: an identifier that
 /// EXTENDS a producer's name exempts nothing, while the call, path and
 /// pattern shapes around the real name still match.
@@ -1289,6 +1402,8 @@ fn a_producer_tell_matches_only_a_whole_identifier() {
             "primary_env_file_path(home, platform)",
             "primary_env_file_path",
         ),
+        ("env_targets", "env_targets"),
+        ("items.managed_env_files", "managed_env_files"),
     ];
     for (func, ident) in real_mentions {
         assert!(
@@ -1299,6 +1414,7 @@ fn a_producer_tell_matches_only_a_whole_identifier() {
     let extensions = [
         ("recorded_managed_env_files(state)", "managed_env_files"),
         ("neutralize_managed_env_files(scope)", "managed_env_files"),
+        ("managed_env_files2(&files)", "managed_env_files"),
         ("primary_env_file_path(home, platform)", "primary_env_file"),
         ("fn env_targets_empty_yields_nothing() {", "env_targets"),
         (
