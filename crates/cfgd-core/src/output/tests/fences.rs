@@ -1129,10 +1129,16 @@ impl LineMask {
                 }
                 b'\'' => {
                     if bytes.get(i + 1) == Some(&b'\\') {
-                        i = bytes[i + 2..]
+                        // The escaped byte sits at i + 2, so the closing-quote
+                        // search starts past it: searched from i + 2, an
+                        // escaped quote (`'\''`) is its own first hit and the
+                        // scan lands on the escaped byte instead of past the
+                        // literal.
+                        let after_escape = (i + 3).min(bytes.len());
+                        i = bytes[after_escape..]
                             .iter()
                             .position(|b| *b == b'\'')
-                            .map_or(bytes.len(), |p| i + 3 + p);
+                            .map_or(bytes.len(), |p| after_escape + p + 1);
                     } else if bytes.get(i + 2) == Some(&b'\'') {
                         i += 3;
                     } else {
@@ -1382,6 +1388,42 @@ fn an_offender_spelling_an_fn_line_inside_a_plain_literal_stays_one_scan_unit() 
         "the literal AND the tell stay inside the offender's slice: {funcs:?}"
     );
     assert_eq!(funcs[1].0, 7);
+}
+
+/// The comment and char-literal arms of [`LineMask`], each on the shape that
+/// desyncs the scan if the arm breaks: a `//` cut keeps an unbalanced quote
+/// in a comment from latching plain-string state, while a `//` INSIDE a
+/// string cuts nothing (its closing quote still counts); a `'"'` opens no
+/// string; `'\''` is consumed whole even hard against a following char
+/// literal — searched from the escaped byte itself, `('\'','"')` swallows
+/// the second literal's opening `'` and reads its `"` as a string opener; a
+/// `'\''` before a real `"` still lets that quote open its string; and a
+/// nested `/* /* */` block masks the lines inside it.
+#[test]
+fn the_masking_arms_read_comments_and_char_literals_as_not_source() {
+    let body = concat!(
+        "fn real() {\n",
+        "    let odd = 1; // an unbalanced \" in a comment\n",
+        "    let s = \"has a // inside\"; let q = '\"';\n",
+        "    let pair = ('\\'','\"');\n",
+        "    let esc = '\\''; let open = \"\n",
+        "fn masked_by_the_open_string() {\n",
+        "\";\n",
+        "    /* outer /* nested */ still a comment\n",
+        "fn masked_by_the_block_comment() {\n",
+        "    */\n",
+        "}\n",
+        "fn after() {}\n"
+    );
+    let funcs = source_functions(body);
+    assert_eq!(funcs.len(), 2, "{funcs:?}");
+    assert_eq!(funcs[0].0, 1);
+    assert!(
+        funcs[0].1.contains("masked_by_the_open_string")
+            && funcs[0].1.contains("masked_by_the_block_comment"),
+        "every masked line stays inside the real function's slice: {funcs:?}"
+    );
+    assert_eq!(funcs[1].0, 12, "the sibling after the masks still opens");
 }
 
 /// The producer-tell matcher reads whole identifiers: an identifier that
