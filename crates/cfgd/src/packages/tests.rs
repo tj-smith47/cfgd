@@ -2391,7 +2391,6 @@ fn simple_manager_default_versions_unknown() {
 
 // --- SimpleManager available_version dispatch ---
 
-#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn simple_manager_available_version_dispatches() {
@@ -4614,6 +4613,8 @@ fn a_tool_owned_manager_reaches_its_tool_with_a_floor_it_can_read() {
 /// and then compares CLEANLY at the manager that owns the grammar. Turning the
 /// propagation into a blanket refusal would file a check error against a
 /// declaration `docs/packages.md` promises works.
+// `installed_for(apt)` shells `dpkg-query -f=${Package}\t${Version}\n`, and a
+// newline in an argument is what `Command` refuses to hand a `.cmd` shim.
 #[cfg(unix)]
 #[test]
 #[serial_test::serial]

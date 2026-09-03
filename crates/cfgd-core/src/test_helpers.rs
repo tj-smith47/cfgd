@@ -1583,12 +1583,16 @@ impl<'a> ShimArm<'a> {
 ///
 /// Three Windows-only limits a caller must respect:
 ///
-/// - **A tool cfgd invokes with `%` or a newline in an argument cannot be
-///   shimmed here at all.** `std::process::Command` refuses those characters
-///   outright when the program is a batch file (`ErrorKind::InvalidInput`,
-///   "batch file arguments are invalid"), which is the batbadbut hardening.
-///   `rpm --queryformat "%{NAME}\t%{VERSION}\n"` is the case in this
-///   workspace; a test standing in for one stays `#[cfg(unix)]` and says so.
+/// - **A tool cfgd invokes with a `\r` or `\n` in an argument cannot be
+///   shimmed here at all.** Those two bytes truncate a `cmd.exe` command
+///   line, so `std::process::Command` refuses them outright when the program
+///   is a batch file (`ErrorKind::InvalidInput`, "batch file arguments are
+///   invalid"). A `%` is fine: std neutralizes it with the `%%cd:~,%` no-op
+///   substring trick rather than rejecting it. The cases in this workspace
+///   are the two whole-listing argvs — `rpm --queryformat
+///   "%{NAME}\t%{VERSION}\n"` and `dpkg-query -f=${Package}\t${Version}\n` —
+///   whose trailing newline is the record separator; a test standing in for
+///   one stays `#[cfg(unix)]` and says so.
 /// - A `matches` substring may not contain `"` — `findstr /C:` takes it as
 ///   the pattern's own terminator.
 /// - An argv carrying `&`, `|`, `<` or `>` corrupts the log line.

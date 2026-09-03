@@ -656,9 +656,10 @@ fn live_drift_results_inner(
 /// What the PRESENCE pass writes into a package row's `expected` slot. The
 /// two words are the whole vocabulary of that half, which is what lets
 /// [`is_presence_package_row`] tell it apart from the floor half without
-/// re-deriving either.
-pub(super) const PRESENCE_WANT_INSTALLED: &str = "installed";
-pub(super) const PRESENCE_WANT_ABSENT: &str = "absent";
+/// re-deriving either — and what `drift_terse_cause` reads to word the row,
+/// so the spelling is the core one both crates share.
+pub(super) const PRESENCE_WANT_INSTALLED: &str = cfgd_core::PACKAGE_WANT_INSTALLED;
+pub(super) const PRESENCE_WANT_ABSENT: &str = cfgd_core::PACKAGE_WANT_ABSENT;
 
 /// Whether a `package` finding came from the presence pass rather than the
 /// declared-floor one. A surface that files package rows by shape asks here:
@@ -788,7 +789,7 @@ pub(super) fn manager_action_drift(action: &ManagerAction) -> Vec<VerifyResult> 
         resource_type: "package".to_string(),
         resource_id,
         matches: false,
-        expected: "installed".to_string(),
+        expected: PRESENCE_WANT_INSTALLED.to_string(),
         actual: format!("{} ({})", phrase.state, phrase.detail),
         unmanaged: false,
     };

@@ -686,6 +686,19 @@ impl std::fmt::Display for Absence {
     }
 }
 
+/// The two `expected` words a package PRESENCE drift row carries, and so the
+/// whole vocabulary distinguishing one from a package VERSION row, whose
+/// `expected` is the declared floor instead.
+///
+/// They are stored operands like [`Absence::as_str`]'s literals, written by
+/// every producer of the row shape and read back by
+/// [`crate::output::drift_terse_cause`] to word the row without re-parsing
+/// either operand — a packaging grammar (`0.10.2_1`, `2:8.2.3995-1ubuntu2`) is
+/// a version its own manager compares and the shared parser cannot.
+pub const PACKAGE_WANT_INSTALLED: &str = "installed";
+/// The removal half of [`PACKAGE_WANT_INSTALLED`]'s pair.
+pub const PACKAGE_WANT_ABSENT: &str = "absent";
+
 #[cfg(test)]
 mod tests {
     use super::*;

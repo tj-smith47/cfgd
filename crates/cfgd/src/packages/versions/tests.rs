@@ -435,7 +435,12 @@ fn dnf_aliases_returns_correct_mappings() {
     }
 }
 
-#[cfg(unix)]
+/// The half of the version surface driven through a [`ToolShim`] stand-in for
+/// the real tool. Cross-platform but for the four whole-listing cells: a
+/// listing argv carries its record separator as a literal `\n`
+/// (`dpkg-query -f=${Package}\t${Version}\n`, `rpm --queryformat
+/// "%{NAME}\t%{VERSION}\n"`), and a newline is what `Command` refuses to hand
+/// a `.cmd` shim, a newline being able to truncate a `cmd.exe` command line.
 mod shim_tests {
     use serial_test::serial;
 
@@ -742,6 +747,7 @@ mod shim_tests {
 
     #[test]
     #[serial]
+    #[cfg(unix)] // see the module doc: a `\n` in the listing argv
     fn list_apt_with_versions_parses_dpkg_query_output() {
         let _shim = ToolShim::install(
             DPKG_QUERY_BIN_ENV,
@@ -767,6 +773,7 @@ mod shim_tests {
 
     #[test]
     #[serial]
+    #[cfg(unix)] // see the module doc: a `\n` in the listing argv
     fn list_apt_with_versions_surfaces_stderr_on_non_zero_exit() {
         let _shim = ToolShim::install(DPKG_QUERY_BIN_ENV, 1, "", "dpkg-query failed");
         let err = list_apt_with_versions("apt").unwrap_err();
@@ -800,6 +807,7 @@ mod shim_tests {
 
     #[test]
     #[serial]
+    #[cfg(unix)] // see the module doc: a `\n` in the listing argv
     fn list_dnf_with_versions_parses_rpm_output() {
         let _shim = ToolShim::install(
             RPM_BIN_ENV,
@@ -825,6 +833,7 @@ mod shim_tests {
 
     #[test]
     #[serial]
+    #[cfg(unix)] // see the module doc: a `\n` in the listing argv
     fn list_dnf_with_versions_surfaces_stderr_on_non_zero_exit() {
         let _shim = ToolShim::install(RPM_BIN_ENV, 1, "", "rpm query failed");
         let err = list_dnf_with_versions("dnf").unwrap_err();
