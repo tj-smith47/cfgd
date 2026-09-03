@@ -3877,13 +3877,15 @@ mod tests {
     use crate::providers::FileManager;
     use secrecy::ExposeSecret;
 
-    /// The three shapes the fold has to tell apart, in one source.
+    /// The shapes the fold has to tell apart, in one source.
     ///
     /// A raw literal is the one a naive "trailing backslash continues the
     /// line" rule gets WRONG in the dangerous direction: it joins two lines
     /// that were never one, and a walk then reports a tell on a line that does
     /// not carry it. An escaped backslash is the same mistake at the end of an
-    /// ordinary literal.
+    /// ordinary literal. The hashed and byte-raw forms take the hash-counting
+    /// arithmetic in `scan_raw_literals`, which the zero-hash case never
+    /// touches, so each holds a case of its own.
     #[test]
     fn the_continuation_fold_joins_only_a_real_continuation() {
         let body = concat!(
@@ -3891,12 +3893,16 @@ mod tests {
             "    two\";\n",
             "let b = r\"a raw line ending in \\\n",
             "    and its next line\";\n",
-            "let c = \"escaped \\\\\";\n"
+            "let c = \"escaped \\\\\";\n",
+            "let d = r#\"a hashed raw ending in \\\n",
+            "    still raw\"#;\n",
+            "let e = br\"a byte raw ending in \\\n",
+            "    and its next line\";\n"
         );
         let folded = logical_source_lines(body);
         assert_eq!(
             folded.len(),
-            4,
+            8,
             "only the first literal is continued: {folded:?}"
         );
         assert_eq!(folded[0].0, 1, "a fold reports its OPENING line");
@@ -3916,6 +3922,18 @@ mod tests {
             folded[3].1.ends_with("\\\\\";"),
             "an escaped backslash ends the literal it is in: {folded:?}"
         );
+        assert_eq!(folded[4].0, 6);
+        assert!(
+            folded[4].1.ends_with('\\'),
+            "a hashed raw literal suppresses the fold like a bare one: {folded:?}"
+        );
+        assert_eq!(folded[5].0, 7, "the hashed raw's next line is its own");
+        assert_eq!(folded[6].0, 8);
+        assert!(
+            folded[6].1.ends_with('\\'),
+            "a byte-raw literal suppresses the fold like a bare one: {folded:?}"
+        );
+        assert_eq!(folded[7].0, 9, "the byte raw's next line is its own");
     }
 
     #[test]
