@@ -354,6 +354,7 @@ impl Doc {
             rows: t.rows,
             row_roles: t.row_roles,
             wrap_cells: t.wrap_cells,
+            owner_columns: t.owner_columns,
         });
         self
     }
@@ -703,6 +704,7 @@ impl SectionBuilder {
             rows: t.rows,
             row_roles: t.row_roles,
             wrap_cells: t.wrap_cells,
+            owner_columns: t.owner_columns,
         });
         self
     }
@@ -1049,6 +1051,7 @@ mod tests {
             rows,
             row_roles,
             wrap_cells,
+            ..
         } = &d.children[0]
         {
             assert_eq!(headers.len(), 2);

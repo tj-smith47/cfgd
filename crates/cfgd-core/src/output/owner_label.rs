@@ -93,6 +93,32 @@ impl StatusTransition {
     }
 }
 
+/// The owner tokens a RECORDED scope string carries, or `None` when the string
+/// is not one.
+///
+/// A recorded scope is either a profile name or the `Owner::TOKEN_SEPARATOR`-
+/// joined tokens of an isolated run, and only the second is an owner list. A
+/// token splits at its FIRST colon — an owner NAME may carry one — and every
+/// token must read as `kind:name` for the string to be a scope: a half-parsed
+/// list rendered half-styled would be a third spelling of a token the tree
+/// already renders two ways.
+///
+/// This is the ONE reading of that string for display; `-o json` keeps it raw.
+pub fn owner_tokens(recorded: &str) -> Option<Vec<OwnerLabel>> {
+    let raw: Vec<&str> = recorded
+        .split(crate::reconciler::Owner::TOKEN_SEPARATOR)
+        .collect();
+    let mut owners = Vec::with_capacity(raw.len());
+    for token in raw {
+        let (kind, name) = token.split_once(':')?;
+        if kind.is_empty() || name.is_empty() {
+            return None;
+        }
+        owners.push(OwnerLabel::new(kind, name));
+    }
+    (!owners.is_empty()).then_some(owners)
+}
+
 /// A `<kind>:<name>` owner token. `plain` is the uncoloured form every
 /// structured, quiet and colour-disabled path renders.
 #[derive(Clone, Debug)]
@@ -180,6 +206,34 @@ mod tests {
     #[test]
     fn plain_is_kind_colon_name() {
         assert_eq!(OwnerLabel::new("module", "nvim").plain(), "module:nvim");
+    }
+
+    /// A recorded scope reads back as the tokens that were written, and
+    /// anything else reads as no tokens at all — the half-parsed middle, where
+    /// one member of a list paints and the rest do not, is what the `?` inside
+    /// the loop refuses. A profile name is the common `None`: a scope row
+    /// carries one whenever the run was not isolated.
+    #[test]
+    fn a_recorded_scope_reads_back_as_its_tokens_or_as_none() {
+        let sep = crate::reconciler::Owner::TOKEN_SEPARATOR;
+        let two = format!("module:nvim{sep}module:git");
+        let owners = owner_tokens(&two).expect("two tokens");
+        assert_eq!(
+            owners.iter().map(OwnerLabel::plain).collect::<Vec<_>>(),
+            ["module:nvim", "module:git"]
+        );
+        // A NAME may carry a colon, so the split takes the first one only.
+        assert_eq!(
+            owner_tokens("system:sysctl.net:forward").map(|o| o[0].plain()),
+            Some("system:sysctl.net:forward".to_string())
+        );
+        assert!(owner_tokens("work").is_none(), "a profile name is no scope");
+        assert!(
+            owner_tokens(&format!("module:nvim{sep}work")).is_none(),
+            "one unparsed member refuses the whole list"
+        );
+        assert!(owner_tokens(":nvim").is_none() && owner_tokens("module:").is_none());
+        assert!(owner_tokens("").is_none());
     }
 
     /// Serial because `supports_truecolor()` reads `COLORTERM` / `NO_COLOR`,

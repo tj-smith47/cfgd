@@ -180,20 +180,6 @@ pub fn build_daemon_status_doc(
 
     match status {
         Some(s) => {
-            // verdict-row-ok: reports the service's state, not something this run did
-            doc = doc.status(Role::Ok, "Daemon running");
-            // Beside the running verdict, not under the facts block: two
-            // verdicts about the daemon read as one report when nothing sits
-            // between them.
-            if let Some(ref version) = s.update_available {
-                doc = doc.status(
-                    Role::Warn,
-                    format!(
-                        "Update available: {} — run `cfgd upgrade` to install",
-                        version
-                    ),
-                );
-            }
             // The config, the sources, the profile and what that profile
             // resolves to — through the one builder `cfgd status` and every run
             // header read, ahead of the facts about the process. The modules
@@ -239,6 +225,24 @@ pub fn build_daemon_status_doc(
                 ));
             }
             doc = doc.kv_rows(rows);
+
+            // After the facts, the way every other surface reporting on a
+            // resolved configuration orders them: the header block binds to
+            // the heading above it, and a verdict about the run reads at the
+            // report's own depth below. The update notice stays beside the
+            // running verdict — two verdicts about the daemon read as one
+            // report when nothing sits between them.
+            // verdict-row-ok: reports the service's state, not something this run did
+            doc = doc.status(Role::Ok, "Daemon running");
+            if let Some(ref version) = s.update_available {
+                doc = doc.status(
+                    Role::Warn,
+                    format!(
+                        "Update available: {} — run `cfgd upgrade` to install",
+                        version
+                    ),
+                );
+            }
 
             let rows: Vec<SourceListEntry> = s
                 .sources

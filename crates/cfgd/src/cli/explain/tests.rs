@@ -673,7 +673,7 @@ fn explain_drilldown_renders_the_documented_shape() {
 Explain: profile.spec.packages.brew <([]string | BrewSpec)>
   Homebrew packages (macOS/Linux).
 
-Docs  https://github.com/tj-smith47/cfgd/blob/v{}/docs/spec/profile.md#specpackagesbrew
+  Docs  https://github.com/tj-smith47/cfgd/blob/v{}/docs/spec/profile.md#specpackagesbrew
 
 Variants
   []string — Package names, as a bare list.
