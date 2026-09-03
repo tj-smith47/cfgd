@@ -1227,7 +1227,12 @@ pub fn logical_source_lines(body: &str) -> Vec<(usize, String)> {
 
 /// Advance the raw-literal state across one physical line: `r`, some `#`s and
 /// a `"` opens one; a `"` followed by the same number of `#`s closes it.
-fn scan_raw_literals(line: &str, hashes: &mut Option<usize>) {
+///
+/// `pub(crate)` for the fixture walk's function slicer, which must suppress a
+/// `fn `-shaped line inside a raw literal with the SAME state the fold above
+/// tracks — a second scan would let the two disagree about where a literal
+/// ends.
+pub(crate) fn scan_raw_literals(line: &str, hashes: &mut Option<usize>) {
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -3897,12 +3902,14 @@ mod tests {
             "let d = r#\"a hashed raw ending in \\\n",
             "    still raw\"#;\n",
             "let e = br\"a byte raw ending in \\\n",
-            "    and its next line\";\n"
+            "    and its next line\";\n",
+            "let f = r##\"holds a \"# decoy and ends in \\\n",
+            "    still raw\"##;\n"
         );
         let folded = logical_source_lines(body);
         assert_eq!(
             folded.len(),
-            8,
+            10,
             "only the first literal is continued: {folded:?}"
         );
         assert_eq!(folded[0].0, 1, "a fold reports its OPENING line");
@@ -3934,6 +3941,13 @@ mod tests {
             "a byte-raw literal suppresses the fold like a bare one: {folded:?}"
         );
         assert_eq!(folded[7].0, 9, "the byte raw's next line is its own");
+        assert_eq!(folded[8].0, 10);
+        assert!(
+            folded[8].1.ends_with('\\'),
+            "a two-hash raw literal stays open past a one-hash `\"#` decoy, \
+             so its line stands alone: {folded:?}"
+        );
+        assert_eq!(folded[9].0, 11, "the two-hash raw's next line is its own");
     }
 
     #[test]

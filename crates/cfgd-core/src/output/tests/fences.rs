@@ -1043,16 +1043,54 @@ fn opens_function(line: &str) -> bool {
     }
 }
 
+/// Whether `func` mentions `ident` as a whole identifier — flanked by no
+/// `[A-Za-z0-9_]` on either side.
+///
+/// A producer tell EXEMPTS a function, so a bare substring test widens every
+/// exemption to any identifier containing a producer's name:
+/// `recorded_managed_env_files` is a state-store query, not a producer, and a
+/// fixture whose only producer-shaped mention is that call is hand-spelling.
+/// The cost runs the other way instead — a producer whose name extends
+/// another's (`primary_env_file_path` over `primary_env_file`) needs its own
+/// entry in the tell set — which fails loud when the shorter entry stops
+/// matching, where the substring's failure was a silent exemption.
+fn names_identifier(func: &str, ident: &str) -> bool {
+    let is_word = |b: &u8| b.is_ascii_alphanumeric() || *b == b'_';
+    let bytes = func.as_bytes();
+    func.match_indices(ident).any(|(at, _)| {
+        (at == 0 || !is_word(&bytes[at - 1]))
+            && bytes.get(at + ident.len()).is_none_or(|b| !is_word(b))
+    })
+}
+
 /// The functions a source's `fn` lines cut it into, each paired with its
 /// opening line number.
+///
+/// A line is an opener only OUTSIDE every string literal: a fixture spelling
+/// `fn f() {` at the start of a raw-string or `\`-continued line would
+/// otherwise split the enclosing function around it, and a split severs a
+/// folded tell from its opening line or a tell from the producer token that
+/// exempts it — the silent direction. The string awareness is the fold
+/// layer's own: raw interiors from the scan `logical_source_lines` uses, and
+/// continuation lines as the ones it assigns no entry of their own. An
+/// ordinary literal spanning lines with NO trailing `\` shares the fold
+/// layer's boundary and is not tracked.
 fn source_functions(body: &str) -> Vec<(usize, String)> {
     let lines: Vec<&str> = body.lines().collect();
-    let opens: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| opens_function(l))
-        .map(|(i, _)| i)
-        .collect();
+    let logical_opens: std::collections::HashSet<usize> =
+        crate::test_helpers::logical_source_lines(body)
+            .into_iter()
+            .map(|(n, _)| n - 1)
+            .collect();
+    let mut raw_hashes: Option<usize> = None;
+    let mut opens: Vec<usize> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let inside_raw = raw_hashes.is_some();
+        crate::test_helpers::scan_raw_literals(line, &mut raw_hashes);
+        if !inside_raw && logical_opens.contains(&i) && opens_function(line) {
+            opens.push(i);
+        }
+    }
     opens
         .iter()
         .zip(opens.iter().skip(1).chain(std::iter::once(&lines.len())))
@@ -1092,13 +1130,16 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
         format!("# {}:", "manager"),
     ];
     let dialects = ["export ", "$env:"];
-    // Every producer is named in FULL: the crate also holds `generate_`
-    // functions for systemd units, launchd plists, SLSA provenance and device
-    // ids, and a bare prefix would exempt any fixture that calls one of those
-    // beside a hand-spelled tell.
+    // Every producer is named in FULL and matched as a WHOLE identifier: the
+    // crate also holds `generate_` functions for systemd units and SLSA
+    // provenance, and `recorded_managed_env_files` is a state-store query —
+    // a prefix or bare substring would exempt any fixture that mentions such
+    // a lookalike beside a hand-spelled tell. A producer whose name extends
+    // another's (`primary_env_file_path`) is its own entry.
     let names_a_producer = [
         "EnvPlatform",
         "primary_env_file",
+        "primary_env_file_path",
         "managed_env_files",
         "env_targets",
         "generate_env_file_content",
@@ -1122,7 +1163,7 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
         };
         for (open, func) in source_functions(&body) {
             checked += 1;
-            if names_a_producer.iter().any(|n| func.contains(n)) {
+            if names_a_producer.iter().any(|n| names_identifier(&func, n)) {
                 continue;
             }
             let folded = crate::test_helpers::logical_source_lines(&func);
@@ -1200,5 +1241,75 @@ fn the_function_open_recognizer_reads_every_qualifier_order() {
     ];
     for line in not_opens {
         assert!(!opens_function(line), "must not open a slice: {line}");
+    }
+}
+
+/// A `fn `-shaped line inside a string literal is string BODY, not source: it
+/// must not open a slice, or the enclosing function splits around it —
+/// severing a folded tell from its opening line, or a tell from the producer
+/// token that exempts it, both in the silent direction.
+#[test]
+fn a_fn_spelled_inside_a_string_literal_does_not_open_a_slice() {
+    let body = concat!(
+        "fn real() {\n",
+        "    let raw = r#\"\n",
+        "fn spelled_in_a_raw_literal() {\n",
+        "\"#;\n",
+        "    let cont = \"one \\\n",
+        "fn spelled_in_a_continuation() {\";\n",
+        "}\n",
+        "fn second() {}\n"
+    );
+    let funcs = source_functions(body);
+    assert_eq!(funcs.len(), 2, "{funcs:?}");
+    assert_eq!(funcs[0].0, 1);
+    assert!(
+        funcs[0].1.contains("spelled_in_a_raw_literal")
+            && funcs[0].1.contains("spelled_in_a_continuation"),
+        "each literal stays inside its function's slice: {funcs:?}"
+    );
+    assert_eq!(funcs[1].0, 8);
+}
+
+/// The producer-tell matcher reads whole identifiers: an identifier that
+/// EXTENDS a producer's name exempts nothing, while the call, path and
+/// pattern shapes around the real name still match.
+#[test]
+fn a_producer_tell_matches_only_a_whole_identifier() {
+    let real_mentions = [
+        ("let t = env_targets(", "env_targets"),
+        ("EnvPlatform::Linux,", "EnvPlatform"),
+        ("items.managed_env_files(&recorded)", "managed_env_files"),
+        ("Action::WriteEnvFile { .. } => {}", "WriteEnvFile"),
+        (
+            "crate::reconciler::primary_env_file(home)",
+            "primary_env_file",
+        ),
+        (
+            "primary_env_file_path(home, platform)",
+            "primary_env_file_path",
+        ),
+    ];
+    for (func, ident) in real_mentions {
+        assert!(
+            names_identifier(func, ident),
+            "{ident} must match in {func}"
+        );
+    }
+    let extensions = [
+        ("recorded_managed_env_files(state)", "managed_env_files"),
+        ("neutralize_managed_env_files(scope)", "managed_env_files"),
+        ("primary_env_file_path(home, platform)", "primary_env_file"),
+        ("fn env_targets_empty_yields_nothing() {", "env_targets"),
+        (
+            "generate_fish_env_content_basic()",
+            "generate_fish_env_content",
+        ),
+    ];
+    for (func, ident) in extensions {
+        assert!(
+            !names_identifier(func, ident),
+            "{ident} must not match inside {func}"
+        );
     }
 }
