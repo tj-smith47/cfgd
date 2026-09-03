@@ -1012,7 +1012,10 @@ mod tests {
             .unwrap_or_else(|| panic!("no {prefix} line in:\n{content}"))
     }
 
-    fn unix_targets_for(home: &Path) -> Vec<EnvTarget> {
+    /// The platform is the caller's to name: which dialect a test's expected
+    /// lines are written in is decided by nothing else, so it stays visible at
+    /// the call site instead of buried here.
+    fn unix_targets_for(home: &Path, platform: EnvPlatform) -> Vec<EnvTarget> {
         let home_str = home.to_string_lossy().into_owned();
         let env = vec![ev("PATH", "$HOME/.cargo/bin:$PATH"), ev("EDITOR", "nvim")];
         let dirs = dirs(&home_str);
@@ -1023,7 +1026,7 @@ mod tests {
             EnvScope::All,
             home,
             &probe,
-            EnvPlatform::Linux,
+            platform,
         )
     }
 
@@ -1035,7 +1038,7 @@ mod tests {
     #[test]
     fn bash_path_line_folds_both_producers_into_one_export() {
         let home = Path::new("/home/tj");
-        let targets = unix_targets_for(home);
+        let targets = unix_targets_for(home, EnvPlatform::Linux);
         let (content, rendered) = managed_file(&targets, ".cfgd.env");
         let line = path_line(content, "export PATH=");
         assert_eq!(
@@ -1060,7 +1063,7 @@ mod tests {
     #[test]
     fn fish_path_line_folds_both_producers_and_keeps_a_literal_home() {
         let home = Path::new("/home/tj");
-        let targets = unix_targets_for(home);
+        let targets = unix_targets_for(home, EnvPlatform::Linux);
         let (content, rendered) = managed_file(&targets, "cfgd-env.fish");
         let line = path_line(content, "set -gx PATH '");
         assert_eq!(
@@ -1118,7 +1121,7 @@ mod tests {
     #[test]
     fn environment_d_has_no_derived_path_line_and_counts_only_declarations() {
         let home = Path::new("/home/tj");
-        let targets = unix_targets_for(home);
+        let targets = unix_targets_for(home, EnvPlatform::Linux);
         let (content, rendered) = managed_file(&targets, "environment.d/cfgd.conf");
         assert!(
             !content.contains("/opt/brewroot/bin"),
@@ -1344,7 +1347,7 @@ mod tests {
     #[test]
     fn the_written_var_count_matches_the_session_publish() {
         let home = Path::new("/home/tj");
-        let targets = unix_targets_for(home);
+        let targets = unix_targets_for(home, EnvPlatform::Linux);
         let (_, rendered) = managed_file(&targets, ".cfgd.env");
         let published = targets
             .iter()

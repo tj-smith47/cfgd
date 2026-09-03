@@ -1005,6 +1005,44 @@ fn the_daemon_log_dialect_matcher_reads_both_call_shapes() {
     assert_eq!(first_string_literal(&calls[1].1).as_deref(), Some("pulled"));
 }
 
+/// Whether a source line opens a function item, whatever qualifiers stand
+/// between its indent and `fn` (`pub(super) async fn`, `const unsafe extern
+/// "C" fn`, …).
+///
+/// The cost of a missed opener is silent: the function's body folds into the
+/// PRECEDING slice, so it is judged under another function's exemptions and
+/// reported, if at all, at that function's line. An enumerated list of
+/// qualifier orderings is how `pub(super) async fn` was missed, so this
+/// consumes qualifiers one at a time instead and accepts any order — a
+/// superset of the grammar, which for a recognizer only errs toward opening
+/// a slice too eagerly.
+fn opens_function(line: &str) -> bool {
+    let mut t = line.trim_start();
+    loop {
+        if t.starts_with("fn ") {
+            return true;
+        }
+        if let Some(scope) = t.strip_prefix("pub(") {
+            let Some((_, tail)) = scope.split_once(')') else {
+                return false;
+            };
+            t = tail.trim_start();
+        } else if let Some(abi) = t.strip_prefix("extern ").map(str::trim_start) {
+            t = match abi.strip_prefix('"').and_then(|a| a.split_once('"')) {
+                Some((_, tail)) => tail.trim_start(),
+                None => abi,
+            };
+        } else if let Some(rest) = ["pub ", "default ", "const ", "async ", "unsafe "]
+            .iter()
+            .find_map(|q| t.strip_prefix(q))
+        {
+            t = rest.trim_start();
+        } else {
+            return false;
+        }
+    }
+}
+
 /// The functions a source's `fn` lines cut it into, each paired with its
 /// opening line number.
 fn source_functions(body: &str) -> Vec<(usize, String)> {
@@ -1012,14 +1050,7 @@ fn source_functions(body: &str) -> Vec<(usize, String)> {
     let opens: Vec<usize> = lines
         .iter()
         .enumerate()
-        .filter(|(_, l)| {
-            let t = l.trim_start();
-            t.starts_with("fn ")
-                || t.starts_with("pub fn ")
-                || t.starts_with("async fn ")
-                || t.starts_with("pub async fn ")
-                || (t.starts_with("pub(") && t.contains(") fn "))
-        })
+        .filter(|(_, l)| opens_function(l))
         .map(|(i, _)| i)
         .collect();
     opens
@@ -1061,12 +1092,19 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
         format!("# {}:", "manager"),
     ];
     let dialects = ["export ", "$env:"];
+    // Every producer is named in FULL: the crate also holds `generate_`
+    // functions for systemd units, launchd plists, SLSA provenance and device
+    // ids, and a bare prefix would exempt any fixture that calls one of those
+    // beside a hand-spelled tell.
     let names_a_producer = [
         "EnvPlatform",
         "primary_env_file",
         "managed_env_files",
         "env_targets",
-        "generate_",
+        "generate_env_file_content",
+        "generate_fish_env_content",
+        "generate_powershell_env_content",
+        "generate_environment_d_content",
         "WriteEnvFile",
         "plan_env_with_home",
         "ScriptShell",
@@ -1075,14 +1113,8 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     let mut offenders = Vec::new();
     let mut checked = 0usize;
     for path in workspace_rust_files() {
-        // The generator's own source is skipped whole: every literal in
-        // `env_engine.rs` is a pin ON the name or the dialect, and its
-        // fixtures reach the platform through local helpers rather than by
-        // naming one per function.
-        if !path.starts_with(&core_src)
-            || path.ends_with(Path::new("output/tests/fences.rs"))
-            || path.ends_with(Path::new("reconciler/env_engine.rs"))
-        {
+        // This file spells every tell in order to hunt for it.
+        if !path.starts_with(&core_src) || path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
         let Ok(body) = std::fs::read_to_string(&path) else {
@@ -1124,4 +1156,49 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
          platform's:\n{}",
         offenders.join("\n")
     );
+}
+
+/// The function-open recognizer behind [`source_functions`], one case per
+/// qualifier shape, so the next modifier added in front of a `fn` regresses
+/// here instead of silently folding that function into its predecessor's
+/// slice.
+#[test]
+fn the_function_open_recognizer_reads_every_qualifier_order() {
+    let opens = [
+        "fn f() {",
+        "    fn indented() {",
+        "pub fn f() {",
+        "async fn f() {",
+        "pub async fn f() {",
+        "pub(crate) fn f() {",
+        "pub(super) fn f() {",
+        "pub(super) async fn f() {",
+        "pub(in crate::daemon) fn f() {",
+        "const fn f() {",
+        "pub const fn f() {",
+        "unsafe fn f() {",
+        "pub(crate) const unsafe fn f() {",
+        "async unsafe fn f() {",
+        "extern \"C\" fn f() {",
+        "pub unsafe extern \"C\" fn f() {",
+        "pub extern fn f() {",
+        "default fn f() {",
+    ];
+    for line in opens {
+        assert!(opens_function(line), "must open a slice: {line}");
+    }
+    let not_opens = [
+        "// pub fn f() {",
+        "let f = make_fn();",
+        "fn_table.insert(k, v);",
+        "publish(fn_name);",
+        "\"pub(super) async fn quoted in a fixture\",",
+        "extern \"C\" {",
+        "extern crate serde;",
+        "pub struct Fn;",
+        "pub(crate) mod tests;",
+    ];
+    for line in not_opens {
+        assert!(!opens_function(line), "must not open a slice: {line}");
+    }
 }
