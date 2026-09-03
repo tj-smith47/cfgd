@@ -99,7 +99,10 @@ fn run(
         .env("HOME", home)
         // Windows resolves `~` from USERPROFILE first, so a child left holding
         // the invoking account's profile would write to the real home.
-        .env("USERPROFILE", home);
+        .env("USERPROFILE", home)
+        // `directories` reads Windows' known folders rather than the env, so
+        // nothing but this seam keeps a child's module cache out of the real profile.
+        .env("CFGD_CACHE_DIR", home.join("cache"));
     if let Some(gpg) = gpg {
         cmd.env("CFGD_GPG_BIN", gpg);
     }
@@ -243,6 +246,7 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_every_exit_code_su
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
+            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
             .env("CFGD_APK_BIN", &apk)
             .output()
             .unwrap();
@@ -304,6 +308,7 @@ fn a_pinned_package_below_its_floor_exits_drift_detected_on_every_surface() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
+            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
             .env("CFGD_DNF_BIN", &dnf)
             .env("CFGD_RPM_BIN", &rpm)
             .output()
@@ -358,6 +363,7 @@ fn a_pinned_package_below_its_floor_is_drift_on_both_scoped_surfaces() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
+            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
             .env("CFGD_DNF_BIN", &dnf)
             .env("CFGD_RPM_BIN", &rpm)
             .output()
@@ -397,6 +403,7 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_both_scoped_surfac
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
+            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
             .env("CFGD_APK_BIN", &apk)
             .output()
             .unwrap();
@@ -439,6 +446,7 @@ fn a_scoped_run_does_not_heal_a_version_row_the_machine_still_holds() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
+            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
             .env("CFGD_DNF_BIN", &dnf)
             .env("CFGD_RPM_BIN", &rpm)
             .output()
@@ -682,6 +690,7 @@ fn a_brew_formula_clearing_its_floor_is_converged_on_every_surface() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
+            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
             .env("CFGD_BREW_BIN", &brew)
             .output()
             .unwrap();
@@ -713,6 +722,7 @@ fn a_brew_formula_clearing_its_floor_is_converged_on_every_surface() {
         .arg(state_tmp.path())
         .env("HOME", home_tmp.path())
         .env("USERPROFILE", home_tmp.path())
+        .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
         .env("CFGD_BREW_BIN", &brew)
         .output()
         .unwrap();
