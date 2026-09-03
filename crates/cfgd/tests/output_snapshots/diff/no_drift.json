@@ -7,6 +7,7 @@
     "hasEnvDrift": false,
     "hasFileDrift": false,
     "hasPkgDrift": false,
+    "hasStandingDrift": false,
     "hasSystemDrift": false,
     "systemCheckFailed": false
   },

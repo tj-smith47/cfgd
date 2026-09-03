@@ -180,6 +180,7 @@ fn diff_no_drift_json() {
         system_errors: Vec::new(),
         env: Vec::new(),
         env_check_error: None,
+        standing: Vec::new(),
         summary: DiffSummary {
             has_file_drift: false,
             has_pkg_drift: false,
@@ -187,6 +188,7 @@ fn diff_no_drift_json() {
             system_check_failed: false,
             has_env_drift: false,
             env_check_failed: false,
+            has_standing_drift: false,
         },
     };
     let (printer, cap) = Printer::for_test_doc();
@@ -289,6 +291,7 @@ fn diff_system_drift_human() {
         system_errors: Vec::new(),
         env: Vec::new(),
         env_check_error: None,
+        standing: Vec::new(),
         summary: DiffSummary {
             has_file_drift: false,
             has_pkg_drift: false,
@@ -296,6 +299,7 @@ fn diff_system_drift_human() {
             system_check_failed: false,
             has_env_drift: false,
             env_check_failed: false,
+            has_standing_drift: false,
         },
     };
     let (printer, cap) = Printer::for_test_doc();
@@ -367,6 +371,7 @@ fn diff_bridge_one_blank_line() {
         system_errors: Vec::new(),
         env: Vec::new(),
         env_check_error: None,
+        standing: Vec::new(),
         summary: DiffSummary {
             has_file_drift: false,
             has_pkg_drift: true,
@@ -374,6 +379,7 @@ fn diff_bridge_one_blank_line() {
             system_check_failed: false,
             has_env_drift: false,
             env_check_failed: false,
+            has_standing_drift: false,
         },
     };
     let (printer, cap) = Printer::for_test_doc();

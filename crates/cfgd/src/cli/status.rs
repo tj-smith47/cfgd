@@ -338,6 +338,166 @@ pub const SURFACE_PACKAGES: &str = "packages";
 pub const SURFACE_ALIASES: &str = "aliases";
 pub const SURFACE_ENV: &str = "env";
 
+/// Classifies recorded drift events by which member of `chain` owns them,
+/// appending each attributable row to `drift` (and `drifted_ids` /
+/// `scanned_packages` where its surface needs them for the sibling sections).
+/// A row is attributed by its id alone — no manager or profile resolution: a
+/// `<module>/<path>` file id names its owner outright, a BARE module id is
+/// the daemon's whole-module action spelling, a package id is matched
+/// against the chain's DECLARED names under the id's own manager, and a
+/// machine-scope `env-var`/`alias` id is attributed to the LAST chain module
+/// declaring the name — the merge's own fold order. An id in no grammar the
+/// chain can vouch for is dropped.
+///
+/// Shared by the recorded-fallback read (every unresolved row) and the live
+/// scan's standing-row fold (the subset this run's own scope owns but did
+/// not re-check), so a recorded row cannot be attributed two different ways
+/// depending on which path last read it.
+struct ChainOwnership<'a> {
+    chain: &'a [String],
+    all_modules: &'a std::collections::HashMap<String, cfgd_core::modules::LoadedModule>,
+    mod_name: &'a str,
+    platform: &'a cfgd_core::platform::Platform,
+}
+
+fn classify_recorded_drift_for_chain(
+    events: impl IntoIterator<Item = cfgd_core::state::DriftEvent>,
+    cx: &ChainOwnership<'_>,
+    drift: &mut Vec<ModuleDrift>,
+    drifted_ids: &mut std::collections::HashSet<String>,
+    scanned_packages: &mut std::collections::HashMap<
+        String,
+        std::collections::VecDeque<(String, ModulePackagePresence)>,
+    >,
+) {
+    let ChainOwnership {
+        chain,
+        all_modules,
+        mod_name,
+        platform,
+    } = *cx;
+    for event in events {
+        match event.resource_type.as_str() {
+            "module" => {
+                match super::live_drift::split_module_file_resource_id(&event.resource_id) {
+                    Some((owner, item)) => {
+                        if !chain.iter().any(|m| m == owner) {
+                            continue;
+                        }
+                        drifted_ids.insert(event.resource_id.clone());
+                        drift.push(ModuleDrift {
+                            owner: owner.to_string(),
+                            surface: SURFACE_FILES,
+                            item,
+                            event,
+                        });
+                    }
+                    // No separator: the daemon's action spelling, a
+                    // whole-module verdict with no file granularity.
+                    None => {
+                        if !chain.contains(&event.resource_id) {
+                            continue;
+                        }
+                        drift.push(ModuleDrift {
+                            owner: event.resource_id.clone(),
+                            surface: "",
+                            item: String::new(),
+                            event,
+                        });
+                    }
+                }
+            }
+            "env-var" | "alias" => {
+                let is_alias = event.resource_type == "alias";
+                let declared_by = |m: &cfgd_core::modules::LoadedModule| {
+                    if is_alias {
+                        m.spec.aliases.iter().any(|a| {
+                            a.name == event.resource_id
+                                && cfgd_core::platform::PlatformGated::applies_to(a, platform)
+                        })
+                    } else {
+                        m.spec.env.iter().any(|e| {
+                            e.name == event.resource_id
+                                && cfgd_core::platform::PlatformGated::applies_to(e, platform)
+                        })
+                    }
+                };
+                let Some(owner) = chain
+                    .iter()
+                    .rev()
+                    .find(|name| all_modules.get(*name).is_some_and(&declared_by))
+                else {
+                    continue;
+                };
+                drift.push(ModuleDrift {
+                    owner: owner.clone(),
+                    surface: if is_alias {
+                        SURFACE_ALIASES
+                    } else {
+                        SURFACE_ENV
+                    },
+                    item: event.resource_id.clone(),
+                    event,
+                });
+            }
+            "package" => {
+                let Some((manager, packages)) = event.resource_id.split_once(':') else {
+                    continue;
+                };
+                // A recorded row may batch several packages under one
+                // manager (the daemon's action spelling); the module's
+                // share is the subset its chain declares, matched under
+                // the row's own manager through the declared alias.
+                let declares = |pkg: &str, module: &cfgd_core::modules::LoadedModule| {
+                    module
+                        .spec
+                        .packages
+                        .iter()
+                        .any(|entry| entry.aliases.get(manager).unwrap_or(&entry.name) == pkg)
+                };
+                let Some((owner, mine)) = chain.iter().find_map(|name| {
+                    let module = all_modules.get(name)?;
+                    let mine: Vec<&str> = packages
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|pkg| declares(pkg, module))
+                        .collect();
+                    (!mine.is_empty()).then(|| (name.clone(), mine.join(", ")))
+                }) else {
+                    continue;
+                };
+                // The recorded verdict seeds the same joined package state a
+                // live scan fills, so the wide inventory row for a package
+                // this report's Drift section names can never read `not
+                // scanned` beside the finding — the file rows' rule, applied
+                // to every resource kind.
+                if let Some(module) = all_modules.get(mod_name) {
+                    for pkg in packages.split(',').map(str::trim) {
+                        let Some(entry) =
+                            module.spec.packages.iter().find(|entry| {
+                                entry.aliases.get(manager).unwrap_or(&entry.name) == pkg
+                            })
+                        else {
+                            continue;
+                        };
+                        scanned_packages
+                            .entry(entry.name.clone())
+                            .or_default()
+                            .push_back((manager.to_string(), ModulePackagePresence::NotInstalled));
+                    }
+                }
+                drift.push(ModuleDrift {
+                    owner,
+                    surface: SURFACE_PACKAGES,
+                    item: mine,
+                    event,
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
 /// What a manager reports about one declared package.
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -2688,6 +2848,23 @@ pub(super) fn cmd_status_module(
     // sibling scans in `diff`/`verify`: the stamp dates the FLEET-wide
     // dashboard's header, and one module's files and packages are not evidence
     // the machine was checked.
+    //
+    // Hoisted so both the live scan (standing rows) and the recorded fallback
+    // classify a row against the SAME chain, computed once — the chain
+    // degrades to the named module alone when the depends graph cannot
+    // resolve (a READ, so the graph error belongs to `apply`/`plan`), and
+    // platform-gated members are dropped as `resolve_modules` drops them.
+    let platform = cfgd_core::platform::Platform::current();
+    let chain: Vec<String> =
+        cfgd_core::modules::resolve_dependency_order(&[mod_name.to_string()], &all_modules)
+            .unwrap_or_else(|_| vec![mod_name.to_string()])
+            .into_iter()
+            .filter(|name| {
+                all_modules.get(name).is_none_or(|m| {
+                    cfgd_core::platform::PlatformGated::applies_to(&m.spec, platform)
+                })
+            })
+            .collect();
     let mut drift: Vec<ModuleDrift> = Vec::new();
     // The verify ids of the files this scan found drifted. The Deployed Files
     // rows are judged against it, so the two sections state one verdict per
@@ -2707,7 +2884,6 @@ pub(super) fn cmd_status_module(
     > = std::collections::HashMap::new();
     let mut system_errors: Vec<super::output_types::SystemCheckError> = Vec::new();
     if do_scan {
-        let platform = Platform::current();
         // Deliberately the config-FREE registry: a module resolves against the
         // managers it declares and cannot reach the profile's `packages.custom`,
         // so resolving it through a config-aware registry would map a module
@@ -2938,11 +3114,30 @@ pub(super) fn cmd_status_module(
                 }
                 system_errors.extend(env_check.check_error);
 
-                super::live_drift::record_scoped_scan_findings(
+                // Rows this scope owns that the scan above did not re-check
+                // (a bare legacy module id, a batched package id no scanned
+                // package matches) — classified through the SAME chain
+                // walk the recorded fallback uses, so this scope's scan and
+                // its own recorded-fallback read can never attribute one
+                // standing row two different ways.
+                let standing = super::live_drift::record_scoped_scan_findings(
                     state,
                     &checked,
                     &findings,
                     &system_errors,
+                    &resolved_modules,
+                );
+                classify_recorded_drift_for_chain(
+                    standing,
+                    &ChainOwnership {
+                        chain: &chain,
+                        all_modules: &all_modules,
+                        mod_name,
+                        platform,
+                    },
+                    &mut drift,
+                    &mut drifted_ids,
+                    &mut scanned_packages,
                 );
                 Ok(())
             },
@@ -2963,150 +3158,21 @@ pub(super) fn cmd_status_module(
         // diff's group agree. An id in no grammar the chain can vouch for
         // stays off the report.
         //
-        // The chain degrades to the named module alone when the depends graph
-        // cannot resolve: this is a READ, and the graph error belongs to the
-        // surfaces that would act on it (`apply`/`plan` refuse it loudly).
-        // Platform-gated members are dropped as `resolve_modules` drops them:
-        // a gated-off module is not part of this host's desired state, so it
-        // cannot vouch for a row here either.
-        let platform = cfgd_core::platform::Platform::current();
-        let chain: Vec<String> =
-            cfgd_core::modules::resolve_dependency_order(&[mod_name.to_string()], &all_modules)
-                .unwrap_or_else(|_| vec![mod_name.to_string()])
-                .into_iter()
-                .filter(|name| {
-                    all_modules.get(name).is_none_or(|m| {
-                        cfgd_core::platform::PlatformGated::applies_to(&m.spec, platform)
-                    })
-                })
-                .collect();
-        for event in state.unresolved_drift()? {
-            match event.resource_type.as_str() {
-                "module" => {
-                    match super::live_drift::split_module_file_resource_id(&event.resource_id) {
-                        Some((owner, item)) => {
-                            if !chain.iter().any(|m| m == owner) {
-                                continue;
-                            }
-                            drifted_ids.insert(event.resource_id.clone());
-                            drift.push(ModuleDrift {
-                                owner: owner.to_string(),
-                                surface: SURFACE_FILES,
-                                item,
-                                event,
-                            });
-                        }
-                        // No separator: the daemon's action spelling, a
-                        // whole-module verdict with no file granularity.
-                        None => {
-                            if !chain.contains(&event.resource_id) {
-                                continue;
-                            }
-                            drift.push(ModuleDrift {
-                                owner: event.resource_id.clone(),
-                                surface: "",
-                                item: String::new(),
-                                event,
-                            });
-                        }
-                    }
-                }
-                "env-var" | "alias" => {
-                    let is_alias = event.resource_type == "alias";
-                    let declared_by = |m: &cfgd_core::modules::LoadedModule| {
-                        if is_alias {
-                            m.spec.aliases.iter().any(|a| {
-                                a.name == event.resource_id
-                                    && cfgd_core::platform::PlatformGated::applies_to(a, platform)
-                            })
-                        } else {
-                            m.spec.env.iter().any(|e| {
-                                e.name == event.resource_id
-                                    && cfgd_core::platform::PlatformGated::applies_to(e, platform)
-                            })
-                        }
-                    };
-                    let Some(owner) = chain
-                        .iter()
-                        .rev()
-                        .find(|name| all_modules.get(*name).is_some_and(&declared_by))
-                    else {
-                        continue;
-                    };
-                    drift.push(ModuleDrift {
-                        owner: owner.clone(),
-                        surface: if is_alias {
-                            SURFACE_ALIASES
-                        } else {
-                            SURFACE_ENV
-                        },
-                        item: event.resource_id.clone(),
-                        event,
-                    });
-                }
-                "package" => {
-                    let Some((manager, packages)) = event.resource_id.split_once(':') else {
-                        continue;
-                    };
-                    // A recorded row may batch several packages under one
-                    // manager (the daemon's action spelling); the module's
-                    // share is the subset its chain declares, matched under
-                    // the row's own manager through the declared alias.
-                    let declares =
-                        |pkg: &str, module: &cfgd_core::modules::LoadedModule| {
-                            module.spec.packages.iter().any(|entry| {
-                                entry.aliases.get(manager).unwrap_or(&entry.name) == pkg
-                            })
-                        };
-                    let Some((owner, mine)) = chain.iter().find_map(|name| {
-                        let module = all_modules.get(name)?;
-                        let mine: Vec<&str> = packages
-                            .split(',')
-                            .map(str::trim)
-                            .filter(|pkg| declares(pkg, module))
-                            .collect();
-                        (!mine.is_empty()).then(|| (name.clone(), mine.join(", ")))
-                    }) else {
-                        continue;
-                    };
-                    // The recorded verdict seeds the same joined package state
-                    // a live scan fills, so the wide inventory row for a
-                    // package this report's Drift section names can never
-                    // read `not scanned` beside the finding — the file rows'
-                    // rule, applied to every resource kind.
-                    if let Some(module) = all_modules.get(mod_name) {
-                        for pkg in packages.split(',').map(str::trim) {
-                            let Some(entry) = module.spec.packages.iter().find(|entry| {
-                                entry.aliases.get(manager).unwrap_or(&entry.name) == pkg
-                            }) else {
-                                continue;
-                            };
-                            scanned_packages
-                                .entry(entry.name.clone())
-                                .or_default()
-                                .push_back((
-                                    manager.to_string(),
-                                    ModulePackagePresence::NotInstalled,
-                                ));
-                        }
-                    }
-                    drift.push(ModuleDrift {
-                        owner,
-                        surface: SURFACE_PACKAGES,
-                        item: mine,
-                        event,
-                    });
-                }
-                _ => {}
-            }
-        }
+        classify_recorded_drift_for_chain(
+            state.unresolved_drift()?,
+            &ChainOwnership {
+                chain: &chain,
+                all_modules: &all_modules,
+                mod_name,
+                platform,
+            },
+            &mut drift,
+            &mut drifted_ids,
+            &mut scanned_packages,
+        );
     }
 
-    let package_state = join_package_state(
-        &module.spec.packages,
-        &mut scanned_packages,
-        cfgd_core::platform::Platform::current(),
-    );
+    let package_state = join_package_state(&module.spec.packages, &mut scanned_packages, platform);
 
     let deployed_files: Vec<ModuleFileStatus> = state
         .module_deployed_files(mod_name)?

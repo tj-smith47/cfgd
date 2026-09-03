@@ -111,7 +111,7 @@ keys while carrying six). The keys live in the builder and its golden.
 | status_module                | yes               | per-module status queried by scripts               |
 | sync                         | yes               | sync result records                                |
 | upgrade                      | yes               | upgrade result records                             |
-| verify                       | no                | dev-loop only                                      |
+| verify                       | yes               | per-resource pass/fail + standing rows queried by scripts |
 | version                      | yes               | version info queried by scripts                    |
 | workflow_generate            | yes               | generated workflow metadata                        |
 

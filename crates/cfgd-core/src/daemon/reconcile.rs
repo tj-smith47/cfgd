@@ -810,11 +810,12 @@ fn reconcile_tick(
     // profile-wide tick to judge.
     let outside_tick_scope = |rtype: &str, rid: &str| match module_filter {
         None => false,
-        Some(name) => match rtype {
-            "module" => crate::reconciler::module_row_owner(rid) != name,
-            "package" => !module_scoped_packages.contains(rid),
-            _ => true,
-        },
+        Some(name) => !crate::reconciler::row_attributable_to_module(
+            rtype,
+            rid,
+            name,
+            &module_scoped_packages,
+        ),
     };
     // The rows this tick cannot vouch for either way, spelled as extra
     // members of the "current" set so the complement-resolve leaves them

@@ -16190,6 +16190,7 @@ fn every_drift_verdict_offers_the_heal_and_only_when_it_reports_drift() {
         pass_count: 0,
         fail_count: 1,
         system_errors: Vec::new(),
+        standing: Vec::new(),
     };
     let verify = rendered(build_verify_doc(&failing, None));
     assert!(
@@ -16214,6 +16215,7 @@ fn every_drift_verdict_offers_the_heal_and_only_when_it_reports_drift() {
             pass_count: 1,
             fail_count: 0,
             system_errors: Vec::new(),
+            standing: Vec::new(),
         },
         None,
     ));
