@@ -14866,6 +14866,89 @@ fn every_golden_separates_sibling_blocks_with_one_blank_line() {
     );
 }
 
+/// Neither half of a managed-env-file fixture is spelled by hand: the PATH
+/// comes from [`cfgd_core::reconciler::primary_env_file`] and the BODY's
+/// generated lines from `MergedEnvItems::declared_line`.
+///
+/// Both halves are the running platform's, and both were hand-written under
+/// `cli/` until three tests that had never executed on windows-latest ran
+/// there: the primary env file is `~/.cfgd.env` on POSIX and
+/// `~/.cfgd-env.ps1` on Windows, and the line a declared entry renders as is
+/// bash `export EDITOR="vim" # module:m` there and PowerShell
+/// `$env:EDITOR = 'vim' # module:m` here. A fixture hardcoding either wrote
+/// its file where nothing reads, or wrote a line the check can never match —
+/// and the tests asserting an ABSENCE passed anyway, blind rather than red,
+/// which is why this is a walk and not three fixes.
+///
+/// Scoped to `cli/`, where a fixture drives the LIVE per-item env check
+/// through a `cmd_*`. `cfgd-core`'s env-engine tests pass an explicit
+/// `EnvPlatform` and are pinning the generator itself, so a literal there is
+/// the assertion.
+#[test]
+fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
+    // Assembled rather than written whole, so this walk's own needles are not
+    // the first thing it reports.
+    let joins: [String; 2] = [
+        format!("join(\"{}\")", ".cfgd.env"),
+        format!("join(\"{}\")", ".cfgd-env.ps1"),
+    ];
+    let owner_comments = [format!("# {}:", "module"), format!("# {}:", "profile")];
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut offenders: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    let mut stack = vec![cli_dir.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if !p.extension().is_some_and(|e| e == "rs") {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            checked += 1;
+            let rel = p.strip_prefix(&cli_dir).unwrap_or(&p).to_path_buf();
+            for (n, line) in body.lines().enumerate() {
+                let where_ = format!("{}:{}", cfgd_core::to_posix_string(&rel), n + 1);
+                // A fixture joining a generated file's name onto a directory
+                // is building a path; a bare mention in an assertion needle or
+                // a synthesized row's id is not.
+                if joins.iter().any(|j| line.contains(j.as_str())) {
+                    offenders.push(format!(
+                        "{where_}: joins a hardcoded env file name — take \
+                         `cfgd_core::reconciler::primary_env_file(home)`"
+                    ));
+                }
+                // A generated line carries its owner comment, which is what a
+                // hand-edited (deliberately non-generated) fixture body lacks.
+                if line.contains("managed by cfgd")
+                    && owner_comments.iter().any(|c| line.contains(c.as_str()))
+                {
+                    offenders.push(format!(
+                        "{where_}: spells a generated env line by hand — render \
+                         it through `MergedEnvItems::declared_line`"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(checked > 10, "the cli sources must be in the walked set");
+    assert!(
+        offenders.is_empty(),
+        "a managed-env-file fixture takes its path and its generated lines from \
+         production's own renderers, or it only ever holds on the platform it \
+         was written on:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// A golden holds ONE render for every machine that runs it, so no golden may
 /// carry a row the HOST decided. The env phase is where that bites twice:
 /// which rc files `env_targets` plans is read off `$SHELL` and `PATH`

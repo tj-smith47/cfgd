@@ -7925,10 +7925,31 @@ mod tests {
         );
         drop(store);
 
-        // The machine converges; the next scoped scan clears the row.
+        // The machine converges; the next scoped scan clears the row. The
+        // line's dialect is the running platform's, so it comes from
+        // production's own per-item renderer rather than a bash literal.
+        let declared_env = vec![cfgd_core::config::EnvVar {
+            name: "EDITOR".to_string(),
+            value: "vim".to_string(),
+            platforms: vec![],
+        }];
+        let declared_owners = {
+            let mut o = cfgd_core::config::EntryOwners::default();
+            o.claim("module:test-mod", &declared_env, &[]);
+            o
+        };
+        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
+            &declared_env,
+            &[],
+            &declared_owners,
+            &[],
+            &[],
+        )
+        .declared_line("env-var", "EDITOR")
+        .expect("EDITOR renders a declared line");
         std::fs::write(
             cfgd_core::reconciler::primary_env_file(tmp_home.path()),
-            "# managed by cfgd \u{2014} do not edit\nexport EDITOR=\"vim\" # module:test-mod\n",
+            format!("# managed by cfgd \u{2014} do not edit\n{declared_line}\n"),
         )
         .unwrap();
         let printer = cfgd_core::test_helpers::test_printer();

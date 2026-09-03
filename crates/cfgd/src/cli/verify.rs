@@ -847,8 +847,11 @@ mod tests {
             out.contains("mod-target.txt"),
             "the scoped report must render its own module's finding, got: {out}"
         );
+        // Both primary env file names, so the needle is not blind on the
+        // platform whose generated file carries the other one.
         for machine_row in [
             ".cfgd.env",
+            ".cfgd-env.ps1",
             ".bashrc",
             ".zshenv",
             ".profile",
