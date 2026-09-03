@@ -32317,25 +32317,42 @@ fn every_owner_label_of_a_held_owner_comes_from_owner_label() {
 /// that returned a bare `&'static str` — one surface calling a violation the
 /// same colour as everything else on the screen.
 ///
-/// Two failure shapes, both walked: a render slot carrying one of the words as
-/// a LITERAL (it belongs to a pair producer, so the literal is a second
-/// spelling), and a call site DISCARDING the role half of a pair. A discard is
-/// legitimate only where nothing renders — a `-o json` payload's own field —
-/// and says so with `// status-word-ok: <why>`.
+/// Three failure shapes. Two are walked at the READING sites: a render slot
+/// carrying one of the words as a LITERAL (it belongs to a pair producer, so
+/// the literal is a second spelling), and a call site DISCARDING the role half
+/// of a pair. A discard is legitimate only where nothing renders — a `-o json`
+/// payload's own field — and says so with `// status-word-ok: <why>`.
+///
+/// The third is the shape the original defect was actually written in: the
+/// enum interpolated straight into a roleless slot, no literal and no pair
+/// spelling anywhere on the line, so neither reading-site arm can see it. That
+/// one is refused at its SOURCE instead — a status vocabulary carries no
+/// `Display` and no public word-alone accessor, so `{status}` / `.to_string()`
+/// does not compile against one.
 #[test]
 fn every_title_cased_status_word_renders_role_styled() {
-    /// Every word the five pair producers can return.
+    /// Every word the pair producers return, enumerated from their own match
+    /// arms (`ApplyStatus::human_str`, `module_status_display`,
+    /// `source_status_display`, `backup_run_status_display`,
+    /// `ComplianceStatus::human_display`). A new arm adds its word here.
     const WORDS: &[&str] = &[
-        "Succeeded",
+        // ApplyStatus
         "Success",
         "Partial",
         "Failed",
         "InProgress",
         "Aborted",
+        // module_status_display
         "Synced",
         "Drifted",
         "NotApplied",
+        // source_status_display (`Unknown` is shared with the module one)
+        "Active",
+        "Pending",
+        "Unknown",
+        // ComplianceStatus
         "Compliant",
+        "Warning",
         "Violation",
     ];
     /// Slots that carry no role of their own.
@@ -32348,7 +32365,6 @@ fn every_title_cased_status_word_renders_role_styled() {
         "backup_run_status_display(",
         "state_display()",
     ];
-
     fn offenders_in(body: &str) -> Vec<(usize, String)> {
         let lines: Vec<&str> = body.lines().collect();
         let mut hits = Vec::new();
@@ -32376,6 +32392,30 @@ fn every_title_cased_status_word_renders_role_styled() {
         hits
     }
 
+    /// A word-alone spelling minted in a PRODUCER file: a `Display` impl on a
+    /// status vocabulary, or a public accessor handing the word back without
+    /// its role. Either one re-opens `{status}` / `.to_string()` at any call
+    /// site — the shape the defect above was actually written in, which no
+    /// walk over the reading sites can see, because such a line carries
+    /// neither a literal nor a pair spelling. Refusing the spelling at its
+    /// source is what makes the defect unrepresentable rather than greppable.
+    fn word_alone_spellings(body: &str) -> Vec<(usize, String)> {
+        body.lines()
+            .enumerate()
+            .filter_map(|(n, line)| {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    return None;
+                }
+                // `ApplySummary`'s own `Display` is a payload rendering, not a
+                // status vocabulary, so the type name is what decides.
+                let bare_display = code.contains("Display for") && code.contains("Status");
+                (bare_display || code.contains("pub fn human_str"))
+                    .then(|| (n + 1, code.to_string()))
+            })
+            .collect()
+    }
+
     assert_eq!(
         offenders_in("        rows.push(KvPair::new(\"Status\", \"Violation\"));\n").len(),
         1,
@@ -32394,21 +32434,60 @@ fn every_title_cased_status_word_renders_role_styled() {
         offenders_in("        // status-word-ok: payload only\n        let (word, _) = payload.state_display();\n").is_empty(),
         "the marker no longer exempts a payload-only read"
     );
+    assert_eq!(
+        word_alone_spellings("impl std::fmt::Display for ComplianceStatus {\n").len(),
+        1,
+        "the producer guard no longer sees a `Display` on a status vocabulary"
+    );
+    assert!(
+        word_alone_spellings("impl std::fmt::Display for ApplySummary {\n").is_empty(),
+        "the producer guard now refuses a payload rendering that is no status word"
+    );
+    assert_eq!(
+        word_alone_spellings("    pub fn human_str(&self) -> &'static str {\n").len(),
+        1,
+        "the producer guard no longer sees a public word-alone accessor"
+    );
+    assert!(
+        word_alone_spellings("    fn human_str(&self) -> &'static str {\n").is_empty(),
+        "the producer guard now refuses the private spelling `human_display` reads"
+    );
 
     let mut offenders: Vec<String> = Vec::new();
+    let mut word_alone: Vec<String> = Vec::new();
+    let mut producers_walked: Vec<String> = Vec::new();
     for (path, body) in cli_production_sources()
         .into_iter()
         .chain(core_production_sources())
     {
         // The producers themselves are where the words and their roles are
-        // spelled; every other site reads them from here.
+        // spelled; every other site reads them from here. What they may NOT
+        // do is offer the word alone.
         if path.ends_with("state/types.rs") || path.ends_with("compliance/mod.rs") {
+            producers_walked.push(cfgd_core::to_posix_string(&path));
+            for (n, code) in word_alone_spellings(&body) {
+                word_alone.push(format!("{}:{n}: {code}", path.display()));
+            }
             continue;
         }
         for (n, code) in offenders_in(&body) {
             offenders.push(format!("{}:{n}: {code}", path.display()));
         }
     }
+    assert_eq!(
+        producers_walked.len(),
+        2,
+        "the producer guard no longer reaches both vocabulary files — it walked \
+         {producers_walked:?}"
+    );
+    assert!(
+        word_alone.is_empty(),
+        "a status vocabulary offers its word only paired with the role that \
+         tints it: no `Display`, no public word-alone accessor, so `{{status}}` \
+         and `.to_string()` cannot spell a status into a roleless slot at \
+         all:\n{}",
+        word_alone.join("\n")
+    );
     assert!(
         offenders.is_empty(),
         "a Title-Cased status word renders with the role its producer paired \
@@ -33178,9 +33257,11 @@ fn every_path_naming_confirm_prompt_folds_the_home_directory() {
 /// path: `status`'s Managed Resources and Drift rows, `status <module>`'s
 /// Deployed Files and Drift rows, `source show` / `source list`'s local
 /// source and its Managed Resources, `backup list`'s `Source` column and
-/// `module show`'s `Directory`. `cfgd status` folded its `Config` row and
-/// spelled `/home/tj/.cfgd.env` six lines below it. `-o json` keeps the
-/// absolute path on every one of them.
+/// `module show`'s `Directory`; `compliance export`'s Violations and Warnings
+/// rows and `compliance diff`'s Added / Removed / Changed rows, whose subject
+/// is a check key naming the file it checked. `cfgd status` folded its
+/// `Config` row and spelled `/home/tj/.cfgd.env` six lines below it.
+/// `-o json` keeps the absolute path on every one of them.
 #[test]
 #[serial_test::serial]
 fn no_report_slot_spells_the_home_directory_absolutely() {
@@ -33441,6 +33522,60 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
             payload.contains(&home_posix),
             "{surface}'s `-o json` payload keeps the absolute path:\n{payload}"
         );
+        surfaces.push((surface, cap.human()));
+    }
+
+    // The two compliance surfaces name a checked file by its `<category>:
+    // <target>` key. They render no payload of their own — `-o json` on
+    // `compliance diff` serializes the diff, not this Doc — so they join the
+    // human-text assert below rather than the payload loop above.
+    let check =
+        |status: cfgd_core::compliance::ComplianceStatus| cfgd_core::compliance::ComplianceCheck {
+            category: "file".into(),
+            target: Some(under_home("perm-conf")),
+            status,
+            detail: Some("permissions 0o600, expected 0o644".into()),
+            ..Default::default()
+        };
+    let snapshot = |status| cfgd_core::compliance::ComplianceSnapshot {
+        timestamp: "2026-05-14T12:00:00Z".into(),
+        machine: cfgd_core::compliance::MachineInfo {
+            hostname: "host".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        },
+        profile: "base".into(),
+        sources: Vec::new(),
+        checks: vec![check(status)],
+        summary: cfgd_core::compliance::ComplianceSummary {
+            compliant: 0,
+            warning: 1,
+            violation: 0,
+        },
+    };
+    let before = snapshot(cfgd_core::compliance::ComplianceStatus::Compliant);
+    let after = snapshot(cfgd_core::compliance::ComplianceStatus::Warning);
+    let compliance_docs = [
+        (
+            "cfgd compliance export",
+            super::compliance::build_compliance_summary_doc(&after, now),
+        ),
+        (
+            "cfgd compliance diff",
+            super::compliance::build_compliance_diff_doc(
+                1,
+                2,
+                &before,
+                &after,
+                &super::compliance::compute_compliance_diff(&before, &after),
+                "->",
+            ),
+        ),
+    ];
+    for (surface, doc) in compliance_docs {
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        printer.emit(doc);
+        drop(printer);
         surfaces.push((surface, cap.human()));
     }
 

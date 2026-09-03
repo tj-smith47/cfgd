@@ -4036,12 +4036,18 @@ mod tests {
             crate::cli::apply::run_apply(&cli, p, &args).unwrap();
         });
         for (surface, rows, module) in [
-            ("module create --apply", &created, Some("scratch")),
-            // Ruled 2026-09-03: an isolate states only what its invocation did
-            // not. `editor` pulls nothing in, so its row says nothing.
-            ("diff --module", &diff_isolate, None),
-            // `editor`'s `depends` IS new information, and it renders in the
-            // `Profile` row's own annotated shape.
+            // Ruled 2026-09-03: a run the invocation named states only what
+            // its invocation did not. `scratch` was just created by name and
+            // depends on nothing, so its row says nothing.
+            ("module create --apply", &created, None),
+            // Every isolate surface renders the SAME delta-only row: what the
+            // resolution ADDED, in the `Profile` row's own annotated shape,
+            // and nothing when it added nothing.
+            (
+                "diff --module",
+                &diff_isolate,
+                Some("editor (depends: core)"),
+            ),
             (
                 "apply --module",
                 &apply_isolate,

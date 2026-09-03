@@ -23,7 +23,7 @@ pub mod status;
 pub mod table;
 pub(crate) mod wrap;
 pub(crate) use glyphs::{
-    action_detail_is_muted, action_subject_style, finalize_owner_subject, finalize_subject,
+    action_detail_is_muted, action_subject_style, finalize_painted_subject, finalize_subject,
     role_glyph,
 };
 pub use status::{Elapsed, StatusFields};

@@ -70,22 +70,22 @@ pub(crate) fn finalize_subject(
     wrap_subject(theme, cursor_safe(subject), marker, qualifier, label)
 }
 
-/// [`finalize_subject`] for a subject that IS an owner token.
+/// [`finalize_subject`] for a subject the renderer PAINTS from typed parts.
 ///
-/// The tri-colour paint is the renderer's own, so it stands in for the
-/// sanitize-then-wrap step rather than layering on top of it: `OwnerLabel`
-/// folds each of its three slots through [`cursor_safe`] itself, and folding
-/// the composed token a second time would eat the SGR the renderer just put
+/// The paint is the renderer's own, so it stands in for the sanitize-then-wrap
+/// step rather than layering on top of it: a [`crate::output::PaintedSubject`]
+/// folds each of its slots through [`cursor_safe`] itself, and folding the
+/// composed string a second time would eat the SGR the renderer just put
 /// there. The row carries `ThemedStyle::plain()` as its subject style so the
-/// role coat does not repaint the token; every width is measured with the
-/// escapes stripped, so padding is unaffected.
-pub(crate) fn finalize_owner_subject(
+/// role coat does not repaint it; every width is measured with the escapes
+/// stripped, so padding is unaffected.
+pub(crate) fn finalize_painted_subject(
     theme: &Theme,
-    owner: &crate::output::OwnerLabel,
+    painted: &crate::output::PaintedSubject,
     qualifier: Option<&str>,
     label: Option<&StatusLabel>,
 ) -> String {
-    wrap_subject(theme, owner.styled(theme), None, qualifier, label)
+    wrap_subject(theme, painted.styled(theme), None, qualifier, label)
 }
 
 fn wrap_subject(
