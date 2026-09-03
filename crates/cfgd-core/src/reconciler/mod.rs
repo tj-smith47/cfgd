@@ -55,9 +55,9 @@ pub use format::{
     DisplaySubject, action_display_subject, action_display_subject_within, bare_script_subject,
     condense_action_desc_for_display, format_action_description, format_plan_item,
     format_plan_items, hook_script_subject, module_file_resource_id, module_file_spec_resource_id,
-    module_script_subject, module_script_subject_within, script_run_subject,
-    script_run_subject_within, split_module_file_resource_id, system_key_doubling_error,
-    system_resource_key,
+    module_row_names_a_file, module_row_owner, module_script_subject, module_script_subject_within,
+    script_run_subject, script_run_subject_within, split_module_file_resource_id,
+    system_key_doubling_error, system_resource_key,
 };
 pub use managers::plan_managers;
 pub use packages::stale_tracked_packages;
@@ -85,11 +85,12 @@ pub use run::{
 pub(crate) use sidecar::is_stamped_sidecar_name;
 pub use sidecar::{CFGD_BACKUP_SUFFIX, SidecarOutcome, backup_file, cfgd_backup_path};
 pub use types::{
-    Action, ActionResult, ApplyResult, CFGD_GROUP_ORDER, DeclaredProvision, ENV_GROUP,
+    Action, ActionResult, ApplyResult, CFGD_GROUP_ORDER, DeclaredProvision, DriftRow, ENV_GROUP,
     ENV_RESOURCE_TYPE, EnvAction, MANAGERS_GROUP, ManagerAction, ModuleAction, ModuleActionKind,
     Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext,
-    RollbackResult, SESSION_GROUP, ScriptAction, ScriptPhase, SystemAction, Tier, attempted_count,
-    package_drift_resource_id, split_package_drift_resource_id,
+    RollbackResult, SESSION_GROUP, ScriptAction, ScriptPhase, SystemAction, Tier,
+    action_drift_rows, apply_heals_action_rows, attempted_count, package_action_drift_rows,
+    package_drift_resource_id, package_entry_drift_id, split_package_drift_resource_id,
 };
 pub use verify::{
     EnvItemCheck, MergedEnvItems, SystemCheckError, VerifyReport, VerifyResult, VersionFloor,

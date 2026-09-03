@@ -97,8 +97,7 @@ pub fn verify(
         // record two rows for one missing package — and resolve each other's
         // as healed. The module attribution stays an ORIGIN fact
         // (`ep.origin`), not part of the row's identity.
-        let resource_id =
-            super::package_drift_resource_id(&ep.manager, std::slice::from_ref(&ep.name));
+        let resource_id = super::package_entry_drift_id(&ep.manager, &ep.name, Some(*mgr));
         if versioned.contains(&resource_id) {
             continue;
         }
@@ -356,15 +355,12 @@ pub fn package_version_drift(
         match package_version_floor(*mgr, &installed, &ep.name, ep.min_version.as_deref()) {
             VersionFloor::Met => {}
             VersionFloor::Unreadable { detail } => check_errors.push(SystemCheckError {
-                key: super::package_drift_resource_id(&ep.manager, std::slice::from_ref(&ep.name)),
+                key: super::package_entry_drift_id(&ep.manager, &ep.name, Some(*mgr)),
                 error: detail,
             }),
             VersionFloor::Below { floor, installed } => results.push(VerifyResult {
                 resource_type: "package".to_string(),
-                resource_id: super::package_drift_resource_id(
-                    &ep.manager,
-                    std::slice::from_ref(&ep.name),
-                ),
+                resource_id: super::package_entry_drift_id(&ep.manager, &ep.name, Some(*mgr)),
                 matches: false,
                 expected: floor,
                 actual: installed,

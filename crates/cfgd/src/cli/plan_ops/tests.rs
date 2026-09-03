@@ -2760,6 +2760,7 @@ fn env_apply_result(descriptions: &[&str]) -> ApplyResult {
                 not_attempted: None,
                 installed: None,
                 versions: Default::default(),
+                drift_rows: Vec::new(),
             })
             .collect(),
         status: ApplyStatus::Success,

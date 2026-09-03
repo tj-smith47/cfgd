@@ -503,6 +503,13 @@ fn drift_operand(resource_type: &str, operand: &str) -> String {
 /// call a sysctl's `0` → `1` a version mismatch.
 #[must_use]
 pub fn drift_terse_cause(resource_type: &str, expected: &str, actual: &str) -> String {
+    // A producer that stated NEITHER operand named no divergence to word.
+    // Asked before the absence fold, which reads an empty operand as the
+    // machine not holding the resource — a row whose two sides are simply
+    // unstated would then report an absence nobody found.
+    if expected.trim().is_empty() && actual.trim().is_empty() {
+        return DRIFT_DETECTED_CAUSE.to_string();
+    }
     let actual = drift_operand(resource_type, actual);
     if actual == crate::Absence::Missing.as_str() || actual == crate::Absence::NotInstalled.as_str()
     {
@@ -511,11 +518,53 @@ pub fn drift_terse_cause(resource_type: &str, expected: &str, actual: &str) -> S
     if actual.starts_with("content differs") {
         return "content differs".to_string();
     }
-    if resource_type == "package" && !crate::is_package_presence_want(expected) {
+    // An EMPTY `expected` is not a version: it is a producer that stated no
+    // operands at all, and calling that a version mismatch reported a package
+    // the machine simply does not hold as an out-of-date one.
+    if resource_type == "package"
+        && !expected.is_empty()
+        && !crate::is_package_presence_want(expected)
+    {
         return "version mismatch".to_string();
+    }
+    if actual.is_empty() {
+        return DRIFT_DETECTED_CAUSE.to_string();
     }
     actual
 }
+
+/// The cause ONE drift row renders, at whichever length its kind words itself.
+///
+/// The ONE chooser between the two: a shell row's `want` IS the declared line
+/// the reader heals toward, so it keeps both operands
+/// ([`drift_detail`] over [`drift_operands`]); every other kind states the
+/// terse cause and leaves the bytes to `cfgd diff`. A row whose producer
+/// stated NO operands takes the terse form whatever its kind — there is
+/// nothing for the verbose one to put on either side of the comma, and the
+/// absence fold would word the silence as a resource the machine does not
+/// hold.
+///
+/// A slot that renders one KIND of row may still reach [`drift_terse_cause`]
+/// directly, and the module report does: its per-surface rows are terse by
+/// design.
+#[must_use]
+pub fn drift_cause(resource_type: &str, expected: &str, actual: &str) -> String {
+    if is_shell_drift_kind(resource_type)
+        && !(expected.trim().is_empty() && actual.trim().is_empty())
+    {
+        let (want, have) = drift_operands(resource_type, expected, actual);
+        return drift_detail(want, have);
+    }
+    drift_terse_cause(resource_type, expected, actual)
+}
+
+/// What a drift row's cause reads when its producer stated no operands — a
+/// divergence with no two sides to name.
+///
+/// One constant rather than a literal per call site: the word is what a reader
+/// scans a report for, and two spellings of the same verdict are two bugs
+/// waiting to be told apart.
+pub const DRIFT_DETECTED_CAUSE: &str = "drift detected";
 
 /// Whether the managed env FILE's own freshness row is redundant in a report
 /// that also carries `kinds`.

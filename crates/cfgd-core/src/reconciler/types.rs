@@ -1162,6 +1162,17 @@ pub struct ActionResult {
     /// absent from the wire, for every other action.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub versions: std::collections::BTreeMap<String, String>,
+    /// The `drift_events` keys a successful settle of this action HEALS —
+    /// [`action_drift_rows`]' own output, carried off the action rather than
+    /// re-derived from `description`, so the row a daemon tick recorded and the
+    /// row this apply resolves are one set by construction. Empty for the four
+    /// `Skip` variants ([`apply_heals_action_rows`]) and for an action the plan
+    /// withheld.
+    ///
+    /// Not serialized: a heal key is bookkeeping, never part of the apply's
+    /// `-o json` shape.
+    #[serde(skip)]
+    pub drift_rows: Vec<(String, String)>,
 }
 
 /// Result of an entire apply operation.
@@ -1241,25 +1252,74 @@ impl ApplyResult {
 }
 
 /// The ONE grammar for a `"package"` drift row's `resource_id`, workspace-wide:
-/// `<manager>:<package>` per package, `<manager>:<a>,<b>` when the row names a
-/// BATCH action rather than one package (the daemon's spelling, from
-/// `action_resource_info`). `:` rather than the tracking table's `/` because
-/// a scoped npm name (`@org/name`) legitimately carries a `/`, which `:`
-/// cannot. Every CLI live check mints one package per row (the cli crate
-/// reaches this through `cli::diff`'s re-export); the apply's healed-key loop
-/// and both `PackageAction` arms mint here too, so a healed key and the row it
-/// heals cannot spell the same package two ways. Hand-typed `format!`s
-/// agreeing only by convention are exactly how a reader and producer of the
-/// tracking grammar drifted apart.
+/// `<manager>:<package>`, always exactly one package. `:` rather than the
+/// tracking table's `/` because a scoped npm name (`@org/name`) legitimately
+/// carries a `/`, which `:` cannot.
+///
+/// The slice signature is what the one-package rule is stated in: every caller
+/// passes a single-element slice, and the assertion below refuses a second
+/// entry. A batch id (`<mgr>:<a>,<b>`) named a unit no per-package re-check
+/// could ever match, so a row keyed on one could only be resolved by another
+/// batch of exactly the same members — it outlived its own membership and no
+/// CLI verb could settle it. [`action_drift_rows`] is now the only producer on
+/// the action side and mints one row per package; the CLI live checks, the
+/// floor pass and the apply's healed keys all mint here too, so a healed key
+/// and the row it heals cannot spell the same package two ways.
+///
+/// The package half is the manager's own
+/// [`package_identity`](crate::providers::PackageManager::package_identity) of
+/// the declared entry — see [`package_entry_drift_id`], which every producer
+/// holding a manager reaches instead of this.
 pub fn package_drift_resource_id(manager: &str, packages: &[String]) -> String {
-    // The keep-set split between the live and batch grammars rests on every
-    // minted id carrying its `:` with a real manager in front — a bare id
-    // would read as the daemon's Skip spelling and stand forever instead of
-    // healing.
+    // The keep-set split between the live grammar and the daemon's bare
+    // `PackageAction::Skip` spelling rests on every minted id carrying its `:`
+    // with a real manager in front — a bare id would read as that Skip
+    // spelling and stand forever instead of healing.
     debug_assert!(
         !manager.is_empty() && packages.iter().all(|p| !p.is_empty()),
         "a package drift id needs a manager and real package names: {manager:?} / {packages:?}"
     );
+    debug_assert!(
+        packages.len() == 1,
+        "a package drift row names exactly one package: {manager:?} / {packages:?}"
+    );
+    format!("{}:{}", manager, packages.join(","))
+}
+
+/// The `package` drift row id for ONE declared entry, folded through the
+/// manager's own
+/// [`package_identity`](crate::providers::PackageManager::package_identity).
+///
+/// The entry a module declares and the name its manager lists are not always
+/// the same string — `go` installs `rsc.io/2fa` and lists `2fa`, `choco`
+/// lowercases, FreeBSD `pkg` strips a trailing `-1.2.0,1` — and the identity is
+/// what every presence check compares against and what the tracking row is
+/// keyed on. Minting the row from the raw entry instead left a finding recorded
+/// under one string and answered under another, and the FreeBSD form smuggled a
+/// comma into an id the keep predicates read as a legacy batch.
+///
+/// `pm` is `None` only where no manager is registered under that name; the raw
+/// entry is then the best identity available and the row is as answerable as
+/// the manager is.
+#[must_use]
+pub fn package_entry_drift_id(
+    manager: &str,
+    entry: &str,
+    pm: Option<&dyn crate::providers::PackageManager>,
+) -> String {
+    let identity = pm.map_or_else(|| entry.to_string(), |m| m.package_identity(entry));
+    package_drift_resource_id(manager, std::slice::from_ref(&identity))
+}
+
+/// The `<manager>:<a>,<b>` identity of a BATCHING package action.
+///
+/// Never a drift row and never recorded as one — [`action_drift_rows`] mints
+/// one row per package, because a batch key names a unit no per-package
+/// re-check can match, and a row under one outlived its own membership. This is
+/// the ACTION's identity, for a caller comparing one plan against another.
+// composed-id-ok: the batch spelling is this function's whole subject, and it
+// is deliberately not `package_drift_resource_id`, which mints drift rows.
+fn package_batch_action_id(manager: &str, packages: &[String]) -> String {
     format!("{}:{}", manager, packages.join(","))
 }
 
@@ -1278,14 +1338,18 @@ pub fn split_package_drift_resource_id(id: &str) -> Option<(&str, Vec<&str>)> {
     Some((manager, packages.split(',').collect()))
 }
 
-/// The `(resource_type, resource_id)` pair a planned action is recorded under.
+/// The `(resource_type, resource_id)` pair that identifies a planned action.
 ///
-/// The ONE derivation of a persisted action identity: drift rows, journal
-/// entries and the pending-decision match in
-/// [`DecisionExclusions`](super::DecisionExclusions) all read it, so a resource
-/// cannot be recorded under one id and matched under another. It is a
-/// state-matching key, never a display string — nothing here is condensed or
-/// re-shaped for a terminal.
+/// The ONE derivation of an action's identity, and — for every kind that stands
+/// for exactly one resource — the row [`action_drift_rows`] records it as.
+/// A batching kind is where the two part ways: a package batch and a module's
+/// file deployment each name a UNIT no per-resource check can re-find, so
+/// `action_drift_rows` breaks them into one row per package and per file while
+/// this pair keeps naming the action. The pending-decision match in
+/// [`DecisionExclusions`](super::DecisionExclusions) reads it for the file id.
+///
+/// It is a state-matching key, never a display string — nothing here is
+/// condensed or re-shaped for a terminal.
 pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
     match action {
         Action::File(fa) => match fa {
@@ -1300,16 +1364,12 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
         Action::Package(pa) => match pa {
             PackageAction::Install {
                 manager, packages, ..
-            } => (
-                "package".to_string(),
-                package_drift_resource_id(manager, packages),
-            ),
+            // composed-id-ok: the ACTION's identity, not a drift row.
+            } => ("package".to_string(), package_batch_action_id(manager, packages)),
             PackageAction::Uninstall {
                 manager, packages, ..
-            } => (
-                "package".to_string(),
-                package_drift_resource_id(manager, packages),
-            ),
+            // composed-id-ok: the ACTION's identity, not a drift row.
+            } => ("package".to_string(), package_batch_action_id(manager, packages)),
             // A Skip row names the bare manager whose whole block was withheld,
             // so a live check can never resolve it as healed.
             // composed-id-ok: deliberately not a package id.
@@ -1347,6 +1407,7 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
                 }
             }
         }
+        // composed-id-ok: the ACTION's identity, not a drift row.
         Action::Module(ma) => ("module".to_string(), ma.module_name.clone()),
         Action::Env(ea) => {
             use crate::reconciler::EnvAction;
@@ -1355,9 +1416,13 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
                 EnvAction::InjectSourceLine { rc_path, .. } => {
                     ("env-rc".to_string(), to_posix_string(rc_path))
                 }
-                EnvAction::RefreshLiveSession { .. } => {
-                    ("env-session".to_string(), "live-session".to_string())
-                }
+                // The ONE spelling of the live-session surface, shared with
+                // the tracking row the apply upserts: three spellings of one
+                // fact left the tick recording a row no verb could settle.
+                EnvAction::RefreshLiveSession { .. } => (
+                    "env-session".to_string(),
+                    crate::state::ENV_SESSION_RESOURCE_ID.to_string(),
+                ),
             }
         }
         // A provision (and its refusal) is a PACKAGE fact — this manager's
@@ -1376,6 +1441,251 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
             }
         },
     }
+}
+
+/// One `drift_events` row a planned action stands for: the identity every
+/// producer records it under, and the operands a reader renders when the action
+/// itself knows them.
+///
+/// `expected` / `actual` are `None` for an action whose divergence has no two
+/// sides to state — a file whose content changed, a script that must run. The
+/// store's `record_drift` COALESCEs a `None` over whatever is already stored, so
+/// a tick re-affirming a row another producer worded does not blank its
+/// operands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriftRow {
+    pub resource_type: String,
+    pub resource_id: String,
+    pub expected: Option<String>,
+    pub actual: Option<String>,
+}
+
+impl DriftRow {
+    /// A row whose divergence states no operands.
+    fn plain((resource_type, resource_id): (String, String)) -> Self {
+        DriftRow {
+            resource_type,
+            resource_id,
+            expected: None,
+            actual: None,
+        }
+    }
+
+    /// The `(resource_type, resource_id)` key a resolver matches on.
+    #[must_use]
+    pub fn key(&self) -> (String, String) {
+        (self.resource_type.clone(), self.resource_id.clone())
+    }
+}
+
+/// The `drift_events` rows a planned action stands for — the ONE producer, read
+/// by the daemon tick that RECORDS them and by the apply that HEALS them.
+///
+/// A resource recorded under one grammar and resolved under another is a
+/// finding no verb can settle: it stands until some other producer happens to
+/// re-mint it, and `cfgd status` goes on advising the very command that just
+/// ran. Deriving both sides here is what makes the two sets one set.
+///
+/// Per action kind:
+///
+/// * `Module(DeployFiles)` — one row per file the action will write, under the
+///   live check's own `<module>/<target>` spelling
+///   ([`module_file_spec_resource_id`](super::module_file_spec_resource_id)).
+///   The aggregate `module:<name>:files:<n>` stays the `managed_resources`
+///   tracking id and is deliberately NOT a drift row: it names a unit no
+///   per-file check can match.
+/// * `Module(InstallPackages)` — one `package` row per resolved package, from
+///   the same composer the `Package` arm uses: a module's packages are checked
+///   by the same live pass every other package is, under the same
+///   `<manager>:<identity>` id. A `script`-installed entry mints none — a
+///   custom install script has no queryable installed state, so a row for one
+///   names something no check can re-find.
+/// * Every other `Module` kind — the id its own executed description parses to
+///   (`<name>:script`, `<name>:skip`), so the apply settles exactly what the
+///   tick recorded.
+/// * `Package(Install | Uninstall)` — one row PER PACKAGE, keyed on the
+///   manager's [`package_entry_drift_id`], carrying the presence words every
+///   live check words a package finding with.
+/// * `Env(RefreshLiveSession)` — `("env-session", ENV_SESSION_RESOURCE_ID)`,
+///   the one spelling of that surface.
+/// * Everything else — `action_resource_info`'s pair, unchanged.
+///
+/// An action [`Action::pre_skip_reason`] answers for yields NO rows: the plan
+/// already priced it out of every total, so a row recorded for it is a finding
+/// the machine never had and no apply will ever settle.
+///
+/// The four `Skip` variants (`PackageAction::Skip`, `SystemAction::Skip`,
+/// `SecretAction::Skip`, `FileAction::Skip`) do get rows — a withheld manager,
+/// an unavailable configurator and a skipped file are real findings — but an
+/// apply that skips them again has settled nothing, so
+/// [`apply_heals_action_rows`] holds them back from the heal. They are cleared
+/// by the tick's own complement, when a later plan stops carrying the skip.
+pub fn action_drift_rows(
+    action: &Action,
+    registry: &crate::providers::ProviderRegistry,
+) -> Vec<DriftRow> {
+    if action.pre_skip_reason().is_some() {
+        return Vec::new();
+    }
+    match action {
+        Action::Module(ma) => match &ma.kind {
+            ModuleActionKind::DeployFiles { files, .. } => files
+                .iter()
+                .map(|f| {
+                    DriftRow::plain((
+                        "module".to_string(),
+                        super::format::module_file_spec_resource_id(&ma.module_name, f),
+                    ))
+                })
+                .collect(),
+            // A module's packages are the machine's packages: the live scan
+            // prices them into the same plan every other declared package
+            // reaches it through, so the row it re-checks is a per-package one
+            // under the manager's own identity. An aggregate over the whole
+            // list named a unit no such check could match, and a scan that
+            // could not match it resolved it blind.
+            ModuleActionKind::InstallPackages { resolved } => {
+                let mut by_manager: Vec<(&str, Vec<&str>)> = Vec::new();
+                for p in resolved
+                    .iter()
+                    // A `prefer: [script]` entry is invisible to drift
+                    // detection by design — a custom install script can put
+                    // anything anywhere, so no installed-state read answers
+                    // for it and no live pass ever re-mints its row.
+                    .filter(|p| p.manager != SCRIPT_INSTALL_MANAGER)
+                {
+                    match by_manager.iter_mut().find(|(m, _)| *m == p.manager) {
+                        Some((_, names)) => names.push(&p.resolved_name),
+                        None => by_manager.push((&p.manager, vec![&p.resolved_name])),
+                    }
+                }
+                by_manager
+                    .into_iter()
+                    .flat_map(|(manager, names)| {
+                        presence_drift_rows(
+                            manager,
+                            names.into_iter(),
+                            crate::PACKAGE_WANT_INSTALLED,
+                            crate::Absence::NotInstalled.as_str(),
+                            registry,
+                        )
+                    })
+                    .collect()
+            }
+            // Parsed back out of the action's own description rather than
+            // re-spelled: the apply upserts and settles under exactly this
+            // string, and two hand-written composers of one id is how the
+            // whole-module row came to be healed by nothing.
+            _ => vec![DriftRow::plain(
+                super::format::parse_resource_from_description(
+                    &super::format::format_action_description(action),
+                ),
+            )],
+        },
+        // A Skip names the bare manager whose whole block was withheld — a
+        // finding about the TOOLING, not about any package in it.
+        Action::Package(PackageAction::Skip { .. }) => {
+            vec![DriftRow::plain(action_resource_info(action))]
+        }
+        Action::Package(pa) => package_action_drift_rows(pa, registry),
+        _ => vec![DriftRow::plain(action_resource_info(action))],
+    }
+}
+
+/// The `actual` verb an uninstall's drift row carries — what the machine still
+/// holds, worded to read in a status line ("to remove").
+const PACKAGE_TO_REMOVE: &str = "to remove";
+
+/// The per-PACKAGE drift rows a batching [`PackageAction`] stands for — ONE row
+/// per package, in the manager's own identity grammar, carrying the presence
+/// words every live check words a package finding with.
+///
+/// The narrower view of [`action_drift_rows`] for the CLI's live scan, which
+/// holds a `PackageAction` rather than an `Action` and prices a plan it never
+/// runs. Empty for `Skip`: the desired and installed sets agree, and the bare
+/// manager row an `Action`-side producer mints for it is a finding about the
+/// tooling that no live package check re-examines.
+pub fn package_action_drift_rows(
+    action: &PackageAction,
+    registry: &crate::providers::ProviderRegistry,
+) -> Vec<DriftRow> {
+    let (manager, packages, expected, actual) = match action {
+        PackageAction::Skip { .. } => return Vec::new(),
+        PackageAction::Install {
+            manager, packages, ..
+        } => (
+            manager,
+            packages,
+            crate::PACKAGE_WANT_INSTALLED,
+            crate::Absence::NotInstalled.as_str(),
+        ),
+        PackageAction::Uninstall {
+            manager, packages, ..
+        } => (
+            manager,
+            packages,
+            crate::PACKAGE_WANT_ABSENT,
+            PACKAGE_TO_REMOVE,
+        ),
+    };
+    presence_drift_rows(
+        manager,
+        packages.iter().map(String::as_str),
+        expected,
+        actual,
+        registry,
+    )
+}
+
+/// The manager name a `prefer: [script]` entry resolves to.
+const SCRIPT_INSTALL_MANAGER: &str = "script";
+
+/// One presence drift row per package, in ONE manager's identity grammar.
+///
+/// The composer both package-bearing action kinds mint through, so a module's
+/// packages and a profile's spell one package one way. The manager is looked
+/// up once for the whole set: [`package_entry_drift_id`] asks it per package,
+/// and a registry scan inside that map is quadratic in a module declaring a
+/// few hundred.
+fn presence_drift_rows<'a>(
+    manager: &str,
+    packages: impl Iterator<Item = &'a str>,
+    expected: &str,
+    actual: &str,
+    registry: &crate::providers::ProviderRegistry,
+) -> Vec<DriftRow> {
+    let pm = registry
+        .package_managers()
+        .iter()
+        .find(|m| m.name() == manager)
+        .map(std::convert::AsRef::as_ref);
+    packages
+        .map(|p| DriftRow {
+            resource_type: "package".to_string(),
+            resource_id: package_entry_drift_id(manager, p, pm),
+            expected: Some(expected.to_string()),
+            actual: Some(actual.to_string()),
+        })
+        .collect()
+}
+
+/// Whether a successful settle of this action HEALS the rows
+/// [`action_drift_rows`] mints for it.
+///
+/// False for the four `Skip` variants alone: each records that cfgd could not
+/// act on a resource — an unavailable manager, an unregistered configurator, a
+/// file a strategy declined — and an apply that reaches the same skip has
+/// changed nothing about it. Resolving those rows on a skip would report a
+/// machine converged by the very run that declined to touch it.
+#[must_use]
+pub fn apply_heals_action_rows(action: &Action) -> bool {
+    !matches!(
+        action,
+        Action::Package(PackageAction::Skip { .. })
+            | Action::System(SystemAction::Skip { .. })
+            | Action::Secret(SecretAction::Skip { .. })
+            | Action::File(FileAction::Skip { .. })
+    )
 }
 
 #[cfg(test)]

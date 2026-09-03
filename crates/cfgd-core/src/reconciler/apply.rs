@@ -924,7 +924,11 @@ pub(super) fn path_dirs_changed(
 /// against. A prior *failure* is left standing as its own row: a failed attempt
 /// and a later successful one are distinct events and collapsing them would hide
 /// the error.
-fn merge_env_result(results: &mut Vec<ActionResult>, description: String, changed: bool) {
+pub(super) fn merge_env_result(
+    results: &mut Vec<ActionResult>,
+    description: String,
+    changed: bool,
+) {
     let key = env_result_key(&description);
     if let Some(prev) = results
         .iter_mut()
@@ -942,6 +946,12 @@ fn merge_env_result(results: &mut Vec<ActionResult>, description: String, change
         };
         return;
     }
+    // The post-apply regeneration carries no planned action, so its heal key
+    // comes off the description it just minted — the same `("env", <path>)`
+    // the Env phase's own action stands for.
+    let drift_rows = vec![super::format::parse_resource_from_description(
+        env_result_key(&description),
+    )];
     results.push(ActionResult {
         // These are env actions no matter which late input triggered them, and a
         // caller filtering results by phase must find them where every other
@@ -957,6 +967,7 @@ fn merge_env_result(results: &mut Vec<ActionResult>, description: String, change
         not_attempted: None,
         installed: None,
         versions: Default::default(),
+        drift_rows,
     });
 }
 
@@ -1770,6 +1781,7 @@ impl<'a> super::Reconciler<'a> {
                                 not_attempted: None,
                                 installed: None,
                                 versions: Default::default(),
+                                drift_rows: Vec::new(),
                             });
                         }
                     }
@@ -1824,6 +1836,7 @@ impl<'a> super::Reconciler<'a> {
                             not_attempted: None,
                             installed: None,
                             versions: Default::default(),
+                            drift_rows: Vec::new(),
                         });
                     }
                     Err(e) => {
@@ -1839,6 +1852,7 @@ impl<'a> super::Reconciler<'a> {
                             not_attempted: None,
                             installed: None,
                             versions: Default::default(),
+                            drift_rows: Vec::new(),
                         });
                         if !continue_on_err {
                             return Err(e);
@@ -1907,6 +1921,7 @@ impl<'a> super::Reconciler<'a> {
                                 not_attempted: None,
                                 installed: None,
                                 versions: Default::default(),
+                                drift_rows: Vec::new(),
                             });
                         }
                         Err(e) => {
@@ -1926,6 +1941,7 @@ impl<'a> super::Reconciler<'a> {
                                 not_attempted: None,
                                 installed: None,
                                 versions: Default::default(),
+                                drift_rows: Vec::new(),
                             });
                             if !continue_on_err {
                                 return Err(e);
@@ -2044,7 +2060,7 @@ impl<'a> super::Reconciler<'a> {
     /// actions in `results`. Shared by the normal completion path and the
     /// cooperative-abort path, which both need state to reflect exactly the
     /// resources that actually changed.
-    fn record_managed_resources(
+    pub(super) fn record_managed_resources(
         &self,
         apply_id: i64,
         results: &[ActionResult],
@@ -2055,6 +2071,12 @@ impl<'a> super::Reconciler<'a> {
             if !result.success {
                 continue;
             }
+            // An action this host was never going to run put nothing on the
+            // machine: it manages no resource and heals no finding. The plan
+            // already priced it out of the header's total; the store must agree.
+            if result.not_attempted.is_some() {
+                continue;
+            }
 
             // Packages track per-resolved-name under "package"/"<mgr>/<pkg>" so the
             // set is usable for declarative prune. The generic parser is lossy for
@@ -2062,27 +2084,8 @@ impl<'a> super::Reconciler<'a> {
             // install adds a tracking row per package, uninstall deletes it.
             if let Some((manager, verb, packages)) = parse_package_description(&result.description)
             {
-                // The drift writers spell a package finding `<mgr>:<pkg>` (the
-                // CLI's live check, one row per package) or `<mgr>:<a>,<b>`
-                // (the daemon's batch action) — never the `<mgr>/<pkg>` this
-                // table tracks under — so the rows this action healed resolve
-                // under THAT grammar, per package plus the batch spelling.
-                let mut healed: Vec<(String, String)> = packages
-                    .iter()
-                    .map(|pkg| {
-                        (
-                            "package".to_string(),
-                            super::package_drift_resource_id(&manager, std::slice::from_ref(pkg)),
-                        )
-                    })
-                    .collect();
-                if packages.len() > 1 {
-                    healed.push((
-                        "package".to_string(),
-                        super::package_drift_resource_id(&manager, &packages),
-                    ));
-                }
-                self.state.resolve_drift_keys(apply_id, &healed)?;
+                self.state
+                    .resolve_drift_keys(apply_id, &result.drift_rows)?;
                 for pkg in &packages {
                     let rid = crate::state::package_resource_id(&manager, pkg);
                     match verb.as_str() {
@@ -2124,6 +2127,14 @@ impl<'a> super::Reconciler<'a> {
                 None => description,
             };
             let (rtype, rid) = parse_resource_from_description(description);
+            // The rows this action stands for, from the ONE producer the daemon
+            // tick records through — never re-derived from `description`, which
+            // is the `managed_resources` tracking id and spells a module's
+            // deployment as a unit (`module:<name>:files:<n>`) no per-file check
+            // can match. Reached only past the guards above: a configurator that
+            // applied nothing converged nothing.
+            self.state
+                .resolve_drift_keys(apply_id, &result.drift_rows)?;
             // A manager node is cfgd's own scaffolding, never a resource the
             // user declared: a refreshed index, a provisioned manager and a
             // tool a cascade shelled out to are none of them things cfgd
@@ -2157,7 +2168,6 @@ impl<'a> super::Reconciler<'a> {
             }
             self.state
                 .upsert_managed_resource(&rtype, &rid, LOCAL_LAYER, None, Some(apply_id))?;
-            self.state.resolve_drift(apply_id, &rtype, &rid)?;
             if rtype == ENV_RESOURCE_TYPE {
                 // An `env:inject:<rc>` action's subject is the shell rc file,
                 // but the check that reads it records the source line under
@@ -2431,6 +2441,17 @@ impl<'a> super::Reconciler<'a> {
                     || provisioned_managers_summary(action, installed, &[]).is_some()
             }),
             versions: versions.iter().cloned().collect(),
+            // Off the ONE producer, so the rows a daemon tick recorded for this
+            // action and the rows this settle heals are one set. Empty for a
+            // Skip, whose row records that cfgd could not act at all.
+            drift_rows: if super::apply_heals_action_rows(action) {
+                super::action_drift_rows(action, self.registry)
+                    .iter()
+                    .map(super::DriftRow::key)
+                    .collect()
+            } else {
+                Vec::new()
+            },
         });
 
         if action_reports_its_own_status(action) {

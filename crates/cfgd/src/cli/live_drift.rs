@@ -145,7 +145,25 @@ fn full_check_cannot_refind(
         return true;
     }
     match e.resource_type.as_str() {
-        "module" => !e.resource_id.contains('/'),
+        // Every module row this check can answer for is a per-file
+        // `<module>/<target>`, classified by the FIRST separator through the
+        // one reader the daemon attributes rows with — a tail may carry a `/`
+        // of its own. The other spellings under the type name a module's own
+        // action (`<module>:script`, `<module>:skip`), which no live file
+        // check re-examines.
+        // legacy-id-ok: a BARE `<module>` is the whole-module row a tick
+        // recorded before per-file rows became the one grammar; that nothing
+        // mints one now is what `every_module_drift_id_names_the_file_it_stands_for`
+        // enforces, and it is kept rather than healed because this check never
+        // looked at whatever it stood for.
+        "module" => !cfgd_core::reconciler::module_row_names_a_file(&e.resource_id),
+        // legacy-id-ok: a comma-joined `<mgr>:<a>,<b>` is the batch spelling a
+        // tick recorded before `action_drift_rows` became the one producer;
+        // that no producer mints one now is what
+        // `every_core_minted_package_drift_id_comes_from_its_composer` enforces,
+        // and the per-package identities that replaced it carry no comma
+        // (FreeBSD `pkg`'s `-1.2.0,1` suffix is stripped by
+        // `package_identity`). A bare id names a manager, not a package.
         "package" => e.resource_id.contains(',') || !e.resource_id.contains(':'),
         "system" => !evaluated_system.iter().any(|c| {
             e.resource_id
@@ -535,7 +553,7 @@ fn live_drift_results_inner(
     let pkg_actions =
         packages::plan_packages(&resolved.merged, modules, &all_managers, cfgd_installed, cx)?;
     for action in &pkg_actions {
-        drift.extend(package_action_drift(action));
+        drift.extend(package_action_drift(action, registry));
     }
 
     // Versions: the package plan above diffs NAMES, so a declaration pinning a
@@ -653,13 +671,15 @@ fn live_drift_results_inner(
     Ok(report)
 }
 
-/// What the PRESENCE pass writes into a package row's `expected` slot. The
-/// two words are the whole vocabulary of that half, which is what lets
+/// What the PRESENCE pass writes into a package row's `expected` slot, for the
+/// one CLI producer that words a row without an action behind it. It is one of
+/// the two words that whole vocabulary holds, which is what lets
 /// [`is_presence_package_row`] tell it apart from the floor half without
-/// re-deriving either — and what `drift_terse_cause` reads to word the row,
-/// so the spelling is the core one both crates share.
+/// re-deriving either — and what `drift_terse_cause` reads to word the row, so
+/// the spelling is the core one both crates share. The `want: absent` half is
+/// only ever minted from an action, through
+/// `cfgd_core::reconciler::package_action_drift_rows`.
 pub(super) const PRESENCE_WANT_INSTALLED: &str = cfgd_core::PACKAGE_WANT_INSTALLED;
-pub(super) const PRESENCE_WANT_ABSENT: &str = cfgd_core::PACKAGE_WANT_ABSENT;
 
 /// Whether a `package` finding came from the presence pass rather than the
 /// declared-floor one — the row-shaped view of
@@ -670,46 +690,27 @@ pub(super) fn is_presence_package_row(r: &VerifyResult) -> bool {
     cfgd_core::is_package_presence_want(&r.expected)
 }
 
-/// Map a non-`Skip` [`PackageAction`] to its drift `VerifyResult` rows — ONE
-/// row per package, never the action's batch. A `package` ROW's identity is
-/// per-package (`<manager>:<name>`) everywhere it is minted: the batch id an
-/// install ACTION carries names a unit no per-package re-check (`status
-/// <module> --scan`, `diff --module`, core `verify`) can ever match, so a
-/// batch-keyed row could only be resolved by another batch of exactly the
-/// same members. Empty for `Skip` (the desired/installed sets already
-/// agree). The `actual` verb is chosen to read naturally in the drift
-/// display (e.g. "not installed").
-pub(super) fn package_action_drift(action: &PackageAction) -> Vec<VerifyResult> {
-    let row = |manager: &str, package: &String, expected: &str, actual: String| VerifyResult {
-        resource_type: "package".to_string(),
-        resource_id: super::diff::package_drift_resource_id(manager, std::slice::from_ref(package)),
-        matches: false,
-        expected: expected.to_string(),
-        actual,
-        unmanaged: false,
-    };
-    match action {
-        PackageAction::Skip { .. } => Vec::new(),
-        PackageAction::Install {
-            manager, packages, ..
-        } => packages
-            .iter()
-            .map(|p| {
-                row(
-                    manager,
-                    p,
-                    PRESENCE_WANT_INSTALLED,
-                    cfgd_core::Absence::NotInstalled.to_string(),
-                )
-            })
-            .collect(),
-        PackageAction::Uninstall {
-            manager, packages, ..
-        } => packages
-            .iter()
-            .map(|p| row(manager, p, PRESENCE_WANT_ABSENT, "to remove".to_string()))
-            .collect(),
-    }
+/// Map a non-`Skip` [`PackageAction`] to its drift `VerifyResult` rows.
+///
+/// A thin view over `cfgd_core::reconciler::package_action_drift_rows`, the ONE
+/// producer the daemon tick records through and the apply heals through, so a
+/// row this scan writes is a row an apply of the same action settles. Empty for
+/// `Skip` (the desired/installed sets already agree).
+pub(super) fn package_action_drift(
+    action: &PackageAction,
+    registry: &cfgd_core::providers::ProviderRegistry,
+) -> Vec<VerifyResult> {
+    cfgd_core::reconciler::package_action_drift_rows(action, registry)
+        .into_iter()
+        .map(|row| VerifyResult {
+            resource_type: row.resource_type,
+            resource_id: row.resource_id,
+            matches: false,
+            expected: row.expected.unwrap_or_default(),
+            actual: row.actual.unwrap_or_default(),
+            unmanaged: false,
+        })
+        .collect()
 }
 
 /// Filter a planner's [`Action`]s down to the [`ManagerAction`]s that are
@@ -1672,6 +1673,45 @@ mod tests {
                 .any(|r| r.resource_type == "package" && r.resource_id.contains(',')),
             "no batch-keyed package row may reach the display: {drift:?}"
         );
+    }
+
+    /// A `module` row is kept unless its FIRST separator names a file.
+    ///
+    /// The predicate once asked whether a `/` appeared anywhere in the id,
+    /// which reads any grammar whose TAIL carries one — a package list holding
+    /// an npm scope or a go module path — as a per-file row, and a scan that
+    /// checked no such file resolved it anyway. Both directions are pinned:
+    /// the file grammar stays resolvable, and every other spelling stays kept
+    /// however its tail is punctuated.
+    #[test]
+    fn a_module_row_is_kept_unless_its_first_separator_names_a_file() {
+        let event = |id: &str| cfgd_core::state::DriftEvent {
+            id: 0,
+            timestamp: cfgd_core::utc_now_iso8601(),
+            resource_type: "module".to_string(),
+            resource_id: id.to_string(),
+            expected: None,
+            actual: None,
+            resolved_by: None,
+            source: cfgd_core::config::LOCAL_LAYER.to_string(),
+            want: None,
+            have: None,
+        };
+        for id in ["dev", "dev:script", "dev:skip", "dev:packages:@scope/cli"] {
+            assert!(
+                full_check_cannot_refind(&event(id), &[], &[]),
+                "a module row this check never looked at is kept: {id}"
+            );
+        }
+        for id in [
+            &module_file_resource_id("dev", "/home/u/.conf"),
+            "dev/C:/Users/u/.conf",
+        ] {
+            assert!(
+                !full_check_cannot_refind(&event(id), &[], &[]),
+                "a per-file module row is what this check re-finds: {id}"
+            );
+        }
     }
 
     /// The live-producer half of the id-shape invariant the keep predicate

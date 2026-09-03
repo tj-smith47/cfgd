@@ -953,6 +953,41 @@ pub fn split_module_file_resource_id(id: &str) -> Option<(&str, String)> {
     Some((module, target))
 }
 
+/// The module a `"module"` drift row belongs to: everything before its first
+/// `/` or `:`.
+///
+/// One type carries three grammars — the per-file `<module>/<target>` rows and
+/// the `<module>:script` / `<module>:skip` ids — plus the bare `<module>` a
+/// tick recorded before either producer agreed on a spelling. A module name
+/// carries neither separator (`modules::loader` refuses one, and the name must
+/// equal its own directory component), so the first one is always where the
+/// owner ends.
+///
+/// Kept beside the composers that mint those ids: the daemon reads it to
+/// attribute a row, the CLI to classify one, and a second reading in either
+/// crate is how one grammar came to be judged two ways.
+#[must_use]
+pub fn module_row_owner(resource_id: &str) -> &str {
+    match resource_id.find(['/', ':']) {
+        Some(at) => &resource_id[..at],
+        None => resource_id,
+    }
+}
+
+/// Whether a `"module"` drift row NAMES A FILE — the `<module>/<target>`
+/// grammar [`module_file_resource_id`] mints — rather than a script, a skip,
+/// or the bare legacy whole-module id.
+///
+/// The question a live check asks before resolving a row: only a per-file id
+/// is something a file pass can re-find, and a scan that resolves anything
+/// else has cleared a finding it never looked at. Judged on the FIRST
+/// separator rather than on the presence of a `/`, because every other
+/// grammar's tail may carry one of its own.
+#[must_use]
+pub fn module_row_names_a_file(resource_id: &str) -> bool {
+    matches!(resource_id.find(['/', ':']), Some(at) if resource_id.as_bytes()[at] == b'/')
+}
+
 pub(super) fn parse_resource_from_description(desc: &str) -> (String, String) {
     let Some((prefix, rest)) = desc.split_once(':') else {
         return ("unknown".to_string(), desc.to_string());

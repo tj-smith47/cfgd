@@ -607,9 +607,10 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                 if pkg.manager != "script" && mgr_map.contains_key(pkg.manager.as_str()) {
                     checked.push((
                         "package".to_string(),
-                        package_drift_resource_id(
+                        package_entry_drift_id(
                             &pkg.manager,
-                            std::slice::from_ref(&pkg.resolved_name),
+                            &pkg.resolved_name,
+                            mgr_map.get(pkg.manager.as_str()).copied(),
                         ),
                     ));
                 }
@@ -617,7 +618,11 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     has_pkg_drift = true;
                     findings.push(cfgd_core::reconciler::VerifyResult {
                         resource_type: "package".to_string(),
-                        resource_id: package_drift_resource_id(&drift.manager, &drift.packages),
+                        resource_id: package_entry_drift_id(
+                            &pkg.manager,
+                            &pkg.resolved_name,
+                            mgr_map.get(pkg.manager.as_str()).copied(),
+                        ),
                         matches: false,
                         expected: cfgd_core::PACKAGE_WANT_INSTALLED.to_string(),
                         // The RECORDED operand takes the one stored spelling
@@ -634,9 +639,10 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     diff_payload.packages.push(drift);
                     continue;
                 }
-                let id = package_drift_resource_id(
+                let id = package_entry_drift_id(
                     &pkg.manager,
-                    std::slice::from_ref(&pkg.resolved_name),
+                    &pkg.resolved_name,
+                    mgr_map.get(pkg.manager.as_str()).copied(),
                 );
                 if let Some(row) = version_rows.iter().find(|r| r.resource_id == id) {
                     has_pkg_drift = true;
@@ -817,18 +823,17 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     Ok(())
 }
 
-/// The ONE grammar for a package drift's `resource_id`: `<manager>:<package>`.
-/// Every CLI minting site passes exactly ONE package — `package_action_drift`
+/// The ONE grammar for a package drift's `resource_id`:
+/// `<manager>:<package_identity>`, one package per row.
+///
+/// Every CLI minting site reaches it through here — `package_action_drift`
 /// (`live_drift.rs`) rows per package, and `cmd_diff_module` /
 /// `cmd_status_module` for both their `checked` scope and their
-/// missing-package findings — so a whole-machine check and a `--module` scan
-/// spell the same missing package identically and one heals what the other
-/// recorded. The daemon's batch spelling (`mgr:a,b`, from
-/// `action_resource_info`) names an ACTION, not a package, and is exactly
-/// what `full_check_cannot_refind` keeps a live check from resolving. The
-/// composer itself is core's — the batch producers live there — so the CLI
-/// and the daemon cannot spell one package two ways.
-pub(super) use cfgd_core::reconciler::package_drift_resource_id;
+/// missing-package findings — so a whole-machine check, a `--module` scan and
+/// the daemon tick spell the same package identically and each heals what the
+/// others recorded. The composer itself is core's, because the tick's and the
+/// apply's producers live there.
+pub(super) use cfgd_core::reconciler::package_entry_drift_id;
 
 /// Drift record for a module-declared package that is not installed, or `None`
 /// when it is installed, script-based, or its manager isn't registered.

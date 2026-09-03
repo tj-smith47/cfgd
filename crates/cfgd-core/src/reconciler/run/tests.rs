@@ -92,6 +92,7 @@ fn action_result(success: bool) -> ActionResult {
         not_attempted: None,
         installed: None,
         versions: Default::default(),
+        drift_rows: Vec::new(),
     }
 }
 
@@ -734,6 +735,7 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
         not_attempted: Some(crate::NO_SESSION_MANAGER.to_string()),
         installed: None,
         versions: Default::default(),
+        drift_rows: Vec::new(),
     });
 
     let tally = result.tally();

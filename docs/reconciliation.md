@@ -297,6 +297,50 @@ cfgd tracks state in a SQLite database at `~/.local/state/cfgd/state.db` (Linux;
 | **Source tracking** | Per-source fetch time, commit, version, sync status | Multi-source sync and conflict history |
 | **Pending decisions** | Unresolved recommended/optional items from source updates | `cfgd decide`, daemon policy |
 
+### What a drift row names
+
+Every producer of a drift row (the daemon's reconcile tick, `cfgd status --scan`,
+`cfgd diff`, `cfgd verify`) writes the same identity for the same finding, and an
+apply clears the rows for the work it just did. One row stands for one thing you
+can check:
+
+| Kind | Row identity | Example |
+|---|---|---|
+| Module file | `<module>/<target>` | `nvim/home/u/.config/nvim/init.lua` |
+| Package | `<manager>:<package>` | `brew:ripgrep` |
+| System setting | `<configurator>.<key>` | `sysctl.net.ipv4.ip_forward` |
+| Managed file | the target path | `/etc/hosts` |
+
+A module that declares five files has five rows, not one: a row that stood for a
+whole module could never be cleared by a per-file check, so a module you had just
+deployed kept reporting drift. A module's packages are rows of the package kind
+for the same reason, spelled exactly as a package you declared in a profile is:
+the check that clears them is the same one. The package row is spelled in the
+manager's own naming (a Go package `rsc.io/2fa` is `go:2fa`, the name `go list`
+reports), so the producer that records the row and the check that clears it always
+agree.
+
+### Rows an older daemon wrote
+
+Before cfgd settled on the identities above, a reconcile tick could record a
+whole-module row (`module|nvim`) or a batched package row
+(`package|brew:jq,ripgrep`). Nothing writes either spelling now, and no check can
+re-find one, so `cfgd status`, `cfgd diff` and `cfgd verify` leave them standing
+rather than clearing a finding they never looked at — which keeps
+`cfgd status --exit-code` at `5`. A running daemon clears them on its next tick
+(the rows it can no longer account for are resolved with the plan it just ran).
+On a machine that never runs `cfgd daemon`, start it once in the foreground and
+stop it after its first tick:
+
+```bash
+cfgd daemon run    # ctrl-c after the first reconcile
+```
+
+A block cfgd skipped (a package manager that is not available, a system
+configurator this host does not have) keeps its row through an apply: the run did
+not converge it, so nothing about it was proven. The next reconcile that can check
+it is what clears it.
+
 ## Provenance Tracking
 
 When using [multi-source config](sources.md), every action carries an `origin` field so the

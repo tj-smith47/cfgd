@@ -544,15 +544,7 @@ impl HealthFinding {
             .as_deref()
             .or(event.actual.as_deref())
             .unwrap_or_default();
-        // A shell row's want IS the declared line the reader heals toward,
-        // so it keeps both operands; every other kind states the terse cause
-        // and leaves the bytes to `cfgd diff`.
-        let cause = if cfgd_core::output::is_shell_drift_kind(&event.resource_type) {
-            let (w, h) = cfgd_core::output::drift_operands(&event.resource_type, want, have);
-            cfgd_core::output::drift_detail(w, h)
-        } else {
-            cfgd_core::output::drift_terse_cause(&event.resource_type, want, have)
-        };
+        let cause = cfgd_core::output::drift_cause(&event.resource_type, want, have);
         let label =
             (event.source != LOCAL_LAYER).then(|| cfgd_core::output::component::StatusLabel {
                 role: Role::Secondary,
@@ -629,6 +621,10 @@ fn render_module_drift_section(
                     cfgd_core::fold_home_in_text(&d.item)
                 )
             };
+            // The module report's rows are terse at every kind, shell
+            // included: the subject already names the item, and this section
+            // is the inventory a reader scans before running `cfgd diff` for
+            // the bytes.
             let cause = cfgd_core::output::drift_terse_cause(
                 &d.event.resource_type,
                 d.event.expected.as_deref().unwrap_or_default(),
@@ -1527,7 +1523,11 @@ fn finding_owner(
                 FindingSlot::OwnerVerdict,
             ),
         },
-        ENV_RESOURCE_TYPE if event.resource_id == cfgd_core::state::ENV_SESSION_RESOURCE_ID => (
+        // The live-session surface is its own resource TYPE — the one spelling
+        // `action_drift_rows` mints and the apply heals. Reading it off an
+        // `env` row's id instead matched a shape no producer wrote, and the
+        // env-file redundancy drop below would have swallowed it anyway.
+        "env-session" => (
             Some(Owner::cfgd(SESSION_GROUP)),
             Some("session env"),
             FindingSlot::Child(None),
@@ -2020,6 +2020,8 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
         .map(|d| {
             (
                 super::live_drift::module_file_resource_id(&d.owner, &d.item),
+                // A files-surface row is one kind and never shell; terse is
+                // the module report's grammar for all of them.
                 cfgd_core::output::drift_terse_cause(
                     &d.event.resource_type,
                     d.event.expected.as_deref().unwrap_or_default(),
@@ -2074,6 +2076,9 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
                 .iter()
                 .find(|d| d.surface == surface && d.item == name)
                 .map(|d| {
+                    // Terse by the module report's rule, not for want of
+                    // operands: an inventory row states the KIND of
+                    // divergence and leaves the declared line to `cfgd diff`.
                     cfgd_core::output::drift_terse_cause(
                         &d.event.resource_type,
                         d.event.expected.as_deref().unwrap_or_default(),
@@ -2802,9 +2807,10 @@ pub(super) fn cmd_status_module(
                         if scannable {
                             checked.push((
                                 "package".to_string(),
-                                super::diff::package_drift_resource_id(
+                                super::diff::package_entry_drift_id(
                                     &pkg.manager,
-                                    std::slice::from_ref(&pkg.resolved_name),
+                                    &pkg.resolved_name,
+                                    mgr_map.get(pkg.manager.as_str()).copied(),
                                 ),
                             ));
                         }
@@ -2815,9 +2821,10 @@ pub(super) fn cmd_status_module(
                         {
                             let finding = cfgd_core::reconciler::VerifyResult {
                                 resource_type: "package".to_string(),
-                                resource_id: super::diff::package_drift_resource_id(
-                                    &pd.manager,
-                                    &pd.packages,
+                                resource_id: super::diff::package_entry_drift_id(
+                                    &pkg.manager,
+                                    &pkg.resolved_name,
+                                    mgr_map.get(pkg.manager.as_str()).copied(),
                                 ),
                                 matches: false,
                                 expected: cfgd_core::PACKAGE_WANT_INSTALLED.to_string(),
@@ -2844,9 +2851,10 @@ pub(super) fn cmd_status_module(
                             // question: a package the machine holds below it
                             // is drift, under the same id its presence row
                             // would carry.
-                            let id = super::diff::package_drift_resource_id(
+                            let id = super::diff::package_entry_drift_id(
                                 &pkg.manager,
-                                std::slice::from_ref(&pkg.resolved_name),
+                                &pkg.resolved_name,
+                                mgr_map.get(pkg.manager.as_str()).copied(),
                             );
                             if let Some(row) = version_rows.iter().find(|r| r.resource_id == id) {
                                 findings.push(row.clone());
@@ -3186,6 +3194,45 @@ mod tests {
     use cfgd_core::output::Printer;
     use cfgd_core::output::Verbosity;
     use cfgd_core::state::{ApplyRecord, ApplyStatus};
+
+    /// A recorded row whose producer stated NO operands reads as a
+    /// divergence, not as an absence — on the shell kinds too.
+    ///
+    /// The Component Health slot renders a shell row's two operands, because
+    /// a shell row's `want` IS the declared line a reader heals toward. A
+    /// daemon-recorded env row states neither half (the file's content
+    /// changed; there is no pair), and the absence fold turns an empty
+    /// operand into `missing` — so the row read `want: missing, have:
+    /// missing`, which says no divergence at all. The env file is taken from
+    /// the generator's own answer for this host, never spelled.
+    #[test]
+    fn a_recorded_shell_row_with_no_operands_reads_as_drift_detected() {
+        let home = tempfile::tempdir().unwrap();
+        let env_file = cfgd_core::reconciler::primary_env_file(home.path());
+        let event = cfgd_core::state::DriftEvent {
+            id: 1,
+            timestamp: cfgd_core::utc_now_iso8601(),
+            resource_type: "env".to_string(),
+            resource_id: cfgd_core::to_posix_string(&env_file),
+            expected: None,
+            actual: None,
+            resolved_by: None,
+            source: cfgd_core::config::LOCAL_LAYER.to_string(),
+            want: None,
+            have: None,
+        };
+        let finding = HealthFinding::of(&event, None);
+        assert_eq!(
+            finding.cause,
+            cfgd_core::output::DRIFT_DETECTED_CAUSE,
+            "an operand-less row names the divergence, not an absence"
+        );
+        assert!(
+            !finding.cause.contains("have:"),
+            "nothing states operands the producer never wrote: {}",
+            finding.cause
+        );
+    }
 
     /// The `cfgd status -o json` surface must emit the unified camelCase status
     /// token at `.lastApply.status`. InProgress is the variant where the apply/
