@@ -314,6 +314,7 @@ pub fn cmd_profile_create(
                 .map(|name| cfgd_core::output::HeaderModule {
                     name: name.clone(),
                     platform_skip_reason: None,
+                    dep_pulled: false,
                 })
                 .collect::<Vec<_>>(),
         },

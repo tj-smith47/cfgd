@@ -173,6 +173,7 @@ fn main() -> anyhow::Result<()> {
         state: dir_src(matches.value_source("state_dir")),
         cache: dir_src(matches.value_source("cache_dir")),
         runtime: dir_src(matches.value_source("runtime_dir")),
+        scope: dir_src(matches.value_source("scope_arg")),
     };
 
     // `--config` (a file OR dir, more specific) wins over `--config-dir`. Because

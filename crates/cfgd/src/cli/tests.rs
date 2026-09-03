@@ -31561,6 +31561,26 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
         raw.contains(&theme.muted.apply_to(" (checked 3m ago)").to_string()),
         "the heading's freshness note must render muted in:\n{raw:?}"
     );
+    // The SUBJECT is an owner token, so it carries the same three slots every
+    // other surface naming that owner paints — kind Secondary, `:` Warn, name
+    // Ok — and NOT the row's single role coat, which is what painted a whole
+    // Ok row green before the owner slot existed.
+    for (kind, name) in [("module", "nvim"), ("cfgd", "env"), ("profile", "base")] {
+        let token = format!(
+            "{}{}{}",
+            theme.secondary.apply_to(kind),
+            theme.warning.apply_to(":"),
+            theme.success.apply_to(name)
+        );
+        assert!(
+            raw.contains(&token),
+            "`{kind}:{name}` must render as the tri-colour owner token in:\n{raw:?}"
+        );
+    }
+    assert!(
+        !raw.contains(&theme.error.apply_to("module:broken").to_string()),
+        "a health row's subject never takes the row's role coat in:\n{raw:?}"
+    );
 }
 
 /// The fleet dashboard has no standalone Drift section: each unresolved
@@ -32259,6 +32279,196 @@ fn every_owner_label_of_a_held_owner_comes_from_owner_label() {
     );
 }
 
+/// Every Title-Cased status word the CLI renders carries its role colour.
+///
+/// The workspace states each status vocabulary as a word-and-ROLE pair
+/// (`ApplyStatus::human_display`, `state::module_status_display`,
+/// `state::source_status_display`, `state::backup_run_status_display`,
+/// `compliance::ComplianceStatus::human_display`), so a slot has the colour in
+/// hand the moment it has the word. `cfgd compliance snapshot` still rendered
+/// `Status  Violation` through the plain kv slot, off an `overall_status`
+/// that returned a bare `&'static str` — one surface calling a violation the
+/// same colour as everything else on the screen.
+///
+/// Two failure shapes, both walked: a render slot carrying one of the words as
+/// a LITERAL (it belongs to a pair producer, so the literal is a second
+/// spelling), and a call site DISCARDING the role half of a pair. A discard is
+/// legitimate only where nothing renders — a `-o json` payload's own field —
+/// and says so with `// status-word-ok: <why>`.
+#[test]
+fn every_title_cased_status_word_renders_role_styled() {
+    /// Every word the five pair producers can return.
+    const WORDS: &[&str] = &[
+        "Succeeded",
+        "Success",
+        "Partial",
+        "Failed",
+        "InProgress",
+        "Aborted",
+        "Synced",
+        "Drifted",
+        "NotApplied",
+        "Compliant",
+        "Violation",
+    ];
+    /// Slots that carry no role of their own.
+    const ROLELESS: &[&str] = &["KvPair::new(", ".kv(", ".row(", "CommandPair::"];
+    /// The pair producers, by the spelling a call site reaches them through.
+    const PAIRS: &[&str] = &[
+        "human_display()",
+        "module_status_display(",
+        "source_status_display(",
+        "backup_run_status_display(",
+        "state_display()",
+    ];
+
+    fn offenders_in(body: &str) -> Vec<(usize, String)> {
+        let lines: Vec<&str> = body.lines().collect();
+        let mut hits = Vec::new();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || code.contains("// status-word-ok:") {
+                continue;
+            }
+            if (n.saturating_sub(1)..n).any(|p| lines[p].contains("// status-word-ok:")) {
+                continue;
+            }
+            // The VALUE position only: the same words are legitimate KEYS
+            // (`Compliant  4` counts a category, it does not report a state).
+            let literal_in_a_roleless_slot = ROLELESS.iter().any(|slot| line.contains(slot))
+                && WORDS.iter().any(|w| line.contains(&format!(", \"{w}\"")));
+            // `let (word, _) = …human_display();` — the colour thrown away at
+            // the one place that had it.
+            let discarded_role = PAIRS.iter().any(|p| line.contains(p))
+                && (line.contains(", _)") || line.contains(", _) ="))
+                && line.contains("let (");
+            if literal_in_a_roleless_slot || discarded_role {
+                hits.push((n + 1, code.to_string()));
+            }
+        }
+        hits
+    }
+
+    assert_eq!(
+        offenders_in("        rows.push(KvPair::new(\"Status\", \"Violation\"));\n").len(),
+        1,
+        "the walk no longer sees a status word in a roleless slot"
+    );
+    assert!(
+        offenders_in("            s.kv(\"Compliant\", summary.compliant.to_string())\n").is_empty(),
+        "a status word used as a KEY counts a category, it reports no state"
+    );
+    assert_eq!(
+        offenders_in("        let (word, _) = record.status.human_display();\n").len(),
+        1,
+        "the walk no longer sees a discarded role"
+    );
+    assert!(
+        offenders_in("        // status-word-ok: payload only\n        let (word, _) = payload.state_display();\n").is_empty(),
+        "the marker no longer exempts a payload-only read"
+    );
+
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        // The producers themselves are where the words and their roles are
+        // spelled; every other site reads them from here.
+        if path.ends_with("state/types.rs") || path.ends_with("compliance/mod.rs") {
+            continue;
+        }
+        for (n, code) in offenders_in(&body) {
+            offenders.push(format!("{}:{n}: {code}", path.display()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a Title-Cased status word renders with the role its producer paired \
+         it with — through `KvPair::role_valued`, `Table::row_styled`, a status \
+         row's own role or `StatusFields::verdict` — never as a literal in a \
+         roleless slot and never with the role discarded (`// status-word-ok: \
+         <why>` for a read that renders nothing):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A status row whose SUBJECT is an owner token takes the renderer's owner
+/// subject slot, never the plain-string one.
+///
+/// A style-less subject falls to the row's ROLE style, so `module:nvim` on an
+/// `Ok` Component Health row painted entirely green while every other surface
+/// naming that owner rendered kind / `:` / name in three colours. The slot
+/// (`Doc::status_owner_with` / `SectionBuilder::status_owner_with`) hands the
+/// renderer the `OwnerLabel` itself and the row's plain `kind:name` stays what
+/// `-o json` reads.
+///
+/// A token INSIDE a sentence (`Rejected 'x' from source:acme`) is not a member:
+/// the row's subject is the sentence, and a sentence has no slot to paint. The
+/// walk reads that shape off the `format!` the call site already carries.
+#[test]
+fn every_status_row_naming_an_owner_takes_the_owner_subject_slot() {
+    /// `Some(line)` per status call whose subject is a bare owner token.
+    fn owner_subjects(body: &str) -> Vec<(usize, String)> {
+        let lines: Vec<&str> = body.lines().collect();
+        let mut hits = Vec::new();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if !["status_with(", ".status(", "status_simple("]
+                .iter()
+                .any(|needle| line.contains(needle))
+            {
+                continue;
+            }
+            let call = lines[n..(n + 3).min(lines.len())].concat();
+            // A formatted subject is a sentence that merely mentions an owner.
+            if call.contains("format!") {
+                continue;
+            }
+            if !(call.contains(".token()") || call.contains(".plain()")) {
+                continue;
+            }
+            if (n.saturating_sub(1)..=n).any(|p| lines[p].contains("owner-subject-ok:")) {
+                continue;
+            }
+            hits.push((n + 1, code.to_string()));
+        }
+        hits
+    }
+
+    let bare = "            let s = s.status_with(role, owner.token(), |f| {\n                f.verdict(verdict)\n            });\n";
+    assert_eq!(
+        owner_subjects(bare).len(),
+        1,
+        "the walk no longer sees a bare owner token in a status subject"
+    );
+    let sentence = "            .status(\n                Role::Ok,\n                format!(\"Rejected from {}\", OwnerLabel::new(\"source\", n).plain()),\n            )\n";
+    assert!(
+        owner_subjects(sentence).is_empty(),
+        "a token inside a sentence is not a subject slot"
+    );
+
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        for (n, code) in owner_subjects(&body) {
+            offenders.push(format!("{}:{n}: {code}", path.display()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a status row naming an owner takes `status_owner_with`, so the token \
+         renders in its own three slots instead of the row's single role coat \
+         (`// owner-subject-ok: <why>` for a subject that is not a token):\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// Every header naming what a resolved profile puts on this machine builds
 /// that row through the one builder.
 ///
@@ -32270,7 +32480,7 @@ fn every_owner_label_of_a_held_owner_comes_from_owner_label() {
 ///
 /// The population is every production `.rs` in both crates. A `Modules` key/
 /// value row belongs to [`cfgd_core::output::config_header_rows`] — or to the
-/// [`cfgd_core::output::modules_header_row`] primitive it wraps; a row
+/// [`cfgd_core::output::modules_header_row_for`] builder it wraps; a row
 /// stating a COUNT of modules, a cache directory, or a set this host is not
 /// resolving from its own profile carries a `// modules-row-ok: <why>` marker.
 #[test]
@@ -32342,7 +32552,7 @@ fn every_resolved_profile_header_names_its_modules_through_the_one_builder() {
     assert!(
         offenders.is_empty(),
         "a `Modules` header row comes from \
-         `cfgd_core::output::modules_header_row`, so no two surfaces can name \
+         `cfgd_core::output::modules_header_row_for`, so no two surfaces can name \
          a resolved profile's modules with different keys or a different \
          elision (a row naming a count or a cache fact takes a \
          `// modules-row-ok:` marker):\n{}",

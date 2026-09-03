@@ -67,10 +67,37 @@ pub(crate) fn finalize_subject(
     qualifier: Option<&str>,
     label: Option<&StatusLabel>,
 ) -> String {
-    let sanitized = cursor_safe(subject);
+    wrap_subject(theme, cursor_safe(subject), marker, qualifier, label)
+}
+
+/// [`finalize_subject`] for a subject that IS an owner token.
+///
+/// The tri-colour paint is the renderer's own, so it stands in for the
+/// sanitize-then-wrap step rather than layering on top of it: `OwnerLabel`
+/// folds each of its three slots through [`cursor_safe`] itself, and folding
+/// the composed token a second time would eat the SGR the renderer just put
+/// there. The row carries `ThemedStyle::plain()` as its subject style so the
+/// role coat does not repaint the token; every width is measured with the
+/// escapes stripped, so padding is unaffected.
+pub(crate) fn finalize_owner_subject(
+    theme: &Theme,
+    owner: &crate::output::OwnerLabel,
+    qualifier: Option<&str>,
+    label: Option<&StatusLabel>,
+) -> String {
+    wrap_subject(theme, owner.styled(theme), None, qualifier, label)
+}
+
+fn wrap_subject(
+    theme: &Theme,
+    subject: String,
+    marker: Option<&StatusLabel>,
+    qualifier: Option<&str>,
+    label: Option<&StatusLabel>,
+) -> String {
     let qualified = match qualifier {
-        Some(q) => compose_subject_with_qualifier(theme, &sanitized, q),
-        None => sanitized,
+        Some(q) => compose_subject_with_qualifier(theme, &subject, q),
+        None => subject,
     };
     let labelled = match label {
         Some(lbl) => compose_subject_with_label(theme, &qualified, lbl),

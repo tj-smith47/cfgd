@@ -20,6 +20,7 @@ const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 fn user_fixture() -> PathsOutput {
     PathsOutput {
         scope: "user",
+        scope_named_by_invocation: false,
         config: ConfigPaths {
             dir: "/home/you/.config/cfgd".into(),
             source: DirSource::Default,
@@ -48,6 +49,7 @@ fn user_fixture() -> PathsOutput {
 fn system_fixture() -> PathsOutput {
     PathsOutput {
         scope: "system",
+        scope_named_by_invocation: false,
         config: ConfigPaths {
             dir: "/etc/cfgd".into(),
             source: DirSource::Default,
@@ -106,6 +108,43 @@ fn paths_user_scope_json() {
          Case, the payload keys stay the camelCase a script reads"
     );
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "paths/user.json");
+}
+
+/// Ruled 2026-09-03: a scoped command never echoes its invocation-named scope
+/// back as an annotation. `cfgd --scope system paths` renders no `Scope` row —
+/// the reader wrote the word. A defaulted scope is the only thing that can say
+/// which family these roots belong to, so its row stays.
+///
+/// The payload is unconditional either way: a scripting consumer never saw the
+/// command line.
+#[test]
+fn a_scope_the_invocation_named_is_not_restated_as_a_row() {
+    let render = |named: bool| {
+        let mut output = system_fixture();
+        output.scope_named_by_invocation = named;
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_paths_doc(&output));
+        drop(printer);
+        (
+            cap.human(),
+            serde_json::to_value(&output).expect("payload serializes"),
+        )
+    };
+
+    let (defaulted, defaulted_json) = render(false);
+    assert!(
+        defaulted.contains("Scope  system"),
+        "a defaulted scope names itself: {defaulted}"
+    );
+    let (flagged, flagged_json) = render(true);
+    assert!(
+        !flagged.contains("Scope"),
+        "`--scope system` is not read back to the reader: {flagged}"
+    );
+    assert_eq!(
+        defaulted_json, flagged_json,
+        "the row is display-only: the payload carries the scope either way"
+    );
 }
 
 #[test]

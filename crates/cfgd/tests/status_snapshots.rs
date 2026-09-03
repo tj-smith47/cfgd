@@ -492,6 +492,7 @@ fn header_modules(output: &StatusOutput) -> Vec<cfgd_core::output::HeaderModule>
         .modules
         .iter()
         .map(|m| cfgd_core::output::HeaderModule {
+            dep_pulled: false,
             name: m.name.clone(),
             platform_skip_reason: None,
         })

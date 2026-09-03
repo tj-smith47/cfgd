@@ -396,6 +396,7 @@ mod tests {
 
     fn module(name: &str) -> ResolvedModule {
         ResolvedModule {
+            dep_pulled: false,
             name: name.to_string(),
             packages: Vec::new(),
             files: Vec::new(),

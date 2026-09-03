@@ -1300,6 +1300,7 @@ use crate::modules::{ResolvedFile, ResolvedModule, ResolvedPackage};
 /// An empty resolved module to fill in one resource kind per test.
 fn empty_module(name: &str) -> ResolvedModule {
     ResolvedModule {
+        dep_pulled: false,
         name: name.to_string(),
         packages: Vec::new(),
         files: Vec::new(),

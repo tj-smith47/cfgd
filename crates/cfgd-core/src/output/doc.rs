@@ -99,6 +99,28 @@ impl StatusFields {
     }
 }
 
+/// The one composition of a status row, over both buffered builders and both
+/// of their entry points — `subject` is always the PLAIN text `-o json` reads,
+/// `owner` the renderer's instruction to paint it as an owner token.
+fn status_component(
+    role: Role,
+    subject: String,
+    owner: Option<OwnerLabel>,
+    f: StatusFields,
+) -> Component {
+    Component::Status {
+        role,
+        subject,
+        detail: f.detail,
+        duration_ms: f.duration.map(|d| d.as_millis()),
+        target: f.target,
+        qualifier: f.qualifier,
+        label: f.label,
+        verdict: f.verdict,
+        owner,
+    }
+}
+
 /// Top-level buffered document. Built then handed to `Printer::emit`.
 pub struct Doc {
     pub(crate) heading: Option<HeadingKind>,
@@ -237,16 +259,12 @@ impl Doc {
     }
 
     pub fn status(mut self, role: Role, subject: impl Into<String>) -> Self {
-        self.children.push(Component::Status {
+        self.children.push(status_component(
             role,
-            subject: subject.into(),
-            detail: None,
-            duration_ms: None,
-            target: None,
-            qualifier: None,
-            label: None,
-            verdict: None,
-        });
+            subject.into(),
+            None,
+            StatusFields::default(),
+        ));
         self
     }
 
@@ -257,16 +275,28 @@ impl Doc {
         build: impl FnOnce(StatusFields) -> StatusFields,
     ) -> Self {
         let f = build(StatusFields::default());
-        self.children.push(Component::Status {
-            role,
-            subject: subject.into(),
-            detail: f.detail,
-            duration_ms: f.duration.map(|d| d.as_millis()),
-            target: f.target,
-            qualifier: f.qualifier,
-            label: f.label,
-            verdict: f.verdict,
-        });
+        self.children
+            .push(status_component(role, subject.into(), None, f));
+        self
+    }
+
+    /// [`Self::status_with`] for a row whose SUBJECT is an owner token — the
+    /// ONE slot a `kind:name` may occupy on a status line, painted through
+    /// [`OwnerLabel`]'s three slots by the renderer.
+    ///
+    /// A caller holding an [`crate::reconciler::Owner`] passes its `label()`;
+    /// the plain token still travels as the row's `subject`, so nothing about
+    /// `-o json` or a colourless render changes. See [`Component::Status`]'s
+    /// `owner` field for why the paint cannot happen at the call site.
+    pub fn status_owner_with(
+        mut self,
+        role: Role,
+        owner: OwnerLabel,
+        build: impl FnOnce(StatusFields) -> StatusFields,
+    ) -> Self {
+        let f = build(StatusFields::default());
+        self.children
+            .push(status_component(role, owner.plain(), Some(owner), f));
         self
     }
 
@@ -550,16 +580,12 @@ impl SectionBuilder {
     }
 
     pub fn status(mut self, role: Role, subject: impl Into<String>) -> Self {
-        self.children.push(Component::Status {
+        self.children.push(status_component(
             role,
-            subject: subject.into(),
-            detail: None,
-            duration_ms: None,
-            target: None,
-            qualifier: None,
-            label: None,
-            verdict: None,
-        });
+            subject.into(),
+            None,
+            StatusFields::default(),
+        ));
         self
     }
 
@@ -570,16 +596,22 @@ impl SectionBuilder {
         build: impl FnOnce(StatusFields) -> StatusFields,
     ) -> Self {
         let f = build(StatusFields::default());
-        self.children.push(Component::Status {
-            role,
-            subject: subject.into(),
-            detail: f.detail,
-            duration_ms: f.duration.map(|d| d.as_millis()),
-            target: f.target,
-            qualifier: f.qualifier,
-            label: f.label,
-            verdict: f.verdict,
-        });
+        self.children
+            .push(status_component(role, subject.into(), None, f));
+        self
+    }
+
+    /// [`Self::status_with`] for a row whose SUBJECT is an owner token — the
+    /// section-level twin of [`Doc::status_owner_with`].
+    pub fn status_owner_with(
+        mut self,
+        role: Role,
+        owner: OwnerLabel,
+        build: impl FnOnce(StatusFields) -> StatusFields,
+    ) -> Self {
+        let f = build(StatusFields::default());
+        self.children
+            .push(status_component(role, owner.plain(), Some(owner), f));
         self
     }
 
@@ -882,10 +914,12 @@ mod tests {
             qualifier,
             label,
             verdict,
+            owner,
         } = &d.children[0]
         {
             assert!(matches!(role, Role::Ok));
             assert!(verdict.is_none());
+            assert!(owner.is_none());
             assert_eq!(subject, "applied");
             assert!(detail.is_none());
             assert!(duration_ms.is_none());
@@ -915,6 +949,7 @@ mod tests {
             qualifier,
             label,
             verdict: _,
+            owner: _,
         } = &d.children[0]
         {
             assert!(matches!(role, Role::Warn));

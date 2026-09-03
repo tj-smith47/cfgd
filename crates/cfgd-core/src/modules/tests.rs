@@ -958,6 +958,7 @@ fn skipped_resolved_module_has_empty_on_drift_scripts() {
         "gated".into(),
         std::path::PathBuf::from("/tmp/gated"),
         Vec::new(),
+        false,
         "platform not matched".into(),
         None,
     );

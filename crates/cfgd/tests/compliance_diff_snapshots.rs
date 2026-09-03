@@ -98,20 +98,20 @@ fn changed_only_diff() -> ComplianceDiff {
         changed: vec![
             ComplianceCheckChange {
                 key: "file:/etc/hosts".into(),
-                old_status: "Compliant".into(),
-                new_status: "Violation".into(),
+                old_status: ComplianceStatus::Compliant,
+                new_status: ComplianceStatus::Violation,
                 detail: Some("hash drift detected".into()),
             },
             ComplianceCheckChange {
                 key: "package:ripgrep".into(),
-                old_status: "Compliant".into(),
-                new_status: "Warning".into(),
+                old_status: ComplianceStatus::Compliant,
+                new_status: ComplianceStatus::Warning,
                 detail: Some("version mismatch: want 14.0.0, have 13.0.0".into()),
             },
             ComplianceCheckChange {
                 key: "system:sysctl.vm.swappiness".into(),
-                old_status: "Warning".into(),
-                new_status: "Compliant".into(),
+                old_status: ComplianceStatus::Warning,
+                new_status: ComplianceStatus::Compliant,
                 detail: None,
             },
         ],

@@ -666,7 +666,6 @@ Windows is always system-scope; `--scope system` is a no-op there.
 ```console
 $ cfgd --scope system paths
 cfgd Directories
-  Scope  system
 
 Config
   Directory  /etc/cfgd

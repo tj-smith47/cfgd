@@ -662,10 +662,9 @@ Managed Resources
 ```
 
 The default module report is a summary: one count per declared surface, then
-what the scan found. `Status` and `Scope` lead the block: `Scope` names what
-the run that last touched this module was scoped to, in the same tri-colour
-`kind:name` token the apply tree and the Managed Resources Owner column use,
-and is absent when that run applied a whole profile. `Shell` is the total of
+what the scan found. `Status` leads the block. The report names no scope: you
+named the module on the command line, so restating it tells you only what you
+just typed; the scope the last run recorded stays in `-o json`. `Shell` is the total of
 the module's declared aliases and env vars, broken down one indented row per
 half; `Scripts` is the total, broken down one indented row per hook in the
 order the hooks run, so a module's `preApply` work is distinguishable from its
@@ -674,7 +673,6 @@ order the hooks run, so a module's `preApply` work is distinguishable from its
 ```
 Status: nvim
   Status        Drifted
-  Scope         module:nvim
   Last Applied  3h ago
   Packages      27
   Files         6
@@ -744,7 +742,6 @@ as a bare declaration instead — a name, never a verdict it never earned:
 ```
 Status: nvim
   Status        Drifted
-  Scope         module:nvim
   Last Applied  3h ago
 
 Installed Packages
@@ -927,8 +924,7 @@ invisible to a module run by design; `cfgd diff` reports it:
 
 ```
 Diff: nvim
-  Config   /home/you/.config/cfgd/cfgd.yaml
-  Modules  nvim
+  Config  /home/you/.config/cfgd/cfgd.yaml
 
 Files
   module:nvim

@@ -2901,6 +2901,7 @@ fn daemon_state_to_response_propagates_fields() {
             "gated".to_string(),
             std::path::PathBuf::from("/modules/gated"),
             Vec::new(),
+            false,
             "platform not matched".to_string(),
             None,
         )]);
@@ -20635,6 +20636,7 @@ mod backup_timers {
                     profile: Some("team".to_string()),
                 }],
                 modules: vec![crate::output::HeaderModule {
+                    dep_pulled: false,
                     name: "nvim".to_string(),
                     platform_skip_reason: None,
                 }],

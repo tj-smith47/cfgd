@@ -1328,6 +1328,7 @@ pub fn test_state() -> crate::state::StateStore {
 /// Useful for reconciler tests that need a module with real package actions.
 pub fn make_resolved_module(name: &str) -> crate::modules::ResolvedModule {
     crate::modules::ResolvedModule {
+        dep_pulled: false,
         name: name.to_string(),
         packages: vec![
             crate::modules::ResolvedPackage {

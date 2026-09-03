@@ -100,7 +100,12 @@ pub fn cmd_plan(
     // manager once rather than once per surface.
     let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
 
-    let header_modules = cfgd_core::output::HeaderModule::of_resolved(&resolved_modules);
+    // An isolate names its own modules on the command line, so its row renders
+    // only what the resolution ADDED to them.
+    let header_modules = match module_only {
+        true => cfgd_core::output::HeaderModule::of_isolate(&resolved_modules),
+        false => cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
+    };
     // recorded-scope-ok: a plan writes no `applies` row, so it has no scope
     // column to fill
     let reconciler = Reconciler::new(&registry, state)

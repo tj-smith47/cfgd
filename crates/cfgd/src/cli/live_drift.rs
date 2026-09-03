@@ -1197,6 +1197,7 @@ mod tests {
         target: std::path::PathBuf,
     ) -> ResolvedModule {
         ResolvedModule {
+            dep_pulled: false,
             name: name.to_string(),
             packages: Vec::new(),
             files: vec![cfgd_core::modules::ResolvedFile {
@@ -1543,6 +1544,7 @@ mod tests {
     /// A `ResolvedModule` carrying a single package, no files.
     fn module_with_package(name: &str, manager: &str, pkg: &str) -> ResolvedModule {
         ResolvedModule {
+            dep_pulled: false,
             name: name.to_string(),
             packages: vec![cfgd_core::modules::ResolvedPackage {
                 canonical_name: pkg.to_string(),

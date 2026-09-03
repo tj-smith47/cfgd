@@ -9,7 +9,10 @@ use std::time::Duration;
 
 use super::component::Component;
 use super::doc::{Doc, HeadingKind};
-use super::renderer::{Elapsed, Renderer, StatusFields, Table, Writer, finalize_subject};
+use super::renderer::{
+    Elapsed, Renderer, StatusFields, Table, Writer, finalize_owner_subject, finalize_subject,
+};
+use super::theme::ThemedStyle;
 
 pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
     renderer.enter_doc();
@@ -58,19 +61,27 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             qualifier,
             label,
             verdict,
+            owner,
         } => {
             let target_pb: Option<PathBuf> = target.as_ref().map(PathBuf::from);
             // Sanitize caller-supplied subject ANSI BEFORE composing the
             // renderer-owned qualifier/label SGR; matches `StatusBuilder::Drop`'s
             // boundary handling so both Doc and streaming paths stay
-            // byte-identical.
-            let subject_owned = finalize_subject(
-                &renderer.theme,
-                subject,
-                None,
-                qualifier.as_deref(),
-                label.as_ref(),
-            );
+            // byte-identical. An owner subject is painted instead of folded —
+            // its own three slots are already sanitized — and takes a plain
+            // subject style so the row's role coat cannot repaint it.
+            let subject_owned = match owner {
+                Some(o) => {
+                    finalize_owner_subject(&renderer.theme, o, qualifier.as_deref(), label.as_ref())
+                }
+                None => finalize_subject(
+                    &renderer.theme,
+                    subject,
+                    None,
+                    qualifier.as_deref(),
+                    label.as_ref(),
+                ),
+            };
             renderer.render_status(
                 sink,
                 depth,
@@ -80,7 +91,7 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
                     detail: detail.as_deref(),
                     duration: duration_ms.map(|ms| Elapsed::row(Duration::from_millis(ms as u64))),
                     target: target_pb.as_deref(),
-                    subject_style: None,
+                    subject_style: owner.as_ref().map(|_| ThemedStyle::plain()),
                     detail_style: None,
                     verdict: verdict.as_deref(),
                 },

@@ -477,6 +477,7 @@ impl<'a> ApplyRun<'a> {
             .map(|module| crate::output::HeaderModule {
                 name: module.name.clone(),
                 platform_skip_reason: reason(&module.name),
+                dep_pulled: module.dep_pulled,
             })
             .collect();
         // A gate the plan names for a module the resolution did not hand this
@@ -489,9 +490,25 @@ impl<'a> ApplyRun<'a> {
                 .map(|(name, why)| crate::output::HeaderModule {
                     name: (*name).to_string(),
                     platform_skip_reason: Some((*why).to_string()),
+                    dep_pulled: false,
                 }),
         );
         listed
+    }
+
+    /// Whether the `--phase` value the invocation carried already names
+    /// exactly the phases the tree is about to print.
+    ///
+    /// A row restating it tells the reader only what they typed. `--phase
+    /// modules` is an owner filter spanning every phase module work can land
+    /// in, so WHICH of them held work is news and its row stays; so does an
+    /// unfiltered run's, which named nothing.
+    fn phases_named_by_invocation(&self, rendered: &[&str]) -> bool {
+        let named = match self.filter {
+            Some(PhaseFilter::Phase(phase)) | Some(PhaseFilter::Selector(phase, _)) => phase,
+            Some(PhaseFilter::ModuleOwners) | None => return false,
+        };
+        rendered == [named.display_name()]
     }
 
     /// Title + context rows, then the plan's warnings via `printer.alert`, at
@@ -542,7 +559,7 @@ impl<'a> ApplyRun<'a> {
             .into_iter()
             .map(|(phase, _)| phase.name.display_name())
             .collect();
-        if !phases.is_empty() {
+        if !phases.is_empty() && !self.phases_named_by_invocation(&phases) {
             rows.push(KvPair::new("Phases", phases.join(", ")));
         }
         if !self.preview_only {

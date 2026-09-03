@@ -278,8 +278,8 @@ pub fn compute_compliance_diff(
             if check1.status != check2.status {
                 changed.push(ComplianceCheckChange {
                     key: key.clone(),
-                    old_status: format!("{:?}", check1.status),
-                    new_status: format!("{:?}", check2.status),
+                    old_status: check1.status,
+                    new_status: check2.status,
                     detail: check2.detail.clone(),
                 });
             }
@@ -343,14 +343,12 @@ pub fn build_compliance_diff_doc(
         });
         doc = doc.section_if_nonempty("Changed", &diff.changed, |s, items| {
             items.iter().fold(s, |s, c| {
-                let role = match c.new_status.as_str() {
-                    "Violation" => Role::Fail,
-                    "Warning" => Role::Warn,
-                    _ => Role::Ok,
-                };
+                // The row's role IS the new status's own — never a match on
+                // the rendered word.
+                let (new_word, role) = c.new_status.human_display();
                 s.status_with(
                     role,
-                    format!("{} ({} {arrow} {})", c.key, c.old_status, c.new_status),
+                    format!("{} ({} {arrow} {new_word})", c.key, c.old_status),
                     |sf| sf.detail_opt(c.detail.as_deref()),
                 )
             })
@@ -419,9 +417,11 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str) ->
             modules: &[],
         },
     ));
-    rows.push(cfgd_core::output::KvPair::new(
+    let (overall_word, overall_role) = overall.human_display();
+    rows.push(cfgd_core::output::KvPair::role_valued(
         "Status",
-        overall.to_string(),
+        overall_word,
+        overall_role,
     ));
     let mut doc = Doc::new().heading("Compliance Summary").kv_rows(rows);
 
@@ -538,14 +538,17 @@ pub fn build_compliance_history_doc(entries: &[ComplianceHistoryRow], now: &str)
     })
 }
 
-/// Derive an overall-status label from a `ComplianceSummary`.
-fn overall_status(summary: &cfgd_core::compliance::ComplianceSummary) -> &'static str {
+/// Derive an overall status from a `ComplianceSummary`.
+///
+/// Typed, so the row rendering it takes the word and its role from the one
+/// producer rather than colouring a string it recognized.
+fn overall_status(summary: &cfgd_core::compliance::ComplianceSummary) -> ComplianceStatus {
     if summary.violation > 0 {
-        "Violation"
+        ComplianceStatus::Violation
     } else if summary.warning > 0 {
-        "Warning"
+        ComplianceStatus::Warning
     } else {
-        "Compliant"
+        ComplianceStatus::Compliant
     }
 }
 
@@ -811,7 +814,7 @@ mod tests {
              second pair (Compliant -> Compliant) is unchanged: {diff:?}"
         );
         assert_eq!(diff.changed[0].key, "file:/a");
-        assert_eq!(diff.changed[0].new_status, "Violation");
+        assert_eq!(diff.changed[0].new_status, ComplianceStatus::Violation);
     }
 
     #[test]
