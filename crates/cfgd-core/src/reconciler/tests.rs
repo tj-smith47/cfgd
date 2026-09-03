@@ -17455,6 +17455,14 @@ fn record_brew_bootstrap(state: &crate::state::StateStore) {
         .expect("record bootstrap path dirs");
 }
 
+/// The PATH dirs an env file's generated line carries, joined in fold order —
+/// what every dialect agrees on. The assignment around them (`export PATH="…"`
+/// on bash, `$env:PATH = '…'` on PowerShell) is the generator's own dialect
+/// and is pinned separately in `env_engine.rs`.
+fn dirs_in_fold_order(dirs: &[&str]) -> String {
+    dirs.join(&crate::PATH_LIST_SEPARATOR.to_string())
+}
+
 /// Body of the `.cfgd.env` write the Env phase planned, if any.
 fn planned_env_file_content(plan: &Plan) -> Option<String> {
     plan.phases
@@ -17503,9 +17511,7 @@ fn plan_env_carries_bootstrap_path_dirs_on_every_plan() {
     let second = plan_content(modules);
 
     assert!(
-        first.contains(
-            "export PATH=\"/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH\""
-        ),
+        first.contains(&dirs_in_fold_order(&BREW_PATH_DIRS)),
         "planned env file must export the manager's PATH entries in order: {first}"
     );
     // The file's content is hashed and compared on every reconcile tick, so a
@@ -17642,9 +17648,7 @@ fn plan_env_folds_in_a_to_be_provisioned_managers_declared_path_dirs() {
     let content = planned_env_file_content(&plan)
         .expect("a to-be-provisioned manager's declared dirs must plan a .cfgd.env write");
     assert!(
-        content.contains(
-            "export PATH=\"/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH\""
-        ),
+        content.contains(&dirs_in_fold_order(&BREW_PATH_DIRS)),
         "the planner must fold the Provision node's declared dirs in at plan time: {content}"
     );
 }
@@ -17846,9 +17850,8 @@ fn apply_converges_env_file_in_the_same_run_that_bootstraps() {
     // spelling is the dialect's (`export PATH="…"` / `$env:PATH = '…'`) and
     // belongs to the generator's own pins, while what this test claims is that
     // the bootstrap's two directories reached the file in fold order.
-    let dirs_in_order = BREW_PATH_DIRS.join(&crate::PATH_LIST_SEPARATOR.to_string());
     assert!(
-        contents.contains(&dirs_in_order),
+        contents.contains(&dirs_in_fold_order(&BREW_PATH_DIRS)),
         "the bootstrapped manager's directories must reach the env file: {contents}"
     );
 
@@ -17983,10 +17986,10 @@ fn apply_does_not_reorder_the_env_file_when_a_new_manager_joins_an_already_recor
     // Unlike `registry_with_bootstrappable_brew` (which leaves the plan-time
     // declaration empty on purpose, to model npm's late-known prefix), this
     // manager declares the SAME dirs it will later record — the ordinary,
-    // reconciled shape every real `PackageManager` now has (Task 10). Only
-    // that shape can prove "an ordinary provision does not spuriously
-    // regenerate": if the declared and recorded sets differed, this test
-    // could not tell a real divergence apart from an ordering artifact.
+    // reconciled shape every real `PackageManager` now has. Only that shape
+    // can prove "an ordinary provision does not spuriously regenerate": if
+    // the declared and recorded sets differed, this test could not tell a
+    // real divergence apart from an ordering artifact.
     let mut registry = ProviderRegistry::new();
     registry.add_package_manager(Box::new(
         BootstrappingPackageManager::new("brew", &BREW_PATH_DIRS)
@@ -18008,9 +18011,11 @@ fn apply_does_not_reorder_the_env_file_when_a_new_manager_joins_an_already_recor
     let planned_content = planned_env_file_content(&plan)
         .expect("the pre-recorded npm dir alone must already plan an env write");
     assert!(
-        planned_content.contains(
-            "export PATH=\"/home/u/.npm-global/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH\""
-        ),
+        planned_content.contains(&dirs_in_fold_order(&[
+            "/home/u/.npm-global/bin",
+            "/home/linuxbrew/.linuxbrew/bin",
+            "/home/linuxbrew/.linuxbrew/sbin",
+        ])),
         "npm (already recorded) must lead, brew (declared by this run's Provision) must \
          follow, in fold order: {planned_content}"
     );
