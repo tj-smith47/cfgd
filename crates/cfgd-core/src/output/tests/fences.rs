@@ -1004,3 +1004,124 @@ fn the_daemon_log_dialect_matcher_reads_both_call_shapes() {
     );
     assert_eq!(first_string_literal(&calls[1].1).as_deref(), Some("pulled"));
 }
+
+/// The functions a source's `fn` lines cut it into, each paired with its
+/// opening line number.
+fn source_functions(body: &str) -> Vec<(usize, String)> {
+    let lines: Vec<&str> = body.lines().collect();
+    let opens: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| {
+            let t = l.trim_start();
+            t.starts_with("fn ")
+                || t.starts_with("pub fn ")
+                || t.starts_with("async fn ")
+                || t.starts_with("pub async fn ")
+                || (t.starts_with("pub(") && t.contains(") fn "))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    opens
+        .iter()
+        .zip(opens.iter().skip(1).chain(std::iter::once(&lines.len())))
+        .map(|(a, b)| (a + 1, lines[*a..*b].join("\n")))
+        .collect()
+}
+
+/// No cfgd-core fixture hand-spells the generated env file's name or its
+/// dialect.
+///
+/// The twin of `cli/tests.rs`'s
+/// `no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect`, for
+/// the crate the generator lives in. Three tests that had never executed on
+/// windows-latest failed there the day they first ran, because the primary
+/// managed env file is `~/.cfgd.env` on POSIX and `~/.cfgd-env.ps1` on
+/// Windows, and a declared entry renders as bash `export EDITOR="vim"
+/// # module:m` there and PowerShell `$env:EDITOR = 'vim' # module:m` here — a
+/// fixture hardcoding either wrote its file where nothing reads, or a line the
+/// check can never match, and the ones asserting an ABSENCE passed anyway.
+///
+/// FUNCTION-scoped, because cfgd-core holds two whole populations for which a
+/// literal is correct and no per-site hatch should be needed: a fixture
+/// exercising the generator NAMES it (an explicit `EnvPlatform`, a
+/// `generate_*` call, `env_targets`), and one naming a path production writes
+/// VERBATIM names that too (`WriteEnvFile`, `plan_env_with_home`,
+/// `ScriptShell` — where the shell, not the host, picks the dialect). A
+/// function that spells a tell and names none of them is hand-spelling.
+#[test]
+fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
+    let joins = [
+        format!("join(\"{}\")", ".cfgd.env"),
+        format!("join(\"{}\")", ".cfgd-env.ps1"),
+    ];
+    let owner_comments = [
+        format!("# {}:", "module"),
+        format!("# {}:", "profile"),
+        format!("# {}:", "manager"),
+    ];
+    let dialects = ["export ", "$env:"];
+    let names_a_producer = [
+        "EnvPlatform",
+        "primary_env_file",
+        "managed_env_files",
+        "env_targets",
+        "generate_",
+        "WriteEnvFile",
+        "plan_env_with_home",
+        "ScriptShell",
+    ];
+    let core_src = workspace_root().join("crates/cfgd-core/src");
+    let mut offenders = Vec::new();
+    let mut checked = 0usize;
+    for path in workspace_rust_files() {
+        // The generator's own source is skipped whole: every literal in
+        // `env_engine.rs` is a pin ON the name or the dialect, and its
+        // fixtures reach the platform through local helpers rather than by
+        // naming one per function.
+        if !path.starts_with(&core_src)
+            || path.ends_with(Path::new("output/tests/fences.rs"))
+            || path.ends_with(Path::new("reconciler/env_engine.rs"))
+        {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (open, func) in source_functions(&body) {
+            checked += 1;
+            if names_a_producer.iter().any(|n| func.contains(n)) {
+                continue;
+            }
+            let folded = crate::test_helpers::logical_source_lines(&func);
+            let spells_a_name = folded
+                .iter()
+                .any(|(_, l)| joins.iter().any(|j| l.contains(j.as_str())));
+            let spells_a_line = folded.iter().any(|(_, l)| {
+                dialects.iter().any(|d| l.contains(d))
+                    && owner_comments.iter().any(|c| l.contains(c.as_str()))
+            });
+            if spells_a_name || spells_a_line {
+                offenders.push(format!(
+                    "{}:{}: {}",
+                    path.display(),
+                    open,
+                    body.lines().nth(open - 1).unwrap_or("").trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        checked > 2000,
+        "the walk no longer reaches cfgd-core's functions — it read {checked}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a fixture must take the env file's path from \
+         `cfgd_core::reconciler::primary_env_file` and its body from the \
+         generator (`MergedEnvItems::managed_env_files`, or a `generate_*` \
+         call under an explicit `EnvPlatform`) — both halves are the running \
+         platform's:\n{}",
+        offenders.join("\n")
+    );
+}

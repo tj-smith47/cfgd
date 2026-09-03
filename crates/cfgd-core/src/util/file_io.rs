@@ -768,7 +768,7 @@ mod tests {
             let dir = fs::metadata(&home).unwrap();
             (dir.uid(), dir.gid())
         };
-        let target = home.join(".cfgd.env");
+        let target = home.join("managed.txt");
 
         atomic_write(&target, b"export FOO=\"bar\"\n").unwrap();
 
@@ -792,7 +792,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let outside = tmp.path().join("outside");
         fs::write(&outside, "untouched\n").unwrap();
-        let link = tmp.path().join(".cfgd.env");
+        let link = tmp.path().join("managed.txt");
         unix_fs::symlink(&outside, &link).unwrap();
         if crate::is_root() {
             std::os::unix::fs::chown(&link, Some(12345), Some(12345)).unwrap();

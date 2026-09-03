@@ -14927,29 +14927,9 @@ fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
             };
             checked += 1;
             let rel = p.strip_prefix(&cli_dir).unwrap_or(&p).to_path_buf();
-            // A Rust string literal is `\`-continued across physical lines with
-            // the next line's indent eaten, so a hand-spelled generated line can
-            // carry its two tells on two different lines. Fold every
-            // continuation back onto the line that opened it, and report that
-            // opening line, before looking for either tell.
-            let mut logical: Vec<(usize, String)> = Vec::new();
-            let mut continues = false;
-            for (n, raw) in body.lines().enumerate() {
-                let trimmed = raw.trim_end();
-                let trailing = trimmed.chars().rev().take_while(|c| *c == '\\').count();
-                let opens_next = trailing % 2 == 1;
-                let piece = if opens_next {
-                    &trimmed[..trimmed.len() - 1]
-                } else {
-                    trimmed
-                };
-                match logical.last_mut() {
-                    Some((_, acc)) if continues => acc.push_str(piece.trim_start()),
-                    _ => logical.push((n + 1, piece.to_string())),
-                }
-                continues = opens_next;
-            }
-            for (n, line) in logical {
+            // A hand-spelled generated line can carry its two tells on two
+            // physical lines; fold every continuation back first.
+            for (n, line) in cfgd_core::test_helpers::logical_source_lines(&body) {
                 let line = line.as_str();
                 let where_ = format!("{}:{}", cfgd_core::to_posix_string(&rel), n);
                 // A fixture joining a generated file's name onto a directory

@@ -3211,14 +3211,10 @@ fn plan_env_generates_file_matching_expected() {
         platforms: vec![],
     }];
 
-    // Write the expected content to a temp file to simulate "already applied"
-    let dir = tempfile::tempdir().unwrap();
-    let env_path = dir.path().join(".cfgd.env");
+    // The subject is the content generation alone: `plan_env` reads the home
+    // directory's own env file, so a copy planted in a tempdir was written and
+    // then read by nothing.
     let expected = super::generate_env_file_content(&env, &[], None, &Default::default());
-    std::fs::write(&env_path, &expected).unwrap();
-
-    // plan_env checks the real ~/.cfgd.env path, not our temp file,
-    // so it will still generate actions. This test validates the content generation.
     assert!(expected.contains("export EDITOR=\"nvim\""));
     assert!(expected.contains("# managed by cfgd"));
 }

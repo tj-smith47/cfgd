@@ -1184,6 +1184,77 @@ pub fn test_printer() -> crate::output::Printer {
     crate::output::Printer::for_test().0
 }
 
+/// A Rust source's logical lines: every `\`-continued string literal folded
+/// onto the line that opened it, paired with that opening line's 1-based
+/// number.
+///
+/// A source-walking pin looks for two tells on ONE line, and a literal
+/// continued across two physical lines carries them on two — so a walk reading
+/// `body.lines()` directly is evaded by a line break. Two shapes make a naive
+/// fold wrong, and both are handled here: a literal ENDING in an escaped
+/// backslash (`"foo\\"`) is not continued, judged by an odd trailing count;
+/// and a RAW literal has no escapes at all, so neither the line opening one
+/// nor any line inside it can be continued.
+///
+/// The raw-literal scan ignores ordinary string literals, so an `r#` written
+/// inside one is read as an opener. That direction is the safe one: it can
+/// only SUPPRESS a fold — costing a walk one offender it would have caught —
+/// never join two lines that were never one.
+pub fn logical_source_lines(body: &str) -> Vec<(usize, String)> {
+    let mut out: Vec<(usize, String)> = Vec::new();
+    let mut continues = false;
+    let mut raw_hashes: Option<usize> = None;
+    for (n, line) in body.lines().enumerate() {
+        let opened_inside_raw = raw_hashes.is_some();
+        scan_raw_literals(line, &mut raw_hashes);
+        let trimmed = line.trim_end();
+        let trailing = trimmed.chars().rev().take_while(|c| *c == '\\').count();
+        let opens_next =
+            !opened_inside_raw && raw_hashes.is_none() && trailing % 2 == 1 && !trimmed.is_empty();
+        let piece = if opens_next {
+            &trimmed[..trimmed.len() - 1]
+        } else {
+            trimmed
+        };
+        match out.last_mut() {
+            Some((_, acc)) if continues => acc.push_str(piece.trim_start()),
+            _ => out.push((n + 1, piece.to_string())),
+        }
+        continues = opens_next;
+    }
+    out
+}
+
+/// Advance the raw-literal state across one physical line: `r`, some `#`s and
+/// a `"` opens one; a `"` followed by the same number of `#`s closes it.
+fn scan_raw_literals(line: &str, hashes: &mut Option<usize>) {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match *hashes {
+            Some(open) => {
+                if bytes[i] == b'"'
+                    && bytes[i + 1..].iter().take_while(|b| **b == b'#').count() >= open
+                {
+                    *hashes = None;
+                    i += 1 + open;
+                    continue;
+                }
+            }
+            None if bytes[i] == b'r' => {
+                let open = bytes[i + 1..].iter().take_while(|b| **b == b'#').count();
+                if bytes.get(i + 1 + open) == Some(&b'"') {
+                    *hashes = Some(open);
+                    i += 2 + open;
+                    continue;
+                }
+            }
+            None => {}
+        }
+        i += 1;
+    }
+}
+
 /// A `PackageStateStore` that remembers nothing — for a fixture whose subject
 /// (`bootstrap`) reaches no state. A test-fixture stub only; re-exported under
 /// this name so existing fixtures keep reading as "the state a bootstrap-only
@@ -3805,6 +3876,47 @@ mod tests {
     use super::*;
     use crate::providers::FileManager;
     use secrecy::ExposeSecret;
+
+    /// The three shapes the fold has to tell apart, in one source.
+    ///
+    /// A raw literal is the one a naive "trailing backslash continues the
+    /// line" rule gets WRONG in the dangerous direction: it joins two lines
+    /// that were never one, and a walk then reports a tell on a line that does
+    /// not carry it. An escaped backslash is the same mistake at the end of an
+    /// ordinary literal.
+    #[test]
+    fn the_continuation_fold_joins_only_a_real_continuation() {
+        let body = concat!(
+            "let a = \"one \\\n",
+            "    two\";\n",
+            "let b = r\"a raw line ending in \\\n",
+            "    and its next line\";\n",
+            "let c = \"escaped \\\\\";\n"
+        );
+        let folded = logical_source_lines(body);
+        assert_eq!(
+            folded.len(),
+            4,
+            "only the first literal is continued: {folded:?}"
+        );
+        assert_eq!(folded[0].0, 1, "a fold reports its OPENING line");
+        assert_eq!(
+            folded[0].1, "let a = \"one two\";",
+            "a real continuation joins onto the line that opened it, its indent eaten"
+        );
+        assert_eq!(folded[1].0, 3);
+        assert!(
+            folded[1].1.ends_with('\\'),
+            "a raw literal has no continuations, so its line stands alone and \
+             keeps its backslash: {folded:?}"
+        );
+        assert_eq!(folded[2].0, 4, "the raw literal's next line is its own");
+        assert_eq!(folded[3].0, 5);
+        assert!(
+            folded[3].1.ends_with("\\\\\";"),
+            "an escaped backslash ends the literal it is in: {folded:?}"
+        );
+    }
 
     #[test]
     fn production_slice_cuts_at_the_trailing_test_module_not_an_early_attribute() {
