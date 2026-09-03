@@ -959,9 +959,10 @@ pub fn split_module_file_resource_id(id: &str) -> Option<(&str, String)> {
 /// One type carries three grammars — the per-file `<module>/<target>` rows and
 /// the `<module>:script` / `<module>:skip` ids — plus the bare `<module>` a
 /// tick recorded before either producer agreed on a spelling. A module name
-/// carries neither separator (`modules::loader` refuses one, and the name must
-/// equal its own directory component), so the first one is always where the
-/// owner ends.
+/// carries neither separator — [`crate::modules::validate_module_name`] is the
+/// one refusal, and every name that becomes a key of the module map answers to
+/// it, whichever of the four sources it arrived from — so the first separator
+/// is always where the owner ends.
 ///
 /// Kept beside the composers that mint those ids: the daemon reads it to
 /// attribute a row, the CLI to classify one, and a second reading in either

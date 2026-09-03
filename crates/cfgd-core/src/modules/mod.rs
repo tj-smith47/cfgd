@@ -27,7 +27,7 @@ pub use git::{
     default_module_cache_dir_for, fetch_git_source, get_head_commit_sha, git_cache_dir,
     is_git_source, parse_git_source,
 };
-pub use loader::{load_module, load_modules, resolve_dependency_order};
+pub use loader::{load_module, load_modules, resolve_dependency_order, validate_module_name};
 pub use lockfile::{
     diff_module_specs, hash_module_contents, load_all_modules, load_locked_modules, load_lockfile,
     load_source_modules, save_lockfile, verify_lockfile_integrity,

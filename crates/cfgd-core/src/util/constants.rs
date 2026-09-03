@@ -3,6 +3,12 @@ pub const API_VERSION: &str = "cfgd.io/v1alpha1";
 pub const CSI_DRIVER_NAME: &str = "csi.cfgd.io";
 pub const MODULES_ANNOTATION: &str = "cfgd.io/modules";
 
+/// The manager name a module package carries when its "install" is an inline
+/// script rather than a manager command. It names no registry entry, so no
+/// manager map holds it, no live listing reports it and no drift row is minted
+/// under it.
+pub(crate) const SCRIPT_SENTINEL: &str = "script";
+
 /// Default namespace the cfgd operator + CSI driver are deployed into. Used by
 /// `kubectl cfgd version` to locate the operator Deployment and CSI DaemonSet
 /// when no explicit `--namespace` is given.

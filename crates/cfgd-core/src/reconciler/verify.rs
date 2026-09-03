@@ -68,7 +68,7 @@ pub fn verify(
         // script's responsibility, expressed via the package entry's
         // creates/onlyIf/unless guards (honored on the apply path in
         // reconciler::modules) — not something verify can re-derive here.
-        if ep.manager == "script" {
+        if ep.manager == crate::SCRIPT_SENTINEL {
             continue;
         }
 
@@ -345,7 +345,7 @@ pub fn package_version_drift(
     let mut check_errors = Vec::new();
     let available = registry.available_package_managers();
     for ep in effective.iter().filter(|ep| ep.min_version.is_some()) {
-        if ep.manager == "script" {
+        if ep.manager == crate::SCRIPT_SENTINEL {
             continue;
         }
         let Some(mgr) = available.iter().find(|m| m.name() == ep.manager) else {

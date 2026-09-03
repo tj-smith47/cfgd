@@ -79,7 +79,7 @@ pub fn resolve_package(
 
     for candidate in &candidates {
         // Special "script" manager — always available, uses custom install script
-        if candidate == "script" {
+        if candidate == crate::SCRIPT_SENTINEL {
             let script = entry
                 .script
                 .as_ref()
@@ -93,7 +93,7 @@ pub fn resolve_package(
             return Ok(Some(ResolvedPackage {
                 canonical_name: entry.name.clone(),
                 resolved_name: entry.name.clone(),
-                manager: "script".to_string(),
+                manager: crate::SCRIPT_SENTINEL.to_string(),
                 // `script` only ever reaches a candidate list the author
                 // wrote: it is not any platform's native manager.
                 manager_declared: true,
@@ -317,7 +317,7 @@ pub(crate) fn priceable_manager<'m>(
     pkg: &ResolvedPackage,
     managers: &HashMap<String, &'m dyn PackageManager>,
 ) -> Option<&'m dyn PackageManager> {
-    if pkg.version.is_some() || pkg.manager == "script" {
+    if pkg.version.is_some() || pkg.manager == crate::SCRIPT_SENTINEL {
         return None;
     }
     let mgr = *managers.get(pkg.manager.as_str())?;

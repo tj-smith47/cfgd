@@ -724,7 +724,7 @@ impl PackageClaim {
     /// `script`-manager package which is always kept) and `false` if it
     /// duplicates an already-claimed `(manager, name)` and must be dropped.
     pub fn claim_module(&mut self, manager: &str, name: &str) -> bool {
-        if manager == "script" {
+        if manager == crate::SCRIPT_SENTINEL {
             return true;
         }
         self.claimed.insert((manager.to_string(), name.to_string()))

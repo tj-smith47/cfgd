@@ -30296,37 +30296,63 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
 fn no_production_site_outside_format_rs_splits_a_module_id() {
     const HATCH: &str = "module-id-ok:";
     const TELLS: [&str; 3] = ["contains('/')", "split_once('/')", "find(['/'"];
+    // The floors are what a walk over the WRONG root cannot fake: a root that
+    // resolves nowhere sees no files, and one holding no drift code sees no
+    // `resource_id` at all. Both counts are far under today's, so a deletion
+    // does not trip them and a re-rooting does.
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+    const FLOOR_ANCHORS: [usize; 2] = [10, 20];
 
-    let roots = [
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src"),
-    ];
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    // The one reader that is allowed to split, named by its FULL path: another
+    // crate's `format.rs` is a different file with a different job.
+    let exempt = roots[1].join("reconciler/format.rs");
     let mut offenders = Vec::new();
-    for root in &roots {
+    for (r, root) in roots.iter().enumerate() {
         let mut files = walk_rust_files(root);
         files.sort();
+        let (mut seen, mut anchors) = (0usize, 0usize);
         for path in files {
             let name = path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            if name == "tests.rs" || name == "test_helpers.rs" || name == "format.rs" {
+            if name == "tests.rs" || name == "test_helpers.rs" || path == exempt {
                 continue;
             }
             let Ok(body) = std::fs::read_to_string(&path) else {
                 continue;
             };
+            seen += 1;
             let production = cfgd_core::test_helpers::production_slice(&body);
-            for (i, line) in production.lines().enumerate() {
-                if !line.contains("resource_id") || line.contains(HATCH) {
+            let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+            for (i, (n, line)) in lines.iter().enumerate() {
+                if line.contains("resource_id") {
+                    anchors += 1;
+                }
+                if !TELLS.iter().any(|t| line.contains(t)) {
                     continue;
                 }
-                if TELLS.iter().any(|t| line.contains(t)) {
-                    offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+                // A chain reads down the page (`e`, `.resource_id`,
+                // `.split_once('/')`), so the subject is looked for in the rows
+                // above the split as well as on it — and so is the hatch.
+                let window = &lines[i.saturating_sub(3)..=i];
+                if window.iter().any(|(_, l)| l.contains(HATCH))
+                    || !window.iter().any(|(_, l)| l.contains("resource_id"))
+                {
+                    continue;
                 }
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
             }
         }
+        assert!(
+            seen >= FLOOR_FILES[r] && anchors >= FLOOR_ANCHORS[r],
+            "the walk read {seen} files and {anchors} `resource_id` lines under \
+             {} — under the floor, so it is looking at the wrong root",
+            root.display()
+        );
     }
     assert!(
         offenders.is_empty(),
@@ -30348,10 +30374,18 @@ fn no_production_site_outside_format_rs_splits_a_module_id() {
 /// from the verbose branch.
 #[test]
 fn no_cli_slot_pairs_the_shell_kind_test_with_the_verbose_detail() {
+    // The verbose form has three spellings — the free function and the two
+    // row builders' slots — and a hand chooser reaching any of them is the
+    // same defect.
+    const VERBOSE: [&str; 2] = ["drift_detail(", ".drift("];
+    const FLOOR_FILES: usize = 30;
+    const FLOOR_ANCHORS: usize = 1;
+
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut offenders = Vec::new();
     let mut files = walk_rust_files(&root);
     files.sort();
+    let (mut seen, mut anchors) = (0usize, 0usize);
     for path in files {
         if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
             continue;
@@ -30359,22 +30393,104 @@ fn no_cli_slot_pairs_the_shell_kind_test_with_the_verbose_detail() {
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
+        seen += 1;
         let production = cfgd_core::test_helpers::production_slice(&body);
-        let lines: Vec<&str> = production.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
+        let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+        for (i, (n, line)) in lines.iter().enumerate() {
             if !line.contains("is_shell_drift_kind(") {
                 continue;
             }
+            anchors += 1;
             let hi = (i + 6).min(lines.len());
-            if lines[i..hi].iter().any(|l| l.contains("drift_detail(")) {
-                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            if lines[i..hi]
+                .iter()
+                .any(|(_, l)| VERBOSE.iter().any(|v| l.contains(v)))
+            {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
             }
         }
     }
     assert!(
+        seen >= FLOOR_FILES && anchors >= FLOOR_ANCHORS,
+        "the walk read {seen} files and {anchors} kind tests under {} — under \
+         the floor, so it is looking at the wrong root",
+        root.display()
+    );
+    assert!(
         offenders.is_empty(),
         "a drift row's cause is chosen by `output::drift_cause`, never by a \
          hand-written shell-kind branch:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// No cfgd-core production site compares a manager name to a bare `"script"`.
+///
+/// `script` is not a registered manager: it is the sentinel a `prefer:
+/// [script]` entry resolves to, and every pass that iterates managers, lists
+/// installed packages or mints a drift row has to agree on which entries it
+/// names. Two named constants for it in one crate is how a fourth spelling
+/// gets written, so there is one `SCRIPT_SENTINEL` and every comparison reads
+/// it. A serde or schema spelling of the word — a `prefer` value as the user
+/// types it, a resource TYPE that happens to be spelled the same — is a
+/// different string and carries `// script-literal-ok: <why>`.
+#[test]
+fn no_core_production_site_compares_a_manager_name_to_a_bare_script_literal() {
+    const HATCH: &str = "script-literal-ok:";
+    // The subjects a manager NAME is held in; a line pairing one of them with
+    // the bare literal is comparing against the sentinel by hand.
+    const SUBJECTS: [&str; 3] = ["manager", "prefer", "candidate"];
+    const FLOOR_FILES: usize = 90;
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src");
+    let mut files = walk_rust_files(&root);
+    files.sort();
+    let mut offenders = Vec::new();
+    let mut seen = 0usize;
+    for path in files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if name == "tests.rs" || name == "test_helpers.rs" {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        seen += 1;
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+        for (i, (n, line)) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            // A Rust comment, and a `#` comment inside an embedded YAML
+            // template, are both prose about the sentinel rather than a
+            // comparison against it.
+            if code.starts_with("//") || code.starts_with('#') {
+                continue;
+            }
+            if lines[i.saturating_sub(1)..=i]
+                .iter()
+                .any(|(_, l)| l.contains(HATCH))
+            {
+                continue;
+            }
+            if line.contains("\"script\"") && SUBJECTS.iter().any(|s| line.contains(s)) {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        seen >= FLOOR_FILES,
+        "the walk read {seen} files under {} — under the floor, so it is \
+         looking at the wrong root",
+        root.display()
+    );
+    assert!(
+        offenders.is_empty(),
+        "a manager name is compared against `crate::SCRIPT_SENTINEL`, never a \
+         bare literal (or carries `// {HATCH} <why>`):\n{}",
         offenders.join("\n")
     );
 }

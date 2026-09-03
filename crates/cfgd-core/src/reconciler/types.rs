@@ -1552,7 +1552,7 @@ pub fn action_drift_rows(
                     // detection by design — a custom install script can put
                     // anything anywhere, so no installed-state read answers
                     // for it and no live pass ever re-mints its row.
-                    .filter(|p| p.manager != SCRIPT_INSTALL_MANAGER)
+                    .filter(|p| p.manager != crate::SCRIPT_SENTINEL)
                 {
                     match by_manager.iter_mut().find(|(m, _)| *m == p.manager) {
                         Some((_, names)) => names.push(&p.resolved_name),
@@ -1636,9 +1636,6 @@ pub fn package_action_drift_rows(
         registry,
     )
 }
-
-/// The manager name a `prefer: [script]` entry resolves to.
-const SCRIPT_INSTALL_MANAGER: &str = "script";
 
 /// One presence drift row per package, in ONE manager's identity grammar.
 ///

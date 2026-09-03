@@ -39,6 +39,8 @@ pub fn package_resource_id(manager: &str, package: &str) -> String {
 /// half — a row cfgd cannot read degrades to unparsed rather than to a pair
 /// claiming a manager it never named.
 pub fn split_package_resource_id(id: &str) -> Option<(&str, &str)> {
+    // module-id-ok: the package TRACKING grammar `<manager>/<package>`, which
+    // this pair owns; a `module` drift row is a different id in another table.
     id.split_once('/')
         .filter(|(manager, package)| !manager.is_empty() && !package.is_empty())
 }

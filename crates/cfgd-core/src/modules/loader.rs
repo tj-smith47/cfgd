@@ -85,19 +85,7 @@ pub fn load_modules(config_dir: &Path) -> Result<HashMap<String, LoadedModule>> 
 
         let doc = parse_module(&contents)?;
 
-        // A module name is the OWNER half of every `module` drift row
-        // (`<name>/<target>`, `<name>:script`), so a name carrying either
-        // separator attributes its own rows to a shorter name that owns none
-        // of them. A `:` is legal in a POSIX directory name and illegal in a
-        // Windows path component; it is refused on every host, so a config
-        // authored on one stays loadable on all of them.
-        if name.contains(['/', ':']) {
-            return Err(ModuleError::InvalidSpec {
-                name: name.clone(),
-                message: "module name must not contain '/' or ':'".to_string(),
-            }
-            .into());
-        }
+        validate_module_name(&name)?;
 
         if doc.metadata.name != name {
             return Err(ModuleError::InvalidSpec {
@@ -125,6 +113,38 @@ pub fn load_modules(config_dir: &Path) -> Result<HashMap<String, LoadedModule>> 
     Ok(modules)
 }
 
+/// Refuse a module name that cannot be the owner half of a drift row.
+///
+/// A module name is the OWNER half of every `module` drift row
+/// (`<name>/<target>`, `<name>:script`), and it is joined onto a directory to
+/// find the body: a name carrying either separator attributes its own rows to
+/// a shorter name that owns none of them, and reaches outside the directory it
+/// was offered under. [`crate::validate_plain_name`] answers everything a
+/// created name must satisfy — no empty or `.`/`..` segment, no drive or root
+/// prefix, no `:`, which Windows reads as a drive or data-stream separator —
+/// and this adds the one question a module name asks on top of it: a name is a
+/// SINGLE segment, so a separator of any kind is refused rather than read as a
+/// path. Every name that becomes a key of the module map answers here, whether
+/// it came from a directory listing, a module body's own `metadata.name`, a
+/// lockfile entry or a source manifest's `spec.provides.modules`.
+pub fn validate_module_name(name: &str) -> Result<()> {
+    let refuse = |message: String| {
+        Err(crate::errors::CfgdError::from(ModuleError::InvalidSpec {
+            name: name.to_string(),
+            message,
+        }))
+    };
+    if let Err(why) = crate::validate_plain_name(name) {
+        return refuse(format!("module name is not usable: {why}"));
+    }
+    if name.contains(['/', '\\']) {
+        return refuse(
+            "module name must be a single path segment, with no '/' or '\\'".to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Load a single module from a given directory.
 pub fn load_module(module_dir: &Path) -> Result<LoadedModule> {
     let module_yaml = module_dir.join("module.yaml");
@@ -144,6 +164,7 @@ pub fn load_module(module_dir: &Path) -> Result<LoadedModule> {
     let contents = read_module_yaml_capped(&module_yaml)?;
     let doc = parse_module(&contents)?;
     let name = doc.metadata.name.clone();
+    validate_module_name(&name)?;
 
     Ok(LoadedModule {
         name,

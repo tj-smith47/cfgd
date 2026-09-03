@@ -792,7 +792,7 @@ impl<'x> PackageExec<'x> {
         let mut delivered = 0;
 
         if let Some(first) = pkgs.first() {
-            if first.manager == "script" {
+            if first.manager == crate::SCRIPT_SENTINEL {
                 for pkg in pkgs {
                     if let Some(ref script_content) = pkg.script {
                         let profile_name = mcx
