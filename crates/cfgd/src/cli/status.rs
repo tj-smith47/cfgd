@@ -58,6 +58,13 @@ pub struct StatusOutput {
     /// branch, which probes nothing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub system_errors: Vec<super::output_types::SystemCheckError>,
+    /// Rows `drift` above already folds in for rendering: the same
+    /// `standing` key `diff` and `verify` carry, so a `-o json` consumer
+    /// finds this run's own findings and the store's carried-forward rows
+    /// under one name across all three surfaces. Populated only on the
+    /// scanning branch — the recorded-state dashboard reads `drift` alone.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub standing: Vec<cfgd_core::state::DriftEvent>,
 }
 
 #[derive(Serialize)]
@@ -246,6 +253,12 @@ pub struct ModuleStatus {
     /// unknown outranks known.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub system_errors: Vec<super::output_types::SystemCheckError>,
+    /// Rows this module's scope owns that the scan above did not re-check —
+    /// the same `standing` key `diff --module` and `verify --module` carry.
+    /// `drift` above already folds these in for rendering; populated only
+    /// on the scanning branch.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub standing: Vec<cfgd_core::state::DriftEvent>,
 }
 
 impl ModuleStatus {
@@ -392,14 +405,18 @@ fn classify_recorded_drift_for_chain(
                             event,
                         });
                     }
-                    // No separator: the daemon's action spelling, a
-                    // whole-module verdict with no file granularity.
+                    // No `/`: either the daemon's action spelling for a
+                    // script/skip row (`<module>:script`, `<module>:skip`)
+                    // or the bare legacy whole-module id an older tick wrote
+                    // with no separator at all — `module_row_owner` reads
+                    // both the same way, up to the first `/` or `:`.
                     None => {
-                        if !chain.contains(&event.resource_id) {
+                        let owner = cfgd_core::reconciler::module_row_owner(&event.resource_id);
+                        if !chain.iter().any(|m| m == owner) {
                             continue;
                         }
                         drift.push(ModuleDrift {
-                            owner: event.resource_id.clone(),
+                            owner: owner.to_string(),
                             surface: "",
                             item: String::new(),
                             event,
@@ -441,13 +458,17 @@ fn classify_recorded_drift_for_chain(
                 });
             }
             "package" => {
-                let Some((manager, packages)) = event.resource_id.split_once(':') else {
+                let Some((manager, packages)) =
+                    cfgd_core::reconciler::split_package_drift_resource_id(&event.resource_id)
+                else {
                     continue;
                 };
-                // A recorded row may batch several packages under one
-                // manager (the daemon's action spelling); the module's
-                // share is the subset its chain declares, matched under
-                // the row's own manager through the declared alias.
+                // `action_drift_rows` mints one row per package since Task 63,
+                // so a fresh id names exactly one; a comma-joined id here is a
+                // batch spelling only a legacy stored row still carries (a
+                // whole-manager `PackageAction::Skip`). Either way the
+                // module's share is the subset its chain declares, matched
+                // under the row's own manager through the declared alias.
                 let declares = |pkg: &str, module: &cfgd_core::modules::LoadedModule| {
                     module
                         .spec
@@ -458,8 +479,8 @@ fn classify_recorded_drift_for_chain(
                 let Some((owner, mine)) = chain.iter().find_map(|name| {
                     let module = all_modules.get(name)?;
                     let mine: Vec<&str> = packages
-                        .split(',')
-                        .map(str::trim)
+                        .iter()
+                        .copied()
                         .filter(|pkg| declares(pkg, module))
                         .collect();
                     (!mine.is_empty()).then(|| (name.clone(), mine.join(", ")))
@@ -472,12 +493,10 @@ fn classify_recorded_drift_for_chain(
                 // scanned` beside the finding — the file rows' rule, applied
                 // to every resource kind.
                 if let Some(module) = all_modules.get(mod_name) {
-                    for pkg in packages.split(',').map(str::trim) {
-                        let Some(entry) =
-                            module.spec.packages.iter().find(|entry| {
-                                entry.aliases.get(manager).unwrap_or(&entry.name) == pkg
-                            })
-                        else {
+                    for pkg in &packages {
+                        let Some(entry) = module.spec.packages.iter().find(|entry| {
+                            entry.aliases.get(manager).unwrap_or(&entry.name) == *pkg
+                        }) else {
                             continue;
                         };
                         scanned_packages
@@ -2363,6 +2382,7 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
         drift_checked_live: false,
         last_scan_at: None,
         system_errors: Vec::new(),
+        standing: Vec::new(),
     };
     // status-word-ok: the payload's own field; this branch renders no state
     let (state_word, _) = payload.state_display();
@@ -2595,6 +2615,7 @@ pub(super) fn cmd_status(
         drift_checked_live: do_scan,
         last_scan_at,
         system_errors: Vec::new(),
+        standing: Vec::new(),
     };
 
     // A RECORDED env-var/alias row holds the opaque markers `verify_env_items`
@@ -2695,11 +2716,17 @@ pub(super) fn cmd_status(
                 .drift
                 .push(super::live_drift::drift_event_from(r, &merged_env_items));
         }
-        output.drift.extend(report.standing.into_iter().filter(|e| {
-            !drift
-                .iter()
-                .any(|r| r.resource_type == e.resource_type && r.resource_id == e.resource_id)
-        }));
+        let standing_rows: Vec<cfgd_core::state::DriftEvent> = report
+            .standing
+            .into_iter()
+            .filter(|e| {
+                !drift
+                    .iter()
+                    .any(|r| r.resource_type == e.resource_type && r.resource_id == e.resource_id)
+            })
+            .collect();
+        output.drift.extend(standing_rows.iter().cloned());
+        output.standing = standing_rows;
     }
 
     // Built from the composition this command already resolved: the rows say
@@ -2866,6 +2893,11 @@ pub(super) fn cmd_status_module(
             })
             .collect();
     let mut drift: Vec<ModuleDrift> = Vec::new();
+    // The raw stored rows behind `drift` above, for the payload's own
+    // `standing` key — populated only on the scanning branch, since the
+    // recorded fallback never re-checks anything and has no scan-vs-carried
+    // split of its own to report.
+    let mut standing_rows: Vec<cfgd_core::state::DriftEvent> = Vec::new();
     // The verify ids of the files this scan found drifted. The Deployed Files
     // rows are judged against it, so the two sections state one verdict per
     // file instead of a content check and a presence check disagreeing.
@@ -3126,7 +3158,9 @@ pub(super) fn cmd_status_module(
                     &findings,
                     &system_errors,
                     &resolved_modules,
+                    registry,
                 );
+                standing_rows = standing.clone();
                 classify_recorded_drift_for_chain(
                     standing,
                     &ChainOwnership {
@@ -3231,6 +3265,7 @@ pub(super) fn cmd_status_module(
         last_scan_at: state.last_scan_at()?,
         drift,
         system_errors,
+        standing: standing_rows,
     };
 
     printer.emit(build_module_status_doc(
@@ -3327,6 +3362,7 @@ mod tests {
             drift_checked_live: false,
             last_scan_at: None,
             system_errors: Vec::new(),
+            standing: Vec::new(),
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["lastApply"]["status"], serde_json::json!("inProgress"));
@@ -4283,6 +4319,7 @@ mod tests {
             drift_checked_live: false,
             last_scan_at: None,
             system_errors: Vec::new(),
+            standing: Vec::new(),
         };
 
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -4360,6 +4397,7 @@ mod tests {
                 drift_checked_live: checked_live,
                 last_scan_at: last_scan_at.map(str::to_string),
                 system_errors: Vec::new(),
+                standing: Vec::new(),
             };
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             printer.emit(build_fleet_status_doc(
@@ -4472,6 +4510,7 @@ mod tests {
                 drift_checked_live: checked_live,
                 last_scan_at: last_scan_at.map(str::to_string),
                 system_errors: Vec::new(),
+                standing: Vec::new(),
                 drift: Vec::new(),
             };
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -4554,6 +4593,7 @@ mod tests {
                 key: "brew:neovim".to_string(),
                 error: "brew reports neovim at 0.12.5_1".to_string(),
             }],
+            standing: Vec::new(),
             drift: Vec::new(),
         };
         let report = |output: &ModuleStatus| {
@@ -4591,6 +4631,7 @@ mod tests {
         // answered still reads its clean verdict.
         let answered = ModuleStatus {
             system_errors: Vec::new(),
+            standing: Vec::new(),
             ..errored
         };
         let clean = report(&answered);
@@ -4647,6 +4688,7 @@ mod tests {
                 key: "brew:neovim".to_string(),
                 error: "brew reports neovim at 0.12.5_1".to_string(),
             }],
+            standing: Vec::new(),
         };
         let health_row = |rendered: &str, owner: &str| -> String {
             rendered
@@ -4767,6 +4809,7 @@ mod tests {
                 key: "/home/user/.cfgd.env".to_string(),
                 error: "Is a directory (os error 21)".to_string(),
             }],
+            standing: Vec::new(),
             drift: Vec::new(),
         };
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -4826,6 +4869,7 @@ mod tests {
             drift_checked_live: false,
             last_scan_at: Some("2026-05-14T08:00:00Z".to_string()),
             system_errors: Vec::new(),
+            standing: Vec::new(),
         };
 
         let out = dashboard(&output);
@@ -4897,6 +4941,7 @@ mod tests {
             // its own stamp.
             last_scan_at: Some("2026-05-14T08:00:00Z".to_string()),
             system_errors: Vec::new(),
+            standing: Vec::new(),
         }
     }
 
@@ -5343,6 +5388,7 @@ mod tests {
             drift_checked_live: false,
             last_scan_at: None,
             system_errors: Vec::new(),
+            standing: Vec::new(),
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["classificationDegraded"], serde_json::json!(true));
@@ -7289,6 +7335,7 @@ mod tests {
             drift: Vec::new(),
             drift_checked_live: false,
             system_errors: Vec::new(),
+            standing: Vec::new(),
             last_scan_at: None,
         }
     }

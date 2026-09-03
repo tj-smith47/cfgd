@@ -989,31 +989,180 @@ pub fn module_row_names_a_file(resource_id: &str) -> bool {
     matches!(resource_id.find(['/', ':']), Some(at) if resource_id.as_bytes()[at] == b'/')
 }
 
+/// The full scope a module-scoped run may vouch for: its own resolved
+/// package ids (minus what an earlier module in the resolved list already
+/// claims — the same module-order dedup [`module_scope`] performs) plus the
+/// env-var and alias names it declares. Built once per scoped run
+/// (`module_scope`) and asked per row through [`row_attributable_to_module`],
+/// so a daemon tick's per-module scope and a CLI isolate's cannot compute two
+/// different answers for the same module.
+#[derive(Default)]
+pub struct ModuleScope {
+    pub packages: std::collections::HashSet<String>,
+    pub env_vars: std::collections::HashSet<String>,
+    pub aliases: std::collections::HashSet<String>,
+}
+
+/// Builds `name`'s [`ModuleScope`] out of `modules` — the run's own resolved
+/// module list (a daemon tick's whole machine-wide resolution, or a CLI
+/// isolate's named module plus its dependency chain).
+///
+/// Packages: `name`'s own resolved packages, less every package an EARLIER
+/// module in `modules` already claims — a package declared by two modules is
+/// dedup'd onto the first (`dedup_module_packages`'s own order), so a later
+/// module's tick or scan may not heal a row it never planned. Minted through
+/// the same [`super::package_entry_drift_id`] every drift-row producer uses,
+/// so a scope entry and a recorded row agree byte-for-byte. Env vars and
+/// aliases: the bare declared names — [`crate::modules::ResolvedModule`]'s
+/// `env`/`aliases` are already platform-gated by resolution, so no second
+/// gate is asked here.
+#[must_use]
+pub fn module_scope(
+    modules: &[crate::modules::ResolvedModule],
+    name: &str,
+    managers: &std::collections::HashMap<&str, &dyn crate::providers::PackageManager>,
+) -> ModuleScope {
+    let Some(module) = modules.iter().find(|m| m.name == name) else {
+        return ModuleScope::default();
+    };
+    let claimed_earlier: std::collections::HashSet<(&str, &str)> = modules
+        .iter()
+        .take_while(|m| m.name != name)
+        .flat_map(|m| {
+            m.packages
+                .iter()
+                .map(|p| (p.manager.as_str(), p.resolved_name.as_str()))
+        })
+        .collect();
+    let packages = module
+        .packages
+        .iter()
+        .filter(|p| !claimed_earlier.contains(&(p.manager.as_str(), p.resolved_name.as_str())))
+        .map(|p| {
+            super::package_entry_drift_id(
+                &p.manager,
+                &p.resolved_name,
+                managers.get(p.manager.as_str()).copied(),
+            )
+        })
+        .collect();
+    ModuleScope {
+        packages,
+        env_vars: module.env.iter().map(|e| e.name.clone()).collect(),
+        aliases: module.aliases.iter().map(|a| a.name.clone()).collect(),
+    }
+}
+
 /// Whether a recorded drift row is one a module-scoped run can vouch for —
 /// the daemon's per-module tick and a CLI scoped scan (`diff`/`verify`/
-/// `status --scan`, each `--module`) ask this same question over the same two
-/// grammars, so a row neither predicate agrees on cannot flip between
-/// "standing" and "healed" depending only on which caller last looked.
+/// `status --scan`, each `--module`) ask this same question over `scope`, so
+/// a row neither call agrees on cannot flip between "standing" and "healed"
+/// depending only on which caller last looked.
 ///
 /// A `module` row belongs to the run whose name is its [`module_row_owner`].
-/// A `package` row belongs to the run iff its id is one of `effective_packages`
-/// — the caller's own resolved set, since which packages a module's chain
-/// carries is a resolution the caller already did (module-order dedup for a
-/// daemon tick, the whole dependency chain for a CLI isolate) and this
-/// function has no context to redo it. Every other type is a machine-wide
-/// surface no module-scoped run evaluates, so it answers `false` — including
-/// for `module`/`package` ids that fall outside those two shapes.
+/// A `package`/`env-var`/`alias` row belongs to the run iff its id is a
+/// member of `scope`'s matching set — `scope` is the caller's own resolved
+/// [`module_scope`], since which packages and shell surfaces a module's chain
+/// carries is a resolution the caller already did and this function has no
+/// context to redo. Every other type is a machine-wide surface no
+/// module-scoped run evaluates, so it answers `false`.
 #[must_use]
 pub fn row_attributable_to_module(
     resource_type: &str,
     resource_id: &str,
     module: &str,
-    effective_packages: &std::collections::HashSet<String>,
+    scope: &ModuleScope,
 ) -> bool {
     match resource_type {
         "module" => module_row_owner(resource_id) == module,
-        "package" => effective_packages.contains(resource_id),
+        "package" => scope.packages.contains(resource_id),
+        "env-var" => scope.env_vars.contains(resource_id),
+        "alias" => scope.aliases.contains(resource_id),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod row_attributable_to_module_tests {
+    use super::*;
+
+    fn scope(packages: &[&str], env_vars: &[&str], aliases: &[&str]) -> ModuleScope {
+        ModuleScope {
+            packages: packages.iter().map(|s| s.to_string()).collect(),
+            env_vars: env_vars.iter().map(|s| s.to_string()).collect(),
+            aliases: aliases.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// A `:script`/`:skip` module id attributes to its owner exactly like the
+    /// bare and per-file grammars — `module_row_owner` is the ONE reading, so
+    /// this predicate cannot special-case the action-row spelling.
+    #[test]
+    fn script_and_skip_module_rows_attribute_to_their_owner() {
+        let empty = ModuleScope::default();
+        assert!(row_attributable_to_module(
+            "module",
+            "nvim:script",
+            "nvim",
+            &empty
+        ));
+        assert!(row_attributable_to_module(
+            "module",
+            "nvim:skip",
+            "nvim",
+            &empty
+        ));
+        assert!(!row_attributable_to_module(
+            "module",
+            "nvim:script",
+            "other",
+            &empty
+        ));
+    }
+
+    #[test]
+    fn a_resource_type_no_module_can_own_answers_false() {
+        let s = scope(&["brew:jq"], &["EDITOR"], &["ll"]);
+        assert!(!row_attributable_to_module(
+            "system",
+            "shell.default",
+            "m",
+            &s
+        ));
+        assert!(!row_attributable_to_module(
+            "env-session",
+            "refresh",
+            "m",
+            &s
+        ));
+    }
+
+    #[test]
+    fn an_empty_scope_owns_no_package_env_or_alias_row() {
+        let empty = ModuleScope::default();
+        assert!(!row_attributable_to_module(
+            "package", "brew:jq", "m", &empty
+        ));
+        assert!(!row_attributable_to_module(
+            "env-var", "EDITOR", "m", &empty
+        ));
+        assert!(!row_attributable_to_module("alias", "ll", "m", &empty));
+    }
+
+    #[test]
+    fn package_ownership_is_scope_membership() {
+        let s = scope(&["brew:jq"], &[], &[]);
+        assert!(row_attributable_to_module("package", "brew:jq", "m", &s));
+        assert!(!row_attributable_to_module("package", "brew:rg", "m", &s));
+    }
+
+    #[test]
+    fn env_var_and_alias_ownership_is_scope_membership() {
+        let s = scope(&[], &["EDITOR"], &["ll"]);
+        assert!(row_attributable_to_module("env-var", "EDITOR", "m", &s));
+        assert!(!row_attributable_to_module("env-var", "SHELL", "m", &s));
+        assert!(row_attributable_to_module("alias", "ll", "m", &s));
+        assert!(!row_attributable_to_module("alias", "la", "m", &s));
     }
 }
 

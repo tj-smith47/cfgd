@@ -279,43 +279,52 @@ pub(super) fn scoped_version_drift(
 /// `chain` is the run's own resolved module set (the named module plus every
 /// dependency `resolve_modules` pulled in) — the scope
 /// [`cfgd_core::reconciler::row_attributable_to_module`] judges attribution
-/// against, one member at a time, the same predicate the daemon's per-module
-/// tick asks over its own single name. `effective_packages` is derived from
-/// `checked` itself: every package id this run resolved as scannable, which
-/// is exactly the set a package row must appear in to be this chain's to
-/// vouch for.
+/// against, one member at a time through its own
+/// [`cfgd_core::reconciler::module_scope`], the same predicate and the same
+/// scope builder the daemon's per-module tick asks over its own single name.
+/// Deliberately NOT derived from `checked`: `checked` is the set this run
+/// already re-examined, and a scope built from it can never contain a row
+/// this run did NOT get to — which is exactly the standing row this function
+/// exists to return.
 ///
 /// Returns every recorded row attributable to `chain` that `checked` did not
 /// cover — a finding this run's own scope owns but never got to re-examine,
 /// because its type or grammar sits outside what THIS check evaluates (a
-/// module's bare legacy id, a `:script`/`:skip` action row, a package batch
-/// id no single scanned package matches). A caller presenting the scan
-/// renders and prices them beside its findings, exactly as the full-machine
-/// walk's own [`record_full_scan_findings`] does with its keep-set — the type
-/// is never special-cased here, only asked of the one shared predicate.
+/// module's bare legacy id, a `:script`/`:skip` action row, a package this
+/// chain declares but the scan excluded from `checked`). A caller presenting
+/// the scan renders and prices them beside its findings, exactly as the
+/// full-machine walk's own [`record_full_scan_findings`] does with its
+/// keep-set — the type is never special-cased here, only asked of the one
+/// shared predicate.
 pub(super) fn record_scoped_scan_findings<'a>(
     state: &cfgd_core::state::StateStore,
     checked: &[(String, String)],
     findings: impl IntoIterator<Item = &'a VerifyResult>,
     check_errors: &[super::output_types::SystemCheckError],
     chain: &[cfgd_core::modules::ResolvedModule],
+    registry: &cfgd_core::providers::ProviderRegistry,
 ) -> Vec<cfgd_core::state::DriftEvent> {
-    let effective_packages: std::collections::HashSet<String> = checked
+    let managers = registry.manager_map();
+    let managers: std::collections::HashMap<&str, &dyn cfgd_core::providers::PackageManager> =
+        managers.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    let scopes: Vec<cfgd_core::reconciler::ModuleScope> = chain
         .iter()
-        .filter(|(rtype, _)| rtype == "package")
-        .map(|(_, rid)| rid.clone())
+        .map(|m| cfgd_core::reconciler::module_scope(chain, &m.name, &managers))
         .collect();
     let owns_row = |rtype: &str, rid: &str| {
-        chain.iter().any(|m| {
-            cfgd_core::reconciler::row_attributable_to_module(
-                rtype,
-                rid,
-                &m.name,
-                &effective_packages,
-            )
+        chain.iter().zip(scopes.iter()).any(|(m, scope)| {
+            cfgd_core::reconciler::row_attributable_to_module(rtype, rid, &m.name, scope)
         })
     };
     let mut standing = Vec::new();
+    // Borrowed once over `checked`: the healed filter and the standing
+    // filter below both ask "is this id one this run re-checked", and a
+    // per-row `checked.iter().any(...)` linear scan is quadratic in the
+    // recorded row count for a module declaring many packages.
+    let checked_ids: std::collections::HashSet<(&str, &str)> = checked
+        .iter()
+        .map(|(t, i)| (t.as_str(), i.as_str()))
+        .collect();
     // One transaction over the batch, for the same WAL-write economy as the
     // full scan's; per-row failures stay warnings.
     if let Err(e) = state.in_transaction(|| {
@@ -339,9 +348,7 @@ pub(super) fn record_scoped_scan_findings<'a>(
                     .into_iter()
                     .filter(|e| {
                         owns_row(&e.resource_type, &e.resource_id)
-                            && !checked
-                                .iter()
-                                .any(|(t, i)| t == &e.resource_type && i == &e.resource_id)
+                            && !checked_ids.contains(&(e.resource_type.as_str(), e.resource_id.as_str()))
                     })
                     .collect();
             }

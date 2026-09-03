@@ -226,6 +226,7 @@ pub fn cmd_verify(
             results.iter().filter(|r| !r.matches),
             &check_errors,
             &resolved_modules,
+            &registry,
         )
     };
     // The recording above persisted the opaque `current`/`missing or

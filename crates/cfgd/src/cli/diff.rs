@@ -827,6 +827,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         &findings,
         &package_check_errors,
         &resolved_modules,
+        registry,
     );
     let has_standing_drift = {
         let sec = printer.section_or_collapse("Standing");
@@ -1177,6 +1178,16 @@ fn drift_tally(output: &DiffOutput, scope: DiffScope<'_>) -> String {
             clean.push(label);
         }
     }
+    // Standing rows are not one of the checked surfaces above — they are
+    // rows a check outside this run's own scope already found and this run
+    // is only carrying forward — so they add a clause without a "clean"
+    // counterpart.
+    if !output.standing.is_empty() {
+        drifted.push(format!(
+            "{} standing",
+            cfgd_core::pluralize(output.standing.len(), "row")
+        ));
+    }
     let drifted = drifted.join(", ");
     if clean.is_empty() {
         drifted
@@ -1189,7 +1200,8 @@ pub fn build_diff_doc(output: &DiffOutput, scope: DiffScope<'_>) -> Doc {
     let any_drift = output.summary.has_file_drift
         || output.summary.has_pkg_drift
         || output.summary.has_system_drift
-        || output.summary.has_env_drift;
+        || output.summary.has_env_drift
+        || output.summary.has_standing_drift;
     // A run that could not check everything has no clean verdict to give, so
     // it never renders one — whether or not the checks that DID run found
     // drift.

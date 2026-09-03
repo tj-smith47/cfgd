@@ -52,12 +52,13 @@ pub use env_engine::{
 pub use files::{LinkDeployedDigest, RefreshedHashes, link_deployed_digest};
 pub(crate) use format::debug_assert_system_key_undoubled;
 pub use format::{
-    DisplaySubject, action_display_subject, action_display_subject_within, bare_script_subject,
-    condense_action_desc_for_display, format_action_description, format_plan_item,
-    format_plan_items, hook_script_subject, module_file_resource_id, module_file_spec_resource_id,
-    module_row_names_a_file, module_row_owner, module_script_subject, module_script_subject_within,
-    row_attributable_to_module, script_run_subject, script_run_subject_within,
-    split_module_file_resource_id, system_key_doubling_error, system_resource_key,
+    DisplaySubject, ModuleScope, action_display_subject, action_display_subject_within,
+    bare_script_subject, condense_action_desc_for_display, format_action_description,
+    format_plan_item, format_plan_items, hook_script_subject, module_file_resource_id,
+    module_file_spec_resource_id, module_row_names_a_file, module_row_owner, module_scope,
+    module_script_subject, module_script_subject_within, row_attributable_to_module,
+    script_run_subject, script_run_subject_within, split_module_file_resource_id,
+    system_key_doubling_error, system_resource_key,
 };
 pub use managers::plan_managers;
 pub use packages::stale_tracked_packages;

@@ -565,6 +565,164 @@ fn a_scoped_env_probe_failure_is_reported_and_escalates_on_both_scoped_surfaces(
     }
 }
 
+/// An `env-var`/`alias` standing row is rendered and priced by a scoped
+/// scan exactly like a `package`/`module` one — the asymmetry this closes:
+/// `row_attributable_to_module` used to answer `false` for both types
+/// unconditionally, so a module's own declared env var recorded standing
+/// while its probe could not run (the file exists but is unreadable) was
+/// silently dropped by the scan path even though the recorded-fallback path
+/// attributed it correctly.
+/// A `prefer: [script]` package entry is invisible to live drift detection
+/// by design (`action_drift_rows`'s own doc), so `checked` never names it —
+/// exactly the shape that broke the OLD `effective_packages`, which was
+/// derived from `checked` itself and could therefore never contain a
+/// package this run had not just re-checked. The scope this run's own
+/// resolved chain declares must attribute the row regardless.
+fn write_script_preferred_package_config(dir: &Path) {
+    let module_dir = dir.join("modules").join("scripted");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: scripted\nspec:\n  packages:\n    - name: demo\n      prefer: [script]\n      script: echo installed\n",
+    )
+    .unwrap();
+    let profiles_dir = dir.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("tiny.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  modules:\n    - scripted\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_scoped_scan_renders_and_prices_a_standing_script_preferred_package_row() {
+    use cfgd_core::state::StateStore;
+
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    let state_tmp = tempfile::tempdir().unwrap();
+    write_script_preferred_package_config(config_tmp.path());
+    {
+        let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
+        state
+            .record_drift("package", "script:demo", None, Some("to remove"), "local")
+            .unwrap();
+    }
+
+    let render_args = &["diff", "--module", "scripted"];
+    let out = run(
+        render_args,
+        config_tmp.path(),
+        state_tmp.path(),
+        home_tmp.path(),
+        None,
+    );
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("demo"),
+        "cfgd {render_args:?}: renders the script-preferred package row it left standing, got: {text}"
+    );
+
+    let mut json_args: Vec<&str> = render_args.to_vec();
+    json_args.extend(["-o", "json"]);
+    let out = run(
+        &json_args,
+        config_tmp.path(),
+        state_tmp.path(),
+        home_tmp.path(),
+        None,
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "cfgd {json_args:?}: expected JSON on stdout, got {}: {e}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    assert_eq!(
+        payload["standing"][0]["resourceId"],
+        serde_json::json!("script:demo"),
+        "cfgd {json_args:?}: standing[0].resourceId, got: {payload}"
+    );
+}
+
+#[test]
+fn a_scoped_scan_renders_and_prices_a_standing_env_var_row() {
+    use cfgd_core::state::StateStore;
+
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    let state_tmp = tempfile::tempdir().unwrap();
+    write_module_config(config_tmp.path());
+    let env_file = cfgd_core::reconciler::primary_env_file(home_tmp.path());
+    std::fs::create_dir(&env_file).unwrap();
+    {
+        let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
+        state
+            .record_drift(
+                "env-var",
+                "EDITOR",
+                Some("EDITOR=vim"),
+                Some("missing or changed"),
+                "local",
+            )
+            .unwrap();
+    }
+
+    let render_args = &["diff", "--module", "envmod"];
+    let out = run(
+        render_args,
+        config_tmp.path(),
+        state_tmp.path(),
+        home_tmp.path(),
+        None,
+    );
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("EDITOR"),
+        "cfgd {render_args:?}: renders the env-var row it left standing, got: {text}"
+    );
+
+    let mut json_args: Vec<&str> = render_args.to_vec();
+    json_args.extend(["-o", "json"]);
+    let out = run(
+        &json_args,
+        config_tmp.path(),
+        state_tmp.path(),
+        home_tmp.path(),
+        None,
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "cfgd {json_args:?}: expected JSON on stdout, got {}: {e}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    let standing = payload["standing"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a standing array, got: {payload}"));
+    assert!(
+        standing
+            .iter()
+            .any(|e| e["resourceId"] == serde_json::json!("EDITOR")
+                && e["resourceType"] == serde_json::json!("env-var")),
+        "cfgd {json_args:?}: EDITOR must appear in standing, got: {payload}"
+    );
+}
+
 /// A recorded row the scan KEEPS standing is rendered and priced by the scan
 /// that kept it.
 ///
@@ -676,6 +834,41 @@ fn every_full_exit_code_surface_renders_and_prices_a_standing_row() {
             text.contains("echo hook"),
             "cfgd {render_args:?}: renders the row it left standing, got: {text}"
         );
+        // The human verdict and `--exit-code`'s `5` below must read one
+        // set: a run with nothing but a standing row still says so, never
+        // "No drift detected" over an exit code that disagrees.
+        assert!(
+            !text.contains("No drift detected"),
+            "cfgd {render_args:?}: verdict must agree with the exit code below, got: {text}"
+        );
+
+        // The `-o json` twin: the same row under the payload's own
+        // `standing` key, not just the terminal render.
+        let mut json_args: Vec<&str> = render_args.to_vec();
+        json_args.extend(["-o", "json"]);
+        let out = run(
+            &json_args,
+            config_tmp.path(),
+            state_tmp.path(),
+            home_tmp.path(),
+            None,
+        );
+        let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+            panic!(
+                "cfgd {json_args:?}: expected JSON on stdout, got {}: {e}",
+                String::from_utf8_lossy(&out.stdout)
+            )
+        });
+        assert_eq!(
+            payload["standing"][0]["resourceId"],
+            serde_json::json!("echo hook"),
+            "cfgd {json_args:?}: standing[0].resourceId, got: {payload}"
+        );
+        assert_eq!(
+            payload["standing"][0]["resourceType"],
+            serde_json::json!("script"),
+            "cfgd {json_args:?}: standing[0].resourceType, got: {payload}"
+        );
 
         let out = run(
             surface,
@@ -749,9 +942,41 @@ fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
+        // `envmod` alone is not proof — every scoped surface's own header
+        // names the module regardless of whether the standing row rendered.
+        // The row's own recorded `actual` value only appears if the row
+        // itself made it onto the screen.
         assert!(
-            text.contains("envmod"),
+            text.contains("drift detected"),
             "cfgd {render_args:?}: renders the row it left standing, got: {text}"
+        );
+
+        // The `-o json` twin: the same row under the payload's own
+        // `standing` key, not just the terminal render.
+        let mut json_args: Vec<&str> = render_args.to_vec();
+        json_args.extend(["-o", "json"]);
+        let out = run(
+            &json_args,
+            config_tmp.path(),
+            state_tmp.path(),
+            home_tmp.path(),
+            None,
+        );
+        let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+            panic!(
+                "cfgd {json_args:?}: expected JSON on stdout, got {}: {e}",
+                String::from_utf8_lossy(&out.stdout)
+            )
+        });
+        assert_eq!(
+            payload["standing"][0]["resourceId"],
+            serde_json::json!("envmod"),
+            "cfgd {json_args:?}: standing[0].resourceId, got: {payload}"
+        );
+        assert_eq!(
+            payload["standing"][0]["resourceType"],
+            serde_json::json!("module"),
+            "cfgd {json_args:?}: standing[0].resourceType, got: {payload}"
         );
 
         let out = run(
@@ -781,6 +1006,100 @@ fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
             "cfgd {surface:?}: the standing row is never healed by the scan that renders it",
         );
     }
+}
+
+/// `status --module --scan` must render and price a `<module>:script` /
+/// `<module>:skip` standing row exactly like the bare whole-module id above —
+/// [`cfgd_core::reconciler::module_row_owner`] reads both grammars the same
+/// way, up to the first `/` or `:`, and `classify_recorded_drift_for_chain`'s
+/// "module" arm must ask it rather than comparing the row's full id against
+/// the bare chain names.
+#[test]
+fn a_module_scoped_scan_renders_and_prices_a_script_shaped_standing_row() {
+    use cfgd_core::state::StateStore;
+
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    let state_tmp = tempfile::tempdir().unwrap();
+    write_bare_module_config(config_tmp.path());
+    {
+        let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
+        state
+            .record_drift(
+                "module",
+                "envmod:script",
+                None,
+                Some("drift detected"),
+                "local",
+            )
+            .unwrap();
+    }
+
+    let render_args = &["status", "--module", "envmod", "--scan"];
+    let out = run(
+        render_args,
+        config_tmp.path(),
+        state_tmp.path(),
+        home_tmp.path(),
+        None,
+    );
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("drift detected"),
+        "cfgd {render_args:?}: renders the script-shaped row it left standing, got: {text}"
+    );
+
+    let mut json_args: Vec<&str> = render_args.to_vec();
+    json_args.extend(["-o", "json"]);
+    let out = run(
+        &json_args,
+        config_tmp.path(),
+        state_tmp.path(),
+        home_tmp.path(),
+        None,
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "cfgd {json_args:?}: expected JSON on stdout, got {}: {e}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    assert_eq!(
+        payload["standing"][0]["resourceId"],
+        serde_json::json!("envmod:script"),
+        "cfgd {json_args:?}: standing[0].resourceId, got: {payload}"
+    );
+
+    let out = run(
+        &["status", "--module", "envmod", "--scan", "--exit-code"],
+        config_tmp.path(),
+        state_tmp.path(),
+        home_tmp.path(),
+        None,
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "cfgd status --module envmod --scan --exit-code: prices the standing row, got: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
+    assert_eq!(
+        state
+            .unresolved_drift()
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.resource_type, e.resource_id))
+            .collect::<Vec<_>>(),
+        vec![("module".to_string(), "envmod:script".to_string())],
+        "the standing row is never healed by the scan that renders it",
+    );
 }
 
 #[test]
