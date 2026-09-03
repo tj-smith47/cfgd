@@ -741,7 +741,7 @@ pub fn build_fleet_status_doc(
                     ));
                 }
                 if let Some((key, value)) = recorded_scope_row(&last.profile) {
-                    rows.push(KvPair::new(key, value));
+                    rows.push(KvPair::scope_valued(key, value));
                 }
                 // `Age`, not the stored instant: `-o json`'s `lastApply.timestamp`
                 // is where an exact moment is read from, and the dashboard row
@@ -854,7 +854,8 @@ pub fn build_fleet_status_doc(
             let mut t = Table::new(["Type", "Owner", "Resource", "Method", "Source"])
                 // A package list is what the reader acts on, so a narrow
                 // terminal wraps it rather than cutting names off the tail.
-                .wrapping();
+                .wrapping()
+                .owner_column("Owner");
             for row in managed_resource_rows(items, &output.modules, profile, resources) {
                 t = t.row(row);
             }

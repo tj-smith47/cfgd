@@ -1,15 +1,15 @@
 Daemon Status
-✓ Daemon running
+  Config              /home/u/.config/cfgd/cfgd.yaml
+  Profile             work
+  Modules             base, dev-tools
+  PID                 4242
+  Uptime              1h
+  Reconcile Interval  300s
+  Sync Interval       900s
+  Drift Count         7
+  Last Reconcile      2d ago
 
-Config              /home/u/.config/cfgd/cfgd.yaml
-Profile             work
-Modules             base, dev-tools
-PID                 4242
-Uptime              1h
-Reconcile Interval  300s
-Sync Interval       900s
-Drift Count         7
-Last Reconcile      2d ago
+✓ Daemon running
 
 Sources
   Name   Source                          Priority  Status  Commit        Last Sync  Signed  Requires Signed

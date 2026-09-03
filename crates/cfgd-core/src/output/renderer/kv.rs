@@ -114,16 +114,23 @@ impl Emitting<'_> {
         self.flush_section_headers();
 
         let bump = bound_to_heading.unwrap_or(
-            depth == 0 && self.state.section_stack.is_empty() && self.state.last_was_top_heading,
+            depth == 0 && self.state.section_stack.is_empty() && self.state.top_heading_scope,
         );
+        // The indent says the block belongs to the heading; the blank line
+        // says whether it is the heading's FIRST block. A second block under
+        // the same heading nests like the first and still separates from it.
+        let swallow_blank = bump && self.state.last_was_top_heading;
         self.state.last_was_top_heading = false;
+        // A block that bound to the heading is still inside its scope, so the
+        // prose and the facts under one heading nest together.
+        self.state.top_heading_scope = bump;
         if self.state.leading {
             self.state.leading = false;
             self.state.blank_pending = false;
-        } else if self.state.blank_pending && !bump {
+        } else if self.state.blank_pending && !swallow_blank {
             self.out.push(String::new());
             self.state.blank_pending = false;
-        } else if bump {
+        } else if swallow_blank {
             self.state.blank_pending = false;
         }
         let effective_depth = if bump { depth + 1 } else { depth };
@@ -236,12 +243,22 @@ impl Emitting<'_> {
             Some(url) if !self.theme.hyperlinks() => url,
             _ => pair.value.as_str(),
         };
-        let value = match pair.value_role {
-            Some(role) if !shown.is_empty() => {
-                let (_, style) = super::role_glyph(self.theme, role);
-                style.apply_to(cursor_safe(shown)).to_string()
+        let value = if pair.owners.is_empty() {
+            match pair.value_role {
+                Some(role) if !shown.is_empty() => {
+                    let (_, style) = super::role_glyph(self.theme, role);
+                    style.apply_to(cursor_safe(shown)).to_string()
+                }
+                _ => cursor_safe(shown),
             }
-            _ => cursor_safe(shown),
+        } else {
+            // Each token paints its own three slots and folds each of them, so
+            // the row's value is assembled from already-safe pieces.
+            pair.owners
+                .iter()
+                .map(|owner| owner.styled(self.theme))
+                .collect::<Vec<_>>()
+                .join(crate::reconciler::Owner::TOKEN_SEPARATOR)
         };
         let value = match pair.link.as_deref() {
             Some(url) if self.theme.hyperlinks() => {
@@ -399,6 +416,50 @@ mod tests {
     fn narrow(cols: usize) -> (Renderer, NarrowSink, Arc<Mutex<String>>) {
         let (r, sink, buf) = capture();
         (r, NarrowSink(sink, cols), buf)
+    }
+
+    /// A recorded scope reaches the kv slot through `KvPair::scope_valued`,
+    /// which resolves the tokens once at build time; the renderer paints each
+    /// one and rejoins them with the separator they were recorded with. A
+    /// value that is not a token list keeps the plain slot's rendering, so a
+    /// `Profile  work` row is untouched.
+    #[test]
+    #[serial_test::serial]
+    fn a_scope_valued_row_paints_every_token_it_carries() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let sep = crate::reconciler::Owner::TOKEN_SEPARATOR;
+        let painted: Vec<String> = ["module:nvim", "module:git"]
+            .iter()
+            .filter_map(|t| t.split_once(':'))
+            .map(|(k, n)| crate::output::OwnerLabel::new(k, n).styled(&theme))
+            .collect();
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(theme, Verbosity::Normal);
+        r.render_kv_block(
+            &sink,
+            0,
+            &[
+                KvPair::scope_valued("Scope", format!("module:nvim{sep}module:git")),
+                KvPair::scope_valued("Profile", "work"),
+            ],
+        );
+        // The painted tokens ARE the subject here.
+        // raw-capture-ok: captured_text strips the escapes this test exists to see
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            raw.contains(&painted.join(sep)),
+            "scope tokens unpainted: {raw:?}"
+        );
+        let plain = crate::output::strip_ansi(&raw);
+        assert!(
+            plain.contains(&format!("Scope    module:nvim{sep}module:git")),
+            "the plain reading is unchanged: {plain:?}"
+        );
+        assert!(
+            raw.contains("  work"),
+            "a bare profile name keeps the plain slot: {raw:?}"
+        );
     }
 
     #[test]

@@ -66,6 +66,16 @@ pub struct Table {
     /// either way.
     #[serde(skip)]
     pub(crate) wrap_cells: bool,
+    /// Headers whose cells are RECORDED owner tokens, painted through
+    /// [`crate::output::OwnerLabel`]'s three slots by the renderer.
+    ///
+    /// Held by header NAME rather than index so a dropped column needs no
+    /// remapping, and display-only like `wrap_cells`: the plain cell is what
+    /// `-o json` carries and what every width is measured over. A cell that
+    /// does not read as a token list stays plain — the same refusal
+    /// [`crate::output::owner_tokens`] makes for the kv slot.
+    #[serde(skip)]
+    pub(crate) owner_columns: Vec<String>,
 }
 
 impl Table {
@@ -75,6 +85,7 @@ impl Table {
             rows: Vec::new(),
             row_roles: Vec::new(),
             wrap_cells: false,
+            owner_columns: Vec::new(),
         }
     }
 
@@ -86,6 +97,15 @@ impl Table {
     /// lost rather than a detail some wider view still offers.
     pub fn wrapping(mut self) -> Self {
         self.wrap_cells = true;
+        self
+    }
+
+    /// Declare a column whose cells are recorded owner tokens, so the
+    /// renderer paints each one the way every surface holding an `Owner`
+    /// renders it. A cell that does not read as a `kind:name` token list
+    /// renders exactly as it was written.
+    pub fn owner_column(mut self, header: impl Into<String>) -> Self {
+        self.owner_columns.push(header.into());
         self
     }
 
@@ -211,6 +231,13 @@ impl Renderer {
         // reads as the last column being right-anchored rather than
         // left-packed two spaces after its neighbour.
         let empty_roles: Vec<Option<Role>> = Vec::new();
+        // Resolved once per table, against the headers that SURVIVED the
+        // unfillable-column drop.
+        let owner_col: Vec<bool> = t
+            .headers
+            .iter()
+            .map(|h| t.owner_columns.iter().any(|o| o == h))
+            .collect();
         let laid_out_rows: Vec<Vec<Vec<String>>> = rows
             .iter()
             .map(|row| {
@@ -285,7 +312,21 @@ impl Renderer {
                     .map(|(i, lines)| {
                         let cell = lines.get(physical).map(String::as_str).unwrap_or("");
                         let pad = widths[i].saturating_sub(UnicodeWidthStr::width(cell));
-                        let padded = format!("{cell}{}", " ".repeat(pad));
+                        let pad = " ".repeat(pad);
+                        // An owner column's cell is painted token by token —
+                        // the padding stays outside the coats, so the column
+                        // aligns on the plain width like every other.
+                        if owner_col.get(i).copied().unwrap_or(false)
+                            && let Some(owners) = crate::output::owner_tokens(cell)
+                        {
+                            let painted = owners
+                                .iter()
+                                .map(|o| o.styled(&self.theme))
+                                .collect::<Vec<_>>()
+                                .join(crate::reconciler::Owner::TOKEN_SEPARATOR);
+                            return format!("{painted}{pad}");
+                        }
+                        let padded = format!("{cell}{pad}");
                         match roles_for_row.get(i).and_then(|r| *r) {
                             Some(role) => {
                                 let (_icon, style) = role_glyph(&self.theme, role);
@@ -330,6 +371,44 @@ mod tests {
         let t = Table::new(std::iter::empty::<String>());
         r.render_table(&sink, 0, &t);
         assert!(crate::test_helpers::captured_text(&buf).is_empty());
+    }
+
+    /// A declared owner column paints its tokens the way every other owner
+    /// slot does, and pads on the PLAIN width so the escapes never widen the
+    /// column. A cell that is not a token list (a bare profile name, an
+    /// `ABSENT` dash) stays exactly as it was written.
+    ///
+    /// The column is held by header NAME, so it survives
+    /// `without_unfillable_columns` dropping a column to its left without any
+    /// index to remap.
+    #[test]
+    #[serial_test::serial]
+    fn a_declared_owner_column_paints_its_tokens_and_pads_on_the_plain_width() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let token = crate::output::OwnerLabel::new("module", "nvim").styled(&theme);
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(theme, Verbosity::Normal);
+        let t = Table::new(["ID", "Scope"])
+            .owner_column("Scope")
+            .row(["1", "module:nvim"])
+            .row(["2", "work"]);
+        r.render_table(&sink, 0, &t);
+        // The styled token IS the subject here.
+        // raw-capture-ok: captured_text strips the escapes this test exists to see
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(raw.contains(&token), "owner token unpainted: {raw:?}");
+        assert!(
+            raw.contains("work"),
+            "a non-token cell renders as written: {raw:?}"
+        );
+        let plain = crate::output::strip_ansi(&raw);
+        let widths: Vec<usize> = plain
+            .lines()
+            .filter(|l| l.contains("module:nvim") || l.contains("work"))
+            .map(str::len)
+            .collect();
+        assert_eq!(widths.len(), 2, "both data rows render once: {plain:?}");
     }
 
     /// The drop is judged over the whole column and carried through the

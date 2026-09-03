@@ -122,7 +122,7 @@ pub fn build_log_doc(output: &LogOutput, now: &str) -> Doc {
     if output.entries.is_empty() {
         doc = doc.status(Role::Info, "No applies recorded yet");
     } else {
-        let mut t = Table::new(["ID", "Age", "Scope", "Status", "Summary"]);
+        let mut t = Table::new(["ID", "Age", "Scope", "Status", "Summary"]).owner_column("Scope");
         for record in &output.entries {
             // The Status cell carries the outcome's own role, from the one
             // word-and-role pairing every surface rendering an apply verdict

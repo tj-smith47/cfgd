@@ -5,8 +5,8 @@ Compliance Summary
   Profile  default
   Status   Compliant
 
-Compliant  3
-Warning    0
-Violation  0
+  Compliant  3
+  Warning    0
+  Violation  0
 
 ✓ All 3 checks compliant

@@ -1,6 +1,6 @@
 Daemon Status
-✓ Daemon running
+  PID          1
+  Uptime       1s
+  Drift Count  0
 
-PID          1
-Uptime       1s
-Drift Count  0
+✓ Daemon running

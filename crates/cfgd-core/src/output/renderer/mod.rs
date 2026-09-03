@@ -111,6 +111,14 @@ pub(crate) struct RenderState {
     /// heading. Reset by any other emission (status, section header, bullet,
     /// etc.).
     pub(crate) last_was_top_heading: bool,
+    /// True while a top-level heading is open and nothing has been written
+    /// that leaves its scope. `last_was_top_heading` answers "was the heading
+    /// the LAST thing written" — which is what decides whether the blank line
+    /// after it is swallowed — and every emission clears it. Placement is the
+    /// other question: a heading's prose, and the facts that follow the prose,
+    /// both belong under the heading, so the INDENT is decided by this flag
+    /// instead. Armed by `mark_top_heading` and re-armed by the next heading.
+    pub(crate) top_heading_scope: bool,
     /// Kind of the most recent top-level group emission, or `None` when the
     /// last thing written was not one (a section body, a section close).
     /// Consumed by the next top-level emit to decide whether it continues that
@@ -143,7 +151,7 @@ impl RenderState {
         KvAnchor {
             depth: self.indent_depth,
             at_top_level,
-            bound_to_heading: at_top_level && self.indent_depth == 0 && self.last_was_top_heading,
+            bound_to_heading: at_top_level && self.indent_depth == 0 && self.top_heading_scope,
         }
     }
 
@@ -156,6 +164,7 @@ impl RenderState {
             kv_anchor: None,
             section_stack: Vec::new(),
             last_was_top_heading: false,
+            top_heading_scope: false,
             last_top_group: None,
             doc_depth: 0,
             last_top_in_doc: false,
@@ -185,6 +194,7 @@ impl RenderState {
             leading: prior.leading,
             last_top_group: prior.last_top_group,
             last_was_top_heading: prior.last_was_top_heading,
+            top_heading_scope: prior.top_heading_scope,
             last_top_in_doc: prior.last_top_in_doc,
             ..Self::new()
         }
@@ -263,6 +273,7 @@ impl RenderState {
     pub(crate) fn mark_top_heading(&mut self) {
         if self.section_stack.is_empty() {
             self.last_was_top_heading = true;
+            self.top_heading_scope = true;
         }
     }
 }
@@ -763,8 +774,13 @@ impl Emitting<'_> {
             self.state.blank_pending = false;
         }
         // Any emission resets the heading-just-emitted flag. Heading itself
-        // sets the flag back true after this call returns.
+        // sets the flag back true after this call returns. A ROW is the
+        // command reporting on itself rather than more of the heading's own
+        // introduction, so it also ends the heading's scope: the closing facts
+        // block a verb leaves after its result rows is its own top-level
+        // block, not the header's continuation.
         self.state.last_was_top_heading = false;
+        self.state.top_heading_scope = false;
         let prefix = indent_prefix(depth);
         // The group measures its column from the glyph; the wrap measures a
         // row from the margin.
@@ -834,6 +850,7 @@ impl Emitting<'_> {
             self.state.blank_pending = false;
         }
         self.state.last_was_top_heading = false;
+        self.state.top_heading_scope = false;
         let prefix = indent_prefix(depth);
         for line in lines {
             self.out.push(format!("{prefix}{line}"));
@@ -1534,7 +1551,11 @@ mod tests {
 
     /// A description belongs to the thing the heading named, so it nests one
     /// level under it with no blank between — the same binding a kv block
-    /// written there gets. The block that follows is a separate group again.
+    /// written there gets. The block that FOLLOWS the description is still the
+    /// heading's, so it nests too and separates as its own group: the indent
+    /// is a fact about scope, the blank line a fact about adjacency. Before
+    /// the two were split, `cfgd explain` printed its prose indented and its
+    /// `Location` / `Docs` rows at column 0 under the same heading.
     #[test]
     fn a_paragraph_binds_to_the_heading_above_it() {
         let (r, sink, buf) = capture();
@@ -1543,7 +1564,7 @@ mod tests {
         r.render_kv_block(&sink, 0, &[crate::output::KvPair::new("kind", "Profile")]);
         let out = crate::test_helpers::captured_text(&buf);
         assert_eq!(
-            out, "profile.spec.packages.brew <object>\n  Homebrew packages.\n\nkind  Profile\n",
+            out, "profile.spec.packages.brew <object>\n  Homebrew packages.\n\n  kind  Profile\n",
             "got: {out:?}"
         );
     }

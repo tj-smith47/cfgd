@@ -14866,6 +14866,70 @@ fn every_golden_separates_sibling_blocks_with_one_blank_line() {
     );
 }
 
+/// A surface that opens on a heading indents its key/value facts under it.
+///
+/// `Emitting::open_aligned_block` binds a top-level kv block to the heading
+/// above it only while `state.last_was_top_heading` still stands, and ANY
+/// intervening emission clears it. `cfgd daemon status` printed its
+/// `✓ Daemon running` verdict between the two, so its whole header block —
+/// `Config`, `PID`, `Uptime`, `Drift Count` — rendered at column 0 while the
+/// same rows on `cfgd status` and every run header sat indented. The fix is
+/// the ORDER every other surface already keeps (heading, facts, verdict), and
+/// this walk is what says so for the next surface that reorders them.
+///
+/// Read off the ANSI-free golden: a column-0 `Label  value` pair in a golden
+/// that opens on a heading. A table's header row is column-0 too and is told
+/// apart by the `─` separator directly beneath it; a surface with no heading
+/// at all (`plugin exec`, `workflow generate`) has nothing to indent under.
+#[test]
+fn no_kv_block_renders_at_column_zero_under_a_heading() {
+    let is_kv = |l: &str| {
+        let Some((key, value)) = l.split_once("  ") else {
+            return false;
+        };
+        !key.is_empty()
+            && key.len() <= 24
+            && key.starts_with(char::is_uppercase)
+            && key.chars().all(|c| c.is_alphanumeric() || c == ' ')
+            && !value.trim().is_empty()
+    };
+    let mut offenders = Vec::new();
+    let mut judged = 0usize;
+    for path in snapshot_goldens(&["txt"]) {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let text = text.replace("\r\n", "\n");
+        let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+        // A heading owns rows, so the golden's first line names a surface only
+        // when something below it is indented.
+        let opens_on_heading = lines.first().is_some_and(|l| {
+            !l.starts_with(' ') && l.chars().next().is_some_and(char::is_alphabetic) && !is_kv(l)
+        }) && lines[1..].iter().any(|l| l.starts_with(' '));
+        if !opens_on_heading {
+            continue;
+        }
+        judged += 1;
+        for (i, line) in lines.iter().enumerate().skip(1) {
+            let is_table_header = lines
+                .get(i + 1)
+                .is_some_and(|n| n.trim_start().starts_with('─'));
+            if !line.starts_with(' ') && is_kv(line) && !is_table_header {
+                offenders.push(format!("{}:{}: {line}", path.display(), i + 1));
+            }
+        }
+    }
+    assert!(
+        judged >= 100,
+        "the walk no longer reaches the heading-bearing goldens — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a heading owns the facts below it, so the block indents under it — \
+         order the surface heading, facts, verdict rather than hand-indenting \
+         or re-opening the block:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// Neither half of a managed-env-file fixture is spelled by hand: the PATH
 /// comes from [`cfgd_core::reconciler::primary_env_file`] and the BODY's
 /// generated lines from `MergedEnvItems::declared_line`.
@@ -32412,6 +32476,130 @@ fn every_owner_label_of_a_held_owner_comes_from_owner_label() {
         "an owner in hand renders through `Owner::label()` (or `token()` for the \
          plain form), so a heading, a table cell and a serialized token cannot \
          come out as three spellings of one owner:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every slot rendering a RECORDED scope token declares it as one, so the
+/// tokens paint the way every surface holding an `Owner` paints them.
+///
+/// A recorded scope is `Owner::token()`, or several of them joined by
+/// `Owner::TOKEN_SEPARATOR` for an isolated run. The string reaches a report
+/// through the state store rather than through an `Owner`, so the sibling walk
+/// above — which finds a held owner by its `.kind` field access — cannot see
+/// it, and `status`'s Scope row, `status`'s Owner column and `log`'s Scope
+/// column all rendered the tokens as flat text beside sections and headings
+/// that paint the same token three ways.
+///
+/// Two arms, one per slot shape. A kv row built off `recorded_scope_row` takes
+/// `KvPair::scope_valued`; a table declaring an owner-token column header names
+/// it through `Table::owner_column`. A header spelled `Owner`/`Scope` over
+/// something that is not a token carries `// owner-column-ok: <why>`.
+#[test]
+fn every_recorded_scope_slot_declares_its_owner_tokens() {
+    /// A `Table::new([...])` header list, with the lines that follow it up to
+    /// the first row push — where `.owner_column` would sit.
+    fn owner_tables(body: &str) -> Vec<(usize, String, Vec<String>, bool)> {
+        let lines: Vec<&str> = body.lines().collect();
+        let mut hits = Vec::new();
+        for (n, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") || !line.contains("Table::new(") {
+                continue;
+            }
+            // rustfmt splits a long header list and the builder chain over
+            // several lines; the declaration ends at the first `;`.
+            let end = (n..lines.len())
+                .find(|i| lines[*i].contains(';'))
+                .unwrap_or(n);
+            let decl = lines[n..=end].concat();
+            let headers: Vec<String> = decl
+                .split_once("Table::new(")
+                .map(|(_, rest)| rest)
+                .unwrap_or_default()
+                .split('"')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_string)
+                .collect();
+            let owned: Vec<String> = headers
+                .into_iter()
+                .filter(|h| h == "Owner" || h == "Scope")
+                .collect();
+            if owned.is_empty() {
+                continue;
+            }
+            let hatched = lines[n..=end]
+                .iter()
+                .any(|l| l.contains("owner-column-ok:"));
+            let declared: Vec<String> = owned
+                .iter()
+                .filter(|h| !decl.contains(&format!(".owner_column(\"{h}\")")))
+                .cloned()
+                .collect();
+            hits.push((n + 1, lines[n].trim_start().to_string(), declared, hatched));
+        }
+        hits
+    }
+
+    // A split declaration: the header list, the wrap knob and the terminating
+    // `;` land on four lines, which a single-line scan would miss.
+    let split = "        let mut t = Table::new([\"Type\", \"Owner\"])\n            .wrapping()\n            .owner_column(\"Owner\");\n";
+    let hits = owner_tables(split);
+    assert_eq!(
+        hits.len(),
+        1,
+        "the scan no longer reaches a split header list"
+    );
+    assert!(
+        hits[0].2.is_empty(),
+        "a declared owner column reads as declared"
+    );
+    let undeclared = owner_tables("        let mut t = Table::new([\"ID\", \"Scope\"]);\n");
+    assert_eq!(
+        undeclared.first().map(|h| h.2.len()),
+        Some(1),
+        "an undeclared owner column is an offender"
+    );
+
+    let mut checked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let name = cfgd_core::to_posix_string(&path);
+        for (n, code, declared, hatched) in owner_tables(&body) {
+            checked.push(format!("{name}:{n}"));
+            if !hatched && !declared.is_empty() {
+                offenders.push(format!(
+                    "{name}:{n}: {code} — column(s) {declared:?} carry owner tokens \
+                     and need `.owner_column(...)`"
+                ));
+            }
+        }
+        // The kv arm: the recorded string reaches a row straight off
+        // `recorded_scope_row`, so the composer is checked at the call.
+        for (n, line) in body.lines().enumerate() {
+            if line.trim_start().starts_with("//") || !line.contains("recorded_scope_row(") {
+                continue;
+            }
+            checked.push(format!("{name}:{}", n + 1));
+            let call: String = body.lines().skip(n).take(4).collect::<Vec<_>>().concat();
+            if call.contains("KvPair::") && !call.contains("KvPair::scope_valued") {
+                offenders.push(format!(
+                    "{name}:{}: a recorded scope reaches a kv row through \
+                     `KvPair::scope_valued`, never the plain slot",
+                    n + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        checked.iter().any(|c| c.contains("cli/log.rs"))
+            && checked.iter().any(|c| c.contains("cli/status.rs")),
+        "the walk no longer reaches the recorded-scope slots — it checked {checked:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a recorded scope token renders through the same three slots every \
+         held owner does, so one report cannot paint `module:nvim` two ways:\n{}",
         offenders.join("\n")
     );
 }

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{PaintedSubject, Role};
+use super::{OwnerLabel, PaintedSubject, Role};
 
 /// A node in a Doc's component tree. Streaming output does not produce these
 /// (it pushes directly to the renderer); only `Doc` and `SectionBuilder` do.
@@ -139,6 +139,10 @@ pub enum Component {
         /// JSON shape is the same with or without it.
         #[serde(skip)]
         wrap_cells: bool,
+        /// Set by `Table::owner_column`: headers whose cells are recorded
+        /// owner tokens. Display-only, like `wrap_cells`.
+        #[serde(skip)]
+        owner_columns: Vec<String>,
     },
     Section {
         name: String,
@@ -196,6 +200,14 @@ pub struct KvPair {
     /// with or without it.
     #[serde(skip)]
     pub value_role: Option<Role>,
+    /// The owner tokens this row's VALUE reads as, each painted through
+    /// [`OwnerLabel`]'s three slots by the renderer. Empty for every other row.
+    ///
+    /// Same split as `value_role` and for the same reason: `value` stays the
+    /// plain string `-o json` carries and the widths are measured over, and
+    /// the coat is the renderer's. Display-only, never serialized.
+    #[serde(skip)]
+    pub owners: Vec<OwnerLabel>,
     /// Whether this row is a BREAKDOWN of the row above it, indented two
     /// columns in from the block's key column (`Scripts 7` / `  preApply 1`).
     ///
@@ -229,6 +241,7 @@ impl KvPair {
             value: v.into(),
             annotation: None,
             value_role: None,
+            owners: Vec::new(),
             nested: false,
             link: None,
         }
@@ -276,6 +289,24 @@ impl KvPair {
         Self {
             value_role: Some(role),
             ..Self::new(k, v)
+        }
+    }
+
+    /// A pair whose value is a RECORDED scope — `Scope  module:nvim`, or the
+    /// `Profile  base` a profile-scoped run records instead.
+    ///
+    /// The ONE slot every surface rendering a recorded scope takes: it asks
+    /// [`crate::output::owner_tokens`] whether the string is an owner list and
+    /// hands the tokens to the renderer when it is, so a `kind:name` in a kv
+    /// value wears the same tri-colour coat as the one a heading over the same
+    /// owner renders. A profile name — anything that is not a token list —
+    /// falls through to a plain row rather than being half-styled.
+    pub fn scope_valued(k: impl Into<String>, recorded: impl Into<String>) -> Self {
+        let recorded = recorded.into();
+        let owners = crate::output::owner_tokens(&recorded).unwrap_or_default();
+        Self {
+            owners,
+            ..Self::new(k, recorded)
         }
     }
 }

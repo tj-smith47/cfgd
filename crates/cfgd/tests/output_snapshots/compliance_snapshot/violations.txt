@@ -5,9 +5,9 @@ Compliance Summary
   Profile  default
   Status   Violation
 
-Compliant  1
-Warning    1
-Violation  1
+  Compliant  1
+  Warning    1
+  Violation  1
 
 Violations
   ✗ system:sysctl.vm.swappiness — expected 10, found 60

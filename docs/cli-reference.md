@@ -1269,7 +1269,7 @@ because a repo-relative path is something no terminal auto-links and no reader
 can paste into a browser:
 
 ```
-Docs        https://github.com/tj-smith47/cfgd/blob/v<version>/docs/spec/module.md#fields
+  Docs        https://github.com/tj-smith47/cfgd/blob/v<version>/docs/spec/module.md#fields
 ```
 
 `<version>` is the running binary's, so the page a row opens documents the
