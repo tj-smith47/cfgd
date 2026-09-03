@@ -968,9 +968,8 @@ pub fn default_state_dir_for(scope: Scope) -> Result<PathBuf> {
         }
         .into());
     }
-    let base = directories::BaseDirs::new().ok_or_else(|| StateError::DirectoryNotWritable {
-        path: PathBuf::from("~/.local/state/cfgd"),
-    })?;
+    let base = directories::BaseDirs::new()
+        .ok_or(StateError::HomeDirectoryUnresolved { role: "state" })?;
     Ok(match base.state_dir() {
         Some(state) => state.join("cfgd"),
         None => base.data_local_dir().join("cfgd").join("state"),
