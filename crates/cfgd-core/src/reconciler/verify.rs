@@ -541,6 +541,13 @@ pub struct EnvItemCheck {
 /// genuinely absent, and reporting nothing would read a deleted env surface
 /// as converged. A file that exists but cannot be read answers nothing —
 /// `check_error` says so instead.
+///
+/// That third state is reachable on EVERY platform, which is what lets one
+/// test cover it: unix mode bits are the obvious way to reach it and the one
+/// that does not travel (`fs_perms` no-ops permissions on Windows), but a
+/// DIRECTORY at the path fails the read with something other than `NotFound`
+/// everywhere, root included. There is no per-platform carve-out to state
+/// here: the contract is the same three answers on all four.
 pub fn env_item_verify_results(
     profile_env: &[crate::config::EnvVar],
     profile_aliases: &[crate::config::ShellAlias],

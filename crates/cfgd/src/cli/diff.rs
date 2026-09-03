@@ -1386,9 +1386,32 @@ mod tests {
 
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let declared_alias = cfgd_core::config::ShellAlias {
+            name: "ll".to_string(),
+            command: "ls -la".to_string(),
+            platforms: vec![],
+        };
+        let declared_owners = {
+            let mut o = cfgd_core::config::EntryOwners::default();
+            o.claim(
+                "profile:default",
+                &[],
+                std::slice::from_ref(&declared_alias),
+            );
+            o
+        };
+        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
+            &[],
+            std::slice::from_ref(&declared_alias),
+            &declared_owners,
+            &[],
+            &[],
+        )
+        .declared_line("alias", "ll")
+        .expect("alias renders a declared line");
         std::fs::write(
-            tmp_home.path().join(".cfgd.env"),
-            "# managed by cfgd \u{2014} do not edit\nalias ll=\"ls -la\" # profile:default\n",
+            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
+            format!("# managed by cfgd \u{2014} do not edit\n{declared_line}\n"),
         )
         .unwrap();
 
@@ -1427,6 +1450,10 @@ mod tests {
     /// never shells out to a real package manager; only the declared name
     /// needs to reach `effective_desired_packages` for
     /// `recorded_manager_path_dirs` to pick up its recorded dir.
+    ///
+    /// Unix-gated for both halves of that: on Windows `chocolatey` is a real
+    /// available manager, and the file body is the bash generator's bytes.
+    #[cfg(unix)]
     #[test]
     #[serial]
     fn cmd_diff_reports_no_env_drift_when_bootstrap_path_dirs_are_recorded() {
@@ -1451,9 +1478,13 @@ mod tests {
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         // Byte-for-byte what the generator produces from the recorded
         // bootstrap dir: header, then the PATH export line naming the manager
-        // that bootstrapped it, no declared env vars or aliases.
+        // that bootstrapped it, no declared env vars or aliases. Written as a
+        // literal because a PATH line owed entirely to bootstrap dirs has no
+        // declaration behind it, so `MergedEnvItems::declared_line` — the
+        // renderer every other fixture here composes from — cannot answer for
+        // it; that is what the `cfg(unix)` above buys.
         std::fs::write(
-            tmp_home.path().join(".cfgd.env"),
+            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
             "# managed by cfgd \u{2014} do not edit\nexport PATH=\"/opt/choco/bin:$PATH\" # manager:chocolatey\n",
         )
         .unwrap();
@@ -1477,7 +1508,8 @@ mod tests {
 
         let json = cap.json().expect("diff emits a data payload");
         let env = json["env"].as_array().expect("env array present");
-        let env_file_path = cfgd_core::to_posix_string(tmp_home.path().join(".cfgd.env"));
+        let env_file_path =
+            cfgd_core::to_posix_string(cfgd_core::reconciler::primary_env_file(tmp_home.path()));
         assert!(
             !env.iter()
                 .any(|e| e["kind"] == "env" && e["name"] == env_file_path.as_str()),
@@ -1527,9 +1559,12 @@ mod tests {
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         // A hand-edited managed env file: the whole-machine check would call
-        // this stale (PAGER rewritten, EDITOR missing).
+        // this stale (PAGER rewritten, EDITOR missing). The body is
+        // deliberately a line no generator ever wrote, so no dialect is
+        // right — but the PATH is, or the file does not exist at all on a
+        // platform whose primary env file carries another name.
         std::fs::write(
-            tmp_home.path().join(".cfgd.env"),
+            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
             "# managed by cfgd \u{2014} do not edit\nexport PAGER=\"more\"\n",
         )
         .unwrap();
@@ -1560,8 +1595,12 @@ mod tests {
         super::super::verify::cmd_verify(&cli, &printer, Some("env-mod"), false).unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
+        let env_file_name = cfgd_core::reconciler::primary_env_file(tmp_home.path())
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .expect("the primary env file has a name");
         assert!(
-            !out.contains(".cfgd.env") && !out.contains("PAGER"),
+            !out.contains(&env_file_name) && !out.contains("PAGER"),
             "a scoped verify may not render the machine-wide env comparison: {out}"
         );
 
@@ -1637,9 +1676,10 @@ mod tests {
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         // The profile-owned PAGER line is hand-edited (drifted) and the
-        // module-owned EDITOR line is absent.
+        // module-owned EDITOR line is absent. The hand-edited body is a line
+        // no generator wrote, so it needs no dialect — the path does.
         std::fs::write(
-            tmp_home.path().join(".cfgd.env"),
+            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
             "# managed by cfgd \u{2014} do not edit\nexport PAGER=\"more\"\n",
         )
         .unwrap();
@@ -1770,9 +1810,31 @@ mod tests {
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         // The machine has CONVERGED: the module-owned line is back in place.
+        // Both the file's name and the line's dialect are the running
+        // platform's, so they come from production's own renderers rather
+        // than a bash-shaped literal.
+        let declared_env = vec![cfgd_core::config::EnvVar {
+            name: "EDITOR".to_string(),
+            value: "vim".to_string(),
+            platforms: vec![],
+        }];
+        let declared_owners = {
+            let mut o = cfgd_core::config::EntryOwners::default();
+            o.claim("module:env-mod", &declared_env, &[]);
+            o
+        };
+        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
+            &declared_env,
+            &[],
+            &declared_owners,
+            &[],
+            &[],
+        )
+        .declared_line("env-var", "EDITOR")
+        .expect("EDITOR renders a declared line");
         std::fs::write(
-            tmp_home.path().join(".cfgd.env"),
-            "# managed by cfgd \u{2014} do not edit\nexport EDITOR=\"vim\" # module:env-mod\n",
+            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
+            format!("# managed by cfgd \u{2014} do not edit\n{declared_line}\n"),
         )
         .unwrap();
 
@@ -1835,9 +1897,10 @@ mod tests {
     /// and flags `envCheckFailed`, the state `diff_exit_code` maps to
     /// `Error` (1) ahead of `DriftDetected` (5): unknown outranks known on
     /// the scoped surface exactly as on the three unscoped ones
-    /// (`tests/drift_exit_code.rs`). The fixture makes `~/.cfgd.env` a
-    /// DIRECTORY, so the read fails with something other than NotFound even
-    /// under root.
+    /// (`tests/drift_exit_code.rs`). The fixture puts a DIRECTORY at the
+    /// primary env file's path, so the read fails with something other than
+    /// NotFound even under root — and on every OS, which unix mode bits
+    /// cannot do (`fs_perms` no-ops them on Windows).
     #[test]
     #[serial]
     fn a_module_diff_reports_an_env_probe_it_could_not_run() {
@@ -1867,7 +1930,7 @@ mod tests {
 
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-        std::fs::create_dir_all(tmp_home.path().join(".cfgd.env")).unwrap();
+        std::fs::create_dir_all(cfgd_core::reconciler::primary_env_file(tmp_home.path())).unwrap();
 
         let mut cli = make_cli(config_path);
         cli.state_dir = Some(tmp.path().join("state"));
