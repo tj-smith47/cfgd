@@ -731,9 +731,17 @@ impl ResolvedDirs {
 
     /// The module cache directory: `<cache>/modules`.
     pub fn module_cache_dir(&self) -> std::path::PathBuf {
-        self.cache.join("modules")
+        self.cache.join(MODULE_CACHE_SEGMENT)
     }
 }
+
+/// The segment the module cache hangs off any cache root by.
+///
+/// Named once because two resolvers reach the same directory —
+/// [`ResolvedDirs::module_cache_dir`] from an already-resolved root and
+/// [`crate::modules::default_module_cache_dir`] from the per-user one — and a
+/// caller of either must land where the other writes.
+pub(crate) const MODULE_CACHE_SEGMENT: &str = "modules";
 
 /// Expand `~` and `~/...` paths to the user's home directory.
 /// Fold every absolute path under the home directory in `text` to its `~/`

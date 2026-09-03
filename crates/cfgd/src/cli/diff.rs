@@ -1282,7 +1282,7 @@ mod tests {
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         // The primary managed env file's dialect is platform-dependent (bash
         // `alias` on Unix, a PowerShell `function`/`Set-Alias` on Windows), so
-        // the hand-edited line is derived from `env_item_declared_line` —
+        // the hand-edited line is derived from `MergedEnvItems::declared_line` —
         // production's own per-item renderer for the running platform —
         // rather than a hardcoded POSIX literal.
         let hand_edited = cfgd_core::config::ShellAlias {
@@ -1441,19 +1441,20 @@ mod tests {
     /// check compares against generated content missing the `export PATH=…`
     /// line the file actually carries — permanent, unfixable "stale" drift on
     /// a fully converged machine that bootstrapped any manager. A profile
-    /// declaring a `chocolatey` package plus a state store recording
-    /// `chocolatey`'s bootstrap PATH dir reproduces exactly that machine: an
-    /// `.cfgd.env` written byte-for-byte with the recorded PATH line must
-    /// report no `env` drift for that file. `chocolatey` is deliberately a
-    /// Windows-only manager — its `is_available()`/`can_bootstrap()` are
-    /// platform-gated false on this Linux test host, so package planning
-    /// never shells out to a real package manager; only the declared name
-    /// needs to reach `effective_desired_packages` for
-    /// `recorded_manager_path_dirs` to pick up its recorded dir.
+    /// declaring a `scoop` package plus a state store recording `scoop`'s
+    /// bootstrap PATH dir reproduces exactly that machine: managed env files
+    /// written byte-for-byte with the recorded PATH line must report no `env`
+    /// drift.
     ///
-    /// Unix-gated for both halves of that: on Windows `chocolatey` is a real
-    /// available manager, and the file body is the bash generator's bytes.
-    #[cfg(unix)]
+    /// `recorded_manager_path_dirs` filters recorded dirs by the manager NAMES
+    /// `effective_desired_packages` holds, with no availability or platform
+    /// test, so the subject is live on every host — and `scoop` is a Windows
+    /// bootstrap manager, which makes Windows the platform it matters most on.
+    /// The manager is chosen for being INSTALLED nowhere cfgd's CI runs (no
+    /// manager is `cfg`-gated off; `is_available` is `command_available` on the
+    /// tool's own name), so package planning shells out to nothing. That is a
+    /// hermeticity property of the fixture, never a reason to gate the test:
+    /// even a host that has scoop would answer the env question the same way.
     #[test]
     #[serial]
     fn cmd_diff_reports_no_env_drift_when_bootstrap_path_dirs_are_recorded() {
@@ -1470,24 +1471,40 @@ mod tests {
         std::fs::create_dir_all(&profiles_dir).unwrap();
         std::fs::write(
             profiles_dir.join("default.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  packages:\n    chocolatey:\n      - black\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  packages:\n    scoop:\n      - black\n",
         )
         .unwrap();
 
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-        // Byte-for-byte what the generator produces from the recorded
-        // bootstrap dir: header, then the PATH export line naming the manager
-        // that bootstrapped it, no declared env vars or aliases. Written as a
-        // literal because a PATH line owed entirely to bootstrap dirs has no
-        // declaration behind it, so `MergedEnvItems::declared_line` — the
-        // renderer every other fixture here composes from — cannot answer for
-        // it; that is what the `cfg(unix)` above buys.
-        std::fs::write(
-            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
-            "# managed by cfgd \u{2014} do not edit\nexport PATH=\"/opt/choco/bin:$PATH\" # manager:chocolatey\n",
+        // Byte-for-byte what the engine writes from the recorded bootstrap
+        // dir, taken from the engine itself: a PATH line owed entirely to
+        // bootstrap dirs has no declaration behind it, so `declared_line`
+        // cannot answer for it, and hand-spelling one file would miss the
+        // second file Windows also writes when Git Bash is present.
+        let path_dirs = vec![cfgd_core::reconciler::ManagerPathDir::new(
+            "scoop",
+            "/opt/scoop/bin",
+        )];
+        let written: Vec<String> = cfgd_core::reconciler::MergedEnvItems::new(
+            &[],
+            &[],
+            &Default::default(),
+            &[],
+            &path_dirs,
         )
-        .unwrap();
+        .managed_env_files(tmp_home.path(), cfgd_core::config::EnvScope::Interactive)
+        .into_iter()
+        .map(|(path, content)| {
+            cfgd_core::ensure_parent_dir(&path).unwrap();
+            std::fs::write(&path, content).unwrap();
+            cfgd_core::to_posix_string(&path)
+        })
+        .collect();
+        assert!(
+            !written.is_empty(),
+            "a recorded bootstrap dir alone must produce a managed env file"
+        );
 
         let state_dir = tmp.path().join("state");
         let mut cli = make_cli(config_path);
@@ -1495,10 +1512,10 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
 
         // The same state a real `cfgd verify` (or an apply that bootstrapped
-        // chocolatey) would have recorded.
+        // scoop) would have recorded.
         let state = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
         state
-            .record_bootstrapped_path_dirs("chocolatey", &["/opt/choco/bin".to_string()])
+            .record_bootstrapped_path_dirs("scoop", &["/opt/scoop/bin".to_string()])
             .unwrap();
         drop(state);
 
@@ -1508,13 +1525,16 @@ mod tests {
 
         let json = cap.json().expect("diff emits a data payload");
         let env = json["env"].as_array().expect("env array present");
-        let env_file_path =
-            cfgd_core::to_posix_string(cfgd_core::reconciler::primary_env_file(tmp_home.path()));
+        // Every file the engine wrote, not just the primary one: Windows adds
+        // the bash file when Git Bash is present, and a stale second file is
+        // the same bug reported under another name.
         assert!(
-            !env.iter()
-                .any(|e| e["kind"] == "env" && e["name"] == env_file_path.as_str()),
-            "the managed env file must not report stale once diff passes the \
-             same recorded bootstrap PATH dirs verify does: {env:?}"
+            !env.iter().any(|e| e["kind"] == "env"
+                && e["name"]
+                    .as_str()
+                    .is_some_and(|n| written.iter().any(|w| w == n))),
+            "no managed env file may report stale once diff passes the same \
+             recorded bootstrap PATH dirs verify does (wrote {written:?}): {env:?}"
         );
     }
 

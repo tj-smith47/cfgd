@@ -1123,7 +1123,7 @@ mod tests {
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         // Dialect is platform-dependent, so the hand-edited line is derived
-        // from `env_item_declared_line` (production's per-item renderer for
+        // from `MergedEnvItems::declared_line` (production's per-item renderer for
         // the running platform) instead of a hardcoded POSIX literal.
         let hand_edited = ShellAlias {
             name: "ll".to_string(),

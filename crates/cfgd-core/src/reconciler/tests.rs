@@ -14417,7 +14417,7 @@ fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouc
 /// CLI recording seam stores each producer's own literals) and from there to
 /// `cfgd status`/`cfgd diff` *and* the device gateway, so the real content
 /// has to be recomputed from config at render time
-/// (`env_item_declared_line`) rather than carried. Uses a deliberately
+/// (`MergedEnvItems::declared_line`) rather than carried. Uses a deliberately
 /// secret-shaped env value and alias command so a regression that words the
 /// row with the raw line fails on the sensitive substring, not just on a
 /// generic marker string.
@@ -17380,7 +17380,7 @@ fn apply_module_install_packages_bootstraps_without_writing_env_out_of_band() {
     // Prerequisites-phase provision that writes it out of band would be
     // erased by the next plan's wholesale rewrite, so the bootstrapped PATH
     // would vanish on the second apply.
-    let env_path = tmp_home.path().join(".cfgd.env");
+    let env_path = primary_env_file(tmp_home.path());
     assert!(
         !env_path.exists(),
         "the Prerequisites phase must not write {}",
@@ -17408,18 +17408,18 @@ fn apply_module_install_packages_leaves_existing_env_file_untouched() {
     use crate::with_test_home_guard;
 
     let tmp_home = tempfile::tempdir().unwrap();
-    // Pre-create .cfgd.env with one path entry already present.
-    std::fs::write(
-        tmp_home.path().join(".cfgd.env"),
-        "export PATH=\"/usr/local/bin:$PATH\"\n",
-    )
-    .unwrap();
+    // Pre-create the primary env file with one path entry already present. The
+    // body is opaque sentinel bytes the assertion compares for identity, so it
+    // is deliberately not the running platform's dialect — nothing here parses
+    // it, and regenerating it would test the generator instead of the phase.
+    let env_path = primary_env_file(tmp_home.path());
+    std::fs::write(&env_path, "export PATH=\"/usr/local/bin:$PATH\"\n").unwrap();
     let _home = with_test_home_guard(tmp_home.path());
 
     // One dir already exists in env; one is new.
     run_brew_module_action(&["/usr/local/bin", "/opt/homebrew/bin"]);
 
-    let contents = std::fs::read_to_string(tmp_home.path().join(".cfgd.env")).unwrap();
+    let contents = std::fs::read_to_string(&env_path).unwrap();
     assert_eq!(
         contents, "export PATH=\"/usr/local/bin:$PATH\"\n",
         "the Modules phase must leave the Env phase's file byte-identical: {contents}"
@@ -17467,7 +17467,7 @@ fn planned_env_file_content(plan: &Plan) -> Option<String> {
         .actions()
         .find_map(|a| match a {
             Action::Env(EnvAction::WriteEnvFile { path, content, .. })
-                if path.file_name() == Some(std::ffi::OsStr::new(".cfgd.env")) =>
+                if path.file_name() == primary_env_file(Path::new("")).file_name() =>
             {
                 Some(content.clone())
             }
@@ -17603,7 +17603,7 @@ fn plan_env_writes_nothing_for_a_manager_cfgd_never_bootstrapped() {
         plan.phases
     );
     assert!(
-        !tmp_home.path().join(".cfgd.env").exists(),
+        !primary_env_file(tmp_home.path()).exists(),
         "planning must not write the env file"
     );
 }
@@ -17839,12 +17839,20 @@ fn apply_converges_env_file_in_the_same_run_that_bootstraps() {
     // The Modules phase bootstrapped brew and recorded its directories, and the
     // post-phase regeneration folded them in — so the file is right by the end
     // of THIS apply, not only from the next one on.
-    let contents = std::fs::read_to_string(tmp_home.path().join(".cfgd.env"))
-        .expect("the bootstrapping apply must leave a .cfgd.env behind");
+    let env_path = primary_env_file(tmp_home.path());
+    let contents = std::fs::read_to_string(&env_path).unwrap_or_else(|e| {
+        panic!(
+            "the bootstrapping apply must leave {} behind: {e}",
+            env_path.posix()
+        )
+    });
+    // The dirs and their separator, not the assignment: the PATH line's
+    // spelling is the dialect's (`export PATH="…"` / `$env:PATH = '…'`) and
+    // belongs to the generator's own pins, while what this test claims is that
+    // the bootstrap's two directories reached the file in fold order.
+    let dirs_in_order = BREW_PATH_DIRS.join(&crate::PATH_LIST_SEPARATOR.to_string());
     assert!(
-        contents.contains(
-            "export PATH=\"/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH\""
-        ),
+        contents.contains(&dirs_in_order),
         "the bootstrapped manager's directories must reach the env file: {contents}"
     );
 
@@ -18033,8 +18041,9 @@ fn apply_does_not_reorder_the_env_file_when_a_new_manager_joins_an_already_recor
     // fold order above. A convergence net that compared those two orderings
     // directly would rewrite the file into the alphabetical order; the file
     // on disk must stay byte-identical to what the Env phase already wrote.
-    let contents = std::fs::read_to_string(tmp_home.path().join(".cfgd.env"))
-        .expect("apply must leave a .cfgd.env behind");
+    let env_path = primary_env_file(tmp_home.path());
+    let contents = std::fs::read_to_string(&env_path)
+        .unwrap_or_else(|e| panic!("apply must leave {} behind: {e}", env_path.posix()));
     assert_eq!(
         contents, planned_content,
         "an ordinary provision beside an already-recorded manager must not reorder PATH \
@@ -18120,7 +18129,7 @@ fn apply_reports_one_result_per_env_surface_when_env_and_bootstrap_coincide() {
             .collect::<Vec<_>>()
     );
 
-    let env_file = crate::to_posix_string(tmp_home.path().join(".cfgd.env"));
+    let env_file = crate::to_posix_string(primary_env_file(tmp_home.path()));
     let rows: Vec<&ActionResult> = result
         .action_results
         .iter()
@@ -18150,11 +18159,12 @@ fn apply_reports_one_result_per_env_surface_when_env_and_bootstrap_coincide() {
             .collect::<Vec<_>>()
     );
 
-    // The merge must not swallow the regeneration's content.
-    let contents = std::fs::read_to_string(tmp_home.path().join(".cfgd.env")).unwrap();
+    // The merge must not swallow the regeneration's content. Both inputs are
+    // named by their VALUES, not by an assignment's spelling: which dialect
+    // writes them is the generator's own pins' subject.
+    let contents = std::fs::read_to_string(primary_env_file(tmp_home.path())).unwrap();
     assert!(
-        contents.contains("export EDITOR=\"nvim\"")
-            && contents.contains("/home/linuxbrew/.linuxbrew/bin"),
+        contents.contains("nvim") && contents.contains("/home/linuxbrew/.linuxbrew/bin"),
         "both inputs must survive into the file: {contents}"
     );
 }
@@ -18275,7 +18285,7 @@ fn apply_phase_modules_bootstraps_without_touching_any_env_surface() {
     // file or injecting a source line into an rc file reaches surfaces the
     // caller deliberately excluded.
     assert!(
-        !tmp_home.path().join(".cfgd.env").exists(),
+        !primary_env_file(tmp_home.path()).exists(),
         "a phase-scoped apply must not write the env file"
     );
     assert_eq!(
@@ -18320,12 +18330,10 @@ fn apply_phase_modules_bootstraps_without_touching_any_env_surface() {
         )
         .unwrap();
     assert_eq!(unfiltered.status, ApplyStatus::Success);
-    let contents = std::fs::read_to_string(tmp_home.path().join(".cfgd.env"))
+    let contents = std::fs::read_to_string(primary_env_file(tmp_home.path()))
         .expect("the following unfiltered apply must converge the env file");
     assert!(
-        contents.contains(
-            "export PATH=\"/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH\""
-        ),
+        contents.contains(&BREW_PATH_DIRS.join(&crate::PATH_LIST_SEPARATOR.to_string())),
         "the recorded directories must survive the phase-scoped run: {contents}"
     );
 }

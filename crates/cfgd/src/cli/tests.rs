@@ -14881,9 +14881,13 @@ fn every_golden_separates_sibling_blocks_with_one_blank_line() {
 /// which is why this is a walk and not three fixes.
 ///
 /// Scoped to `cli/`, where a fixture drives the LIVE per-item env check
-/// through a `cmd_*`. `cfgd-core`'s env-engine tests pass an explicit
-/// `EnvPlatform` and are pinning the generator itself, so a literal there is
-/// the assertion.
+/// through a `cmd_*`. `cfgd-core` holds two other populations this walk
+/// deliberately does not reach: a test passing an explicit `EnvPlatform` is
+/// pinning the generator, so a literal there IS the assertion, and a test
+/// naming an env file's path as an INPUT (a hand-built `WriteEnvFile`, an
+/// `rc` line's body) is naming a value production writes verbatim. The ones
+/// that do resolve through `EnvPlatform::current()` take
+/// [`cfgd_core::reconciler::primary_env_file`] like everything here.
 #[test]
 fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     // Assembled rather than written whole, so this walk's own needles are not
@@ -14892,7 +14896,15 @@ fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
         format!("join(\"{}\")", ".cfgd.env"),
         format!("join(\"{}\")", ".cfgd-env.ps1"),
     ];
-    let owner_comments = [format!("# {}:", "module"), format!("# {}:", "profile")];
+    // Every owner kind the generator can emit, `manager` included: the PATH
+    // line's comment names the managers whose directories it publishes, and a
+    // fixture spelling that line by hand is the same bug as one spelling a
+    // module's.
+    let owner_comments = [
+        format!("# {}:", "module"),
+        format!("# {}:", "profile"),
+        format!("# {}:", "manager"),
+    ];
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut offenders: Vec<String> = Vec::new();
     let mut checked = 0usize;
@@ -14915,8 +14927,31 @@ fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
             };
             checked += 1;
             let rel = p.strip_prefix(&cli_dir).unwrap_or(&p).to_path_buf();
-            for (n, line) in body.lines().enumerate() {
-                let where_ = format!("{}:{}", cfgd_core::to_posix_string(&rel), n + 1);
+            // A Rust string literal is `\`-continued across physical lines with
+            // the next line's indent eaten, so a hand-spelled generated line can
+            // carry its two tells on two different lines. Fold every
+            // continuation back onto the line that opened it, and report that
+            // opening line, before looking for either tell.
+            let mut logical: Vec<(usize, String)> = Vec::new();
+            let mut continues = false;
+            for (n, raw) in body.lines().enumerate() {
+                let trimmed = raw.trim_end();
+                let trailing = trimmed.chars().rev().take_while(|c| *c == '\\').count();
+                let opens_next = trailing % 2 == 1;
+                let piece = if opens_next {
+                    &trimmed[..trimmed.len() - 1]
+                } else {
+                    trimmed
+                };
+                match logical.last_mut() {
+                    Some((_, acc)) if continues => acc.push_str(piece.trim_start()),
+                    _ => logical.push((n + 1, piece.to_string())),
+                }
+                continues = opens_next;
+            }
+            for (n, line) in logical {
+                let line = line.as_str();
+                let where_ = format!("{}:{}", cfgd_core::to_posix_string(&rel), n);
                 // A fixture joining a generated file's name onto a directory
                 // is building a path; a bare mention in an assertion needle or
                 // a synthesized row's id is not.
@@ -20631,19 +20666,34 @@ fn workstation_daemon_hooks_plan_files_empty_profile() {
 // -----------------------------------------------------------------------
 
 #[test]
-#[cfg(unix)]
 #[serial_test::serial]
 fn is_unmanaged_file_module_cache_symlink_under_test_home() {
-    // is_unmanaged_file second early-return: a symlink pointing into
-    // ~/.cache/cfgd/modules/ is module-managed (NOT unmanaged) even though it
-    // does not start with config_dir. Honors the test-home thread-local via
-    // expand_tilde, so we can build the cache-dir path under a tempdir.
+    // is_unmanaged_file second early-return: a symlink pointing into the module
+    // cache is module-managed (NOT unmanaged) even though it does not start
+    // with config_dir.
+    //
+    // The cache root is set to a directory NO spelling of `~/.cache/cfgd`
+    // reaches, which is what makes this a check of the resolution rather than
+    // of one host's layout: a `~/.cache/cfgd/modules` hardcode answers `false`
+    // here, and so does one on a machine whose per-user cache is
+    // `~/Library/Caches` or `%LOCALAPPDATA%` rather than `~/.cache`.
     let dir = tempfile::tempdir().unwrap();
     let _guard = cfgd_core::with_test_home_guard(dir.path());
+    let cache_root = dir.path().join("elsewhere-cache");
+    let _cache = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_CACHE_DIR",
+        &cfgd_core::to_posix_string(&cache_root),
+    );
     let state = StateStore::open_in_memory().unwrap();
 
-    // Build a real source under the redirected ~/.cache/cfgd/modules/<mod>/
-    let module_root = dir.path().join(".cache/cfgd/modules/example-mod");
+    let module_root = cfgd_core::modules::default_module_cache_dir()
+        .unwrap()
+        .join("example-mod");
+    assert!(
+        !module_root.starts_with(dir.path().join(".cache")),
+        "the fixture's cache root must not be the one a hardcode would guess: {}",
+        module_root.posix()
+    );
     std::fs::create_dir_all(&module_root).unwrap();
     let module_payload = module_root.join("rc-fragment");
     std::fs::write(&module_payload, "# from module\n").unwrap();
@@ -20655,11 +20705,11 @@ fn is_unmanaged_file_module_cache_symlink_under_test_home() {
     let unrelated_dir = dir.path().join("home");
     std::fs::create_dir_all(&unrelated_dir).unwrap();
     let target = unrelated_dir.join(".module-link");
-    std::os::unix::fs::symlink(&module_payload, &target).unwrap();
+    cfgd_core::create_symlink(&module_payload, &target).unwrap();
 
     assert!(
         !is_unmanaged_file(&target, &config_dir, &state),
-        "symlink into ~/.cache/cfgd/modules must be treated as cfgd-managed",
+        "a symlink into the module cache must be treated as cfgd-managed",
     );
 }
 
