@@ -806,6 +806,7 @@ fn apply_result_counts() {
                 not_attempted: None,
                 installed: None,
                 versions: Default::default(),
+                drift_rows: Vec::new(),
             },
             ActionResult {
                 phase: "files".to_string(),
@@ -817,6 +818,7 @@ fn apply_result_counts() {
                 not_attempted: None,
                 installed: None,
                 versions: Default::default(),
+                drift_rows: Vec::new(),
             },
         ],
         status: ApplyStatus::Partial,
@@ -1858,11 +1860,16 @@ fn verify_routes_through_package_identity_for_name_remapping_manager() {
     .results;
     let row = results
         .iter()
-        .find(|r| r.resource_type == "package" && r.resource_id == "go:rsc.io/2fa")
-        .expect("expected a verify row for the go package");
+        .find(|r| r.resource_type == "package" && r.resource_id == "go:2fa")
+        .expect("expected a verify row for the go package under its identity");
     assert!(
         row.matches,
         "installed binary `2fa` must match desired `rsc.io/2fa` through package_identity: {results:?}"
+    );
+    assert!(
+        !results.iter().any(|r| r.resource_id == "go:rsc.io/2fa"),
+        "the row is keyed on the IDENTITY the presence check compares and the \
+         apply heals — the raw entry is a second spelling of one finding: {results:?}"
     );
     assert_eq!(row.actual, "installed");
 }
@@ -7320,20 +7327,20 @@ fn both_producers_mint_one_identity_for_a_provision_finding() {
     assert_eq!((rtype.as_str(), rid.as_str()), ("package", "refuse:npm"));
 }
 
-/// The id-shape invariant both keep predicates rest on, judged over the
-/// daemon's action grammar INNER variant by inner variant: a daemon `module`
-/// row is the bare module name (never a `/`, which the CLI's
-/// `module_file_resource_id` always carries), a daemon `package` Skip row the
-/// bare manager name (never a `:`, which every CLI-minted package id
-/// carries), a daemon `system` row the composer's own `<configurator>.<key>`
-/// so either producer's check heals the other's, and a provision or refusal the CLI's own
-/// `package`-typed id so either producer's next check heals the other's row.
-/// The nested exhaustive matches are the trip-wire: a new inner variant of
-/// ANY action enum fails this test's compile until its recorded shape is
-/// judged against the two live grammars here.
+/// The id-shape invariant of an ACTION's identity, judged INNER variant by
+/// inner variant: a module action's identity is the bare module name (never a
+/// `/`, which every module-file drift id carries), a `package` Skip the bare
+/// manager name (never a `:`, which every package drift id carries), a
+/// `system` row the composer's own `<configurator>.<key>` so either
+/// producer's check heals the other's, and a provision or refusal the same
+/// `package`-typed id the live check mints. The DRIFT rows an action stands
+/// for are `action_drift_rows`' answer, not this one's — a batching kind is
+/// exactly where the two part ways. The nested exhaustive matches are the
+/// trip-wire: a new inner variant of ANY action enum fails this test's
+/// compile until its recorded shape is judged here.
 #[test]
 fn no_daemon_action_row_wears_the_live_checks_separator() {
-    use super::types::{ManagerAction, ModuleAction, ModuleActionKind, action_resource_info};
+    use super::types::{ManagerAction, ModuleActionKind, action_resource_info};
     use crate::providers::{FileAction, PackageAction, SecretAction};
     use crate::reconciler::{EnvAction, ScriptAction, SystemAction};
 
@@ -7423,7 +7430,13 @@ fn no_daemon_action_row_wears_the_live_checks_separator() {
             Action::Env(ea) => match ea {
                 EnvAction::WriteEnvFile { .. } => assert_eq!(rtype, "env"),
                 EnvAction::InjectSourceLine { .. } => assert_eq!(rtype, "env-rc"),
-                EnvAction::RefreshLiveSession { .. } => assert_eq!(rtype, "env-session"),
+                // One spelling of the live-session surface, everywhere: the
+                // row is keyed on the constant, never on the bare verb the
+                // description happens to carry.
+                EnvAction::RefreshLiveSession { .. } => {
+                    assert_eq!(rtype, "env-session");
+                    assert_eq!(rid, crate::state::ENV_SESSION_RESOURCE_ID);
+                }
             },
             Action::Manager(man) => match man {
                 // A provision finding (and its refusal) is a PACKAGE fact
@@ -7445,11 +7458,408 @@ fn no_daemon_action_row_wears_the_live_checks_separator() {
         }
     }
 
+    for action in &every_action_variant() {
+        judged(action);
+    }
+}
+
+/// The post-apply env regeneration heals the key its own action stands for.
+///
+/// It is the one heal not driven by a planned action: the regeneration mints
+/// its key from the description it just wrote rather than from
+/// [`action_drift_rows`], so nothing but this agreement keeps the two
+/// spellings one. Both env surfaces are walked, because the file write and
+/// the rc injection compose their descriptions apart — and the rc file's row
+/// is typed `env-rc` by the check that records it, a split the apply closes
+/// with a twin resolve rather than a second key.
+#[test]
+fn the_post_apply_env_regeneration_heals_the_key_its_action_stands_for() {
+    use crate::reconciler::EnvAction;
+
+    let empty = ProviderRegistry::new();
+    for action in [
+        Action::Env(EnvAction::WriteEnvFile {
+            path: PathBuf::from("/home/u/.cfgd.env"),
+            content: "export A=1\n".to_string(),
+            vars: 1,
+            aliases: 0,
+        }),
+        Action::Env(EnvAction::InjectSourceLine {
+            rc_path: PathBuf::from("/home/u/.zshrc"),
+            line: "source ~/.cfgd.env".to_string(),
+        }),
+    ] {
+        let mut results: Vec<ActionResult> = Vec::new();
+        super::apply::merge_env_result(
+            &mut results,
+            crate::reconciler::format_action_description(&action),
+            true,
+        );
+        let planned = crate::reconciler::action_drift_rows(&action, &empty)
+            .into_iter()
+            .map(|row| row.key())
+            .next()
+            .unwrap_or_else(|| panic!("an env action stands for a row: {action:?}"));
+        let healed = &results[0].drift_rows;
+        assert_eq!(
+            healed.len(),
+            1,
+            "one regenerated surface, one healed key: {healed:?}"
+        );
+        assert_eq!(
+            healed[0].1, planned.1,
+            "the regeneration heals the surface the Env phase's own action \
+             stands for: {action:?}"
+        );
+        // The rc injection's own description types as `env` — the tracking
+        // grammar — while the row a check records for it is `env-rc`. The
+        // twin resolve in `record_managed_resources` closes that split, keyed
+        // on this same id, so the verb it reconstructs must still read as the
+        // injection this description carried.
+        if healed[0].0 != planned.0 {
+            assert_eq!(planned.0, "env-rc", "the only typed split: {action:?}");
+            assert_eq!(
+                crate::reconciler::recorded_env_method(&healed[0].1),
+                crate::reconciler::ENV_VERB_INJECT
+            );
+        }
+    }
+}
+
+/// An action this host never attempted writes nothing and heals nothing.
+///
+/// A withheld result carries `success: true` — the run did not fail, it
+/// declined — so the success gate alone would let it upsert a
+/// `managed_resources` row for a resource that was never touched and resolve
+/// the very finding that says so.
+#[test]
+fn a_result_the_run_never_attempted_writes_no_row_and_heals_none() {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let action = Action::File(FileAction::Delete {
+        target: PathBuf::from("/home/u/.gone"),
+        origin: "profile".to_string(),
+    });
+    let rows: Vec<(String, String)> = crate::reconciler::action_drift_rows(&action, &registry)
+        .into_iter()
+        .map(|row| row.key())
+        .collect();
+    for (rtype, rid) in &rows {
+        state
+            .record_drift(rtype, rid, None, None, "daemon")
+            .unwrap();
+    }
+    let apply_id = state
+        .record_apply("test", "hash", ApplyStatus::Success, None)
+        .unwrap();
+
+    let reconciler = Reconciler::new(&registry, &state);
+    reconciler
+        .record_managed_resources(
+            apply_id,
+            &[ActionResult {
+                phase: PhaseName::Files.as_str().to_string(),
+                description: crate::reconciler::format_action_description(&action),
+                success: true,
+                error: None,
+                changed: false,
+                skipped: false,
+                not_attempted: Some("no session manager".to_string()),
+                installed: None,
+                versions: Default::default(),
+                drift_rows: rows.clone(),
+            }],
+            &make_empty_resolved(),
+            &[],
+        )
+        .unwrap();
+
+    assert!(
+        state.managed_resources().unwrap().is_empty(),
+        "a withheld result manages no resource"
+    );
+    let standing: Vec<(String, String)> = state
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    assert_eq!(
+        standing, rows,
+        "the finding that says the work was withheld outlives the run that withheld it"
+    );
+}
+
+/// Every drift row the tick records for a planned action is healed by the
+/// apply that converges it — one producer, [`action_drift_rows`], on both
+/// ends of the round trip.
+///
+/// The bug this ends: the tick recorded a bare `("module", "nvim")` while the
+/// apply healed per-file `("module", "nvim/<target>")` rows, so a converged
+/// module reported drift on every later `cfgd status` and nothing on the
+/// machine could ever clear it. The first half walks EVERY inner variant and
+/// requires rows to exist exactly where the action is not pre-skipped (an
+/// action that cannot run on this host stands for no finding). The second
+/// It also holds the module grammar: a `module`-typed row names a file, a
+/// script or a skipped block, never an aggregate over a package list — the
+/// arm-level claim the source walk in the CLI crate cannot see. The second
+/// half records what the producer yields for a plan of executable actions,
+/// runs a real apply against a real store, and requires the store to come
+/// back holding only the four `Skip` variants' rows — a withheld block is not
+/// converged by the run that withheld it, so its row waits for the tick's own
+/// complement instead.
+///
+/// The env and secret variants are absent from the executable half: the first
+/// writes the user's real shell surfaces and the second needs a live backend,
+/// so both are judged by the population half alone.
+#[test]
+fn every_row_the_tick_records_is_healed_by_the_apply_that_converges_it() {
+    use super::types::{ManagerAction, ModuleAction, ModuleActionKind};
+    use crate::providers::{FileAction, PackageAction, SecretAction};
+    use crate::reconciler::SystemAction;
+
+    let empty = ProviderRegistry::new();
+    for action in every_action_variant() {
+        let rows = crate::reconciler::action_drift_rows(&action, &empty);
+        assert_eq!(
+            rows.is_empty(),
+            action.pre_skip_reason().is_some(),
+            "an action stands for rows exactly when it can run here: {action:?}"
+        );
+        for row in &rows {
+            assert!(
+                !row.resource_type.is_empty() && !row.resource_id.is_empty(),
+                "a row names both halves of its key: {row:?} from {action:?}"
+            );
+            if row.resource_type == "module" {
+                assert!(
+                    crate::reconciler::module_row_names_a_file(&row.resource_id)
+                        || row.resource_id.ends_with(":script")
+                        || row.resource_id.ends_with(":skip"),
+                    "a module row names a file, a script or a skipped block —                      never an aggregate over a list no check can re-find:                      {row:?} from {action:?}"
+                );
+            }
+        }
+    }
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "brew",
+    )));
+    registry.add_package_manager(Box::new(BootstrappablePackageManager::new("snap")));
+    registry.add_system_configurator(Box::new(
+        MockSystemConfigurator::new("gsettings").with_drift(vec![crate::providers::SystemDrift {
+            key: "org.gnome.x key".to_string(),
+            expected: "1".to_string(),
+            actual: "0".to_string(),
+        }]),
+    ));
+    registry.file_manager = Some(Box::new(crate::test_helpers::MockFileManager::new()));
+
+    let provision: Vec<Action> = vec![Action::Manager(ManagerAction::Provision {
+        manager: "snap".to_string(),
+        via: "stub".to_string(),
+        declared: None,
+        batched: vec![],
+        depends_on: vec![],
+    })];
+    let converging: Vec<Action> = vec![
+        Action::Package(PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: vec!["jq".to_string(), "rg".to_string()],
+            origin: "profile".to_string(),
+        }),
+        Action::Package(PackageAction::Uninstall {
+            manager: "brew".to_string(),
+            packages: vec!["fd".to_string()],
+            origin: "profile".to_string(),
+        }),
+        Action::System(SystemAction::SetValue {
+            configurator: "gsettings".to_string(),
+            key: "org.gnome.x key".to_string(),
+            desired: "1".to_string(),
+            current: "0".to_string(),
+            origin: "profile".to_string(),
+        }),
+        Action::File(FileAction::Delete {
+            target: PathBuf::from("/home/u/.gone"),
+            origin: "profile".to_string(),
+        }),
+        Action::Module(ModuleAction::local(
+            "nvim",
+            ModuleActionKind::InstallPackages {
+                resolved: vec![ResolvedPackage {
+                    canonical_name: "tree".to_string(),
+                    resolved_name: "tree".to_string(),
+                    manager: "brew".to_string(),
+                    manager_declared: false,
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    min_version: None,
+                }],
+            },
+        )),
+        Action::Module(ModuleAction::local(
+            "nvim",
+            ModuleActionKind::DeployFiles {
+                files: vec![
+                    ResolvedFile {
+                        source: PathBuf::from("/cache/nvim/init.lua"),
+                        target: PathBuf::from("/home/u/.config/nvim/init.lua"),
+                        is_git_source: false,
+                        strategy: None,
+                        encryption: None,
+                        permissions: None,
+                        patch: None,
+                    },
+                    ResolvedFile {
+                        source: PathBuf::from("/cache/nvim/lazy.lua"),
+                        target: PathBuf::from("/home/u/.config/nvim/lazy.lua"),
+                        is_git_source: false,
+                        strategy: None,
+                        encryption: None,
+                        permissions: None,
+                        patch: None,
+                    },
+                ],
+                declared_total: 2,
+            },
+        )),
+    ];
+    let withheld: Vec<Action> = vec![
+        Action::Package(PackageAction::Skip {
+            manager: "brew".to_string(),
+            reason: "up to date".to_string(),
+            origin: "profile".to_string(),
+        }),
+        Action::System(SystemAction::Skip {
+            configurator: "systemdUnits".to_string(),
+            reason: "not available".to_string(),
+            origin: "profile".to_string(),
+            unknown: false,
+        }),
+        Action::File(FileAction::Skip {
+            target: PathBuf::from("/home/u/.untouched"),
+            reason: "unmanaged".to_string(),
+            origin: "profile".to_string(),
+        }),
+        Action::Secret(SecretAction::Skip {
+            source: "s.enc".to_string(),
+            reason: "no backend".to_string(),
+            origin: "profile".to_string(),
+        }),
+    ];
+
+    // What a tick would record for this plan, through the one producer.
+    let mut recorded: Vec<(String, String)> = Vec::new();
+    for action in provision
+        .iter()
+        .chain(converging.iter())
+        .chain(withheld.iter())
+    {
+        for row in crate::reconciler::action_drift_rows(action, &registry) {
+            state
+                .record_drift(
+                    &row.resource_type,
+                    &row.resource_id,
+                    row.expected.as_deref(),
+                    row.actual.as_deref(),
+                    "daemon",
+                )
+                .unwrap();
+            recorded.push(row.key());
+        }
+    }
+    assert!(
+        recorded
+            .iter()
+            .any(|(rtype, rid)| rtype == "module" && rid.contains('/')),
+        "the fixture records the per-file module rows this pin exists for: \
+         {recorded:?}"
+    );
+
+    let mut expected_standing: Vec<(String, String)> = withheld
+        .iter()
+        .flat_map(|a| crate::reconciler::action_drift_rows(a, &registry))
+        .map(|row| row.key())
+        .collect();
+    expected_standing.sort_unstable();
+    assert_eq!(
+        expected_standing.len(),
+        4,
+        "one standing row per withheld block: {expected_standing:?}"
+    );
+
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(PhaseName::Prerequisites, &Owner::profile("test"), provision),
+            Phase::from_actions(PhaseName::Packages, &Owner::profile("test"), converging),
+            Phase::from_actions(PhaseName::Modules, &Owner::profile("test"), withheld),
+        ],
+        warnings: vec![],
+    };
+    let (result, out) = apply_manager_plan(&registry, &state, &plan);
+    assert_eq!(result.status, ApplyStatus::Success, "apply output:\n{out}");
+
+    let mut standing: Vec<(String, String)> = state
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    standing.sort_unstable();
+    assert_eq!(
+        standing, expected_standing,
+        "every row the converging actions stand for is healed by the apply \
+         that ran them; only the withheld blocks' rows survive"
+    );
+}
+
+/// One `Action` per INNER variant of every action enum a plan can hold.
+///
+/// Shared by the two walks that must see the whole population — the identity
+/// judgment above and the record-then-heal round trip. A new inner variant
+/// fails the exhaustive matches in those walks, which is what sends the next
+/// author back here.
+fn every_action_variant() -> Vec<Action> {
+    use super::types::{ManagerAction, ModuleAction, ModuleActionKind};
+    use crate::providers::{FileAction, PackageAction, SecretAction};
+    use crate::reconciler::{EnvAction, ScriptAction, SystemAction};
+
     let module_kinds = [
-        ModuleActionKind::InstallPackages { resolved: vec![] },
+        ModuleActionKind::InstallPackages {
+            // One real entry, for the same reason `DeployFiles` carries one:
+            // an install of nothing stands for no finding.
+            resolved: vec![ResolvedPackage {
+                canonical_name: "jq".to_string(),
+                resolved_name: "jq".to_string(),
+                manager: "brew".to_string(),
+                manager_declared: false,
+                version: None,
+                script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
+                min_version: None,
+            }],
+        },
         ModuleActionKind::DeployFiles {
-            files: vec![],
-            declared_total: 0,
+            // One real entry: a `DeployFiles` writing nothing stands for no
+            // finding, so an empty list would judge the wrong shape.
+            files: vec![ResolvedFile {
+                source: PathBuf::from("/cache/nvim/init.lua"),
+                target: PathBuf::from("/home/u/.config/nvim/init.lua"),
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+                permissions: None,
+                patch: None,
+            }],
+            declared_total: 1,
         },
         ModuleActionKind::RunScript {
             script: ScriptEntry::Simple("echo hi".to_string()),
@@ -7542,10 +7952,55 @@ fn no_daemon_action_row_wears_the_live_checks_separator() {
             manager: "npm".to_string(),
             reason: "provision failed".to_string(),
         }),
+        Action::File(FileAction::Create {
+            source: PathBuf::from("/cache/conf"),
+            target: PathBuf::from("/home/u/.created"),
+            origin: "profile".to_string(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+            patch: None,
+        }),
+        Action::File(FileAction::Update {
+            source: PathBuf::from("/cache/conf"),
+            target: PathBuf::from("/home/u/.updated"),
+            diff: String::new(),
+            origin: "profile".to_string(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+            patch: None,
+        }),
+        Action::File(FileAction::SetPermissions {
+            target: PathBuf::from("/home/u/.chmodded"),
+            mode: 0o600,
+            origin: "profile".to_string(),
+        }),
+        Action::File(FileAction::Skip {
+            target: PathBuf::from("/home/u/.skipped"),
+            reason: "unmanaged".to_string(),
+            origin: "profile".to_string(),
+        }),
+        Action::Secret(SecretAction::Decrypt {
+            source: PathBuf::from("/cache/s.enc"),
+            target: PathBuf::from("/home/u/.secret"),
+            backend: "sops".to_string(),
+            origin: "profile".to_string(),
+        }),
+        Action::Secret(SecretAction::Resolve {
+            provider: "op".to_string(),
+            reference: "op://vault/item".to_string(),
+            target: PathBuf::from("/home/u/.token"),
+            template: None,
+            origin: "profile".to_string(),
+        }),
+        Action::Secret(SecretAction::ResolveEnv {
+            provider: "op".to_string(),
+            reference: "op://vault/item".to_string(),
+            envs: vec!["TOKEN".to_string()],
+            template: None,
+            origin: "profile".to_string(),
+        }),
     ]);
-    for action in &actions {
-        judged(action);
-    }
+    actions
 }
 
 #[test]
@@ -8714,14 +9169,20 @@ fn apply_manager_provision_makes_manager_available() {
     assert!(registry.package_managers()[0].is_available());
 }
 
-/// An apply that installs a package settles the drift rows the two live
-/// producers mint for it — the CLI's per-package `<mgr>:<pkg>` and the
-/// daemon's batch `<mgr>:<a>,<b>` — immediately, not at the next scan.
-/// `managed_resources` tracks under a third grammar (`<mgr>/<pkg>`), which no
-/// drift writer mints; resolving under it healed nothing, so an installed
-/// package kept reporting drift until a later check happened to re-look.
+/// An apply that installs a package settles the per-package drift rows every
+/// producer mints for it — `action_drift_rows`' own output, which the daemon
+/// tick records and the CLI live check mints identically — immediately, not at
+/// the next scan. `managed_resources` tracks under a second grammar
+/// (`<mgr>/<pkg>`), which no drift writer mints; resolving under it healed
+/// nothing, so an installed package kept reporting drift until a later check
+/// happened to re-look.
+///
+/// A comma-joined `<mgr>:<a>,<b>` is the BATCH spelling a tick recorded before
+/// `action_drift_rows` became the one producer. Nothing mints one now and
+/// nothing invents a resolution for one: it stands here, and the CLI scan keeps
+/// it standing for the same reason.
 #[test]
-fn an_apply_that_installs_packages_resolves_both_producers_drift_rows() {
+fn an_apply_that_installs_packages_resolves_the_per_package_drift_rows() {
     let state = test_state();
     for rid in ["brew:jq", "brew:rg", "brew:jq,rg", "brew:bystander"] {
         state
@@ -8757,9 +9218,9 @@ fn an_apply_that_installs_packages_resolves_both_producers_drift_rows() {
     standing.sort_unstable();
     assert_eq!(
         standing,
-        vec!["brew:bystander".to_string()],
-        "the per-package rows and the batch row resolve with the apply; \
-         a package this apply did not install stands"
+        vec!["brew:bystander".to_string(), "brew:jq,rg".to_string()],
+        "the per-package rows resolve with the apply; a package this apply did \
+         not install stands, and so does the legacy batch spelling nothing mints"
     );
 }
 

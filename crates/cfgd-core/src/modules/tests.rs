@@ -103,6 +103,38 @@ spec: {}
     assert!(err.to_string().contains("does not match"));
 }
 
+/// A module name is the OWNER half of every `module` drift row, so one
+/// carrying a `/` or a `:` would attribute its own rows to a shorter name.
+/// Refused at the load, which is what lets both crates read a row's owner as
+/// "everything before the first separator" instead of guessing.
+///
+/// Only the `:` half is reachable from a directory listing — a `/` cannot
+/// occur in one path component — but the refusal names both, because both are
+/// separators the row grammar reads.
+#[test]
+fn a_module_name_carrying_a_drift_id_separator_is_refused() {
+    let name = "a:b";
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("modules").join(name);
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec: {{}}\n"
+        ),
+    )
+    .unwrap();
+
+    let err = load_modules(dir.path())
+        .err()
+        .unwrap_or_else(|| panic!("a module named {name:?} must be refused"))
+        .to_string();
+    assert!(
+        err.contains("must not contain"),
+        "the refusal names the rule: {err}"
+    );
+}
+
 #[test]
 fn load_modules_wrong_kind_errors() {
     let dir = tempfile::tempdir().unwrap();

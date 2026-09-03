@@ -2086,17 +2086,19 @@ impl DecisionExclusions {
             "file" => self
                 .files
                 .contains(crate::posixify_text(resource_id).as_ref()),
-            // The CLI's module-file rows: `<module>/<target>` with the
-            // target's leading separator trimmed. The tail is folded
-            // unconditionally before matching, the exclusion set's own
-            // `to_posix_string` fold — keep and prune then answer alike for
-            // a Unix target carrying a legal `\`.
-            "module" => resource_id.split_once('/').is_some_and(|(_, tail)| {
-                let tail = crate::posixify_text(tail);
-                self.files
-                    .iter()
-                    .any(|f| f.trim_start_matches('/') == tail.as_ref())
-            }),
+            // The CLI's module-file rows, read through the composer's own
+            // inverse rather than split here: one grammar, one parser. The
+            // tail is folded unconditionally before matching, the exclusion
+            // set's own `to_posix_string` fold — keep and prune then answer
+            // alike for a Unix target carrying a legal `\`.
+            "module" => {
+                super::split_module_file_resource_id(resource_id).is_some_and(|(_, target)| {
+                    let tail = crate::posixify_text(&target);
+                    self.files
+                        .iter()
+                        .any(|f| f.trim_start_matches('/') == tail.trim_start_matches('/'))
+                })
+            }
             // Every `package` grammar. A `provision:`/`refuse:` row is kept
             // while ANY package on that manager is withheld: withholding the
             // manager's last consumer prunes its provision node too, and the
@@ -2139,16 +2141,15 @@ impl DecisionExclusions {
 pub struct WithheldFromPlan {
     /// How many whole actions left the plan.
     pub actions: usize,
-    /// The daemon-grammar id of every recorded row the pruned plan no longer
-    /// speaks for: each removed action's own `(resource_type, resource_id)`,
-    /// plus the pre-shrink spelling of every batch the prune reshaped. These
-    /// are the AGGREGATE rows — a bare `("module", name)`, a bare
-    /// `("system", cfg)`, a manager node, an old batch spelling — whose ids
-    /// carry no trace of the resource the decision names, so
-    /// [`DecisionExclusions::withholds_recorded_row`] cannot answer for them;
-    /// only the prune knows which owners it emptied. A complement-resolve
-    /// over the pruned plan folds these into its keep set, or the rows of the
-    /// very owners the pending decisions are about are resolved blind.
+    /// Every drift row the plan spoke for before the prune and no longer
+    /// does, as the difference of two [`super::action_drift_rows`] walks. A
+    /// row whose id carries no trace of the resource the decision names — a
+    /// bare `("system", cfg)`, a manager node, a file whose whole action the
+    /// prune emptied — cannot be answered by
+    /// [`DecisionExclusions::withholds_recorded_row`]; only the prune knows
+    /// which owners it emptied. A complement-resolve over the pruned plan
+    /// folds these into its keep set, or the rows of the very owners the
+    /// pending decisions are about are resolved blind.
     pub resource_ids: Vec<(String, String)>,
 }
 
@@ -2167,16 +2168,23 @@ pub struct WithheldFromPlan {
 /// [`withholding_env_surface`](super::Reconciler::withholding_env_surface), fed
 /// from [`DecisionExclusions::withholds_env_surface`], because apply regenerates
 /// that surface from the DECLARED set after the phases run.
-pub fn withhold_from_plan(plan: &mut Plan, exclusions: &DecisionExclusions) -> WithheldFromPlan {
+pub fn withhold_from_plan(
+    plan: &mut Plan,
+    exclusions: &DecisionExclusions,
+    registry: &crate::providers::ProviderRegistry,
+) -> WithheldFromPlan {
     if exclusions.is_empty() {
         return WithheldFromPlan::default();
     }
-    let before_ids: Vec<(String, String)> = plan
-        .phases
-        .iter()
-        .flat_map(|p| p.actions())
-        .map(action_resource_info)
-        .collect();
+    let plan_rows = |plan: &Plan| -> Vec<(String, String)> {
+        plan.phases
+            .iter()
+            .flat_map(|p| p.actions())
+            .flat_map(|a| super::action_drift_rows(a, registry))
+            .map(|row| row.key())
+            .collect()
+    };
+    let before_ids: Vec<(String, String)> = plan_rows(plan);
     // An undecidable batch has no row to explain its absence, so the warning
     // lands on the plan itself: the run header renders `plan.warnings` and
     // the `-o json` payload carries them, which is exactly where the operator
@@ -2195,12 +2203,7 @@ pub fn withhold_from_plan(plan: &mut Plan, exclusions: &DecisionExclusions) -> W
     // last of them withholds the refresh with them, before the count is taken,
     // so the header never names a number the run disagrees with.
     super::managers::prune_to_surviving_consumers(plan);
-    let after_ids: HashSet<(String, String)> = plan
-        .phases
-        .iter()
-        .flat_map(|p| p.actions())
-        .map(action_resource_info)
-        .collect();
+    let after_ids: HashSet<(String, String)> = plan_rows(plan).into_iter().collect();
     let mut resource_ids: Vec<(String, String)> = before_ids
         .into_iter()
         .filter(|id| !after_ids.contains(id))

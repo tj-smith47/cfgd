@@ -30112,15 +30112,16 @@ fn every_live_minted_drift_id_comes_from_its_composer() {
     // Each production mint, by file and count: `diff --module`'s scoped
     // module-file finding and checked-key pushes plus its package findings
     // (the machine-wide `diff` mints nothing of its own — it consumes the
-    // shared engine's findings); `live_drift`'s module/system/package
-    // scanners and the manager-node rows; `status <module> --scan`'s checked
-    // key and finding.
-    const EXPECTED: [(&str, usize); 3] = [("diff.rs", 4), ("live_drift.rs", 4), ("status.rs", 2)];
+    // shared engine's findings); `live_drift`'s module and system scanners
+    // and the manager-node rows (its package rows come from core's one
+    // producer); `status <module> --scan`'s checked key and finding.
+    const EXPECTED: [(&str, usize); 3] = [("diff.rs", 4), ("live_drift.rs", 3), ("status.rs", 2)];
     const COMPOSERS: [(&str, &[&str]); 3] = [
         ("module", &["module_file_resource_id("]),
         (
             "package",
             &[
+                "package_entry_drift_id(",
                 "package_drift_resource_id(",
                 "provision_resource_id(",
                 ".resource_id()",
@@ -30193,27 +30194,35 @@ fn every_live_minted_drift_id_comes_from_its_composer() {
 }
 
 /// The core-crate twin of the walk above: `cfgd-core` mints the same
-/// `<mgr>:<pkg>` / `<mgr>:<a>,<b>` package drift grammar — the apply's
-/// healed-key loop, `action_resource_info`'s two `PackageAction` arms and
-/// `verify`'s missing-package and below-the-floor rows — but lives outside
-/// `src/cli`, so the cli
-/// walk is structurally blind to it. Same anchor, same window, same hatch:
-/// every production line typing a `"package"` drift row composes its id
-/// through `reconciler::package_drift_resource_id` or a manager-node
-/// composer, or carries `// composed-id-ok: <why>`. Identical hand-typed
-/// format strings agreeing only by convention are how a producer and a
-/// reader of the tracking grammar drifted apart.
+/// `<mgr>:<pkg>` package drift grammar — `action_drift_rows`' own per-package
+/// rows, the manager node's provision/refuse rows, the apply's batch-member
+/// heal and `verify`'s missing-package and below-the-floor rows — but lives
+/// outside `src/cli`, so the cli walk is structurally blind to it. Same
+/// anchor, same window, same hatch: every production line typing a
+/// `"package"` drift row composes its id through
+/// `reconciler::package_entry_drift_id` / `package_drift_resource_id` or a
+/// manager-node composer, or carries `// composed-id-ok: <why>`. Identical
+/// hand-typed format strings agreeing only by convention are how a producer
+/// and a reader of the tracking grammar drifted apart.
+///
+/// The comma-joined `<mgr>:<a>,<b>` batch spelling is what the two hatched
+/// `action_resource_info` arms compose, and it is an ACTION identity, never a
+/// drift row: `package_drift_resource_id` debug-asserts a single package, so
+/// a producer reaching for the batch shape trips at run time as well as here.
 #[test]
 fn every_core_minted_package_drift_id_comes_from_its_composer() {
     const HATCH: &str = "composed-id-ok:";
-    const COMPOSERS: [&str; 4] = [
+    const COMPOSERS: [&str; 5] = [
+        "package_entry_drift_id(",
         "package_drift_resource_id(",
         ".resource_id()",
         "provision_resource_id(",
         "refuse_resource_id(",
     ];
-    // Each production anchor, by file and count, hatched lines excluded.
-    const EXPECTED: [(&str, usize); 3] = [("apply.rs", 4), ("types.rs", 3), ("verify.rs", 2)];
+    // Each production anchor, by file and count, hatched lines excluded:
+    // `apply.rs`'s two provision batch-member heals, `types.rs`'s manager-node
+    // and per-package rows, `verify.rs`'s missing and below-the-floor rows.
+    const EXPECTED: [(&str, usize); 3] = [("apply.rs", 2), ("types.rs", 2), ("verify.rs", 2)];
 
     let core_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src");
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -30271,6 +30280,201 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
     assert_eq!(
         found, expected,
         "every core production package-drift mint is pinned here; a new one means a \
+         producer whose ids nothing resolves until it is reviewed"
+    );
+}
+
+/// One reader of a `module` row's id, in the file that mints it.
+///
+/// The owner half of a `module` row ends at its FIRST separator, and a second
+/// classifier asking a different question ("does a `/` appear anywhere") reads
+/// any grammar whose tail carries one as a per-file row — which is how a live
+/// scan came to resolve a row it never checked. Both crates ask
+/// `reconciler::format`'s own readers instead; a production line splitting a
+/// `resource_id` at `/` anywhere else is the shape that regressed.
+#[test]
+fn no_production_site_outside_format_rs_splits_a_module_id() {
+    const HATCH: &str = "module-id-ok:";
+    const TELLS: [&str; 3] = ["contains('/')", "split_once('/')", "find(['/'"];
+
+    let roots = [
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src"),
+    ];
+    let mut offenders = Vec::new();
+    for root in &roots {
+        let mut files = walk_rust_files(root);
+        files.sort();
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs" || name == "test_helpers.rs" || name == "format.rs" {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let production = cfgd_core::test_helpers::production_slice(&body);
+            for (i, line) in production.lines().enumerate() {
+                if !line.contains("resource_id") || line.contains(HATCH) {
+                    continue;
+                }
+                if TELLS.iter().any(|t| line.contains(t)) {
+                    offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a `module` row's id is read by `reconciler::format`'s own readers \
+         (`module_row_owner` / `module_row_names_a_file` / \
+         `split_module_file_resource_id`), never split at a call site (or \
+         carries `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// No CLI slot chooses a drift row's cause by hand.
+///
+/// The verbose form states both operands and the terse one names the kind of
+/// divergence; a slot picking between them at the call site is a slot that
+/// can be given a row with no operands at all, and the absence fold then
+/// words two unstated sides as a resource the machine does not hold.
+/// `output::drift_cause` is the one chooser, and it holds the empty pair back
+/// from the verbose branch.
+#[test]
+fn no_cli_slot_pairs_the_shell_kind_test_with_the_verbose_detail() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut offenders = Vec::new();
+    let mut files = walk_rust_files(&root);
+    files.sort();
+    for path in files {
+        if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("is_shell_drift_kind(") {
+                continue;
+            }
+            let hi = (i + 6).min(lines.len());
+            if lines[i..hi].iter().any(|l| l.contains("drift_detail(")) {
+                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a drift row's cause is chosen by `output::drift_cause`, never by a \
+         hand-written shell-kind branch:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A `module` drift row names the FILE it stands for, on both crates.
+///
+/// The bare `("module", <name>)` spelling was an aggregate: it stood for
+/// whatever the tick happened to find under a module, and no per-file check
+/// could ever re-find it, so the apply that converged the module healed
+/// everything except the row the tick had written. `action_drift_rows` is now
+/// the one producer, and every `module` row it and the live scanners mint
+/// carries a `<module>/<target>` id from one of the three composers beside
+/// `module_file_resource_id`. The walk anchors on a production line TYPING a
+/// `module` row and requires a composer in the surrounding window;
+/// `action_resource_info`'s Module arm is hatched, because an ACTION's
+/// identity really is its module and it is not a drift row.
+///
+/// What it can see is a HAND-WRITTEN mint: an arm that types its row through
+/// `parse_resource_from_description` names neither anchor, so the grammar of
+/// every arm of `action_drift_rows` is judged by
+/// `every_row_the_tick_records_is_healed_by_the_apply_that_converges_it`,
+/// which walks the producer itself.
+#[test]
+fn every_module_drift_id_names_the_file_it_stands_for() {
+    const HATCH: &str = "composed-id-ok:";
+    const COMPOSERS: [&str; 3] = [
+        "module_file_spec_resource_id(",
+        "module_file_resource_id(",
+        "live_drift::module_file_resource_id(",
+    ];
+    // Each production anchor, by file and count, hatched lines excluded:
+    // `action_drift_rows`' DeployFiles arm, the apply's declared-file heal,
+    // `diff --module`'s checked key and finding, and `live_drift`'s scoped
+    // module-file finding.
+    const EXPECTED: [(&str, usize); 4] = [
+        ("apply.rs", 1),
+        ("diff.rs", 2),
+        ("live_drift.rs", 1),
+        ("types.rs", 1),
+    ];
+
+    let roots = [
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src"),
+    ];
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut offenders = Vec::new();
+    for root in &roots {
+        let mut files = walk_rust_files(root);
+        files.sort();
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs" || name == "test_helpers.rs" {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let production = cfgd_core::test_helpers::production_slice(&body);
+            let lines: Vec<&str> = production.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if !line.contains("\"module\".to_string()")
+                    && !line.contains("resource_type: \"module\"")
+                {
+                    continue;
+                }
+                if line.contains(HATCH) || (i > 0 && lines[i - 1].contains(HATCH)) {
+                    continue;
+                }
+                *counts.entry(name.clone()).or_default() += 1;
+                let lo = i.saturating_sub(10);
+                let hi = (i + 16).min(lines.len());
+                if !lines[lo..hi]
+                    .iter()
+                    .any(|l| COMPOSERS.iter().any(|c| l.contains(c)))
+                {
+                    offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a module drift id names the file it stands for, composed by one of \
+         the three composers (or carries `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+    let found: Vec<(String, usize)> = counts.into_iter().collect();
+    let mut expected: Vec<(String, usize)> = EXPECTED
+        .iter()
+        .map(|(f, n)| ((*f).to_string(), *n))
+        .collect();
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "every production module-drift mint is pinned here; a new one means a \
          producer whose ids nothing resolves until it is reviewed"
     );
 }

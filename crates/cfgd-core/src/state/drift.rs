@@ -10,6 +10,16 @@ impl StateStore {
     /// `(resource_type, resource_id)`, its timestamp and expected/actual values
     /// are refreshed instead of inserting a duplicate, so a resource that drifts
     /// across N reconcile ticks keeps exactly one outstanding row.
+    ///
+    /// A `None` operand LEAVES the stored one alone (`COALESCE`) rather than
+    /// blanking it. Producers know their findings to different depths: a live
+    /// check words a missing package `installed` / `not installed`, while a
+    /// daemon tick re-affirming the same row from its plan knows only that the
+    /// package is planned. Overwriting with NULL let the tick erase the words a
+    /// reader acts on, and the row then rendered as a version mismatch on a
+    /// package that was simply absent. Clearing an operand deliberately is not
+    /// a thing any producer needs; re-wording one is, and passing `Some` still
+    /// does it.
     pub fn record_drift(
         &self,
         resource_type: &str,
@@ -20,7 +30,11 @@ impl StateStore {
     ) -> Result<i64> {
         let timestamp = crate::utc_now_iso8601();
         let updated = self.conn.execute(
-            "UPDATE drift_events SET timestamp = ?1, expected = ?2, actual = ?3, source = ?4
+            "UPDATE drift_events
+                 SET timestamp = ?1,
+                     expected = COALESCE(?2, expected),
+                     actual = COALESCE(?3, actual),
+                     source = ?4
                  WHERE resource_type = ?5 AND resource_id = ?6
                  AND resolved_by IS NULL AND resolved_at IS NULL",
             params![

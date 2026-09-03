@@ -277,6 +277,51 @@ fn record_drift_upserts_same_resource() {
     assert_eq!(events[0].resource_id, "/etc/hosts");
 }
 
+/// A re-affirming producer that knows less than the one before it leaves the
+/// stored operands alone.
+///
+/// The CLI live check words a missing package `installed` / `not installed`;
+/// the daemon tick re-affirms the SAME row off its plan and knows only that
+/// the package is planned, so it passes `None` for both. Blanking the pair
+/// there erased the words `status` renders, and the row then read as a version
+/// mismatch on a package that was simply absent. `Some` still re-words a
+/// stored operand — only `None` is a non-statement.
+#[test]
+fn record_drift_keeps_stored_operands_a_reaffirming_producer_does_not_restate() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_drift(
+            "package",
+            "brew:jq",
+            Some("installed"),
+            Some("not installed"),
+            "local",
+        )
+        .unwrap();
+    store
+        .record_drift("package", "brew:jq", None, None, "daemon")
+        .unwrap();
+
+    let events = store.unresolved_drift().unwrap();
+    assert_eq!(events.len(), 1, "the re-affirmation upserts the one row");
+    assert_eq!(
+        (events[0].expected.as_deref(), events[0].actual.as_deref()),
+        (Some("installed"), Some("not installed")),
+        "a `None` operand leaves the stored one alone"
+    );
+    assert_eq!(events[0].source, "daemon", "the source still moves");
+
+    store
+        .record_drift("package", "brew:jq", Some("1.7"), Some("1.6"), "local")
+        .unwrap();
+    let events = store.unresolved_drift().unwrap();
+    assert_eq!(
+        (events[0].expected.as_deref(), events[0].actual.as_deref()),
+        (Some("1.7"), Some("1.6")),
+        "a `Some` operand still re-words the stored one"
+    );
+}
+
 #[test]
 fn record_drift_distinct_resources_stay_separate() {
     let store = StateStore::open_in_memory().unwrap();

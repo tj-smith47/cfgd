@@ -213,6 +213,7 @@ pub fn cmd_plan(
     let _ = reconciler::withhold_from_plan(
         &mut plan,
         &reconciler::DecisionExclusions::from_withheld(&withheld),
+        &registry,
     );
 
     // Snapshot scope before --skip/--only prune the plan, so a zero-action

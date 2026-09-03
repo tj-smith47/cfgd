@@ -172,6 +172,10 @@ Only a managed target diverging **out-of-band** (edited or removed outside cfgd)
 
 The `/status` endpoint's `driftCount` and the `/drift` endpoint's events list always reflect the same current set of unresolved drift, so the count and the event detail stay consistent.
 
+The daemon records the same drift rows the CLI's own checks do (see [what a drift row names](reconciliation.md#what-a-drift-row-names)), so a `cfgd apply` you run by hand clears what the last tick found, and the next tick reports a converged machine rather than re-finding work that is already done.
+
+A row the daemon records for a module, system setting, managed file, script or env surface states no `expected`/`actual` pair: the divergence has no two sides to name, and the row reads as `drift detected` wherever a cause is rendered. In `cfgd status -o json`, the `/drift` endpoint and the daemon's health IPC, both fields are `null` on such a row (they carried the literal `"drift detected"` in the `actual` field before). A row another producer worded keeps that producer's operands: a tick re-affirming it never blanks them.
+
 ## Reconcile Patches
 
 Override reconcile settings for specific modules or profiles. Patches live in your `cfgd.yaml`: you control your machine's sync behavior regardless of what upstream profiles or modules recommend.

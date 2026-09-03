@@ -85,6 +85,20 @@ pub fn load_modules(config_dir: &Path) -> Result<HashMap<String, LoadedModule>> 
 
         let doc = parse_module(&contents)?;
 
+        // A module name is the OWNER half of every `module` drift row
+        // (`<name>/<target>`, `<name>:script`), so a name carrying either
+        // separator attributes its own rows to a shorter name that owns none
+        // of them. A `:` is legal in a POSIX directory name and illegal in a
+        // Windows path component; it is refused on every host, so a config
+        // authored on one stays loadable on all of them.
+        if name.contains(['/', ':']) {
+            return Err(ModuleError::InvalidSpec {
+                name: name.clone(),
+                message: "module name must not contain '/' or ':'".to_string(),
+            }
+            .into());
+        }
+
         if doc.metadata.name != name {
             return Err(ModuleError::InvalidSpec {
                 name: name.clone(),

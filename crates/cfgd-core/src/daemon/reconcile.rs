@@ -1,6 +1,6 @@
 use super::*;
 use crate::PathDisplayExt;
-use crate::reconciler::{DecisionExclusions, action_resource_info, withhold_from_plan};
+use crate::reconciler::{DecisionExclusions, withhold_from_plan};
 
 // --- File Watcher ---
 
@@ -626,7 +626,8 @@ fn reconcile_tick(
     // no trace of the withheld resource, so the exclusions cannot re-derive
     // them from a recorded id alone, and the keep-set below folds these in
     // beside what `withholds_recorded_row` answers.
-    let withheld_row_ids = withhold_from_plan(&mut plan, &pending_exclusions).resource_ids;
+    let withheld_row_ids =
+        withhold_from_plan(&mut plan, &pending_exclusions, registry).resource_ids;
 
     // Check drift policy to decide whether to auto-apply or just notify.
     // Per-module ticks may override the global value via their patch entry.
@@ -749,17 +750,70 @@ fn reconcile_tick(
         }
     };
 
+    // The `package` rows a per-module tick may speak for: the ones this
+    // module's own group carries into the narrowed plan. A package an EARLIER
+    // resolved module also declares is dedup'd onto that module's group
+    // (`dedup_module_packages`, module-order walk), so it leaves this tick's
+    // plan entirely and a row for it would be healed by a tick that never
+    // planned it.
+    let module_scoped_packages: std::collections::HashSet<String> = match module_filter {
+        None => std::collections::HashSet::new(),
+        Some(name) => {
+            // Looked up once for the whole scoped set: the identity fold below
+            // asks per package, and a linear scan of the registry inside that
+            // map is quadratic in a module declaring a few hundred packages.
+            let managers: std::collections::HashMap<
+                &str,
+                &Box<dyn crate::providers::PackageManager>,
+            > = registry
+                .package_managers()
+                .iter()
+                .map(|m| (m.name(), m))
+                .collect();
+            let claimed_earlier: std::collections::HashSet<(&str, &str)> = resolved_modules_ref
+                .iter()
+                .take_while(|m| m.name != name)
+                .flat_map(|m| {
+                    m.packages
+                        .iter()
+                        .map(|p| (p.manager.as_str(), p.resolved_name.as_str()))
+                })
+                .collect();
+            resolved_modules_ref
+                .iter()
+                .find(|m| m.name == name)
+                .into_iter()
+                .flat_map(|m| m.packages.iter())
+                .filter(|p| {
+                    !claimed_earlier.contains(&(p.manager.as_str(), p.resolved_name.as_str()))
+                })
+                .map(|p| {
+                    crate::reconciler::package_entry_drift_id(
+                        &p.manager,
+                        &p.resolved_name,
+                        managers
+                            .get(p.manager.as_str())
+                            .copied()
+                            .map(std::convert::AsRef::as_ref),
+                    )
+                })
+                .collect()
+        }
+    };
+
     // A per-module tick probes ONE module, so beyond the re-find predicate it
-    // may heal only rows attributable to that module by identity: its own
-    // module-file rows and its bare module row. Everything else — other
-    // modules', the machine-wide surfaces, per-package rows nothing attributes
-    // to a module — stands for the next profile-wide tick to judge.
+    // may heal only rows attributable to that module by identity: every
+    // `module` row under its name — the per-file `<name>/<target>` rows and the
+    // `<name>:script` / `<name>:skip` spellings its own actions mint — plus the
+    // per-package rows of the packages its group carries. Everything else — other modules', the machine-wide surfaces —
+    // stands for the next profile-wide tick to judge.
     let outside_tick_scope = |rtype: &str, rid: &str| match module_filter {
         None => false,
-        Some(name) => {
-            !(rtype == "module"
-                && (rid == name || rid.strip_prefix(name).is_some_and(|r| r.starts_with('/'))))
-        }
+        Some(name) => match rtype {
+            "module" => crate::reconciler::module_row_owner(rid) != name,
+            "package" => !module_scoped_packages.contains(rid),
+            _ => true,
+        },
     };
     // The rows this tick cannot vouch for either way, spelled as extra
     // members of the "current" set so the complement-resolve leaves them
@@ -828,17 +882,22 @@ fn reconcile_tick(
             let mut current_drift: Vec<(String, String)> = Vec::new();
             for phase in &plan.phases {
                 for action in phase.actions() {
-                    let (rtype, rid) = action_resource_info(action);
-                    if let Err(e) = store.record_drift(
-                        &rtype,
-                        &rid,
-                        None,
-                        Some("drift detected"),
-                        config::LOCAL_LAYER,
-                    ) {
-                        tracing::warn!(error = %e, "reconcile: failed to record drift");
+                    // The ONE producer both sides read: what this tick records
+                    // is exactly what an apply of the same action settles, and
+                    // an action this host was never going to run yields no row
+                    // at all — the header's total already excluded it.
+                    for row in crate::reconciler::action_drift_rows(action, registry) {
+                        if let Err(e) = store.record_drift(
+                            &row.resource_type,
+                            &row.resource_id,
+                            row.expected.as_deref(),
+                            row.actual.as_deref(),
+                            config::LOCAL_LAYER,
+                        ) {
+                            tracing::warn!(error = %e, "reconcile: failed to record drift");
+                        }
+                        current_drift.push(row.key());
                     }
-                    current_drift.push((rtype, rid));
                     planned.push(action);
                 }
             }
@@ -1347,21 +1406,22 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
 ///   and says nothing about which items still mismatch (keep), while no
 ///   planned rewrite means the file converged, which re-finds every declared
 ///   item healed (resolve).
-/// * `package` `<manager>:<name>` with no `,` — the CLI's per-package
-///   spelling. The tick plans one batch per manager, so the row is re-found
-///   exactly when a planned install/uninstall on that manager still carries
-///   the package. `provision:` / `refuse:` rows are re-found through the
-///   manager node that speaks for the manager — batch members included,
-///   whose one planned node carries only its leader's id.
-/// * `module` `<module>/<target>` — the CLI's module-file spelling
-///   (`module_file_resource_id`: the target as `display_posix` folds it —
-///   Windows-only — with its leading separator trimmed, after the module
-///   name). The planner spells a module
-///   file's redeploy as `ModuleActionKind::DeployFiles`, never as an
-///   `Action::File` — so the join is the owning module's own planned file
-///   list, exact on both halves. A module the plan carries only as a
-///   `ModuleActionKind::Skip` was never probed at all, so its rows are kept
-///   the way the CLI keeps an unevaluated configurator's.
+/// * `package` `<manager>:<identity>` — the CLI's per-package spelling, which
+///   this tick now mints too, so identity governs: a package a planned batch
+///   still carries is already in the current set, and one no batch carries is
+///   installed. `provision:` / `refuse:` rows are the one shape the tick does
+///   not mint per member — a cascade's node carries only its leader's id — so
+///   they are re-found through the manager node that speaks for the manager.
+/// * `module` — every spelling under a module's name: the per-file
+///   `<module>/<target>` rows this tick mints itself through
+///   `module_file_spec_resource_id`, and the `<module>:packages:…` /
+///   `<module>:script` / `<module>:skip` ids its other kinds mint. All of them
+///   are the tick's own grammar, so identity governs — a row the plan still
+///   covers is in the current set before this predicate is consulted, and one
+///   it does not cover is a file or a surface the plan found converged. The
+///   exception is a module the plan carries only as a
+///   `ModuleActionKind::Skip`: it was never probed at all, so its rows are
+///   kept the way the CLI keeps an unevaluated configurator's.
 /// * `system` `<configurator>.<key>` — [`crate::reconciler::system_resource_key`]'s
 ///   spelling, which the tick's own `SetValue` mints too, so a row is re-found
 ///   by comparing the whole composed id rather than splitting it. A planned
@@ -1386,7 +1446,6 @@ pub(super) fn tick_cannot_refind(
     resource_id: &str,
     planned: &[&crate::reconciler::Action],
 ) -> bool {
-    use crate::providers::PackageAction;
     use crate::reconciler::{Action, EnvAction, ModuleActionKind, SystemAction};
     match resource_type {
         "env-var" | "alias" => planned
@@ -1405,55 +1464,19 @@ pub(super) fn tick_cannot_refind(
                     _ => false,
                 });
             }
-            let Some((manager, package)) = resource_id.split_once(':') else {
-                // The daemon's own bare Skip spelling: identity governs.
-                return false;
-            };
-            if package.contains(',') {
-                // The daemon's own batch spelling: identity governs.
-                return false;
-            }
-            planned.iter().any(|a| match a {
-                Action::Package(
-                    PackageAction::Install {
-                        manager: m,
-                        packages,
-                        ..
-                    }
-                    | PackageAction::Uninstall {
-                        manager: m,
-                        packages,
-                        ..
-                    },
-                ) => m == manager && packages.iter().any(|p| p == package),
-                _ => false,
+            // Every other package row is the tick's own spelling: identity
+            // governs, and a row the plan still covers never reaches here.
+            false
+        }
+        // A module the plan carries only as a Skip probed nothing under it.
+        "module" => {
+            let owner = crate::reconciler::module_row_owner(resource_id);
+            planned.iter().any(|a| {
+                matches!(a, Action::Module(ma)
+                    if ma.module_name == owner
+                        && matches!(ma.kind, ModuleActionKind::Skip { .. }))
             })
         }
-        "module" => match resource_id.split_once('/') {
-            // The daemon's own bare module-name spelling: identity governs.
-            None => false,
-            Some((module, tail)) => planned.iter().any(|a| match a {
-                Action::Module(ma) if ma.module_name == module => match &ma.kind {
-                    // A module file plans as DeployFiles, never Action::File,
-                    // so the join is the owning module's own planned file
-                    // list — the tick that plans a redeploy re-finds exactly
-                    // the file it will write. The fold is the id PRODUCER's
-                    // (`FileDriftResult.target` is set with `display_posix`,
-                    // Windows-only): `to_posix_string`'s unconditional fold
-                    // would rename a Unix target carrying a legal `\` into a
-                    // key the recorded row never spelled.
-                    ModuleActionKind::DeployFiles { files, .. } => files
-                        .iter()
-                        .any(|f| f.target.display_posix().trim_start_matches('/') == tail),
-                    // A skipped module was never probed: its rows are vouched
-                    // for neither way.
-                    ModuleActionKind::Skip { .. } => true,
-                    ModuleActionKind::InstallPackages { .. }
-                    | ModuleActionKind::RunScript { .. } => false,
-                },
-                _ => false,
-            }),
-        },
         // Judged whole against the composer's output rather than parsed: a KEY
         // may carry a colon (`windowsRegistry.HKCU:\Software\…`), so nothing
         // here may read one as a separator.

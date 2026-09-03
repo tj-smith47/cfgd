@@ -436,7 +436,7 @@ pub fn run_apply(
     let plan_was_converged = plan.is_empty();
     // The discard is deliberate: the CLI runs no complement-resolve over
     // recorded drift, so the carrier's ids have no reader here.
-    let _ = reconciler::withhold_from_plan(&mut plan, &exclusions);
+    let _ = reconciler::withhold_from_plan(&mut plan, &exclusions, &registry);
 
     // Snapshot scope before --skip/--only prune the plan, so a zero-action
     // outcome distinguishes "in sync" from "a filter excluded pending work".

@@ -2120,7 +2120,12 @@ fn an_all_withheld_manager_is_withheld_with_its_packages() {
         warnings: Vec::new(),
     };
 
-    let withheld = crate::reconciler::withhold_from_plan(&mut plan, &exclusions).actions;
+    let withheld = crate::reconciler::withhold_from_plan(
+        &mut plan,
+        &exclusions,
+        &crate::providers::ProviderRegistry::new(),
+    )
+    .actions;
 
     let nodes: Vec<String> = plan
         .phases
@@ -3958,7 +3963,12 @@ fn a_dotted_custom_manager_source_batch_is_withheld_fail_closed_with_a_warning()
         )])],
         warnings: Vec::new(),
     };
-    let pruned = crate::reconciler::withhold_from_plan(&mut plan, &exclusions).actions;
+    let pruned = crate::reconciler::withhold_from_plan(
+        &mut plan,
+        &exclusions,
+        &crate::providers::ProviderRegistry::new(),
+    )
+    .actions;
     assert_eq!(pruned, 0, "the batch survives with one fewer entry");
     assert_eq!(
         installed_batches(&plan.phases[0]),
@@ -9193,11 +9203,11 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
 
     let store = StateStore::open(&state_dir.join("state.db")).unwrap();
     let drift_events = store.unresolved_drift().unwrap();
-    // Should have drift events for all actions:
-    // 1 file create + 2 package install actions = 3 drift events
+    // One row per file the plan writes and one per package it installs:
+    // 1 file create + (2 + 1) packages = 4 drift rows.
     assert_eq!(
         drift_events.len(),
-        3,
+        4,
         "should have drift events for all actions; got: {:?}",
         drift_events
     );
@@ -12334,6 +12344,7 @@ spec:
     fn tick_cannot_refind_judges_each_grammar_from_the_recorded_rows_side() {
         use super::reconcile::tick_cannot_refind;
         use crate::providers::{PackageAction, ProviderRegistry, SystemDrift};
+        use crate::reconciler::module_row_owner;
         use crate::reconciler::{
             Action, EnvAction, ManagerAction, ModuleActionKind, ReconcileContext, Reconciler,
             SystemAction,
@@ -12465,21 +12476,25 @@ spec:
 
         let cases: &[(&str, &str, bool, bool)] = &[
             // (type, id, kept under `planned`, kept under an empty plan)
-            ("package", "brew:jq", true, false),
+            // The tick MINTS this row itself, so the complement never reaches
+            // it; the predicate speaks only for rows the tick did not record.
+            ("package", "brew:jq", false, false),
             ("package", "brew:absent", false, false),
             ("package", "brew:jq,rg", false, false),
             ("package", "brew", false, false),
             ("package", "provision:npm", true, false),
             ("package", "provision:pip", true, false),
             ("package", "refuse:ghost", false, false),
-            // A planned redeploy re-finds exactly the file it will write...
-            ("module", "dev/home/u/.conf", true, false),
-            // ...and vouches nothing for a file the module no longer declares.
+            // A planned redeploy MINTS the row of every file it writes, so
+            // that row rides `current_drift`, not this predicate...
+            ("module", "dev/home/u/.conf", false, false),
+            // ...and the tick vouches nothing for a file no longer declared.
             ("module", "dev/home/u/.other", false, false),
-            // A module the plan carries only as a Skip was never probed.
+            // A module the plan carries only as a Skip was never probed, so
+            // every row under it is kept whatever its id's grammar.
             ("module", "gated/etc/app.conf", true, false),
+            ("module", "gated", true, false),
             ("module", "dev", false, false),
-            ("module", "gated", false, false),
             ("env-var", "EDITOR", true, false),
             ("alias", "ll", true, false),
             ("system", "gsettings.org.gnome.x key", true, false),
@@ -12505,20 +12520,22 @@ spec:
             );
         }
 
-        // The join probes the fold the id's PRODUCER used: a recorded Unix id
-        // keeps its `\`, and the unconditionally folded spelling names a
-        // different file no row was recorded for.
-        #[cfg(unix)]
-        {
-            assert!(
-                tick_cannot_refind("module", r"dev/home/u/od\d.conf", &planned),
-                "the backslash-bearing recorded id meets the planned deploy"
-            );
-            assert!(
-                !tick_cannot_refind("module", "dev/home/u/od/d.conf", &planned),
-                "the folded spelling names a file no producer recorded"
-            );
-        }
+        // The module arm reads the OWNER off the id and nothing else: the
+        // tail is a filename, and a `\` is a legal one on POSIX. Both
+        // spellings belong to the Skip module, so both are kept — the row a
+        // deploy re-finds is settled on the MINT side, where one composer
+        // writes the recorded id and the current-set id alike.
+        assert!(
+            tick_cannot_refind("module", r"gated/etc/od\d.conf", &planned),
+            "a backslash-bearing file id under the Skip module is kept"
+        );
+        assert!(
+            tick_cannot_refind("module", "gated/etc/od/d.conf", &planned),
+            "and so is its folded spelling"
+        );
+        assert_eq!(module_row_owner(r"gated/etc/od\d.conf"), "gated");
+        assert_eq!(module_row_owner("dev:script"), "dev");
+        assert_eq!(module_row_owner("solo"), "solo");
     }
 
     /// A clean profile-wide tick is ground truth only for what it PROBED: the
@@ -12651,13 +12668,13 @@ spec:
         );
     }
 
-    /// A recorded module-file row — the CLI's `<module>/<target>` spelling —
-    /// survives the tick that PLANS its redeploy: the machine still shows the
-    /// finding until the deploy actually runs, and the planner spells that
-    /// redeploy as a `DeployFiles` under the owning module, never as a file
-    /// action. A row for a file the module no longer declares resolves in the
-    /// same tick — the plan's own file list is the join, exact on both sides,
-    /// end to end through a real tick over a real config tree.
+    /// A recorded module-file row — the `<module>/<target>` spelling every
+    /// producer mints — survives the tick that PLANS its redeploy: the tick
+    /// RE-RECORDS that exact row off the `DeployFiles` action, so the machine
+    /// still shows the finding until the deploy actually runs. A row for a
+    /// file the module no longer declares is in no action's row set and
+    /// resolves in the same tick — one composer on both sides, end to end
+    /// through a real tick over a real config tree.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tick_that_plans_a_redeploy_keeps_the_planned_files_recorded_row() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -12730,9 +12747,9 @@ spec:
         standing.sort_unstable();
         assert_eq!(
             standing,
-            vec![("module", "dev"), ("module", declared_id.as_str()),],
-            "the tick records its own bare-module row, keeps the planned \
-             file's row, and resolves the undeclared file's row"
+            vec![("module", declared_id.as_str())],
+            "the tick re-records the planned file's row and nothing else, so \
+             the undeclared file's row resolves and no bare module id is minted"
         );
     }
 
@@ -12744,10 +12761,10 @@ spec:
     /// declared resolves in the same tick — which is also the proof the tick
     /// really ran rather than skipping fail-closed.
     ///
-    /// The `solo` module exercises the AGGREGATE row: its only file is
-    /// withheld, so the prune empties the whole module action and the bare
-    /// `("module", "solo")` id vanishes from the plan — an id the exclusions
-    /// cannot answer for, kept only by the prune's own `resource_ids`
+    /// The `solo` module exercises the EMPTIED action: its only file is
+    /// withheld, so the prune drops the whole module action and every row it
+    /// spoke for vanishes from the plan at once — rows the tick therefore
+    /// re-records nowhere, kept only by the prune's own `resource_ids`
     /// carrier. The closing Auto tick is the discriminator that the prune
     /// still withholds at all: were it to stop, the auto-apply would write
     /// the withheld targets and this test's keep assertions would stay green
@@ -12817,6 +12834,10 @@ spec:
             crate::to_posix_string(tmp.path().join("deploy").join("gone.conf"))
                 .trim_start_matches('/')
         );
+        let solo_id = format!(
+            "solo/{}",
+            crate::to_posix_string(&solo_target).trim_start_matches('/')
+        );
         {
             let store = StateStore::open_in_dir(tmp.path()).unwrap();
             for rid in [&withheld_id, &planned_id, &undeclared_id] {
@@ -12824,12 +12845,11 @@ spec:
                     .record_drift("module", rid, Some("deployed"), Some("missing"), "local")
                     .unwrap();
             }
-            // The aggregate row a prior tick would have recorded for `solo`:
-            // its id carries no trace of the withheld file, so only the
-            // prune's carrier can keep it once the module's one action leaves
-            // the plan.
+            // `solo`'s one file: the prune empties the module's whole action,
+            // so no surviving action speaks for this row and only the prune's
+            // carrier can keep it.
             store
-                .record_drift("module", "solo", None, Some("drift detected"), "local")
+                .record_drift("module", &solo_id, None, Some("drift detected"), "local")
                 .unwrap();
             for target in [&withheld_target, &solo_target] {
                 store
@@ -12868,14 +12888,13 @@ spec:
         assert_eq!(
             standing,
             vec![
-                ("module", "dev"),
                 ("module", withheld_id.as_str()),
                 ("module", planned_id.as_str()),
-                ("module", "solo"),
+                ("module", solo_id.as_str()),
             ],
             "the withheld file's row survives on the exclusions' say-so, the \
-             planned sibling's on the plan join, the emptied module's bare \
-             row on the prune's carrier, and the undeclared file's row \
+             planned sibling's because the tick re-records it, the emptied \
+             module's on the prune's carrier, and the undeclared file's row \
              resolves — proof the tick ran"
         );
         drop(store);
