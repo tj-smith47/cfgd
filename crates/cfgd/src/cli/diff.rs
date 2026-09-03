@@ -384,6 +384,30 @@ pub fn cmd_diff(
         !sys_rows.is_empty()
     };
 
+    // Rows the walk above could not re-find (a bare legacy module id, a
+    // system key outside every configurator this scan evaluated, a check
+    // error's own key) — the store's own answer, kept unresolved by
+    // `live_drift_results` and rendered here through the same drift-row
+    // renderer every section above used, never a second wording.
+    let has_standing_drift = {
+        let sec = printer.section_or_collapse("Standing");
+        let _inherit = printer.depth_inheritance();
+        for e in &report.standing {
+            let (expected, actual) = cfgd_core::output::drift_operands(
+                &e.resource_type,
+                e.expected.as_deref().unwrap_or_default(),
+                e.actual.as_deref().unwrap_or_default(),
+            );
+            sec.status(
+                Role::Warn,
+                cfgd_core::output::drift_item_subject(&e.resource_type, &e.resource_id),
+            )
+            .drift(&expected, &actual);
+        }
+        !report.standing.is_empty()
+    };
+    diff_payload.standing = report.standing;
+
     diff_payload.summary = DiffSummary {
         has_file_drift,
         has_pkg_drift,
@@ -395,6 +419,7 @@ pub fn cmd_diff(
         // the whole command via `?`, so this path never reaches here with the
         // env check unresolved.
         env_check_failed: false,
+        has_standing_drift,
     };
 
     printer.emit(build_diff_doc(&diff_payload, DiffScope::Machine));
@@ -440,7 +465,8 @@ fn diff_exit_code(summary: &DiffSummary) -> Option<cfgd_core::exit::ExitCode> {
     (summary.has_file_drift
         || summary.has_pkg_drift
         || summary.has_system_drift
-        || summary.has_env_drift)
+        || summary.has_env_drift
+        || summary.has_standing_drift)
         .then_some(cfgd_core::exit::ExitCode::DriftDetected)
 }
 
@@ -792,12 +818,34 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
 
     // The scoped record: this run's own module rows, and nothing beyond
     // them — no machine-wide stamp, unlike the full-machine path above.
-    super::live_drift::record_scoped_scan_findings(
+    // Returns the rows this chain owns that the scan above did not cover
+    // (a bare legacy module id): rendered and priced beside the findings
+    // above, through the same drift-row renderer.
+    let standing = super::live_drift::record_scoped_scan_findings(
         state,
         &checked,
         &findings,
         &package_check_errors,
+        &resolved_modules,
     );
+    let has_standing_drift = {
+        let sec = printer.section_or_collapse("Standing");
+        let _inherit = printer.depth_inheritance();
+        for e in &standing {
+            let (expected, actual) = cfgd_core::output::drift_operands(
+                &e.resource_type,
+                e.expected.as_deref().unwrap_or_default(),
+                e.actual.as_deref().unwrap_or_default(),
+            );
+            sec.status(
+                Role::Warn,
+                cfgd_core::output::drift_item_subject(&e.resource_type, &e.resource_id),
+            )
+            .drift(&expected, &actual);
+        }
+        !standing.is_empty()
+    };
+    diff_payload.standing = standing;
 
     let package_check_failed = !package_check_errors.is_empty();
     diff_payload.system_errors = package_check_errors;
@@ -812,6 +860,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         system_check_failed: package_check_failed,
         has_env_drift,
         env_check_failed,
+        has_standing_drift,
     };
 
     printer.emit(build_diff_doc(&diff_payload, DiffScope::Module(mod_name)));
@@ -1995,6 +2044,7 @@ mod tests {
             system_check_failed: false,
             has_env_drift: json["summary"]["hasEnvDrift"] == serde_json::json!(true),
             env_check_failed: true,
+            has_standing_drift: json["summary"]["hasStandingDrift"] == serde_json::json!(true),
         };
         assert_eq!(
             diff_exit_code(&summary),
@@ -2152,6 +2202,7 @@ mod tests {
                 system_check_failed: false,
                 has_env_drift: false,
                 env_check_failed: false,
+                has_standing_drift: false,
             },
             ..Default::default()
         };
@@ -2175,6 +2226,7 @@ mod tests {
                 system_check_failed: false,
                 has_env_drift: false,
                 env_check_failed: false,
+                has_standing_drift: false,
             },
             ..Default::default()
         };
@@ -2206,6 +2258,7 @@ mod tests {
                 system_check_failed: true,
                 has_env_drift: false,
                 env_check_failed: false,
+                has_standing_drift: false,
             },
             ..Default::default()
         };
@@ -2273,6 +2326,7 @@ mod tests {
                 system_check_failed: false,
                 has_env_drift: false,
                 env_check_failed: true,
+                has_standing_drift: false,
             },
             ..Default::default()
         };
@@ -2317,6 +2371,7 @@ mod tests {
                 system_check_failed: false,
                 has_env_drift: false,
                 env_check_failed: true,
+                has_standing_drift: false,
             },
             ..Default::default()
         };

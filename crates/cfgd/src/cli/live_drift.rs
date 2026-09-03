@@ -20,9 +20,14 @@
 //! settle. A SCOPED check (`--module`) records and resolves only rows whose
 //! resource ids fall in its own scope — the keys it actually re-checked
 //! ([`record_scoped_scan_findings`]) — and leaves the machine-wide stamp
-//! alone. Stored strings are the producer's literals; display folds
-//! (`fold_home_in_text`, the env declared-value recompute) never reach the
-//! store.
+//! alone. Its scope can still hold a row it never re-checked (a bare legacy
+//! module id, a batched package id no scanned package matches): that row
+//! stays standing exactly as the full-machine check's does, attributed
+//! through [`cfgd_core::reconciler::row_attributable_to_module`] — the same
+//! predicate the daemon's per-module tick asks — and returned for the
+//! caller to render and price beside its findings. Stored strings are the
+//! producer's literals; display folds (`fold_home_in_text`, the env
+//! declared-value recompute) never reach the store.
 
 use cfgd_core::config::ResolvedProfile;
 use cfgd_core::modules::ResolvedModule;
@@ -270,12 +275,47 @@ pub(super) fn scoped_version_drift(
 /// `check_errors` names the keys this run could not answer for. They are
 /// withheld from the resolve on the full walk's rule: a check that errored
 /// vouches for nothing, so its recorded rows stand.
+///
+/// `chain` is the run's own resolved module set (the named module plus every
+/// dependency `resolve_modules` pulled in) — the scope
+/// [`cfgd_core::reconciler::row_attributable_to_module`] judges attribution
+/// against, one member at a time, the same predicate the daemon's per-module
+/// tick asks over its own single name. `effective_packages` is derived from
+/// `checked` itself: every package id this run resolved as scannable, which
+/// is exactly the set a package row must appear in to be this chain's to
+/// vouch for.
+///
+/// Returns every recorded row attributable to `chain` that `checked` did not
+/// cover — a finding this run's own scope owns but never got to re-examine,
+/// because its type or grammar sits outside what THIS check evaluates (a
+/// module's bare legacy id, a `:script`/`:skip` action row, a package batch
+/// id no single scanned package matches). A caller presenting the scan
+/// renders and prices them beside its findings, exactly as the full-machine
+/// walk's own [`record_full_scan_findings`] does with its keep-set — the type
+/// is never special-cased here, only asked of the one shared predicate.
 pub(super) fn record_scoped_scan_findings<'a>(
     state: &cfgd_core::state::StateStore,
     checked: &[(String, String)],
     findings: impl IntoIterator<Item = &'a VerifyResult>,
     check_errors: &[super::output_types::SystemCheckError],
-) {
+    chain: &[cfgd_core::modules::ResolvedModule],
+) -> Vec<cfgd_core::state::DriftEvent> {
+    let effective_packages: std::collections::HashSet<String> = checked
+        .iter()
+        .filter(|(rtype, _)| rtype == "package")
+        .map(|(_, rid)| rid.clone())
+        .collect();
+    let owns_row = |rtype: &str, rid: &str| {
+        chain.iter().any(|m| {
+            cfgd_core::reconciler::row_attributable_to_module(
+                rtype,
+                rid,
+                &m.name,
+                &effective_packages,
+            )
+        })
+    };
+    let mut standing = Vec::new();
     // One transaction over the batch, for the same WAL-write economy as the
     // full scan's; per-row failures stay warnings.
     if let Err(e) = state.in_transaction(|| {
@@ -293,10 +333,27 @@ pub(super) fn record_scoped_scan_findings<'a>(
         if let Err(e) = state.resolve_drift_in(&healed) {
             tracing::warn!(error = %e, "failed to resolve healed drift rows");
         }
+        match state.unresolved_drift() {
+            Ok(rows) => {
+                standing = rows
+                    .into_iter()
+                    .filter(|e| {
+                        owns_row(&e.resource_type, &e.resource_id)
+                            && !checked
+                                .iter()
+                                .any(|(t, i)| t == &e.resource_type && i == &e.resource_id)
+                    })
+                    .collect();
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read recorded drift; leaving standing rows unreported");
+            }
+        }
         Ok(())
     }) {
         tracing::warn!(error = %e, "failed to commit the drift scan");
     }
+    standing
 }
 
 /// Content-aware verify results for every managed file in the profile.
@@ -466,9 +523,14 @@ impl LiveDriftReport {
 /// caller's, which reads the pre-scan value first for its own header.
 ///
 /// Only divergent results are returned — the caller treats a non-empty findings
-/// vector as "drift detected" and renders each entry. This is the single source
-/// of truth for `diff`, `status --scan`'s rendered Drift section and both `-e`
-/// exit gates, so the human verdict can never contradict the exit code.
+/// vector as "drift detected" and renders each entry. Findings alone are not
+/// the whole verdict: [`LiveDriftReport::standing`] carries the recorded rows
+/// this same visit could not re-find and therefore left unresolved, and a
+/// caller must render and price BOTH — `diff`, `status --scan`'s rendered
+/// Drift section and both `-e` exit gates all read `findings` and `standing`
+/// together, so the human verdict can never contradict the exit code and
+/// neither half alone can claim clean over a store the scan itself left
+/// standing.
 ///
 /// `fm` is the caller's: `diff` re-renders inline hunks through the same
 /// manager after the scan, and a second construction rebuilds the template

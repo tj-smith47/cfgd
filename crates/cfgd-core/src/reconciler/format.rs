@@ -989,6 +989,34 @@ pub fn module_row_names_a_file(resource_id: &str) -> bool {
     matches!(resource_id.find(['/', ':']), Some(at) if resource_id.as_bytes()[at] == b'/')
 }
 
+/// Whether a recorded drift row is one a module-scoped run can vouch for —
+/// the daemon's per-module tick and a CLI scoped scan (`diff`/`verify`/
+/// `status --scan`, each `--module`) ask this same question over the same two
+/// grammars, so a row neither predicate agrees on cannot flip between
+/// "standing" and "healed" depending only on which caller last looked.
+///
+/// A `module` row belongs to the run whose name is its [`module_row_owner`].
+/// A `package` row belongs to the run iff its id is one of `effective_packages`
+/// — the caller's own resolved set, since which packages a module's chain
+/// carries is a resolution the caller already did (module-order dedup for a
+/// daemon tick, the whole dependency chain for a CLI isolate) and this
+/// function has no context to redo it. Every other type is a machine-wide
+/// surface no module-scoped run evaluates, so it answers `false` — including
+/// for `module`/`package` ids that fall outside those two shapes.
+#[must_use]
+pub fn row_attributable_to_module(
+    resource_type: &str,
+    resource_id: &str,
+    module: &str,
+    effective_packages: &std::collections::HashSet<String>,
+) -> bool {
+    match resource_type {
+        "module" => module_row_owner(resource_id) == module,
+        "package" => effective_packages.contains(resource_id),
+        _ => false,
+    }
+}
+
 pub(super) fn parse_resource_from_description(desc: &str) -> (String, String) {
     let Some((prefix, rest)) = desc.split_once(':') else {
         return ("unknown".to_string(), desc.to_string());

@@ -326,11 +326,16 @@ Before cfgd settled on the identities above, a reconcile tick could record a
 whole-module row (`module|nvim`) or a batched package row
 (`package|brew:jq,ripgrep`). Nothing writes either spelling now, and no check can
 re-find one, so `cfgd status`, `cfgd diff` and `cfgd verify` leave them standing
-rather than clearing a finding they never looked at — which keeps
-`cfgd status --exit-code` at `5`. A running daemon clears them on its next tick
-(the rows it can no longer account for are resolved with the plan it just ran).
-On a machine that never runs `cfgd daemon`, start it once in the foreground and
-stop it after its first tick:
+rather than clearing a finding they never looked at — rendered beside the live
+findings under their stored `expected`/`actual`, which keeps `cfgd status
+--exit-code`, `cfgd diff --exit-code` and `cfgd verify --exit-code` all at `5`.
+A `--module` run leaves standing only the rows its own scope owns (a bare
+module id matching the module chain, a package id the module's own resolved
+set claims); a row outside that scope is neither rendered nor priced by the
+narrower check. A running daemon clears them on its next tick (the rows it can
+no longer account for are resolved with the plan it just ran). On a machine
+that never runs `cfgd daemon`, start it once in the foreground and stop it
+after its first tick:
 
 ```bash
 cfgd daemon run    # ctrl-c after the first reconcile

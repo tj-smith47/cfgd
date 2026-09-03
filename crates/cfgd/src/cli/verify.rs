@@ -15,6 +15,11 @@ pub struct VerifyOutput {
     /// consumer parsed is byte-identical.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub system_errors: Vec<cfgd_core::reconciler::SystemCheckError>,
+    /// Recorded rows this run's own scope owns but could not re-examine —
+    /// the same `standing` key `diff` and `status --scan` carry, and what
+    /// `verify --exit-code` prices alongside `fail_count`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub standing: Vec<cfgd_core::state::DriftEvent>,
 }
 
 pub fn cmd_verify(
@@ -179,7 +184,10 @@ pub fn cmd_verify(
     // contributes no system row at all, so its recorded rows stand. A
     // `--module` run computes nothing but its own module's files and
     // packages, so it records and resolves exactly what it checked.
-    if module_filter.is_none() {
+    //
+    // Populated with the rows this run's own scope owns but did not
+    // re-check: rendered and priced beside `results`.
+    let standing: Vec<cfgd_core::state::DriftEvent> = if module_filter.is_none() {
         // A configurator's diff yields one result per key it read, each id
         // spelled `<configurator>.<key>`, so the leading segment is the
         // configurator itself and a probe that answered ALWAYS contributes at
@@ -202,7 +210,7 @@ pub fn cmd_verify(
             results.iter().filter(|r| !r.matches),
             &evaluated_system,
             &check_errors,
-        );
+        )
     } else {
         // A scoped run computes ONLY its own module's files and packages —
         // the machine-wide halves are gated off above — so everything in
@@ -217,8 +225,9 @@ pub fn cmd_verify(
             &checked,
             results.iter().filter(|r| !r.matches),
             &check_errors,
-        );
-    }
+            &resolved_modules,
+        )
+    };
     // The recording above persisted the opaque `current`/`missing or
     // changed` markers for every env-var/alias row (the declared value must
     // never reach `drift_events`) — this `results` vec is now the DISPLAY
@@ -251,13 +260,14 @@ pub fn cmd_verify(
     }
     let pass_count = results.iter().filter(|r| r.matches).count();
     let fail_count = results.iter().filter(|r| !r.matches).count();
-    let has_drift = fail_count > 0;
+    let has_drift = fail_count > 0 || !standing.is_empty();
 
     let output = VerifyOutput {
         results,
         pass_count,
         fail_count,
         system_errors: check_errors,
+        standing,
     };
     printer.emit(build_verify_doc(&output, module_filter));
 
@@ -283,7 +293,7 @@ pub fn cmd_verify(
 pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
     let mut doc = Doc::new().heading("Verify");
 
-    if output.results.is_empty() && output.system_errors.is_empty() {
+    if output.results.is_empty() && output.system_errors.is_empty() && output.standing.is_empty() {
         doc = doc.status(Role::Info, "No managed resources to verify");
         return doc.with_data(output.clone());
     }
@@ -305,14 +315,27 @@ pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
         // A check that could not run is a row of its own, after the answered
         // ones — the same composition `diff` and `status --scan` render, so
         // one failure reads identically on all three surfaces.
-        output.system_errors.iter().fold(s, |s, err| {
+        let s = output.system_errors.iter().fold(s, |s, err| {
             s.status_with(Role::Warn, err.key.clone(), |sf| {
                 sf.qualifier("error checking drift").detail(&err.error)
             })
+        });
+        // Rows this run's own scope owns but did not re-check — the store's
+        // own answer, through the same drift-row renderer the findings
+        // above used, never a second wording.
+        output.standing.iter().fold(s, |s, e| {
+            let subject = cfgd_core::output::drift_item_subject(&e.resource_type, &e.resource_id);
+            let (expected, actual) = cfgd_core::output::drift_operands(
+                &e.resource_type,
+                e.expected.as_deref().unwrap_or_default(),
+                e.actual.as_deref().unwrap_or_default(),
+            );
+            s.status_with(Role::Fail, subject, |sf| sf.drift(&expected, &actual))
         })
     });
 
-    doc = if output.fail_count == 0 && output.system_errors.is_empty() {
+    doc = if output.fail_count == 0 && output.system_errors.is_empty() && output.standing.is_empty()
+    {
         doc.status(
             // verdict-row-ok: a match verdict, not an act cfgd performed
             Role::Ok,
@@ -332,8 +355,14 @@ pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
                 cfgd_core::pluralize(output.system_errors.len(), "check")
             ));
         }
+        if !output.standing.is_empty() {
+            clauses.push_str(&format!(
+                ", {} standing",
+                cfgd_core::pluralize(output.standing.len(), "row")
+            ));
+        }
         let doc = doc.status(Role::Warn, clauses);
-        if output.fail_count > 0 {
+        if output.fail_count > 0 || !output.standing.is_empty() {
             doc.hint(super::heal_drift_hint(module))
         } else {
             doc
@@ -953,6 +982,7 @@ mod tests {
             pass_count: 1,
             fail_count: 0,
             system_errors: Vec::new(),
+            standing: Vec::new(),
         };
         printer.emit(build_verify_doc(&output, None));
         drop(printer);
@@ -980,6 +1010,7 @@ mod tests {
             pass_count: 0,
             fail_count: 1,
             system_errors: Vec::new(),
+            standing: Vec::new(),
         };
         printer.emit(build_verify_doc(&output, None));
         drop(printer);
@@ -1023,6 +1054,7 @@ mod tests {
                 key: "gpgKeys".into(),
                 error: "keyring unavailable".into(),
             }],
+            standing: Vec::new(),
         };
         printer.emit(build_verify_doc(&output, None));
         drop(printer);

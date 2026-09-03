@@ -216,6 +216,12 @@ pub struct DiffOutput {
     /// phases already succeeded for the module asked about.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env_check_error: Option<String>,
+    /// Recorded rows this run's own scope owns but could not re-examine —
+    /// the store's own answer, kept unresolved and rendered beside the live
+    /// findings above. `diff`, `verify` and `status --scan` all name this
+    /// key the same way, so a consumer parses one shape across all three.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub standing: Vec<cfgd_core::state::DriftEvent>,
     pub summary: DiffSummary,
 }
 
@@ -235,6 +241,11 @@ pub struct DiffSummary {
     /// Read alongside `has_env_drift` the same way `system_check_failed` is
     /// read alongside `has_system_drift`.
     pub env_check_failed: bool,
+    /// At least one row in `DiffOutput::standing` — a recorded finding this
+    /// run's scope owns but did not re-check. Priced into `diff_exit_code`
+    /// exactly like a live finding: the store's own unresolved answer is
+    /// drift the reader has not yet acted on, whichever check last saw it.
+    pub has_standing_drift: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1519,6 +1530,7 @@ mod tests {
                 expected: r#"alias ll="ls -la""#.to_string(),
                 actual: "missing or changed".to_string(),
             }],
+            standing: Vec::new(),
             summary: DiffSummary {
                 has_file_drift: true,
                 has_pkg_drift: true,
@@ -1526,6 +1538,7 @@ mod tests {
                 system_check_failed: true,
                 has_env_drift: true,
                 env_check_failed: false,
+                has_standing_drift: false,
             },
             env_check_error: None,
         };
@@ -1575,6 +1588,7 @@ mod tests {
             system_check_failed: false,
             has_env_drift: true,
             env_check_failed: true,
+            has_standing_drift: true,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["hasFileDrift"], json!(false));
@@ -1583,6 +1597,7 @@ mod tests {
         assert_eq!(json["systemCheckFailed"], json!(false));
         assert_eq!(json["hasEnvDrift"], json!(true));
         assert_eq!(json["envCheckFailed"], json!(true));
+        assert_eq!(json["hasStandingDrift"], json!(true));
     }
 
     #[test]

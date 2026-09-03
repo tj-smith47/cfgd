@@ -507,6 +507,22 @@ fn write_module_config(dir: &Path) {
     write_config(dir, false, false);
 }
 
+/// A module declaring no env, files or packages, so a scoped run's `checked`
+/// set is empty and a seeded legacy `("module", <name>)` row stands untouched
+/// — never confused with `write_module_config`'s own genuinely-drifted
+/// `EDITOR` env var, which a scoped scan re-checks and (correctly) leaves
+/// recorded as real drift rather than a standing row.
+fn write_bare_module_config(dir: &Path) {
+    let module_dir = dir.join("modules").join("envmod");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: envmod\nspec: {}\n",
+    )
+    .unwrap();
+    write_config(dir, false, false);
+}
+
 #[test]
 fn a_scoped_env_probe_failure_is_reported_and_escalates_on_both_scoped_surfaces() {
     let config_tmp = tempfile::tempdir().unwrap();
@@ -619,6 +635,152 @@ fn a_row_the_scan_keeps_standing_is_rendered_and_priced_by_that_scan() {
             .collect::<Vec<_>>(),
         vec![("script".to_string(), "echo hook".to_string())],
     );
+}
+
+/// The FULL-machine axis of the standing-row contract, over every surface
+/// `EXIT_CODE_SURFACES` names: a `script` row (a type none of the full scan's
+/// passes can re-find) stands after any of the three and is rendered and
+/// priced by all of them the same way the single-surface pin above proved
+/// for `status --scan`.
+#[test]
+fn every_full_exit_code_surface_renders_and_prices_a_standing_row() {
+    use cfgd_core::state::StateStore;
+
+    for surface in EXIT_CODE_SURFACES {
+        let config_tmp = tempfile::tempdir().unwrap();
+        let home_tmp = tempfile::tempdir().unwrap();
+        let state_tmp = tempfile::tempdir().unwrap();
+        write_config(config_tmp.path(), false, false);
+        {
+            let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
+            state
+                .record_drift("script", "echo hook", None, Some("drift detected"), "local")
+                .unwrap();
+        }
+
+        // The render half: the same argv minus its trailing `--exit-code`.
+        let render_args = &surface[..surface.len() - 1];
+        let out = run(
+            render_args,
+            config_tmp.path(),
+            state_tmp.path(),
+            home_tmp.path(),
+            None,
+        );
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            text.contains("echo hook"),
+            "cfgd {render_args:?}: renders the row it left standing, got: {text}"
+        );
+
+        let out = run(
+            surface,
+            config_tmp.path(),
+            state_tmp.path(),
+            home_tmp.path(),
+            None,
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(5),
+            "cfgd {surface:?}: prices the standing row, got: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
+        assert_eq!(
+            state
+                .unresolved_drift()
+                .unwrap()
+                .into_iter()
+                .map(|e| (e.resource_type, e.resource_id))
+                .collect::<Vec<_>>(),
+            vec![("script".to_string(), "echo hook".to_string())],
+            "cfgd {surface:?}: the standing row is never healed by the scan that renders it",
+        );
+    }
+}
+
+/// The SCOPED (`--module`) axis of the same contract. A bare legacy
+/// whole-module id (the daemon's own action spelling) is attributable to the
+/// named module's chain — [`cfgd_core::reconciler::row_attributable_to_module`]
+/// says so by owner alone — but a scoped scan of a module declaring no files
+/// or packages never re-checks it, so it stands. `verify --module` is
+/// included here even though it carries no erroring-check cell in
+/// `SCOPED_EXIT_CODE_SURFACES` above: that exclusion is about the env probe
+/// specifically, not about this module-id row.
+#[test]
+fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
+    use cfgd_core::state::StateStore;
+
+    const SURFACES: [&[&str]; 3] = [
+        &["diff", "--module", "envmod", "--exit-code"],
+        &["verify", "--module", "envmod", "--exit-code"],
+        &["status", "--module", "envmod", "--scan", "--exit-code"],
+    ];
+
+    for surface in SURFACES {
+        let config_tmp = tempfile::tempdir().unwrap();
+        let home_tmp = tempfile::tempdir().unwrap();
+        let state_tmp = tempfile::tempdir().unwrap();
+        write_bare_module_config(config_tmp.path());
+        {
+            let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
+            state
+                .record_drift("module", "envmod", None, Some("drift detected"), "local")
+                .unwrap();
+        }
+
+        let render_args = &surface[..surface.len() - 1];
+        let out = run(
+            render_args,
+            config_tmp.path(),
+            state_tmp.path(),
+            home_tmp.path(),
+            None,
+        );
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            text.contains("envmod"),
+            "cfgd {render_args:?}: renders the row it left standing, got: {text}"
+        );
+
+        let out = run(
+            surface,
+            config_tmp.path(),
+            state_tmp.path(),
+            home_tmp.path(),
+            None,
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(5),
+            "cfgd {surface:?}: prices the standing row, got: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
+        assert_eq!(
+            state
+                .unresolved_drift()
+                .unwrap()
+                .into_iter()
+                .map(|e| (e.resource_type, e.resource_id))
+                .collect::<Vec<_>>(),
+            vec![("module".to_string(), "envmod".to_string())],
+            "cfgd {surface:?}: the standing row is never healed by the scan that renders it",
+        );
+    }
 }
 
 #[test]
