@@ -1225,36 +1225,49 @@ pub fn logical_source_lines(body: &str) -> Vec<(usize, String)> {
     out
 }
 
+/// A raw literal opening at `bytes[i]` (`r`, some `#`s, a `"`): its hash
+/// count, or `None` when nothing opens there.
+///
+/// `pub(crate)` because two scanners read this arithmetic — the raw-only scan
+/// below and the fixture walk's string-aware line scan — and an off-by-one
+/// carried by only one of them would let the two disagree about where a
+/// literal ends.
+pub(crate) fn raw_string_open(bytes: &[u8], i: usize) -> Option<usize> {
+    if bytes[i] != b'r' {
+        return None;
+    }
+    let open = bytes[i + 1..].iter().take_while(|b| **b == b'#').count();
+    (bytes.get(i + 1 + open) == Some(&b'"')).then_some(open)
+}
+
+/// Whether the raw literal opened with `open` hashes closes at `bytes[i]` (a
+/// `"` followed by at least as many `#`s). The twin of [`raw_string_open`],
+/// shared for the same reason.
+pub(crate) fn raw_string_closes(bytes: &[u8], i: usize, open: usize) -> bool {
+    bytes[i] == b'"' && bytes[i + 1..].iter().take_while(|b| **b == b'#').count() >= open
+}
+
 /// Advance the raw-literal state across one physical line: `r`, some `#`s and
 /// a `"` opens one; a `"` followed by the same number of `#`s closes it.
-///
-/// `pub(crate)` for the fixture walk's function slicer, which must suppress a
-/// `fn `-shaped line inside a raw literal with the SAME state the fold above
-/// tracks — a second scan would let the two disagree about where a literal
-/// ends.
-pub(crate) fn scan_raw_literals(line: &str, hashes: &mut Option<usize>) {
+fn scan_raw_literals(line: &str, hashes: &mut Option<usize>) {
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         match *hashes {
             Some(open) => {
-                if bytes[i] == b'"'
-                    && bytes[i + 1..].iter().take_while(|b| **b == b'#').count() >= open
-                {
+                if raw_string_closes(bytes, i, open) {
                     *hashes = None;
                     i += 1 + open;
                     continue;
                 }
             }
-            None if bytes[i] == b'r' => {
-                let open = bytes[i + 1..].iter().take_while(|b| **b == b'#').count();
-                if bytes.get(i + 1 + open) == Some(&b'"') {
+            None => {
+                if let Some(open) = raw_string_open(bytes, i) {
                     *hashes = Some(open);
                     i += 2 + open;
                     continue;
                 }
             }
-            None => {}
         }
         i += 1;
     }
