@@ -662,15 +662,12 @@ pub(super) const PRESENCE_WANT_INSTALLED: &str = cfgd_core::PACKAGE_WANT_INSTALL
 pub(super) const PRESENCE_WANT_ABSENT: &str = cfgd_core::PACKAGE_WANT_ABSENT;
 
 /// Whether a `package` finding came from the presence pass rather than the
-/// declared-floor one. A surface that files package rows by shape asks here:
-/// the floor pass's operands are two versions, and rendering them under the
-/// presence pass's `not installed` wording would describe a package the
-/// machine HAS as missing.
+/// declared-floor one — the row-shaped view of
+/// [`cfgd_core::is_package_presence_want`], which `drift_terse_cause` asks of
+/// the same word, so a surface filing rows by shape and the renderer wording
+/// them cannot disagree.
 pub(super) fn is_presence_package_row(r: &VerifyResult) -> bool {
-    matches!(
-        r.expected.as_str(),
-        PRESENCE_WANT_INSTALLED | PRESENCE_WANT_ABSENT
-    )
+    cfgd_core::is_package_presence_want(&r.expected)
 }
 
 /// Map a non-`Skip` [`PackageAction`] to its drift `VerifyResult` rows — ONE

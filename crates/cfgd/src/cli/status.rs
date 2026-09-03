@@ -2819,7 +2819,7 @@ pub(super) fn cmd_status_module(
                                     &pd.packages,
                                 ),
                                 matches: false,
-                                expected: "installed".to_string(),
+                                expected: cfgd_core::PACKAGE_WANT_INSTALLED.to_string(),
                                 actual: cfgd_core::Absence::NotInstalled.to_string(),
                                 unmanaged: false,
                             };

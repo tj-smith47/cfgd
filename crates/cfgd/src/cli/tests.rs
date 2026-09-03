@@ -31850,8 +31850,12 @@ fn the_fleet_heading_annotation_states_the_checks_freshness() {
 /// `not installed` for the SAME fact, so one host answered two spellings —
 /// and a compliance diff of two snapshots taken through two commands read as
 /// drift. The walk finds every `resource_type: "package"` construction in
-/// the producer files and requires its `actual` arm to reference the shared
-/// vocabulary, never a bare string literal.
+/// the producer files and requires BOTH stored arms to reference the shared
+/// vocabulary, never a bare string literal: `actual` spells its absence
+/// through `Absence::NotInstalled`, `expected` its presence through
+/// [`cfgd_core::PACKAGE_WANT_INSTALLED`] / [`cfgd_core::PACKAGE_WANT_ABSENT`].
+/// The second arm joined the walk once `output::drift_terse_cause` began
+/// classifying a package row by that word.
 #[test]
 fn one_stored_literal_for_a_missing_package() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -31885,6 +31889,9 @@ fn one_stored_literal_for_a_missing_package() {
     for path in files {
         let file = cfgd_core::to_posix_string(&path);
         let text = std::fs::read_to_string(&path).unwrap();
+        // A file's own inline test module builds fixture rows whose literals
+        // are the point; only the production region is walked.
+        let text = cfgd_core::test_helpers::production_slice(&text);
         let lines: Vec<&str> = text.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if !line.contains(r#"resource_type: "package""#) {
@@ -31914,7 +31921,26 @@ fn one_stored_literal_for_a_missing_package() {
                 && !arm.contains(r#""installed""#)
                 && !arm.contains("phrase.state")
             {
-                offenders.push(format!("{file}:{}: {}", i + 1, lines[i].trim()));
+                offenders.push(format!("{file}:{}: actual {}", i + 1, lines[i].trim()));
+            }
+            // The `expected` arm, same rule, different vocabulary: a presence
+            // row's word is `PACKAGE_WANT_INSTALLED`/`_ABSENT` (or the cli
+            // crate's `PRESENCE_WANT_*` aliases of them), a version row's is
+            // the declared floor, always a binding. A bare literal here is
+            // what `drift_terse_cause` would misread — it now calls any
+            // non-presence `expected` on a package row a version mismatch, so
+            // a drifted spelling files "version mismatch" against a package
+            // the machine simply does not have.
+            let Some(expected_at) = window.find("expected:") else {
+                continue;
+            };
+            let want = &window[expected_at..];
+            let want = want.find("actual:").map_or(want, |end| &want[..end]);
+            if want.contains('"')
+                && !want.contains("WANT_INSTALLED")
+                && !want.contains("WANT_ABSENT")
+            {
+                offenders.push(format!("{file}:{}: expected {}", i + 1, lines[i].trim()));
             }
         }
     }
@@ -31924,8 +31950,9 @@ fn one_stored_literal_for_a_missing_package() {
     );
     assert!(
         offenders.is_empty(),
-        "a missing package's stored `actual` comes from `Absence::NotInstalled`, \
-         never a second literal:\n{}",
+        "a package row's stored arms come from the shared vocabulary — `actual` \
+         from `Absence::NotInstalled`, `expected` from `PACKAGE_WANT_INSTALLED` / \
+         `PACKAGE_WANT_ABSENT` — never a second literal:\n{}",
         offenders.join("\n")
     );
 }

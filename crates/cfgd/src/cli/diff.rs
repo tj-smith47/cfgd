@@ -603,7 +603,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                         resource_type: "package".to_string(),
                         resource_id: package_drift_resource_id(&drift.manager, &drift.packages),
                         matches: false,
-                        expected: "installed".to_string(),
+                        expected: cfgd_core::PACKAGE_WANT_INSTALLED.to_string(),
                         // The RECORDED operand takes the one stored spelling
                         // for a missing package (`Absence::NotInstalled`);
                         // `drift.shape` stays the `-o json` payload's own
