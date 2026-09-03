@@ -48,7 +48,7 @@ impl ApplyStatus {
     /// camelCase token for the CLI JSON surface (`cfgd apply`/`status -o json`).
     /// Distinct from `as_str`, which is the snake_case state-store
     /// persistence form that round-trips through `from_str`, and from
-    /// [`Self::human_str`], which is what a person reads.
+    /// `human_str`, the private word-alone spelling a person reads.
     pub fn display_str(&self) -> &'static str {
         match self {
             ApplyStatus::Success => "success",
@@ -67,7 +67,11 @@ impl ApplyStatus {
     /// Split from [`Self::display_str`] because that token is a WIRE value: it
     /// is what `-o json` carries and what an external matcher greps for, so a
     /// reword of the words on screen must not be able to reach it.
-    pub fn human_str(&self) -> &'static str {
+    ///
+    /// Private, and deliberately the only word-alone spelling this vocabulary
+    /// has: [`Self::human_display`] is what a render slot takes, so a call
+    /// site cannot reach the word without the role that tints it.
+    fn human_str(&self) -> &'static str {
         match self {
             ApplyStatus::Success => "Success",
             ApplyStatus::Partial => "Partial",
@@ -77,7 +81,7 @@ impl ApplyStatus {
         }
     }
 
-    /// [`Self::human_str`] paired with the role every rendered slot tints it
+    /// The human word paired with the role every rendered slot tints it
     /// by — the run-outcome member of the status-display family beside
     /// [`module_status_display`] and [`source_status_display`], so `cfgd
     /// status`'s Result row and `cfgd log`'s Status column cannot theme one

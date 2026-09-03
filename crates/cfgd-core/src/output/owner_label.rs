@@ -1,12 +1,93 @@
-//! `OwnerLabel` — the one renderer of the tri-colour owner token.
+//! The subjects a status row is PAINTED from rather than coated with.
 //!
-//! An owner token names who a group of work belongs to: `module:nvim`,
-//! `profile:work`, `cfgd:managers`. It is three theme slots in one string, so
-//! it lives here rather than being composed at a call site: a caller that
-//! hand-rolled it would reach for `console` or a literal colour and leave the
-//! theme unable to restyle it.
+//! A row's subject normally takes the row's single role. Two do not, because
+//! their parts carry different roles: an owner token (`module:nvim` — kind,
+//! colon, name) and a state transition (`(Compliant → Violation)` — each
+//! status word in the role its own vocabulary paired it with). Both live here
+//! rather than at a call site: a caller composing one would reach for
+//! `console` or a literal colour and leave the theme unable to restyle it,
+//! and the renderer's `cursor_safe` fold would eat the coat anyway.
 
 use super::{Role, Theme};
+
+/// A subject the renderer paints from typed parts. `plain` is what `-o json`,
+/// a quiet render and every width computation read.
+#[derive(Clone, Debug)]
+pub enum PaintedSubject {
+    Owner(OwnerLabel),
+    Transition(StatusTransition),
+}
+
+impl PaintedSubject {
+    pub(crate) fn plain(&self) -> String {
+        match self {
+            Self::Owner(o) => o.plain(),
+            Self::Transition(t) => t.plain(),
+        }
+    }
+
+    pub(crate) fn styled(&self, theme: &Theme) -> String {
+        match self {
+            Self::Owner(o) => o.styled(theme),
+            Self::Transition(t) => t.styled(theme),
+        }
+    }
+}
+
+/// `<subject> (<old> → <new>)` — a recorded state CHANGE, each status word in
+/// the role its own vocabulary paired it with.
+///
+/// The row's role is the NEW state's, so leaving the pair to the row's coat
+/// paints the old word in the new state's colour — a `Compliant` rendered in
+/// Fail red. Both words are Title-Cased status words, and a Title-Cased
+/// status word renders in its own role everywhere.
+#[derive(Clone, Debug)]
+pub struct StatusTransition {
+    subject: String,
+    old: (String, Role),
+    new: (String, Role),
+}
+
+impl StatusTransition {
+    pub fn new(subject: impl Into<String>, old: (&str, Role), new: (&str, Role)) -> Self {
+        Self {
+            subject: subject.into(),
+            old: (old.0.to_string(), old.1),
+            new: (new.0.to_string(), new.1),
+        }
+    }
+
+    /// The structural fallback: the row RENDERS through [`Self::styled`] on
+    /// every path, colour-disabled included (a `ThemedStyle` emits nothing
+    /// there), and this surface's `-o json` is its own typed payload — so the
+    /// theme's arrow reaches every string a reader or a script sees, and this
+    /// form only ever stands in for a component nothing asked to paint.
+    fn plain(&self) -> String {
+        format!(
+            "{} ({} {} {})",
+            self.subject,
+            self.old.0,
+            Theme::default().arrow(),
+            self.new.0
+        )
+    }
+
+    fn styled(&self, theme: &Theme) -> String {
+        let paint = |role: Role, text: &str| {
+            let (_, style) = super::renderer::role_glyph(theme, role);
+            style.apply_to(super::cursor_safe(text)).to_string()
+        };
+        // The subject is a check KEY from a recorded snapshot, so it is folded
+        // like the owner token's slots; the frame stays the theme's own.
+        format!(
+            "{} ({} {} {})",
+            super::cursor_safe(&self.subject),
+            paint(self.old.1, &self.old.0),
+            theme.arrow(),
+            paint(self.new.1, &self.new.0)
+        )
+    }
+}
 
 /// A `<kind>:<name>` owner token. `plain` is the uncoloured form every
 /// structured, quiet and colour-disabled path renders.

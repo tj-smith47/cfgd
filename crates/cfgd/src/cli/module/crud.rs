@@ -318,15 +318,14 @@ pub fn cmd_module_create(
         )?;
 
         // The module just created is the whole of this run: one owner, no
-        // profile, and the same skeleton `cfgd apply` renders. The config the
-        // registry was built from still declares its subscriptions, and where
-        // this run's configuration comes from is a fact about the config, not
-        // about whether a profile resolved.
-        let header_modules = vec![cfgd_core::output::HeaderModule {
-            name: name.to_string(),
-            platform_skip_reason: None,
-            dep_pulled: false,
-        }];
+        // profile, and the same skeleton `cfgd apply` renders. Its `Modules`
+        // row is delta-only like every other invocation-named run — the verb
+        // already named what it created, so the row appears only if the
+        // resolution folded a `depends:` in. The config the registry was built
+        // from still declares its subscriptions, and where this run's
+        // configuration comes from is a fact about the config, not about
+        // whether a profile resolved.
+        let header_modules = cfgd_core::output::HeaderModule::of_isolate(&resolved_modules);
         let declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
         let ctx = cfgd_core::reconciler::RunContext {
             title: cfgd_core::reconciler::RunTitle::Apply,

@@ -90,26 +90,6 @@ pub fn cmd_diff(
 
     if let Some(mod_name) = module_filter {
         printer.heading_title(&TitleLabel::new("Diff", mod_name));
-        // The scoped run's header, the same rows `apply --module` opens on: a
-        // title that owns no rows would put its blank line straight under the
-        // heading, which no other titled run does.
-        // The isolate resolves no profile, so it carries no `Profile` row — and
-        // no `Modules` row either: the heading above already names the module
-        // the invocation named, and a row restating it tells the reader only
-        // what they typed. The config it read still declares its subscriptions,
-        // and those are a fact about where this run's configuration comes from
-        // whether or not a profile resolved.
-        let declared =
-            cfgd_core::reconciler::ComposedSource::from_declared(&ctx.config()?.spec.sources);
-        printer.kv_rows(cfgd_core::output::config_header_rows(
-            &cfgd_core::output::ConfigHeader {
-                config_path: Some(&cli.config),
-                sources: &declared,
-                profile: None,
-                profile_inherits: &[],
-                modules: &[],
-            },
-        ));
         return cmd_diff_module(&ctx, mod_name, exit_code);
     }
 
@@ -464,6 +444,34 @@ fn diff_exit_code(summary: &DiffSummary) -> Option<cfgd_core::exit::ExitCode> {
         .then_some(cfgd_core::exit::ExitCode::DriftDetected)
 }
 
+/// The scoped run's header, the same rows `apply --module` opens on: a title
+/// that owns no rows would put its blank line straight under the heading,
+/// which no other titled run does.
+///
+/// The isolate resolves no profile, so it carries no `Profile` row, and its
+/// `Modules` row is delta-only like every other isolate surface: the heading
+/// already names the module the invocation named, so the row renders only what
+/// the resolution ADDED. The config it read still declares its subscriptions,
+/// and those are a fact about where this run's configuration comes from
+/// whether or not a profile resolved.
+fn emit_isolate_header(
+    ctx: &RunContext<'_>,
+    modules: &[cfgd_core::output::HeaderModule],
+) -> anyhow::Result<()> {
+    let declared =
+        cfgd_core::reconciler::ComposedSource::from_declared(&ctx.config()?.spec.sources);
+    ctx.printer().kv_rows(cfgd_core::output::config_header_rows(
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(&ctx.cli().config),
+            sources: &declared,
+            profile: None,
+            profile_inherits: &[],
+            modules,
+        },
+    ));
+    Ok(())
+}
+
 fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> anyhow::Result<()> {
     let cli = ctx.cli();
     let printer = ctx.printer();
@@ -498,6 +506,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                 )
             ) =>
         {
+            emit_isolate_header(ctx, &[])?;
             printer.emit(
                 Doc::new()
                     .status(
@@ -512,8 +521,15 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
             );
             return Ok(());
         }
-        Err(e) => return Err(e.into()),
+        Err(e) => {
+            emit_isolate_header(ctx, &[])?;
+            return Err(e.into());
+        }
     };
+    emit_isolate_header(
+        ctx,
+        &cfgd_core::output::HeaderModule::of_isolate(&resolved_modules),
+    )?;
 
     let state = ctx.state()?;
     let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);

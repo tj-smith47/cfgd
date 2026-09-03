@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{OwnerLabel, Role};
+use super::{PaintedSubject, Role};
 
 /// A node in a Doc's component tree. Streaming output does not produce these
 /// (it pushes directly to the renderer); only `Doc` and `SectionBuilder` do.
@@ -89,16 +89,16 @@ pub enum Component {
         /// `qualifier`: every current call site carries `with_data`.
         #[serde(skip_serializing_if = "Option::is_none")]
         verdict: Option<String>,
-        /// Set when the SUBJECT is an owner token, painted by the renderer
-        /// through [`OwnerLabel`]'s three slots instead of the row's single
-        /// role coat: a subject left to the role style paints `module:nvim`
-        /// entirely green on an `Ok` row, where every other surface naming
-        /// that owner renders kind / `:` / name in three.
+        /// Set when the SUBJECT is built from parts carrying DIFFERENT roles,
+        /// painted by the renderer instead of coated with the row's single
+        /// role: an owner token left to the role style paints `module:nvim`
+        /// entirely green on an `Ok` row, and a transition paints its old
+        /// status word in the new state's colour.
         ///
-        /// Never serialized — `subject` carries the plain `kind:name`, which
-        /// is what `-o json` and every colourless path already read.
+        /// Never serialized — `subject` carries the plain form, which is what
+        /// `-o json` and every colourless path already read.
         #[serde(skip)]
-        owner: Option<OwnerLabel>,
+        painted: Option<PaintedSubject>,
     },
     /// A child row belonging to the Status row above it: `subject — detail`,
     /// no glyph, one depth below its parent — the buffered-`Doc` twin of the
@@ -653,7 +653,7 @@ mod tests {
             qualifier: None,
             label: None,
             verdict: None,
-            owner: None,
+            painted: None,
         };
         let json = serde_json::to_value(&c).unwrap();
         assert!(json.get("detail").is_none());
@@ -678,7 +678,7 @@ mod tests {
                 text: "[team-config]".into(),
             }),
             verdict: None,
-            owner: None,
+            painted: None,
         };
         let json = serde_json::to_value(&c).unwrap();
         let label = json.get("label").expect("label must serialize when set");
@@ -697,7 +697,7 @@ mod tests {
             qualifier: Some("missing".into()),
             label: None,
             verdict: None,
-            owner: None,
+            painted: None,
         };
         let json = serde_json::to_value(&c).unwrap();
         assert_eq!(json["qualifier"], "missing");

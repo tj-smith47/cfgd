@@ -226,6 +226,14 @@ pub(super) fn check_key(c: &ComplianceCheck) -> String {
     format!("{}:{}", c.category, id)
 }
 
+/// [`check_key`] in a DISPLAY slot: the same identity, with the home
+/// directory folded the way every other report row spells a path. The
+/// identity itself stays absolute — it is what the two snapshots are matched
+/// on and what `-o json` carries.
+fn check_subject(c: &ComplianceCheck) -> String {
+    cfgd_core::fold_home_in_text(&check_key(c))
+}
+
 #[derive(Debug)]
 pub struct ComplianceDiff {
     pub added: Vec<ComplianceCheck>,
@@ -336,19 +344,19 @@ pub fn build_compliance_diff_doc(
         doc = doc.status(Role::Ok, "No differences between snapshots");
     } else {
         doc = doc.section_if_nonempty("Added", &diff.added, |s, items| {
-            items.iter().fold(s, |s, c| s.bullet(check_key(c)))
+            items.iter().fold(s, |s, c| s.bullet(check_subject(c)))
         });
         doc = doc.section_if_nonempty("Removed", &diff.removed, |s, items| {
-            items.iter().fold(s, |s, c| s.bullet(check_key(c)))
+            items.iter().fold(s, |s, c| s.bullet(check_subject(c)))
         });
         doc = doc.section_if_nonempty("Changed", &diff.changed, |s, items| {
             items.iter().fold(s, |s, c| {
-                // The row's role IS the new status's own — never a match on
-                // the rendered word.
-                let (new_word, role) = c.new_status.human_display();
-                s.status_with(
-                    role,
-                    format!("{} ({} {arrow} {new_word})", c.key, c.old_status),
+                // Each word in its own vocabulary's role, and the row's role
+                // is the new status's — never a match on a rendered word.
+                s.status_transition_with(
+                    cfgd_core::fold_home_in_text(&c.key),
+                    c.old_status.human_display(),
+                    c.new_status.human_display(),
                     |sf| sf.detail_opt(c.detail.as_deref()),
                 )
             })
@@ -445,7 +453,7 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str) ->
         .collect();
     doc = doc.section_if_nonempty("Violations", &violations, |s, items| {
         items.iter().fold(s, |s, c| {
-            s.status_with(Role::Fail, check_key(c), |sf| {
+            s.status_with(Role::Fail, check_subject(c), |sf| {
                 sf.detail_opt(c.detail.as_deref())
             })
         })
@@ -458,7 +466,7 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str) ->
         .collect();
     doc = doc.section_if_nonempty("Warnings", &warnings, |s, items| {
         items.iter().fold(s, |s, c| {
-            s.status_with(Role::Warn, check_key(c), |sf| {
+            s.status_with(Role::Warn, check_subject(c), |sf| {
                 sf.detail_opt(c.detail.as_deref())
             })
         })

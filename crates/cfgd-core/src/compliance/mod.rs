@@ -79,19 +79,12 @@ impl ComplianceStatus {
             Self::Violation => ("Violation", crate::output::Role::Fail),
         }
     }
-
-    /// The word alone, for a slot that carries the role separately (a status
-    /// row's own role, a `-o json` payload).
-    pub fn human_str(self) -> &'static str {
-        self.human_display().0
-    }
 }
 
-impl std::fmt::Display for ComplianceStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.human_str())
-    }
-}
+// No `Display`, and no word-alone accessor: the whole point of the pair is
+// that a call site cannot reach the word without its role, and `{status}` /
+// `.to_string()` is exactly the roleless spelling the defect this type
+// replaced was written in.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComplianceSummary {

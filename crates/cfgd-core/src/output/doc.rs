@@ -2,11 +2,11 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use super::OwnerLabel;
 use super::Role;
 use super::TitleLabel;
 use super::component::{CommandPair, Component, KvPair, StatusLabel};
 use super::renderer::Table;
+use super::{OwnerLabel, PaintedSubject, StatusTransition};
 
 /// A `Doc`'s top-level heading, deferred past construction because the
 /// styled render needs a `Theme` a `Doc` is built without — `render_doc`
@@ -105,7 +105,7 @@ impl StatusFields {
 fn status_component(
     role: Role,
     subject: String,
-    owner: Option<OwnerLabel>,
+    painted: Option<PaintedSubject>,
     f: StatusFields,
 ) -> Component {
     Component::Status {
@@ -117,7 +117,7 @@ fn status_component(
         qualifier: f.qualifier,
         label: f.label,
         verdict: f.verdict,
-        owner,
+        painted,
     }
 }
 
@@ -295,8 +295,9 @@ impl Doc {
         build: impl FnOnce(StatusFields) -> StatusFields,
     ) -> Self {
         let f = build(StatusFields::default());
+        let painted = PaintedSubject::Owner(owner);
         self.children
-            .push(status_component(role, owner.plain(), Some(owner), f));
+            .push(status_component(role, painted.plain(), Some(painted), f));
         self
     }
 
@@ -610,8 +611,30 @@ impl SectionBuilder {
         build: impl FnOnce(StatusFields) -> StatusFields,
     ) -> Self {
         let f = build(StatusFields::default());
+        let painted = PaintedSubject::Owner(owner);
         self.children
-            .push(status_component(role, owner.plain(), Some(owner), f));
+            .push(status_component(role, painted.plain(), Some(painted), f));
+        self
+    }
+
+    /// [`Self::status_with`] for a row reporting a state CHANGE: the subject
+    /// reads `<subject> (<old> → <new>)` with each status word in the role its
+    /// own vocabulary paired it with, rather than both taking the row's coat.
+    ///
+    /// The row's own role is the NEW state's, so a shared coat would paint the
+    /// old word in the new state's colour.
+    pub fn status_transition_with(
+        mut self,
+        subject: impl Into<String>,
+        old: (&str, Role),
+        new: (&str, Role),
+        build: impl FnOnce(StatusFields) -> StatusFields,
+    ) -> Self {
+        let f = build(StatusFields::default());
+        let role = new.1;
+        let painted = PaintedSubject::Transition(StatusTransition::new(subject, old, new));
+        self.children
+            .push(status_component(role, painted.plain(), Some(painted), f));
         self
     }
 
@@ -914,12 +937,12 @@ mod tests {
             qualifier,
             label,
             verdict,
-            owner,
+            painted,
         } = &d.children[0]
         {
             assert!(matches!(role, Role::Ok));
             assert!(verdict.is_none());
-            assert!(owner.is_none());
+            assert!(painted.is_none());
             assert_eq!(subject, "applied");
             assert!(detail.is_none());
             assert!(duration_ms.is_none());
@@ -949,7 +972,7 @@ mod tests {
             qualifier,
             label,
             verdict: _,
-            owner: _,
+            painted: _,
         } = &d.children[0]
         {
             assert!(matches!(role, Role::Warn));

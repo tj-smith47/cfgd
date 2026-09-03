@@ -176,6 +176,59 @@ fn compliance_diff_empty_human() {
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_diff/empty.txt");
 }
 
+/// Ruled 2026-09-03 (R-A): a changed row's two status words each carry their
+/// OWN role. The row's role is the NEW status's, so a shared coat would paint
+/// `Compliant` in Violation's red — the word's colour belongs to the word.
+///
+/// The subject is painted by the renderer through `PaintedSubject`, so only a
+/// coloured capture can see it: the plain render collapses both spans.
+#[test]
+fn a_changed_rows_two_status_words_each_render_in_their_own_role() {
+    /// The SGR parameters immediately preceding `word`, or `None` if the word
+    /// carries no coat of its own.
+    fn coat_of<'a>(out: &'a str, word: &str) -> Option<&'a str> {
+        let at = out.find(word)?;
+        let before = &out[..at];
+        let esc = before.rfind("\u{1b}[")?;
+        let params = &before[esc + 2..];
+        (params.ends_with('m') && at == before.len()).then(|| params.trim_end_matches('m'))
+    }
+
+    let snap1 = fixed_snapshot("2026-05-14T09:00:00Z", Vec::new());
+    let snap2 = fixed_snapshot("2026-05-14T12:00:00Z", Vec::new());
+    let diff = changed_only_diff();
+    let (printer, buf) = Printer::for_test_with_theme_colored(
+        cfgd_core::output::Theme::default(),
+        cfgd_core::output::Verbosity::Normal,
+    );
+    let arrow = printer.arrow().to_string();
+    printer.emit(build_compliance_diff_doc(
+        3, 4, &snap1, &snap2, &diff, &arrow,
+    ));
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+
+    // `file:/etc/hosts` went Compliant -> Violation on a Fail-roled row: an
+    // unfixed render coats the whole subject once, so both words read red.
+    let old = coat_of(&out, "Compliant").expect("the old word carries its own coat");
+    let new = coat_of(&out, "Violation").expect("the new word carries its own coat");
+    assert_ne!(
+        old, new,
+        "each status word takes its own role, not the row's one coat: {out:?}"
+    );
+    // Not "the first word is always Ok": `system:sysctl.vm.swappiness` healed
+    // Warning -> Compliant, so the OLD word here is the Warn-roled one.
+    let warn = coat_of(&out, "Warning").expect("the healed row's old word is painted too");
+    assert_ne!(
+        warn, old,
+        "Warning and Compliant are different roles: {out:?}"
+    );
+    assert!(
+        out.contains(&arrow),
+        "the transition keeps the theme's arrow: {out:?}"
+    );
+}
+
 // --- changed-only: no added, no removed, only status flips ---
 
 #[test]
