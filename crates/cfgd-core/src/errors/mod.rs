@@ -587,6 +587,17 @@ pub enum StateError {
     #[error("state directory not writable: {path}")]
     DirectoryNotWritable { path: PathBuf },
 
+    /// No home directory could be resolved, so the named per-user root has no
+    /// location on this host.
+    ///
+    /// Its own variant rather than a [`Self::DirectoryNotWritable`] carrying a
+    /// placeholder path: nothing resolved, so there is no path to name, and a
+    /// hand-written POSIX default (`~/.cache/cfgd`) reads as a lie on the one
+    /// platform — Windows, where `directories` has the most ways to answer
+    /// `None` — that a reader is most likely to be looking at it from.
+    #[error("cannot locate the per-user {role} directory: no home directory found")]
+    HomeDirectoryUnresolved { role: &'static str },
+
     #[error("state filesystem I/O failed at {path}: {source}")]
     FilesystemIo {
         path: PathBuf,

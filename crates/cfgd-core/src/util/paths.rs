@@ -578,10 +578,8 @@ pub fn default_cache_dir_for(scope: Scope) -> crate::errors::Result<std::path::P
     if let Some(home) = test_home_override() {
         return Ok(home.join(".cache").join("cfgd"));
     }
-    let base =
-        directories::BaseDirs::new().ok_or(crate::errors::StateError::DirectoryNotWritable {
-            path: std::path::PathBuf::from("~/.cache/cfgd"),
-        })?;
+    let base = directories::BaseDirs::new()
+        .ok_or(crate::errors::StateError::HomeDirectoryUnresolved { role: "cache" })?;
     Ok(base.cache_dir().join("cfgd"))
 }
 
