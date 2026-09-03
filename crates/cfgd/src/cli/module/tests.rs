@@ -3013,8 +3013,8 @@ fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
         "should announce create: {output}"
     );
     assert!(
-        output.contains("Modules  apply-noop-mod"),
-        "the --apply run renders the shared header naming its one owner: {output}"
+        !output.contains("Modules"),
+        "the invocation named the module it created, so the delta-only header          adds no Modules row for a module that pulled in no dependency: {output}"
     );
     assert!(
         output.contains(cfgd_core::reconciler::MSG_NOTHING_TO_DO),

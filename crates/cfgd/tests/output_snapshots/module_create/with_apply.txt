@@ -9,7 +9,6 @@ Created at <CONFIG_DIR>/modules/apply-mod
 ✓ Generated .github/workflows/cfgd-release.yml
 
 Apply
-  Config   ~/cfgd.yaml
-  Modules  apply-mod
+  Config  ~/cfgd.yaml
 
 ✓ Nothing to do — everything is up to date
