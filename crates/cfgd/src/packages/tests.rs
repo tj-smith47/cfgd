@@ -4619,35 +4619,56 @@ fn a_tool_owned_manager_reaches_its_tool_with_a_floor_it_can_read() {
     }
 }
 
+/// The raise verb a family answers `upgrade_verb()` with, or the seam that
+/// proves the alternative when it cannot raise in place at all: a manager
+/// answering `None` must then LIST only [`cfgd_core::providers::UNKNOWN_PACKAGE_VERSION`],
+/// or a floor check against it is a bug nothing can clear (see
+/// `packages::shared::upgrade_each`'s rustdoc). `listing_seam` is the
+/// `CFGD_*_BIN` variable that manager's listing spawns through, so the walk
+/// can shim it and prove the sentinel without the real tool.
+enum RaiseVerb {
+    Verb(&'static str),
+    None { listing_seam: &'static str },
+}
+
 /// Every registered manager against the verb it raises an already-held
 /// package with, read off each manager's own `upgrade_verb()` at HEAD. A
 /// newly registered manager fails this walk until it is classified here,
 /// which is the mechanism that keeps the next family honest.
-const MANAGER_RAISE_VERBS: &[(&str, Option<&str>)] = &[
-    ("brew", Some("upgrade")),
-    ("brew-cask", Some("upgrade")),
-    ("brew-tap", None),
-    ("apt", Some("install")),
-    ("cargo", Some("install")),
-    ("npm", Some("install")),
-    ("pipx", Some("upgrade")),
-    ("dnf", Some("install")),
-    ("apk", Some("upgrade")),
-    ("pacman", Some("-S")),
-    ("zypper", Some("install")),
-    ("yum", Some("install")),
-    ("pkg", Some("install")),
-    ("snap", Some("refresh")),
-    ("flatpak", Some("update")),
-    ("nix", Some("upgrade")),
-    ("go", Some("install")),
-    ("winget", Some("install")),
-    ("chocolatey", Some("upgrade")),
-    ("scoop", Some("update")),
+const MANAGER_RAISE_VERBS: &[(&str, RaiseVerb)] = &[
+    ("brew", RaiseVerb::Verb("upgrade")),
+    ("brew-cask", RaiseVerb::Verb("upgrade")),
+    (
+        "brew-tap",
+        RaiseVerb::None {
+            listing_seam: "CFGD_BREW_BIN",
+        },
+    ),
+    ("apt", RaiseVerb::Verb("install")),
+    ("cargo", RaiseVerb::Verb("install")),
+    ("npm", RaiseVerb::Verb("install")),
+    ("pipx", RaiseVerb::Verb("upgrade")),
+    ("dnf", RaiseVerb::Verb("install")),
+    ("apk", RaiseVerb::Verb("upgrade")),
+    ("pacman", RaiseVerb::Verb("-S")),
+    ("zypper", RaiseVerb::Verb("install")),
+    ("yum", RaiseVerb::Verb("install")),
+    ("pkg", RaiseVerb::Verb("install")),
+    ("snap", RaiseVerb::Verb("refresh")),
+    ("flatpak", RaiseVerb::Verb("update")),
+    ("nix", RaiseVerb::Verb("upgrade")),
+    ("go", RaiseVerb::Verb("install")),
+    ("winget", RaiseVerb::Verb("install")),
+    ("chocolatey", RaiseVerb::Verb("upgrade")),
+    ("scoop", RaiseVerb::Verb("update")),
 ];
 
 #[test]
+#[serial_test::serial]
 fn every_registered_manager_declares_how_its_family_raises_a_held_package() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = PackageContext::new(&printer, &state);
     for mgr in all_package_managers() {
         let (_, verb) = MANAGER_RAISE_VERBS
             .iter()
@@ -4660,13 +4681,40 @@ fn every_registered_manager_declares_how_its_family_raises_a_held_package() {
                     mgr.name()
                 )
             });
+        let expected = match verb {
+            RaiseVerb::Verb(v) => Some(*v),
+            RaiseVerb::None { .. } => None,
+        };
         assert_eq!(
             mgr.upgrade_verb(),
-            *verb,
+            expected,
             "{}: MANAGER_RAISE_VERBS disagrees with the manager's own \
              upgrade_verb()",
             mgr.name()
         );
+        if let RaiseVerb::None { listing_seam } = verb {
+            let _shim = cfgd_core::test_helpers::ToolShim::install(
+                listing_seam,
+                0,
+                "one/tap\ntwo/tap\n",
+                "",
+            );
+            let listed = mgr
+                .installed_packages_with_versions(&cx)
+                .unwrap_or_else(|e| panic!("{}: shimmed listing failed: {e}", mgr.name()));
+            assert!(
+                !listed.is_empty(),
+                "{}: the shim listed two entries",
+                mgr.name()
+            );
+            assert!(
+                listed
+                    .iter()
+                    .all(|p| p.version == cfgd_core::providers::UNKNOWN_PACKAGE_VERSION),
+                "{}: a manager that cannot raise must list only the unknown sentinel",
+                mgr.name()
+            );
+        }
     }
 }
 

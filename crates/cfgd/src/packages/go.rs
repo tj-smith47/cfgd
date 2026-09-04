@@ -356,10 +356,12 @@ pub(super) fn parse_go_version_m_batch(
     for line in output.lines() {
         // Every line of a block but its header is tab-indented, and the header
         // is `<path>: go<version>` with the path echoed verbatim — so a header
-        // is a non-indented line whose text before the last `:` is one of the
-        // queried paths (the last `:`, because a Windows path carries one).
+        // is a non-indented line whose text before the first `: ` is one of
+        // the queried paths (the first `: ` — a Windows path's own `:` is
+        // followed by `\`, and a devel toolchain's header carries a timestamp
+        // with colons of its own after the separator).
         let header = (!line.starts_with('\t'))
-            .then(|| line.rsplit_once(':'))
+            .then(|| line.split_once(": "))
             .flatten()
             .map(|(path, _)| path)
             .filter(|path| path_set.contains(path));
@@ -429,8 +431,8 @@ mod tests {
     }
 
     /// A Windows path's own drive-letter colon (`C:\Users\...`) is not the
-    /// header delimiter — only the LAST `:` on a non-indented line is, which
-    /// is what lets the header lookup split on it unambiguously.
+    /// header delimiter — it is followed by `\`, never a space, so the FIRST
+    /// `: ` on a non-indented line is unambiguously the true separator.
     #[test]
     fn parse_go_version_m_batch_matches_a_windows_path_header() {
         let output = "C:\\Users\\u\\go\\bin\\gopls.exe: go1.21.5\n\
@@ -443,6 +445,31 @@ mod tests {
                 .get("C:\\Users\\u\\go\\bin\\gopls.exe")
                 .map(String::as_str),
             Some("0.15.3")
+        );
+    }
+
+    /// A devel/gotip toolchain's header carries a timestamp with colons of
+    /// its own AFTER the true separator (`devel go1.23-2f0f7bd2c8 Wed Nov 15
+    /// 20:33:44 2023 +0000`) — the first `: `, not the last, is what keeps
+    /// this header matched to its own path rather than merged into the
+    /// following block.
+    #[test]
+    fn parse_go_version_m_batch_matches_a_devel_toolchain_header() {
+        let output = "/go/bin/gotip: devel go1.23-2f0f7bd2c8 Wed Nov 15 20:33:44 2023 +0000\n\
+                       \tpath\texample.com/gotip\n\
+                       \tmod\texample.com/gotip\tv0.1.0\th1:aaa=\n\
+                       /go/bin/stable: go1.21.5\n\
+                       \tpath\texample.com/stable\n\
+                       \tmod\texample.com/stable\tv2.0.0\th1:bbb=\n";
+        let paths = vec!["/go/bin/gotip".to_string(), "/go/bin/stable".to_string()];
+        let versions = parse_go_version_m_batch(output, &paths);
+        assert_eq!(
+            versions.get("/go/bin/gotip").map(String::as_str),
+            Some("0.1.0")
+        );
+        assert_eq!(
+            versions.get("/go/bin/stable").map(String::as_str),
+            Some("2.0.0")
         );
     }
 
