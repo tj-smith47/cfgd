@@ -1105,6 +1105,31 @@ impl Plan {
         self.phases.iter().map(|p| p.action_count()).sum()
     }
 
+    /// The actions that stand for a FINDING — every attempted action except a
+    /// module `Skip`.
+    ///
+    /// [`total_actions`](Self::total_actions) is the plan/apply promise: what a
+    /// run will list and tally, the skip included, because the plan renders it
+    /// as a planned, skipped action. A module skipped whole probed nothing, so
+    /// [`action_drift_rows`] mints no row for it and a drift count that
+    /// included it would report divergence no verb can settle.
+    pub fn drift_action_count(&self) -> usize {
+        self.phases
+            .iter()
+            .flat_map(|p| p.actions())
+            .filter(|a| {
+                a.pre_skip_reason().is_none()
+                    && !matches!(
+                        a,
+                        Action::Module(ModuleAction {
+                            kind: ModuleActionKind::Skip { .. },
+                            ..
+                        })
+                    )
+            })
+            .count()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.phases.iter().all(|p| p.is_empty())
     }
@@ -1520,6 +1545,15 @@ impl DriftRow {
 /// apply that skips them again has settled nothing, so
 /// [`apply_heals_action_rows`] holds them back from the heal. They are cleared
 /// by the tick's own complement, when a later plan stops carrying the skip.
+///
+/// `ModuleActionKind::Skip` is the one Skip that mints NO row. The other four
+/// name a resource cfgd probed and could not converge; a module skipped whole
+/// (a platform gate, an encryption incompatibility) was never probed at all, so
+/// there is nothing under it to diverge. That is why the tick keeps the rows
+/// standing under such a module rather than re-finding them
+/// (`daemon::reconcile`'s `tick_cannot_refind`), and why no CLI check can
+/// re-mint a `<name>:skip` row: a gate is information, not divergence. The plan
+/// and the apply still list the skip as a planned, skipped action.
 pub fn action_drift_rows(
     action: &Action,
     registry: &crate::providers::ProviderRegistry,
@@ -1529,6 +1563,7 @@ pub fn action_drift_rows(
     }
     match action {
         Action::Module(ma) => match &ma.kind {
+            ModuleActionKind::Skip { .. } => Vec::new(),
             ModuleActionKind::DeployFiles { files, .. } => files
                 .iter()
                 .map(|f| {
@@ -1669,11 +1704,14 @@ fn presence_drift_rows<'a>(
 /// Whether a successful settle of this action HEALS the rows
 /// [`action_drift_rows`] mints for it.
 ///
-/// False for the four `Skip` variants alone: each records that cfgd could not
-/// act on a resource — an unavailable manager, an unregistered configurator, a
-/// file a strategy declined — and an apply that reaches the same skip has
-/// changed nothing about it. Resolving those rows on a skip would report a
-/// machine converged by the very run that declined to touch it.
+/// False for the five `Skip` variants: each records that cfgd could not act on
+/// a resource — an unavailable manager, an unregistered configurator, a file a
+/// strategy declined — and an apply that reaches the same skip has changed
+/// nothing about it. Resolving those rows on a skip would report a machine
+/// converged by the very run that declined to touch it.
+///
+/// `ModuleActionKind::Skip` is held back as a belt: [`action_drift_rows`] mints
+/// no row for it at all, so the heal it would perform is over an empty set.
 #[must_use]
 pub fn apply_heals_action_rows(action: &Action) -> bool {
     !matches!(
@@ -1682,6 +1720,10 @@ pub fn apply_heals_action_rows(action: &Action) -> bool {
             | Action::System(SystemAction::Skip { .. })
             | Action::Secret(SecretAction::Skip { .. })
             | Action::File(FileAction::Skip { .. })
+            | Action::Module(ModuleAction {
+                kind: ModuleActionKind::Skip { .. },
+                ..
+            })
     )
 }
 

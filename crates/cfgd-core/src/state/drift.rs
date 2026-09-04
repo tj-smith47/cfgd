@@ -4,6 +4,12 @@ use super::StateStore;
 use super::types::DriftEvent;
 use crate::errors::Result;
 
+/// Keys bound per statement while staging a drift-key set. Two parameters per
+/// key against SQLite's 32766-parameter ceiling leaves the bound two orders of
+/// magnitude clear, and the staging table takes the rest of the set on the
+/// next statement.
+const DRIFT_KEY_CHUNK: usize = 500;
+
 impl StateStore {
     /// Record a drift event for a resource currently diverging from desired
     /// state. Upserts: if an unresolved row already exists for
@@ -85,15 +91,26 @@ impl StateStore {
     /// `set_clause` on every unresolved row whose `(resource_type,
     /// resource_id)` satisfies `membership` (`IN` / `NOT IN`) against `keys`.
     /// The key is matched as a row value — `(resource_type, resource_id)
-    /// IN (VALUES (?,?), …)` — rather than a concatenation, because only the
+    /// IN (SELECT …)` — rather than a concatenation, because only the
     /// row-value form is a shape `idx_drift_events_resource` can seek; an
     /// expression over the columns forces a scan however the index is built.
     /// (`NOT IN` still examines every unresolved row — inherent to a
     /// complement, not to the SQL shape.) Every value is a bound param —
     /// nothing is interpolated into the SQL, so it stays injection-safe.
     /// Empty-set semantics are each caller's to decide BEFORE calling; an
-    /// empty `keys` here is a caller bug (`VALUES` with no rows is a syntax
-    /// error), and each of the three callers short-circuits it.
+    /// empty `keys` here is a caller bug, and each of the three callers
+    /// short-circuits it.
+    ///
+    /// The keys land in a per-connection temp table in
+    /// [`DRIFT_KEY_CHUNK`]-sized inserts rather than in one inline `VALUES`
+    /// list, because a single statement binds at most SQLite's
+    /// `SQLITE_MAX_VARIABLE_NUMBER` parameters (32766 since 3.32) and this
+    /// list is two per key: a tick resolving more than 16k rows would error
+    /// out of the caller's transaction. Chunking is applied to the INSERTS
+    /// and never to the UPDATE, because a COMPLEMENT cannot be split — one
+    /// `NOT IN` statement per chunk resolves every row the other chunks name.
+    /// The temp table's own primary key is what the `IN`-operator seeks, so
+    /// the index plan is the one the inline list had.
     fn update_unresolved_by_keys(
         &self,
         set_clause: &str,
@@ -101,22 +118,40 @@ impl StateStore {
         first_param: &dyn rusqlite::ToSql,
         keys: &[(String, String)],
     ) -> Result<()> {
-        let placeholders = std::iter::repeat_n("(?, ?)", keys.len())
-            .collect::<Vec<_>>()
-            .join(", ");
+        self.conn.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS drift_key_set (
+                 resource_type TEXT NOT NULL,
+                 resource_id   TEXT NOT NULL,
+                 PRIMARY KEY (resource_type, resource_id)
+             ) WITHOUT ROWID;
+             DELETE FROM drift_key_set;",
+        )?;
+
+        for chunk in keys.chunks(DRIFT_KEY_CHUNK) {
+            let placeholders = std::iter::repeat_n("(?, ?)", chunk.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "INSERT OR IGNORE INTO drift_key_set (resource_type, resource_id)
+                     VALUES {placeholders}",
+            );
+            let mut refs: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 * chunk.len());
+            for (rtype, rid) in chunk {
+                refs.push(rtype);
+                refs.push(rid);
+            }
+            self.conn.execute(&sql, refs.as_slice())?;
+        }
+
         let sql = format!(
             "UPDATE drift_events SET {set_clause}
                  WHERE resolved_by IS NULL AND resolved_at IS NULL
-                 AND (resource_type, resource_id) {membership} (VALUES {placeholders})",
+                 AND (resource_type, resource_id) {membership}
+                     (SELECT resource_type, resource_id FROM drift_key_set)",
         );
-
-        let mut refs: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 * keys.len() + 1);
-        refs.push(first_param);
-        for (rtype, rid) in keys {
-            refs.push(rtype);
-            refs.push(rid);
-        }
-        self.conn.execute(&sql, refs.as_slice())?;
+        let refs: [&dyn rusqlite::ToSql; 1] = [first_param];
+        self.conn.execute(&sql, &refs[..])?;
+        self.conn.execute("DELETE FROM drift_key_set", [])?;
         Ok(())
     }
 

@@ -377,6 +377,64 @@ fn resolve_drift_not_in_matches_on_full_tuple_not_id_alone() {
     assert_eq!(events[0].resource_id, "/etc/x");
 }
 
+/// A key set past the staging chunk is still ONE call and ONE answer, in both
+/// membership directions and inside the caller's transaction, as the daemon
+/// tick calls it.
+///
+/// The size is past SQLite's 32766-parameter ceiling on purpose — two
+/// parameters per key — because that is the failure the staging table exists
+/// to remove: a set this big bound into one inline `VALUES` list errors the
+/// whole tick out. The complement half is what a per-chunk `NOT IN` would get
+/// wrong, so both directions are driven.
+#[test]
+fn a_key_set_past_the_chunk_resolves_in_one_call_under_one_transaction() {
+    const KEYS: usize = 20_000;
+    let keys: Vec<(String, String)> = (0..KEYS)
+        .map(|n| ("file".to_string(), format!("/etc/f{n}")))
+        .collect();
+
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .in_transaction(|| {
+            for (rtype, rid) in &keys {
+                store.record_drift(rtype, rid, None, Some("x"), "local")?;
+            }
+            store.record_drift("file", "/etc/outsider", None, Some("x"), "local")
+        })
+        .unwrap();
+    assert_eq!(store.unresolved_drift().unwrap().len(), KEYS + 1);
+
+    store
+        .in_transaction(|| store.resolve_drift_in(&keys))
+        .unwrap();
+    let left = store.unresolved_drift().unwrap();
+    assert_eq!(left.len(), 1, "every named key resolved in the one call");
+    assert_eq!(left[0].resource_id, "/etc/outsider");
+
+    // The complement direction: a chunked staging table must still answer as
+    // ONE set, never once per chunk — a per-chunk `NOT IN` resolves every row
+    // the other chunks name.
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .in_transaction(|| {
+            for (rtype, rid) in &keys {
+                store.record_drift(rtype, rid, None, Some("x"), "local")?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let still_drifting = &keys[..KEYS - 1];
+    store
+        .in_transaction(|| store.resolve_drift_not_in(still_drifting))
+        .unwrap();
+    let left = store.unresolved_drift().unwrap();
+    assert_eq!(
+        left.len(),
+        KEYS - 1,
+        "only the row outside the set resolved"
+    );
+}
+
 #[test]
 fn resolve_drift_in_resolves_only_the_named_keys() {
     let store = StateStore::open_in_memory().unwrap();
@@ -2480,26 +2538,60 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
 
     // A fresh apply re-derives the rows under the corrected id — and two
     // modules no longer contend for the same UNIQUE(resource_type, resource_id).
+    // The two skipped modules beside them record nothing at all: nothing under
+    // a module gated off this host was probed, so the run manages nothing for
+    // it.
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = crate::test_helpers::make_empty_resolved();
+    let modules: Vec<crate::modules::ResolvedModule> = ["nvim", "zsh"]
+        .into_iter()
+        .map(|name| {
+            let mut m = crate::test_helpers::make_resolved_module(name);
+            m.packages = vec![];
+            m.files = vec![];
+            m.dir = dir.path().to_path_buf();
+            m
+        })
+        .collect();
+    let owner = crate::reconciler::Owner::profile("test");
     let plan = Plan {
-        phases: vec![Phase::from_actions(
-            PhaseName::Modules,
-            &crate::reconciler::Owner::profile("test"),
-            ["nvim", "zsh"]
-                .into_iter()
-                .map(|name| {
-                    Action::Module(ModuleAction {
-                        module_name: name.to_string(),
-                        kind: ModuleActionKind::Skip {
-                            reason: "platform not matched".to_string(),
-                        },
-                        origin: None,
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Modules,
+                &owner,
+                ["gated-a", "gated-b"]
+                    .into_iter()
+                    .map(|name| {
+                        Action::Module(ModuleAction {
+                            module_name: name.to_string(),
+                            kind: ModuleActionKind::Skip {
+                                reason: "platform not matched".to_string(),
+                            },
+                            origin: None,
+                        })
                     })
-                })
-                .collect(),
-        )],
+                    .collect(),
+            ),
+            Phase::from_actions(
+                PhaseName::PostScripts,
+                &owner,
+                ["nvim", "zsh"]
+                    .into_iter()
+                    .map(|name| {
+                        Action::Module(ModuleAction {
+                            module_name: name.to_string(),
+                            kind: ModuleActionKind::RunScript {
+                                // A no-op every shell this runs under reads.
+                                script: crate::config::ScriptEntry::Simple("cd .".to_string()),
+                                phase: crate::reconciler::ScriptPhase::PostApply,
+                            },
+                            origin: None,
+                        })
+                    })
+                    .collect(),
+            ),
+        ],
         warnings: vec![],
     };
     let printer = crate::test_helpers::test_printer();
@@ -2509,8 +2601,8 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&crate::reconciler::PhaseFilter::Phase(PhaseName::Modules)),
-            &[],
+            None,
+            &modules,
             ReconcileContext::Apply,
             false,
             None,
@@ -2527,8 +2619,9 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
         .collect();
     assert_eq!(
         module_ids,
-        vec!["nvim:skip".to_string(), "zsh:skip".to_string()],
-        "each module must re-appear under its own name-qualified id"
+        vec!["nvim:script".to_string(), "zsh:script".to_string()],
+        "each module must re-appear under its own name-qualified id, and a \
+         skipped module under none"
     );
 }
 
