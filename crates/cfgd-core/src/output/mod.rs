@@ -162,7 +162,9 @@ pub(crate) fn osc8_hyperlink(url: &str, text: &str) -> String {
 pub use printer::{ColorChoice, DocCapture, Printer, PromptAnswer};
 
 pub mod owner_label;
-pub use owner_label::{OwnerLabel, PaintedSubject, StatusTransition, owner_tokens};
+pub use owner_label::{
+    OwnerLabel, PaintedSubject, StatusTransition, owner_tokens, split_owner_token,
+};
 
 pub mod phase_label;
 pub use phase_label::PhaseLabel;

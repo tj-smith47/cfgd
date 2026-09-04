@@ -652,9 +652,17 @@ fn reconcile_tick(
     // displaces nothing, so a sidecar it took would be a copy of a file nobody
     // was about to overwrite.
     let reconciler = if matches!(drift_policy, config::DriftPolicy::Auto) {
+        // The same root `resolve_daemon_modules` resolved the plan's own
+        // modules from — a tick given `--cache-dir` symlinks its module files
+        // there, and answering from the per-user default instead would read
+        // every one of them as a stranger's file on this tick alone.
+        let module_cache = crate::resolve_cache_dir(cache_dir_override, scope)
+            .map(|d| d.join("modules"))
+            .unwrap_or_else(|_| config_dir.join(".module-cache"));
         match crate::reconciler::sweep_unmanaged_file_targets(
             &mut plan,
             &config_dir,
+            &module_cache,
             store,
             printer,
             &crate::effective::effective_file_strategies(

@@ -141,6 +141,7 @@ pub(super) fn cmd_compliance_snapshot(cli: &Cli, printer: &Printer) -> anyhow::R
     printer.emit(build_compliance_summary_doc(
         &snapshot,
         &cfgd_core::utc_now_iso8601(),
+        printer.arrow(),
     ));
     Ok(())
 }
@@ -389,7 +390,7 @@ pub fn build_compliance_diff_doc(
 /// Pure builder: compliance snapshot summary Doc.
 ///
 /// `now` is a parameter, not a clock read, so the `Age` row pins in a golden.
-pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str) -> Doc {
+pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str, arrow: &str) -> Doc {
     let overall = overall_status(&snapshot.summary);
 
     // The snapshot's own facts around the two header rows it can fill: a
@@ -424,6 +425,7 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str) ->
             // `inherits:` chain was captured when it was taken.
             profile_inherits: &[],
             modules: &[],
+            arrow,
         },
     ));
     let (overall_word, overall_role) = overall.human_display();
@@ -639,7 +641,11 @@ mod tests {
             check("package", "ripgrep", ComplianceStatus::Compliant),
         ]);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_compliance_summary_doc(&snapshot, NOW));
+        printer.emit(build_compliance_summary_doc(
+            &snapshot,
+            NOW,
+            printer.arrow(),
+        ));
         drop(printer);
 
         let output = cap.human();
@@ -664,7 +670,11 @@ mod tests {
             check("system", "sysctl.x", ComplianceStatus::Warning),
         ]);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_compliance_summary_doc(&snapshot, NOW));
+        printer.emit(build_compliance_summary_doc(
+            &snapshot,
+            NOW,
+            printer.arrow(),
+        ));
         drop(printer);
 
         let output = cap.human();
@@ -686,7 +696,11 @@ mod tests {
             check("package", "ripgrep", ComplianceStatus::Violation),
         ]);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_compliance_summary_doc(&snapshot, NOW));
+        printer.emit(build_compliance_summary_doc(
+            &snapshot,
+            NOW,
+            printer.arrow(),
+        ));
         drop(printer);
 
         let output = cap.human();
@@ -704,7 +718,11 @@ mod tests {
     fn build_compliance_summary_doc_empty_checks() {
         let snapshot = sample_snapshot(vec![]);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_compliance_summary_doc(&snapshot, NOW));
+        printer.emit(build_compliance_summary_doc(
+            &snapshot,
+            NOW,
+            printer.arrow(),
+        ));
         drop(printer);
 
         let output = cap.human();

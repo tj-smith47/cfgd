@@ -819,3 +819,31 @@ fn normalize_snapshot_durations_keeps_the_wall_clock_word() {
         "a near miss is not a duration"
     );
 }
+
+/// Windows paths are case-insensitive, so two spellings of one directory
+/// differing only in case must fold to the same `PATH` entry on Windows —
+/// asserted through [`super::fold_path_case_windows`] directly, which is
+/// compiled on every host under test, so the claim is checked without a
+/// Windows runner.
+#[test]
+fn fold_path_case_windows_folds_two_spellings_of_one_directory_to_one() {
+    assert_eq!(
+        super::fold_path_case_windows(r"C:\Tools".to_string()),
+        super::fold_path_case_windows(r"c:\tools".to_string()),
+        "Windows paths are case-insensitive: two spellings of one directory must compare equal"
+    );
+}
+
+/// On every OTHER host a `PATH` entry's case is significant (POSIX
+/// filesystems are case-sensitive by default), so [`super::normalize_path_entry`]
+/// must leave case alone there — the Windows fold is the exception, not the
+/// rule.
+#[test]
+#[cfg(not(windows))]
+fn normalize_path_entry_leaves_case_alone_off_windows() {
+    let home = std::path::Path::new("/home/u");
+    assert_eq!(
+        super::normalize_path_entry("/opt/Tools", home),
+        "/opt/Tools"
+    );
+}

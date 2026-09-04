@@ -478,10 +478,11 @@ pub(super) enum PathPart {
 /// producers contributed to it.
 ///
 /// One variable, one assignment: cfgd's bootstrapped-manager directories and a
-/// declared `spec.env` `PATH` used to render as two `export PATH=` lines in one
-/// file, so the file assigned one variable twice and every count over it had to
-/// choose between naming lines and naming variables — the write said `4 vars`
-/// one row above a session publish saying `3`.
+/// declared `spec.env` `PATH` used to render as two `PATH` assignment lines
+/// (each dialect's own syntax) in one file, so the file assigned one variable
+/// twice and every count over it had to choose between naming lines and
+/// naming variables — the write said `4 vars` one row above a session publish
+/// saying `3`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FoldedPath {
     parts: Vec<PathPart>,

@@ -3590,7 +3590,7 @@ fn is_unmanaged_file_nonexistent() {
     let dir = tempfile::tempdir().unwrap();
     let state = StateStore::open_in_memory().unwrap();
     let target = dir.path().join("does-not-exist");
-    assert!(!is_unmanaged_file(&target, dir.path(), &state));
+    assert!(!is_unmanaged_file(&target, dir.path(), dir.path(), &state));
 }
 
 #[test]
@@ -3599,7 +3599,7 @@ fn is_unmanaged_file_regular_file() {
     let state = StateStore::open_in_memory().unwrap();
     let target = dir.path().join("existing-file");
     std::fs::write(&target, "content").unwrap();
-    assert!(is_unmanaged_file(&target, dir.path(), &state));
+    assert!(is_unmanaged_file(&target, dir.path(), dir.path(), &state));
 }
 
 #[test]
@@ -3613,7 +3613,7 @@ fn is_unmanaged_file_cfgd_symlink() {
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&source, &target).unwrap();
     // Symlink points into config_dir, so it's managed
-    assert!(!is_unmanaged_file(&target, dir.path(), &state));
+    assert!(!is_unmanaged_file(&target, dir.path(), dir.path(), &state));
 }
 
 #[test]
@@ -3628,7 +3628,7 @@ fn is_unmanaged_file_tracked_in_state() {
     state
         .upsert_managed_resource("file", &target_str, "local", None, None)
         .unwrap();
-    assert!(!is_unmanaged_file(&target, dir.path(), &state));
+    assert!(!is_unmanaged_file(&target, dir.path(), dir.path(), &state));
 }
 
 // --- config get/set/unset helpers ---
@@ -10928,7 +10928,7 @@ fn build_plan_output_empty_plan() {
         phases: vec![],
         warnings: vec![],
     };
-    let output = super::build_plan_output(&plan, "apply", None, &[], &Default::default(), &[]);
+    let output = super::build_plan_output(&plan, "apply", None, &[], &Default::default(), &[], "→");
     assert_eq!(output.context, "apply");
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
@@ -10948,7 +10948,8 @@ fn build_plan_output_with_actions() {
         )],
         warnings: vec!["something".into()],
     };
-    let output = super::build_plan_output(&plan, "reconcile", None, &[], &Default::default(), &[]);
+    let output =
+        super::build_plan_output(&plan, "reconcile", None, &[], &Default::default(), &[], "→");
     assert_eq!(output.context, "reconcile");
     assert_eq!(output.total_actions, 1);
     assert_eq!(output.phases.len(), 1);
@@ -10991,6 +10992,7 @@ fn build_plan_output_with_phase_filter() {
         &[],
         &Default::default(),
         &[],
+        "→",
     );
     assert_eq!(output.total_actions, 1);
     assert_eq!(output.phases.len(), 1);
@@ -14053,6 +14055,7 @@ fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
                     profile: Some("base"),
                     profile_inherits: &[],
                     modules: &[],
+                    arrow: printer.arrow(),
                 },
                 &[],
                 "2026-05-14T10:05:00Z",
@@ -20261,6 +20264,7 @@ fn render_daemon_status_human_running_with_sources_and_update() {
         &[],
         &[],
         DAEMON_STATUS_NOW,
+        printer.arrow(),
     ));
     drop(printer);
     let output = cap.human();
@@ -20312,6 +20316,7 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
         &[],
         &[],
         DAEMON_STATUS_NOW,
+        printer.arrow(),
     ));
     drop(printer);
     let output = cap.human();
@@ -20339,6 +20344,7 @@ fn render_daemon_status_json_emits_some_status_shape() {
         &[],
         &[],
         DAEMON_STATUS_NOW,
+        printer.arrow(),
     ));
     drop(printer);
     let parsed = cap.json().expect("doc captured json");
@@ -20356,6 +20362,7 @@ fn render_daemon_status_json_emits_placeholder_when_none() {
         &[],
         &[],
         DAEMON_STATUS_NOW,
+        printer.arrow(),
     ));
     drop(printer);
     let parsed = cap.json().expect("doc captured json");
@@ -20733,9 +20740,8 @@ fn is_unmanaged_file_module_cache_symlink_under_test_home() {
     );
     let state = StateStore::open_in_memory().unwrap();
 
-    let module_root = cfgd_core::modules::default_module_cache_dir()
-        .unwrap()
-        .join("example-mod");
+    let module_cache = cfgd_core::modules::default_module_cache_dir().unwrap();
+    let module_root = module_cache.join("example-mod");
     assert!(
         !module_root.starts_with(dir.path().join(".cache")),
         "the fixture's cache root must not be the one a hardcode would guess: {}",
@@ -20755,7 +20761,7 @@ fn is_unmanaged_file_module_cache_symlink_under_test_home() {
     cfgd_core::create_symlink(&module_payload, &target).unwrap();
 
     assert!(
-        !is_unmanaged_file(&target, &config_dir, &state),
+        !is_unmanaged_file(&target, &config_dir, &module_cache, &state),
         "a symlink into the module cache must be treated as cfgd-managed",
     );
 }
@@ -30430,72 +30436,81 @@ fn no_cli_slot_pairs_the_shell_kind_test_with_the_verbose_detail() {
     );
 }
 
-/// No cfgd-core production site compares a manager name to a bare `"script"`.
+/// No production site in EITHER crate compares a manager name to a bare
+/// `"script"`.
 ///
 /// `script` is not a registered manager: it is the sentinel a `prefer:
 /// [script]` entry resolves to, and every pass that iterates managers, lists
 /// installed packages or mints a drift row has to agree on which entries it
 /// names. Two named constants for it in one crate is how a fourth spelling
 /// gets written, so there is one `SCRIPT_SENTINEL` and every comparison reads
-/// it. A serde or schema spelling of the word — a `prefer` value as the user
-/// types it, a resource TYPE that happens to be spelled the same — is a
-/// different string and carries `// script-literal-ok: <why>`.
+/// it — `cfgd_core::SCRIPT_SENTINEL` from the binary crate, `crate::SCRIPT_SENTINEL`
+/// from core's own production sites. A serde or schema spelling of the word —
+/// a `prefer` value as the user types it, a resource TYPE that happens to be
+/// spelled the same — is a different string and carries
+/// `// script-literal-ok: <why>`.
 #[test]
 fn no_core_production_site_compares_a_manager_name_to_a_bare_script_literal() {
     const HATCH: &str = "script-literal-ok:";
     // The subjects a manager NAME is held in; a line pairing one of them with
     // the bare literal is comparing against the sentinel by hand.
     const SUBJECTS: [&str; 3] = ["manager", "prefer", "candidate"];
-    const FLOOR_FILES: usize = 90;
+    // The floors are what a walk over the WRONG root cannot fake: a root that
+    // resolves nowhere sees no files. Both counts are far under today's real
+    // counts (171/229), so a deletion does not trip them and a re-rooting does.
+    const FLOOR_FILES: [usize; 2] = [80, 90];
 
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src");
-    let mut files = walk_rust_files(&root);
-    files.sort();
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
     let mut offenders = Vec::new();
-    let mut seen = 0usize;
-    for path in files {
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_string();
-        if name == "tests.rs" || name == "test_helpers.rs" {
-            continue;
-        }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        seen += 1;
-        let production = cfgd_core::test_helpers::production_slice(&body);
-        let lines = cfgd_core::test_helpers::logical_source_lines(&production);
-        for (i, (n, line)) in lines.iter().enumerate() {
-            let code = line.trim_start();
-            // A Rust comment, and a `#` comment inside an embedded YAML
-            // template, are both prose about the sentinel rather than a
-            // comparison against it.
-            if code.starts_with("//") || code.starts_with('#') {
+    for (r, root) in roots.iter().enumerate() {
+        let mut files = walk_rust_files(root);
+        files.sort();
+        let mut seen = 0usize;
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs" || name == "test_helpers.rs" {
                 continue;
             }
-            if lines[i.saturating_sub(1)..=i]
-                .iter()
-                .any(|(_, l)| l.contains(HATCH))
-            {
+            let Ok(body) = std::fs::read_to_string(&path) else {
                 continue;
-            }
-            if line.contains("\"script\"") && SUBJECTS.iter().any(|s| line.contains(s)) {
-                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            };
+            seen += 1;
+            let production = cfgd_core::test_helpers::production_slice(&body);
+            let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+            for (i, (n, line)) in lines.iter().enumerate() {
+                let code = line.trim_start();
+                // A Rust comment, and a `#` comment inside an embedded YAML
+                // template, are both prose about the sentinel rather than a
+                // comparison against it.
+                if code.starts_with("//") || code.starts_with('#') {
+                    continue;
+                }
+                if lines[i.saturating_sub(1)..=i]
+                    .iter()
+                    .any(|(_, l)| l.contains(HATCH))
+                {
+                    continue;
+                }
+                if line.contains("\"script\"") && SUBJECTS.iter().any(|s| line.contains(s)) {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
             }
         }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is \
+             looking at the wrong root",
+            root.display()
+        );
     }
     assert!(
-        seen >= FLOOR_FILES,
-        "the walk read {seen} files under {} — under the floor, so it is \
-         looking at the wrong root",
-        root.display()
-    );
-    assert!(
         offenders.is_empty(),
-        "a manager name is compared against `crate::SCRIPT_SENTINEL`, never a \
+        "a manager name is compared against the one `SCRIPT_SENTINEL`, never a \
          bare literal (or carries `// {HATCH} <why>`):\n{}",
         offenders.join("\n")
     );
@@ -31747,6 +31762,7 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
             profile: Some("default"),
             profile_inherits: &[],
             modules: &[],
+            arrow: printer.arrow(),
         },
         &[],
         "2026-05-12T14:30:25Z",
@@ -31914,6 +31930,7 @@ fn component_health_fixture() -> super::status::StatusOutput {
 fn component_health_doc(
     output: &super::status::StatusOutput,
     profile: Option<&str>,
+    arrow: &str,
 ) -> cfgd_core::output::Doc {
     super::status::build_fleet_status_doc(
         output,
@@ -31923,6 +31940,7 @@ fn component_health_doc(
             profile,
             profile_inherits: &[],
             modules: &[],
+            arrow,
         },
         &[],
         "2026-05-14T10:05:00Z",
@@ -31962,7 +31980,7 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
 
     let output = component_health_fixture();
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    printer.emit(component_health_doc(&output, Some("base")));
+    printer.emit(component_health_doc(&output, Some("base"), printer.arrow()));
     drop(printer);
     let rendered = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -32010,7 +32028,11 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
     let mut never_checked = component_health_fixture();
     never_checked.last_scan_at = None;
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    printer.emit(component_health_doc(&never_checked, Some("base")));
+    printer.emit(component_health_doc(
+        &never_checked,
+        Some("base"),
+        printer.arrow(),
+    ));
     drop(printer);
     let rendered = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -32023,7 +32045,7 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
     // section while the table below still lists them under `-`. Everything
     // cfgd or a module owns survives.
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    printer.emit(component_health_doc(&output, None));
+    printer.emit(component_health_doc(&output, None, printer.arrow()));
     drop(printer);
     let rendered = cfgd_core::test_helpers::captured_text(&buf);
     let section = component_health_section(&rendered);
@@ -32043,7 +32065,7 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
     // the renderer's, not a caller's coat that `cursor_safe` would strip.
     let theme = cfgd_core::output::Theme::from_preset("dracula").with_colors(true);
     let (printer, buf) = Printer::for_test_with_theme_colored(theme.clone(), Verbosity::Normal);
-    printer.emit(component_health_doc(&output, Some("base")));
+    printer.emit(component_health_doc(&output, Some("base"), printer.arrow()));
     printer.flush();
     // raw-capture-ok: the subject IS the verdict's SGR bytes, which captured_text strips.
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -32181,7 +32203,7 @@ fn component_health_nests_the_recorded_drift_under_its_owner() {
     ];
 
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    printer.emit(component_health_doc(&output, Some("base")));
+    printer.emit(component_health_doc(&output, Some("base"), printer.arrow()));
     drop(printer);
     let rendered = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -32296,7 +32318,7 @@ fn component_health_nests_the_recorded_drift_under_its_owner() {
     // themed-verdict pin, live now that a recorded row can flip a verdict.
     let theme = cfgd_core::output::Theme::from_preset("dracula").with_colors(true);
     let (printer, buf) = Printer::for_test_with_theme_colored(theme.clone(), Verbosity::Normal);
-    printer.emit(component_health_doc(&output, Some("base")));
+    printer.emit(component_health_doc(&output, Some("base"), printer.arrow()));
     printer.flush();
     // raw-capture-ok: the subject IS the verdict's SGR bytes, which captured_text strips.
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -32319,7 +32341,7 @@ fn the_fleet_heading_annotation_states_the_checks_freshness() {
         let mut output = component_health_fixture();
         mutate(&mut output);
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        printer.emit(component_health_doc(&output, Some("base")));
+        printer.emit(component_health_doc(&output, Some("base"), printer.arrow()));
         drop(printer);
         let rendered = cfgd_core::test_helpers::captured_text(&buf);
         rendered
@@ -32583,6 +32605,7 @@ fn last_apply_leads_on_its_verdict() {
             profile: Some("base"),
             profile_inherits: &[],
             modules: &[],
+            arrow: printer.arrow(),
         },
         &[],
         "2026-05-12T14:30:25Z",
@@ -33718,6 +33741,62 @@ fn no_journal_line_folds_the_home_directory() {
     );
 }
 
+/// The arrow glyph is `Theme::arrow()` / `Printer::arrow()`, overridable via
+/// `icon_arrow` in `spec.output.theme`. A production slot that hardcodes the
+/// literal instead renders `→` under an ASCII preset that asked for `->`. Two
+/// files are exempt: `output/theme.rs`, which OWNS the default and the
+/// `pub(crate)` fallback constant test/scheduling code threads where no arrow
+/// value could ever actually render, and `generate/schema.rs`, whose embedded
+/// YAML reference documents `iconArrow`'s own default the same way it
+/// documents `iconOk`/`iconWarn`/`iconFail` — a schema field's default is
+/// never itself a rendered relationship.
+#[test]
+fn no_production_slot_hardcodes_the_arrow_glyph() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = walk_rust_files(&root.join("src"));
+    files.extend(walk_rust_files(&root.join("../cfgd-core/src")));
+    files.sort();
+    let mut scanned_cfgd = 0usize;
+    let mut scanned_core = 0usize;
+    let mut offenders = Vec::new();
+    for path in files {
+        if path.file_name().is_none_or(|n| n == "tests.rs")
+            || path.components().any(|c| c.as_os_str() == "tests")
+            || path.ends_with("output/theme.rs")
+            || path.ends_with("generate/schema.rs")
+        {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if path.components().any(|c| c.as_os_str() == "cfgd-core") {
+            scanned_core += 1;
+        } else {
+            scanned_cfgd += 1;
+        }
+        let body = cfgd_core::test_helpers::production_slice(&raw);
+        for (n, line) in body.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || !line.contains('→') {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, code.trim()));
+        }
+    }
+    assert!(
+        scanned_cfgd >= 1 && scanned_core >= 1,
+        "the walk no longer reaches both crates' src/ — it found {scanned_cfgd} cfgd files, \
+         {scanned_core} cfgd-core files"
+    );
+    assert!(
+        offenders.is_empty(),
+        "the arrow glyph is `Theme::arrow()` / `Printer::arrow()`, never a literal `→`, so a \
+         preset's `icon_arrow` override reaches every rendered relationship:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// A slot keyed on the DIMENSION states the magnitude; a slot keyed on the
 /// EVENT states the relation. `Age  3m ago` spent its value restating the
 /// pastness its key already asserts, beside `Last Applied  3m ago`, which is
@@ -33900,6 +33979,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         profile: Some("base"),
         profile_inherits: &[],
         modules: &[],
+        arrow: "->",
     });
     let ctx = cfgd_core::reconciler::RunContext {
         title: cfgd_core::reconciler::RunTitle::Restore,
@@ -34108,7 +34188,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
     let docs: Vec<(&str, cfgd_core::output::Doc)> = vec![
         (
             "cfgd compliance snapshot",
-            super::compliance::build_compliance_summary_doc(&after, now),
+            super::compliance::build_compliance_summary_doc(&after, now, "->"),
         ),
         (
             "cfgd compliance export",
@@ -34138,6 +34218,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
                     profile: Some("base"),
                     profile_inherits: &[],
                     modules: &[],
+                    arrow: "->",
                 },
                 &[],
                 now,

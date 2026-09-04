@@ -406,6 +406,7 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
             profile: Some("default"),
             profile_inherits: &[],
             modules: &[],
+            arrow: status_printer.arrow(),
         },
         &declared,
         "2026-05-14T10:05:00Z",

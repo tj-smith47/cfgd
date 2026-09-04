@@ -12674,7 +12674,7 @@ spec:
         std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
         std::fs::write(
             tmp.path().join("profiles").join("default.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - envmod\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Login\n  modules:\n    - envmod\n",
         )
         .unwrap();
         let module_dir = tmp.path().join("modules").join("envmod");

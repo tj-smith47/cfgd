@@ -72,7 +72,10 @@ pub(crate) fn capture_attached_apply<D: serde::Serialize>(
             current: apply.current.to_string(),
             origin: String::new(),
         });
-        drop(owner_section.action_status(Role::Ok, action_display_subject(&action).to_string()));
+        drop(owner_section.action_status(
+            Role::Ok,
+            action_display_subject(&action, printer.arrow()).to_string(),
+        ));
     }
 
     printer.emit(

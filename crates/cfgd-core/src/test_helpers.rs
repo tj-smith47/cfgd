@@ -3898,11 +3898,16 @@ pub fn freeze_last_scan_at(
 ///
 /// The shape relied on is rustfmt's, which every file in this workspace is
 /// formatted by: the attribute alone at column 0, and the module's closing `}`
-/// alone at column 0. Each anchor drops through the next such line. The one way
-/// that assumption breaks is a multi-line raw string inside a test module whose
-/// body carries a bare `}` at column 0, which would end the strip early — no
-/// such literal exists today, and `cli::tests::production_body` assumes the same
-/// shape.
+/// alone at column 0. Each anchor drops through the next such line. A platform
+/// gate stacks a second attribute (`#[cfg(test)]` / `#[cfg(unix)]` /
+/// `mod tests {`) between the marker and the `mod` line, so the scan skips
+/// every column-0 attribute line before checking for `mod ` — three daemon
+/// service files and `cli/kubectl.rs` carry exactly this shape, and without
+/// the skip their whole test module read as production text. The one way the
+/// rustfmt assumption breaks is a multi-line raw string inside a test module
+/// whose body carries a bare `}` at column 0, which would end the strip early
+/// — no such literal exists today, and `cli::tests::production_body` assumes
+/// the same shape.
 ///
 /// A walk over several files pairs this with a per-file floor on what it found,
 /// so a future re-blinding fails rather than passes quietly.
@@ -3912,10 +3917,15 @@ pub fn production_slice(src: &str) -> String {
     while let Some(line) = lines.next() {
         if line == "#[cfg(test)]" {
             let mut rest = lines.clone();
+            while rest.clone().next().is_some_and(|m| m.starts_with('#')) {
+                rest.next();
+            }
             if rest
+                .clone()
                 .next()
                 .is_some_and(|m| m.starts_with("mod ") && m.trim_end().ends_with('{'))
             {
+                rest.next();
                 lines = rest;
                 for inner in lines.by_ref() {
                     if inner == "}" {
@@ -4141,6 +4151,32 @@ mod tests {
                 "the production between the siblings survives: {production}"
             );
         }
+    }
+
+    /// A platform-gated test module stacks a second attribute
+    /// (`#[cfg(unix)]`) between `#[cfg(test)]` and its `mod tests {` line —
+    /// the shape `daemon/health_ipc.rs`, both `daemon/service/*.rs` files and
+    /// `cli/kubectl.rs` carry. Checking only the IMMEDIATE next line for
+    /// `mod ` missed it, leaking a whole test module into every walk reading
+    /// through this helper.
+    #[test]
+    fn production_slice_skips_a_stacked_platform_attribute_before_the_mod_line() {
+        let attr = format!("#[cfg({})]", "test");
+        let src = format!(
+            "pub const RENDERED: &str = \"a literal a walk must see\";\n\
+             {attr}\n#[cfg(unix)]\nmod tests #OPEN#\n    fn hidden() #OPEN##CLOSE#\n#CLOSE#\n"
+        )
+        .replace("#OPEN#", "{")
+        .replace("#CLOSE#", "}");
+        let production = production_slice(&src);
+        assert!(
+            production.contains("a literal a walk must see"),
+            "production ahead of the stacked-attribute module survives: {production}"
+        );
+        assert!(
+            !production.contains("fn hidden"),
+            "the module behind a stacked platform attribute is still cut away: {production}"
+        );
     }
 
     /// The guard's exclusion is the reason no window-pinning test carries a

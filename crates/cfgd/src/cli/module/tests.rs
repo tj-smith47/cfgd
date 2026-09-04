@@ -7505,6 +7505,7 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         "workstation",
         std::path::Path::new("/cfg/config.yaml"),
         &[],
+        printer.arrow(),
     ));
     drop(printer);
     surfaces.push((

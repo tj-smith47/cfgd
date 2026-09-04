@@ -96,6 +96,7 @@ pub fn cmd_verify(
         (resolved, mods, registry)
     };
     registry.set_system_config_dir(config_dir);
+    let module_cache = module_cache_dir(cli)?;
 
     // ONE context for both halves of the run: the reconciler's package check
     // and the manager-drift plan below both diff against installed state, and
@@ -137,6 +138,7 @@ pub fn cmd_verify(
                 &resolved,
                 &resolved_modules,
                 registry.default_file_strategy,
+                &module_cache,
                 state,
             )?);
             // Module files are content-aware here (not in the reconciler, which is
@@ -149,6 +151,7 @@ pub fn cmd_verify(
                 &resolved,
                 &resolved_modules,
                 registry.default_file_strategy,
+                &module_cache,
                 state,
             )?);
             // Managers: the reconciler's own `verify` only walks

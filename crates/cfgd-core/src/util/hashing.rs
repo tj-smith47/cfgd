@@ -105,9 +105,11 @@ pub fn short_commit(commit: &str) -> &str {
 
 /// Parse a potentially loose version string into a semver Version.
 /// Handles "1.28" → "1.28.0", "1" → "1.0.0", and a leading `v`/`V` prefix
-/// (`v1.10.0` → `1.10.0`) so callers can feed git/OCI tag names directly.
+/// (`v1.10.0` → `1.10.0`, stripped through [`declared_floor_version`] so
+/// callers can feed git/OCI tag names directly) — the one strip both
+/// functions share.
 pub fn parse_loose_version(s: &str) -> Option<semver::Version> {
-    let s = s.strip_prefix(['v', 'V']).unwrap_or(s);
+    let s = declared_floor_version(s);
     if let Ok(ver) = semver::Version::parse(s) {
         return Some(ver);
     }
@@ -135,7 +137,9 @@ pub fn parse_loose_version(s: &str) -> Option<semver::Version> {
 /// clears, so the package reports as below it on a converged machine and is
 /// re-planned as an upgrade forever. The strip lives here rather than at
 /// config read because every display surface echoes the value the user
-/// declared, prefix and all.
+/// declared, prefix and all; [`parse_loose_version`] reaches through this
+/// function for the identical strip on the VERSION side, so the two can never
+/// disagree about where the `v` ends.
 pub fn declared_floor_version(floor: &str) -> &str {
     floor.strip_prefix(['v', 'V']).unwrap_or(floor)
 }

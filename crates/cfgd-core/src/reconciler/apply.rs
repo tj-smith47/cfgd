@@ -1206,7 +1206,7 @@ impl<'a> super::Reconciler<'a> {
         // pseudo-phases; this is the value when a caller drives the reconciler
         // without one.
         let budget = printer.subject_budget();
-        let width = super::run::report_align_width(plan, phase_filter, budget);
+        let width = super::run::report_align_width(plan, phase_filter, budget, printer.arrow());
 
         'phases: for phase in &plan.phases {
             // Plan positions of the actions in this phase that survive
@@ -1256,7 +1256,7 @@ impl<'a> super::Reconciler<'a> {
                 .map(|action| {
                     (
                         action_key(action),
-                        action_display_subject_within(action, budget).to_string(),
+                        action_display_subject_within(action, budget, printer.arrow()).to_string(),
                     )
                 })
                 .collect();

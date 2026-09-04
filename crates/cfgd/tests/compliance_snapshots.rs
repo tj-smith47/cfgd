@@ -97,7 +97,7 @@ fn empty_snapshot() -> ComplianceSnapshot {
 fn compliance_snapshot_happy_human() {
     let snap = happy_snapshot();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_summary_doc(&snap, NOW));
+    printer.emit(build_compliance_summary_doc(&snap, NOW, printer.arrow()));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_snapshot/happy.txt");
 }
@@ -106,7 +106,7 @@ fn compliance_snapshot_happy_human() {
 fn compliance_snapshot_happy_json() {
     let snap = happy_snapshot();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_summary_doc(&snap, NOW));
+    printer.emit(build_compliance_summary_doc(&snap, NOW, printer.arrow()));
     drop(printer);
     let expected = serde_json::json!({
         "snapshot": serde_json::to_value(&snap).unwrap(),
@@ -124,7 +124,7 @@ fn compliance_snapshot_happy_json() {
 fn compliance_snapshot_violations_human() {
     let snap = violations_snapshot();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_summary_doc(&snap, NOW));
+    printer.emit(build_compliance_summary_doc(&snap, NOW, printer.arrow()));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -136,7 +136,7 @@ fn compliance_snapshot_violations_human() {
 fn compliance_snapshot_empty_human() {
     let snap = empty_snapshot();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_summary_doc(&snap, NOW));
+    printer.emit(build_compliance_summary_doc(&snap, NOW, printer.arrow()));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_snapshot/empty.txt");
 }

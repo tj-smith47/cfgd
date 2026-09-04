@@ -502,6 +502,7 @@ pub(in crate::cli) fn build_plan_output(
     pending_backups: &[String],
     withheld: &reconciler::WithheldDecisions,
     sources: &[reconciler::ComposedSource],
+    arrow: &str,
 ) -> PlanOutput {
     let tree = reconciler::in_scope_tree(plan, phase_filter, reconciler::PhaseCoverage::Complete);
     let total_actions = reconciler::attempted_count(
@@ -521,7 +522,7 @@ pub(in crate::cli) fn build_plan_output(
                         actions
                             .into_iter()
                             .map(|action| PlanActionOutput {
-                                description: reconciler::format_plan_item(action),
+                                description: reconciler::format_plan_item(action, arrow),
                                 action_type: action_type_str(action).to_string(),
                                 targets: action_targets(action),
                                 origin: action_origin(action),
@@ -578,8 +579,10 @@ fn is_script_work(a: &reconciler::Action) -> bool {
         reconciler::Action::Module(reconciler::ModuleAction {
             kind: reconciler::ModuleActionKind::InstallPackages { resolved },
             ..
-        }) => resolved.iter().any(|p| p.manager == "script"),
-        reconciler::Action::Package(pa) => package_manager_name(pa) == "script",
+        }) => resolved
+            .iter()
+            .any(|p| p.manager == cfgd_core::SCRIPT_SENTINEL),
+        reconciler::Action::Package(pa) => package_manager_name(pa) == cfgd_core::SCRIPT_SENTINEL,
         reconciler::Action::Script(_) => true,
         _ => false,
     }
@@ -761,6 +764,7 @@ pub(in crate::cli) fn display_plan_preview(
         pending_backups,
         withheld,
         run.sources(),
+        printer.arrow(),
     );
 
     // Structured-output routing: when -o yaml/json/etc., emit the plan as the
@@ -1142,9 +1146,11 @@ const PROMPT_POLICIES: [ResolvedConflict; 4] = [
 
 /// Settle every unmanaged file target in the plan under `--on-conflict`, and
 /// report the ones whose settled policy is `Backup`.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::cli) fn handle_unmanaged_file_targets(
     plan: &mut reconciler::Plan,
     config_dir: &Path,
+    module_cache: &Path,
     state: &StateStore,
     printer: &Printer,
     auto_yes: bool,
@@ -1167,6 +1173,7 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
             reconciler::sweep_unmanaged_file_targets(
                 plan,
                 config_dir,
+                module_cache,
                 state,
                 printer,
                 strategies,
@@ -1177,6 +1184,7 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
         None => reconciler::sweep_unmanaged_file_targets(
             plan,
             config_dir,
+            module_cache,
             state,
             printer,
             strategies,

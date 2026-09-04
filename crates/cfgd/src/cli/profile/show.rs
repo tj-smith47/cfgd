@@ -12,6 +12,7 @@ pub fn build_profile_show_doc(
     name: &str,
     config_path: &Path,
     sources: &[cfgd_core::reconciler::ComposedSource],
+    arrow: &str,
 ) -> Doc {
     // header-row-ok: the heading names the profile and the blocks below ARE the
     // module inventory, so this header states the config file and what it
@@ -28,6 +29,7 @@ pub fn build_profile_show_doc(
                     profile: None,
                     profile_inherits: &[],
                     modules: &[],
+                    arrow,
                 },
             ));
 
@@ -240,6 +242,7 @@ pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> any
         &profile_name,
         &cli.config,
         &declared,
+        printer.arrow(),
     ));
     Ok(())
 }

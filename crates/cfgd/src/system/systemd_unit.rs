@@ -190,7 +190,12 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 let dest_path = Path::new(&dest);
                 cx.report(
                     Role::Info,
-                    format!("Installing unit file: {} → {}", source.display(), dest),
+                    format!(
+                        "Installing unit file: {} {} {}",
+                        source.display(),
+                        cx.arrow(),
+                        dest
+                    ),
                 );
 
                 match std::fs::read(&source) {

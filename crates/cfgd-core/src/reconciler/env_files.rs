@@ -360,8 +360,8 @@ pub(super) fn alias_line_prefixes(
     prefixes
 }
 
-/// The prefix of the generator's own PATH scaffolding line (`export PATH=` /
-/// `$env:PATH = `), so a PATH line rendered from a PAST run's bootstrapped
+/// The prefix of the generator's own PATH scaffolding line (each dialect's
+/// own assignment syntax), so a PATH line rendered from a PAST run's bootstrapped
 /// directories is claimed as cfgd's own scaffolding rather than read as some
 /// layer's deleted entry.
 pub(super) fn path_dirs_line_prefix(platform: super::env_engine::EnvPlatform) -> Option<String> {

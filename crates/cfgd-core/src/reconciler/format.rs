@@ -88,8 +88,10 @@ pub fn pre_skip_doubling_error(subject: &str, reason: &str) -> Option<String> {
 /// mid-plan over a wording defect.
 pub(crate) fn debug_checked_pre_skip_reason(action: &Action, reason: &'static str) -> &'static str {
     if cfg!(debug_assertions)
-        && let Some(message) =
-            pre_skip_doubling_error(&action_display_subject(action).to_string(), reason)
+        && let Some(message) = pre_skip_doubling_error(
+            &action_display_subject(action, crate::output::theme::ICON_ARROW).to_string(),
+            reason,
+        )
     {
         debug_assert!(false, "{message}");
     }
@@ -250,7 +252,7 @@ pub fn condense_action_desc_for_display(action: &Action, desc: &str) -> String {
     if embeds_raw_script {
         crate::output::condense_script_label(desc)
     } else if carries_operand_list(action) {
-        action_display_subject(action).body
+        action_display_subject(action, crate::output::theme::ICON_ARROW).body
     } else {
         desc.to_string()
     }
@@ -342,8 +344,8 @@ impl std::fmt::Display for DisplaySubject {
 /// journal `resource_id`, `ActionResult.description` and the `-o json` plan
 /// payload — stay byte-identical to the source body and come from
 /// [`format_action_description`] / [`format_plan_item`] instead.
-pub fn action_display_subject(action: &Action) -> DisplaySubject {
-    action_display_subject_within(action, None)
+pub fn action_display_subject(action: &Action, arrow: &str) -> DisplaySubject {
+    action_display_subject_within(action, None, arrow)
 }
 
 /// [`action_display_subject`] for a row that knows how wide it may be.
@@ -362,7 +364,11 @@ pub fn action_display_subject(action: &Action) -> DisplaySubject {
 /// action is still one string wherever it is painted.
 ///
 /// [`Printer::subject_budget`]: crate::output::Printer::subject_budget
-pub fn action_display_subject_within(action: &Action, budget: Option<usize>) -> DisplaySubject {
+pub fn action_display_subject_within(
+    action: &Action,
+    budget: Option<usize>,
+    arrow: &str,
+) -> DisplaySubject {
     match action {
         Action::Script(ScriptAction::Run {
             entry,
@@ -391,7 +397,7 @@ pub fn action_display_subject_within(action: &Action, budget: Option<usize>) -> 
         // `-o json` plan payload and keeps the absolute path.
         _ => DisplaySubject {
             marker: None,
-            body: crate::fold_home_in_text(&plan_item(action)),
+            body: crate::fold_home_in_text(&plan_item(action, arrow)),
         },
     }
 }
@@ -530,11 +536,11 @@ fn script_body_display(run: &str, origin: &str, budget: Option<usize>, marker: &
 }
 
 /// Format one plan item for display.
-pub fn format_plan_item(action: &Action) -> String {
-    plan_item(action)
+pub fn format_plan_item(action: &Action, arrow: &str) -> String {
+    plan_item(action, arrow)
 }
 
-fn plan_item(action: &Action) -> String {
+fn plan_item(action: &Action, arrow: &str) -> String {
     match action {
         Action::File(fa) => match fa {
             FileAction::Create { target, origin, .. } => {
@@ -605,7 +611,7 @@ fn plan_item(action: &Action) -> String {
                 origin,
                 ..
             } => format!(
-                "decrypt {} → {} (via {}){}",
+                "decrypt {} {arrow} {} (via {}){}",
                 source.posix(),
                 target.posix(),
                 backend,
@@ -618,7 +624,7 @@ fn plan_item(action: &Action) -> String {
                 origin,
                 ..
             } => format!(
-                "resolve {}://{} → {}{}",
+                "resolve {}://{} {arrow} {}{}",
                 provider,
                 reference,
                 target.posix(),
@@ -631,7 +637,7 @@ fn plan_item(action: &Action) -> String {
                 origin,
                 ..
             } => format!(
-                "resolve {}://{} → env [{}]{}",
+                "resolve {}://{} {arrow} env [{}]{}",
                 provider,
                 reference,
                 envs.join(", "),
@@ -653,7 +659,7 @@ fn plan_item(action: &Action) -> String {
                 origin,
                 ..
             } => format!(
-                "set {}: {} → {}{}",
+                "set {}: {} {arrow} {}{}",
                 system_resource_key(configurator, key),
                 current,
                 desired,
@@ -761,8 +767,12 @@ fn format_manager_action_item(action: &ManagerAction) -> String {
 }
 
 /// Format one owner group's plan items for display, one per action in order.
-pub fn format_plan_items(group: &OwnerGroup) -> Vec<String> {
-    group.actions.iter().map(format_plan_item).collect()
+pub fn format_plan_items(group: &OwnerGroup, arrow: &str) -> Vec<String> {
+    group
+        .actions
+        .iter()
+        .map(|a| format_plan_item(a, arrow))
+        .collect()
 }
 
 /// Format a module action for plan display.
@@ -1265,7 +1275,8 @@ mod tests {
         )];
 
         for (action, reason) in &withheld {
-            let subject = action_display_subject(action).to_string();
+            let subject =
+                action_display_subject(action, crate::output::theme::ICON_ARROW).to_string();
             assert!(
                 pre_skip_doubling_error(&subject, reason).is_none(),
                 "{}",
@@ -1370,7 +1381,9 @@ mod tests {
                 continue;
             }
             for budget in (80..=200).map(Some).chain(std::iter::once(None)) {
-                let subject = action_display_subject_within(action, budget).to_string();
+                let subject =
+                    action_display_subject_within(action, budget, crate::output::theme::ICON_ARROW)
+                        .to_string();
                 for name in &names {
                     assert!(
                         subject.contains(name.as_str()),

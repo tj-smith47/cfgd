@@ -16,7 +16,10 @@ use crate::test_helpers::{
 
 /// Plan item strings for a whole phase, in the plan's own order.
 fn plan_items(phase: &Phase) -> Vec<String> {
-    phase.actions().map(format_plan_item).collect()
+    phase
+        .actions()
+        .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+        .collect()
 }
 
 #[test]
@@ -12839,7 +12842,9 @@ fn no_produced_detail_restates_a_total_the_subject_already_gives() {
         if !complement {
             continue;
         }
-        let subject = super::format::action_display_subject(action).to_string();
+        let subject =
+            super::format::action_display_subject(action, crate::output::theme::ICON_ARROW)
+                .to_string();
         let is_deploy = matches!(
             action,
             Action::Module(ModuleAction {
@@ -18037,12 +18042,12 @@ fn apply_module_install_packages_leaves_existing_env_file_untouched() {
     use crate::with_test_home_guard;
 
     let tmp_home = tempfile::tempdir().unwrap();
-    // Pre-create the primary env file with one path entry already present. The
-    // body is opaque sentinel bytes the assertion compares for identity, so it
-    // is deliberately not the running platform's dialect — nothing here parses
-    // it, and regenerating it would test the generator instead of the phase.
+    // Pre-create the primary env file with opaque sentinel bytes the assertion
+    // compares for identity — deliberately not any dialect's real syntax, so
+    // nothing here parses it and regenerating it would test the generator
+    // instead of the phase.
     let env_path = primary_env_file(tmp_home.path());
-    std::fs::write(&env_path, "export PATH=\"/usr/local/bin:$PATH\"\n").unwrap();
+    std::fs::write(&env_path, "UNTOUCHED SENTINEL BYTES\n").unwrap();
     let _home = with_test_home_guard(tmp_home.path());
 
     // One dir already exists in env; one is new.
@@ -18050,7 +18055,7 @@ fn apply_module_install_packages_leaves_existing_env_file_untouched() {
 
     let contents = std::fs::read_to_string(&env_path).unwrap();
     assert_eq!(
-        contents, "export PATH=\"/usr/local/bin:$PATH\"\n",
+        contents, "UNTOUCHED SENTINEL BYTES\n",
         "the Modules phase must leave the Env phase's file byte-identical: {contents}"
     );
 }
@@ -18089,9 +18094,9 @@ fn record_brew_bootstrap(state: &crate::state::StateStore) {
 }
 
 /// The PATH dirs an env file's generated line carries, joined in fold order —
-/// what every dialect agrees on. The assignment around them (`export PATH="…"`
-/// on bash, `$env:PATH = '…'` on PowerShell) is the generator's own dialect
-/// and is pinned separately in `env_engine.rs`.
+/// what every dialect agrees on. The assignment syntax around them (bash's own
+/// keyword, PowerShell's own operator) is the generator's own dialect and is
+/// pinned separately in `env_engine.rs`.
 fn dirs_in_fold_order(dirs: &[&str]) -> String {
     dirs.join(&crate::PATH_LIST_SEPARATOR.to_string())
 }
@@ -18479,10 +18484,10 @@ fn apply_converges_env_file_in_the_same_run_that_bootstraps() {
             env_path.posix()
         )
     });
-    // The dirs and their separator, not the assignment: the PATH line's
-    // spelling is the dialect's (`export PATH="…"` / `$env:PATH = '…'`) and
-    // belongs to the generator's own pins, while what this test claims is that
-    // the bootstrap's two directories reached the file in fold order.
+    // The dirs and their separator, not the assignment: the PATH line's own
+    // assignment syntax belongs to the generator's own pins, while what this
+    // test claims is that the bootstrap's two directories reached the file in
+    // fold order.
     assert!(
         contents.contains(&dirs_in_fold_order(&BREW_PATH_DIRS)),
         "the bootstrapped manager's directories must reach the env file: {contents}"
@@ -22911,11 +22916,11 @@ fn interleaved_owner_actions_collapse_into_one_group_each() {
     let nvim = &phase.groups()[1].actions;
     assert_eq!(nvim.len(), 2);
     assert!(
-        format_plan_item(&nvim[0]).contains("neovim"),
+        format_plan_item(&nvim[0], crate::output::theme::ICON_ARROW).contains("neovim"),
         "first-appearance order survives inside a group: {:?}",
         plan_items(&phase)
     );
-    assert!(format_plan_item(&nvim[1]).contains("tree-sitter"));
+    assert!(format_plan_item(&nvim[1], crate::output::theme::ICON_ARROW).contains("tree-sitter"));
     assert_eq!(phase.action_count(), 5, "grouping loses no action");
 }
 
@@ -24531,7 +24536,9 @@ fn deployed_unit_file_precedes_systemd_enable() {
         .actions()
         .next()
         .expect("the Files phase holds the module deploy");
-    assert!(format_plan_item(deploy).contains("cfgd-agent.service"));
+    assert!(
+        format_plan_item(deploy, crate::output::theme::ICON_ARROW).contains("cfgd-agent.service")
+    );
 }
 
 #[test]
@@ -24642,7 +24649,7 @@ fn a_withheld_file_leaves_the_declared_set_with_it() {
 
     let action = phase.actions().next().expect("the shrunk batch survives");
     assert_eq!(format_action_description(action), "module:mymod:files:1");
-    let item = format_plan_item(action);
+    let item = format_plan_item(action, crate::output::theme::ICON_ARROW);
     assert!(
         !item.contains("already deployed"),
         "the survivor must not claim a converged sibling, got: {item}"
@@ -24767,8 +24774,14 @@ fn to_hash_string_is_stable_across_group_permutation() {
         warnings: vec![],
     };
 
-    let walk: Vec<String> = plan.phases[1].actions().map(format_plan_item).collect();
-    let permuted_walk: Vec<String> = permuted.phases[1].actions().map(format_plan_item).collect();
+    let walk: Vec<String> = plan.phases[1]
+        .actions()
+        .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+        .collect();
+    let permuted_walk: Vec<String> = permuted.phases[1]
+        .actions()
+        .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+        .collect();
     assert_ne!(
         walk, permuted_walk,
         "the fixture must actually permute the walk order, or the assertion below is vacuous"
@@ -25318,9 +25331,11 @@ fn the_managers_group_completes_before_the_env_group_begins() {
     ]);
     let plan = prerequisites_phase(vec![
         provision_node("brew", "curl", &[]),
+        // Body content is irrelevant here — only its arrival timing on disk is
+        // asserted below — so it stays opaque rather than any dialect's syntax.
         Action::Env(EnvAction::WriteEnvFile {
             path: env_file.clone(),
-            content: "export PATH=\"/home/linuxbrew/.linuxbrew/bin:$PATH\"\n".to_string(),
+            content: "OPAQUE ENV FILE BODY\n".to_string(),
             vars: 0,
             aliases: 0,
         }),
@@ -29451,10 +29466,9 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
         );
     }
     // `written` is the file the planner wrote for THIS host, so the assertion
-    // is on the line's directory and its TAIL: the assignment syntax and the
-    // separator belong to the dialect (`export PATH="…:$PATH"` on a POSIX
-    // shell, `$env:PATH = "…;$env:PATH"` in PowerShell), and pinning one of
-    // them here asserts which platform ran the test.
+    // is on the line's directory and its TAIL: each dialect's own assignment
+    // syntax and separator belong to the generator, and pinning one of them
+    // here asserts which platform ran the test.
     assert!(
         written
             .lines()
@@ -29543,6 +29557,7 @@ fn a_patch_finding_keeps_its_own_reason() {
         &mut patched,
         crate::config::FileStrategy::Patch,
         tmp.path(),
+        &tmp.path().join("mcache"),
         &state,
     );
     assert_eq!(
@@ -29558,6 +29573,7 @@ fn a_patch_finding_keeps_its_own_reason() {
         &mut copied,
         crate::config::FileStrategy::Copy,
         tmp.path(),
+        &tmp.path().join("mcache"),
         &state,
     );
     assert_eq!(copied.actual, crate::reconciler::UNMANAGED_DRIFT_CAUSE);
@@ -29590,6 +29606,7 @@ fn a_source_not_found_finding_keeps_its_own_reason_over_an_untracked_target() {
         &mut record,
         crate::config::FileStrategy::Copy,
         tmp.path(),
+        &tmp.path().join("mcache"),
         &state,
     );
     assert_eq!(
@@ -29599,6 +29616,42 @@ fn a_source_not_found_finding_keeps_its_own_reason_over_an_untracked_target() {
     assert!(
         !record.unmanaged,
         "cfgd never looked at the target, so it cannot report it as a stranger's file"
+    );
+}
+
+/// A symlink into the run's OWN resolved module cache is cfgd's own
+/// deployment; the same path read against the per-user DEFAULT cache root
+/// answers the opposite, because nothing established that the two roots
+/// coincide. A run given `--cache-dir` deploys module symlinks under the
+/// override, so answering from the default would read every one of them as a
+/// stranger's file the moment the two roots diverge.
+#[test]
+fn a_symlink_into_the_runs_own_module_cache_is_not_unmanaged_but_a_different_root_reads_it_as_a_strangers_file()
+ {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let override_cache = tmp.path().join("override-cache").join("modules");
+    let default_cache = tmp.path().join("default-cache").join("modules");
+    std::fs::create_dir_all(&override_cache).unwrap();
+    std::fs::create_dir_all(&default_cache).unwrap();
+
+    let source = override_cache.join("nvim").join("init.lua");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "-- module file\n").unwrap();
+    let target = tmp.path().join(".config").join("nvim").join("init.lua");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    crate::create_symlink(&source, &target).unwrap();
+
+    let state = crate::state::StateStore::open_in_memory().unwrap();
+
+    assert!(
+        !crate::reconciler::is_unmanaged_file(&target, &config_dir, &override_cache, &state),
+        "a symlink into the run's own resolved module cache is cfgd's own deployment"
+    );
+    assert!(
+        crate::reconciler::is_unmanaged_file(&target, &config_dir, &default_cache, &state),
+        "the same symlink read against a different root is a stranger's file: nothing established that the two roots coincide"
     );
 }
 
