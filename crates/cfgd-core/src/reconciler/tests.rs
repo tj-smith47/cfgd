@@ -2022,6 +2022,138 @@ fn a_pinned_package_below_its_bound_is_version_drift() {
     );
 }
 
+/// The Critical this round answers: a comparator that genuinely fails to
+/// spawn (`pkg version -t`'s real shape) must propagate as
+/// [`VersionFloor::Unreadable`], never fold to `Below` — a spawn failure is a
+/// check that could not run, not a verdict that the floor was missed.
+#[test]
+fn a_comparator_that_fails_to_spawn_is_unreadable_not_below() {
+    let mgr = MockPackageManager::new("pkg")
+        .with_installed_at("ripgrep", "1.0.0")
+        .failing_version_comparisons();
+    let state = test_state();
+    let printer = test_printer();
+    let cx = test_package_context(&printer, &state);
+    let installed = cx.installed_for(&mgr).expect("the mock lists");
+
+    let verdict = crate::reconciler::package_version_floor(&mgr, &installed, "ripgrep", Some("2"));
+    match verdict {
+        crate::reconciler::VersionFloor::Unreadable { detail } => {
+            assert!(
+                detail.contains("could not compare"),
+                "the check error names what could not be compared: {detail}"
+            );
+        }
+        other => panic!(
+            "a comparator that failed to spawn must never be reported as a verdict: {other:?}"
+        ),
+    }
+}
+
+/// The same failure on the LIVE path `cmd_verify` actually calls: the
+/// comparator's spawn failure must reach the reader as `check_errors`
+/// (feeding `verify --exit-code`'s `Error` branch), never as drift.
+#[test]
+fn a_comparator_spawn_failure_reaches_verify_as_a_check_error_not_drift() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("pkg")
+            .with_installed_at("ripgrep", "1.0.0")
+            .failing_version_comparisons(),
+    ));
+
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+    let modules = vec![module_one_pinned_pkg("dev", "pkg", "ripgrep", "2")];
+
+    let report = verify(
+        &resolved,
+        &registry,
+        &state,
+        &modules,
+        &crate::providers::PackageContext::new(&printer, &state),
+        true,
+    )
+    .unwrap();
+
+    assert!(
+        !report
+            .results
+            .iter()
+            .any(|r| r.resource_id == "pkg:ripgrep" && !r.matches),
+        "a check that could not run invents no drift verdict: {:?}",
+        report.results
+    );
+    let err = report
+        .check_errors
+        .iter()
+        .find(|e| e.key == "pkg:ripgrep")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a check error for pkg:ripgrep: {:?}",
+                report.check_errors
+            )
+        });
+    assert!(
+        err.error.contains("could not compare"),
+        "the check error names the comparator that failed: {}",
+        err.error
+    );
+}
+
+/// WARN 5's ruling: a manager with no upgrade verb can never raise an
+/// already-held package, so a `Below` on it is drift no apply could ever
+/// heal — it becomes a check error at the seam where the floor is known,
+/// naming the exact reason.
+#[test]
+fn a_manager_with_no_upgrade_verb_reports_a_below_floor_package_as_a_check_error() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("norake")
+            .with_installed_at("ripgrep", "1.0.0")
+            .without_upgrade_verb(),
+    ));
+
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+    let modules = vec![module_one_pinned_pkg("dev", "norake", "ripgrep", "2")];
+
+    let report = verify(
+        &resolved,
+        &registry,
+        &state,
+        &modules,
+        &crate::providers::PackageContext::new(&printer, &state),
+        true,
+    )
+    .unwrap();
+
+    assert!(
+        !report
+            .results
+            .iter()
+            .any(|r| r.resource_id == "norake:ripgrep" && !r.matches),
+        "a package nothing can raise is a check error, not invented drift: {:?}",
+        report.results
+    );
+    let err = report
+        .check_errors
+        .iter()
+        .find(|e| e.key == "norake:ripgrep")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a check error for norake:ripgrep: {:?}",
+                report.check_errors
+            )
+        });
+    assert_eq!(
+        err.error, "cannot raise ripgrep to 2: norake has no upgrade verb",
+        "the check error names the package, the floor and the manager"
+    );
+}
+
 /// The complement: a declaration that pins nothing asks nothing about
 /// versions. A host holding an old copy of an UNPINNED package is converged —
 /// the declaration never said otherwise — so presence stays the whole

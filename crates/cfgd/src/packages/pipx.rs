@@ -96,6 +96,10 @@ impl PackageManager for PipxManager {
         "pipx"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
+
     fn tool_version(&self) -> Option<String> {
         super::shared::tool_version_from(pipx_cmd().arg("--version"))
     }
@@ -231,7 +235,7 @@ impl PackageManager for PipxManager {
         upgrade_each(cx, "pipx", &held, "pipx upgrade", |pkg| {
             let mut cmd = pipx_cmd();
             cmd.args(["upgrade", pkg]);
-            Some(cmd)
+            cmd
         })?;
         Ok(())
     }

@@ -91,6 +91,10 @@ impl PackageManager for ScoopManager {
         "scoop"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("update")
+    }
+
     fn tool_version(&self) -> Option<String> {
         super::shared::tool_version_from(scoop_cmd().arg("--version"))
     }
@@ -177,7 +181,7 @@ impl PackageManager for ScoopManager {
         upgrade_each(cx, "scoop", &held, "scoop update", |pkg| {
             let mut cmd = scoop_cmd();
             cmd.arg("update").arg(pkg);
-            Some(cmd)
+            cmd
         })?;
         Ok(())
     }

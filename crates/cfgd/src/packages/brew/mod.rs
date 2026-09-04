@@ -229,6 +229,10 @@ impl PackageManager for BrewCaskManager {
         "brew-cask"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
+
     fn tool_version(&self) -> Option<String> {
         super::shared::tool_version_from(brew_cmd().arg("--version"))
     }
@@ -272,7 +276,7 @@ impl PackageManager for BrewCaskManager {
         upgrade_each(cx, "brew-cask", &held, "brew upgrade --cask", |pkg| {
             let mut cmd = brew_cmd();
             cmd.arg("upgrade").arg("--cask").arg(pkg);
-            Some(cmd)
+            cmd
         })?;
         Ok(())
     }
@@ -343,6 +347,10 @@ impl PackageManager for BrewCaskManager {
 impl PackageManager for BrewManager {
     fn name(&self) -> &str {
         "brew"
+    }
+
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
     }
 
     fn tool_version(&self) -> Option<String> {
@@ -480,7 +488,7 @@ impl PackageManager for BrewManager {
         upgrade_each(cx, "brew", &held, "brew upgrade", |pkg| {
             let mut cmd = brew_cmd();
             cmd.arg("upgrade").arg(pkg);
-            Some(cmd)
+            cmd
         })?;
         Ok(())
     }

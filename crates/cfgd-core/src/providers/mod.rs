@@ -825,6 +825,13 @@ pub trait PackageManager: Send + Sync {
         self.version_comparable(floor)
     }
 
+    /// The verb this manager raises an already-held package with (`upgrade`,
+    /// `update`, `refresh`), or `None` for a family that cannot raise one in
+    /// place.
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Directories to add to PATH after bootstrap. Empty for managers
     /// that are already on the system PATH (apt, dnf, etc.).
     ///
@@ -1789,6 +1796,13 @@ pub(crate) struct StubPackageManager {
     /// `installed_for` memoizes successes only, so a caller retrying a failed
     /// read per package shows up here as a count, never a duration.
     enumerations: Arc<std::sync::atomic::AtomicUsize>,
+    /// Whether `version_meets_minimum_checked` fails instead of answering —
+    /// the FreeBSD `pkg version -t` shape, whose comparator genuinely shells
+    /// out and can fail to spawn.
+    comparisons_fail: bool,
+    /// Whether `upgrade_verb()` answers `None` — the family with no distinct
+    /// raise verb. `false` by default: most real managers carry one.
+    no_upgrade_verb: bool,
 }
 
 #[cfg(test)]
@@ -1806,7 +1820,25 @@ impl StubPackageManager {
             fold_case: false,
             version_queries: Arc::default(),
             enumerations: Arc::default(),
+            comparisons_fail: false,
+            no_upgrade_verb: false,
         }
+    }
+
+    /// The `pkg version -t` shape: the version comparator fails to spawn
+    /// rather than answering, so a caller judging a floor gets a check error
+    /// instead of a `bool`.
+    pub fn failing_version_comparisons(mut self) -> Self {
+        self.comparisons_fail = true;
+        self
+    }
+
+    /// A family with no distinct verb for raising an already-held package —
+    /// `upgrade_verb()` answers `None`, so a below-floor package becomes a
+    /// check error rather than a planned raise.
+    pub fn without_upgrade_verb(mut self) -> Self {
+        self.no_upgrade_verb = true;
+        self
     }
 
     /// The shared counter of this stub's version queries, taken BEFORE the stub
@@ -1934,6 +1966,19 @@ impl PackageManager for StubPackageManager {
         } else {
             entry.to_string()
         }
+    }
+    fn version_meets_minimum_checked(
+        &self,
+        available: &str,
+        min_version: &str,
+    ) -> std::result::Result<bool, String> {
+        if self.comparisons_fail {
+            return Err("stub comparator failed to spawn".to_string());
+        }
+        Ok(self.version_meets_minimum(available, min_version))
+    }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        (!self.no_upgrade_verb).then_some("upgrade")
     }
 }
 

@@ -49,6 +49,10 @@ impl PackageManager for NixManager {
         "nix"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
+
     fn tool_version(&self) -> Option<String> {
         super::shared::tool_version_from(nix_cmd().arg("--version"))
     }
@@ -159,7 +163,7 @@ impl PackageManager for NixManager {
             upgrade_each(cx, "nix", &held, "nix profile upgrade", |pkg| {
                 let mut cmd = nix_cmd();
                 cmd.args(["profile", "upgrade", &format!("nixpkgs#{}", pkg)]);
-                Some(cmd)
+                cmd
             })?;
         } else {
             install_batch_then_per_package(cx, "nix", &fresh, |pkgs| {
@@ -173,7 +177,7 @@ impl PackageManager for NixManager {
             upgrade_each(cx, "nix", &held, "nix-env -u", |pkg| {
                 let mut cmd = nix_env_cmd();
                 cmd.args(["-u", pkg]);
-                Some(cmd)
+                cmd
             })?;
         }
         Ok(())
@@ -232,30 +236,45 @@ impl PackageManager for NixManager {
     }
 }
 
-/// Parse `nix profile list --json` stdout into a `HashSet` of profile element
-/// names. Handles both JSON shapes nix has emitted: the modern (`version` 3)
-/// object form where `elements` is keyed by element name, and the legacy
-/// (`version` 1/2) array form where each entry is named from its `attrPath`'s
-/// final `.`-segment (falling back to the flake fragment after `#` in
-/// `originalUrl`/`url`). Entries that cannot be named are dropped. Returns an
-/// empty set on missing/empty/malformed JSON.
-pub(super) fn parse_nix_profile_list_json(stdout: &str) -> HashSet<String> {
+/// Every profile element as `(name, element)` pairs, across both JSON shapes
+/// nix has emitted: the modern (`version` 3) object form keyed by element
+/// name, and the legacy (`version` 1/2) array form named via
+/// [`element_name_from_value`] (its `attrPath`'s final `.`-segment, falling
+/// back to the flake fragment after `#` in `originalUrl`/`url`). The ONE walk
+/// [`parse_nix_profile_list_json`] and [`parse_nix_profile_list_versions`]
+/// both consume, so an array-shaped `elements` (nix 2.13-2.19) reads
+/// identically to the object shape instead of the version parser silently
+/// reporting nothing installed. Entries that cannot be named are dropped;
+/// returns empty on missing/malformed JSON.
+fn nix_profile_elements(stdout: &str) -> Vec<(String, serde_json::Value)> {
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(stdout) else {
-        return HashSet::new();
+        return Vec::new();
     };
     let Some(elements) = parsed.get("elements") else {
-        return HashSet::new();
+        return Vec::new();
     };
 
     if let Some(obj) = elements.as_object() {
-        return obj.keys().cloned().collect();
+        return obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     }
 
     if let Some(arr) = elements.as_array() {
-        return arr.iter().filter_map(element_name_from_value).collect();
+        return arr
+            .iter()
+            .filter_map(|v| element_name_from_value(v).map(|name| (name, v.clone())))
+            .collect();
     }
 
-    HashSet::new()
+    Vec::new()
+}
+
+/// Parse `nix profile list --json` stdout into a `HashSet` of profile element
+/// names, over [`nix_profile_elements`]'s shared walk of both JSON shapes.
+pub(super) fn parse_nix_profile_list_json(stdout: &str) -> HashSet<String> {
+    nix_profile_elements(stdout)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// Parse `nix profile list --json` stdout into `(name, version)` pairs,
@@ -266,27 +285,17 @@ pub(super) fn parse_nix_profile_list_json(stdout: &str) -> HashSet<String> {
 pub(super) fn parse_nix_profile_list_versions(
     stdout: &str,
 ) -> Vec<cfgd_core::providers::PackageInfo> {
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(stdout) else {
-        return Vec::new();
-    };
-    let Some(elements) = parsed.get("elements").and_then(|v| v.as_object()) else {
-        return Vec::new();
-    };
-
-    elements
-        .iter()
+    nix_profile_elements(stdout)
+        .into_iter()
         .map(|(name, entry)| {
             let version = entry
                 .get("storePaths")
                 .and_then(|v| v.as_array())
                 .and_then(|paths| paths.first())
                 .and_then(|v| v.as_str())
-                .and_then(|path| nix_store_path_version(path, name))
+                .and_then(|path| nix_store_path_version(path, &name))
                 .unwrap_or_else(|| cfgd_core::providers::UNKNOWN_PACKAGE_VERSION.to_string());
-            cfgd_core::providers::PackageInfo {
-                name: name.clone(),
-                version,
-            }
+            cfgd_core::providers::PackageInfo { name, version }
         })
         .collect()
 }
@@ -295,6 +304,12 @@ pub(super) fn parse_nix_profile_list_versions(
 /// (`/nix/store/<32-char-hash>-<name>-<version>` → `<version>`): strip the
 /// store hash prefix up to its first `-` (the hash itself never contains
 /// one), then strip a leading `<name>-` if the remainder still carries it.
+/// The stripped remainder is trusted only when its LAST `-`-segment actually
+/// parses as a version: a `name` that does not match the store path's own
+/// (a normalization drift between the declared entry and what nix stored)
+/// leaves the whole unstripped remainder as the fallback, and returning that
+/// verbatim would report a non-version string as "the version" instead of
+/// admitting the read failed.
 fn nix_store_path_version(store_path: &str, name: &str) -> Option<String> {
     let basename = store_path.rsplit('/').next()?;
     let after_hash = basename.split_once('-')?.1;
@@ -303,10 +318,11 @@ fn nix_store_path_version(store_path: &str, name: &str) -> Option<String> {
         .and_then(|rest| rest.strip_prefix('-'))
         .unwrap_or(after_hash);
     if version.is_empty() {
-        None
-    } else {
-        Some(version.to_string())
+        return None;
     }
+    let last_segment = version.rsplit('-').next()?;
+    cfgd_core::parse_loose_version(last_segment)?;
+    Some(version.to_string())
 }
 
 /// Derive a profile element name from a legacy (array-shape) `elements` entry.
@@ -405,6 +421,20 @@ mod tests {
         assert!(parse_nix_profile_list_versions("not json").is_empty());
     }
 
+    /// nix 2.18's `elements` is an ARRAY (pre-2.20 shape), not the modern
+    /// object form — before I-1, `parse_nix_profile_list_versions` required
+    /// an object and reported every array-shaped profile as holding nothing,
+    /// silently planning a reinstall of every package it already held on
+    /// every reconcile.
+    #[test]
+    fn parse_nix_profile_list_versions_nix_2_18_array_shape() {
+        let stdout = r#"{"elements":[{"active":true,"attrPath":"legacyPackages.x86_64-linux.ripgrep","originalUrl":"flake:nixpkgs","storePaths":["/nix/store/9r9z5r5r5r5r5r5r5r5r5r5r5r5r5r5r-ripgrep-14.1.0"],"url":"github:NixOS/nixpkgs/abc123"}],"version":2}"#;
+        let versions = parse_nix_profile_list_versions(stdout);
+        assert_eq!(versions.len(), 1, "the array shape names its elements too");
+        assert_eq!(versions[0].name, "ripgrep");
+        assert_eq!(versions[0].version, "14.1.0");
+    }
+
     #[test]
     fn nix_store_path_version_strips_hash_and_name() {
         assert_eq!(
@@ -413,6 +443,20 @@ mod tests {
                 "ripgrep"
             ),
             Some("14.1.0".to_string())
+        );
+    }
+
+    /// A store path whose basename does not carry the declared name at all —
+    /// no readable version segment survives the fallback — is a read that
+    /// failed, never a string reported as though it were a version.
+    #[test]
+    fn nix_store_path_version_unreadable_remainder_is_none() {
+        assert_eq!(
+            nix_store_path_version(
+                "/nix/store/9r9z5r5r5r5r5r5r5r5r5r5r5r5r5r5r-not-a-version-at-all",
+                "ripgrep"
+            ),
+            None
         );
     }
 

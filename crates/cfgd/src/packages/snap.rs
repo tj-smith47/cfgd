@@ -11,7 +11,7 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 use super::shared::detect_system_method;
 use super::shared::{
     MediatedArms, bootstrap_via_system_manager, partition_already_installed,
-    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, run_pkg_query, sudo_cmd_with_seam,
+    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, sudo_cmd_with_seam,
     system_manager_arms, tool_cmd_with_resolver, upgrade_each,
 };
 
@@ -36,6 +36,10 @@ pub(super) fn snap_cmd() -> Command {
 impl PackageManager for SnapManager {
     fn name(&self) -> &str {
         "snap"
+    }
+
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("refresh")
     }
 
     fn tool_version(&self) -> Option<String> {
@@ -75,7 +79,9 @@ impl PackageManager for SnapManager {
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<HashSet<String>> {
-        let output = run_pkg_cmd("snap", snap_cmd().args(["list"]), "list")?;
+        // A listing read tolerates a nonzero exit rather than erroring — the
+        // same treatment every other manager's read side gets.
+        let output = run_pkg_query("snap", snap_cmd().args(["list"]))?;
         Ok(parse_snap_list(&String::from_utf8_lossy(&output.stdout)))
     }
 
@@ -83,7 +89,7 @@ impl PackageManager for SnapManager {
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
-        let output = run_pkg_cmd("snap", snap_cmd().args(["list"]), "list")?;
+        let output = run_pkg_query("snap", snap_cmd().args(["list"]))?;
         Ok(parse_snap_list_versions(&String::from_utf8_lossy(
             &output.stdout,
         )))
@@ -126,7 +132,7 @@ impl PackageManager for SnapManager {
         upgrade_each(cx, "snap", &held, "snap refresh", |pkg| {
             let mut cmd = sudo_cmd_with_seam("snap");
             cmd.arg("refresh").arg(pkg);
-            Some(cmd)
+            cmd
         })?;
         Ok(())
     }
@@ -165,9 +171,9 @@ impl PackageManager for SnapManager {
 ///
 /// `snap list` emits a header row (`Name Version Rev Tracking Publisher Notes`)
 /// followed by one row per snap; the first whitespace-separated token in each
-/// data row is the snap name. We unconditionally skip the first line — empty
-/// installations still emit a header (or an empty stdout, in which case the
-/// `skip(1)` no-op is safe).
+/// data row is the snap name. The first line is unconditionally skipped —
+/// empty installations still emit a header (or an empty stdout, in which
+/// case the `skip(1)` no-op is safe).
 pub(super) fn parse_snap_list(stdout: &str) -> HashSet<String> {
     stdout
         .lines()
@@ -548,7 +554,7 @@ ripgrep   14.1.0   234    latest/stable  burntsushi    classic
             // (because run_pkg_cmd_live now surfaces stderr in the error
             // message) and a second attempt is fired with `--classic`. The
             // shim is the same for both attempts, so the second also fails
-            // — we only assert that both argvs landed. The partitioning
+            // — only that both argvs landed is asserted here. The partitioning
             // `list` call also fails on this shim, which fails held/fresh
             // open (fresh = every package), so it does not change the retry
             // shape — just adds one more invocation.
@@ -640,6 +646,21 @@ ripgrep   14.1.0   234   latest/stable  burntsushi   classic
             let pkgs = SnapManager.installed_packages(&cx).expect("Ok");
             assert!(pkgs.contains("core22"));
             assert!(pkgs.contains("ripgrep"));
+        }
+
+        #[test]
+        #[serial]
+        fn snap_installed_packages_nonzero_exit_is_empty_not_error() {
+            // A listing read tolerates a nonzero exit (`run_pkg_query`, not
+            // `run_pkg_cmd`) the same way flatpak's and scoop's do.
+            let _s = ToolShim::install(SHIM_ENV, 1, "", "no snaps installed\n");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = SnapManager
+                .installed_packages(&cx)
+                .expect("nonzero exit must be Ok(empty), not Err");
+            assert!(pkgs.is_empty());
         }
 
         #[test]

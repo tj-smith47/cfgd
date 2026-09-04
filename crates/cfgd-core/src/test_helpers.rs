@@ -3202,6 +3202,10 @@ pub struct MockPackageManager {
     /// the FreeBSD `pkg version -t` shape, whose comparator genuinely shells
     /// out and can fail to spawn.
     comparisons_fail: bool,
+    /// Whether `upgrade_verb()` answers `None` — the family with no distinct
+    /// raise verb, so a below-floor package is a check error rather than a
+    /// planned raise. `false` by default: most real managers carry a verb.
+    no_upgrade_verb: bool,
 }
 
 impl MockPackageManager {
@@ -3233,6 +3237,7 @@ impl MockPackageManager {
             registers_sources: false,
             versions: std::collections::BTreeMap::new(),
             comparisons_fail: false,
+            no_upgrade_verb: false,
         }
     }
 
@@ -3241,6 +3246,14 @@ impl MockPackageManager {
     /// instead of a `bool`.
     pub fn failing_version_comparisons(mut self) -> Self {
         self.comparisons_fail = true;
+        self
+    }
+
+    /// A family with no distinct verb for raising an already-held package —
+    /// `upgrade_verb()` answers `None`, so a below-floor package becomes a
+    /// check error rather than a planned raise.
+    pub fn without_upgrade_verb(mut self) -> Self {
+        self.no_upgrade_verb = true;
         self
     }
 
@@ -3438,6 +3451,10 @@ impl Drop for WitnessGuard<'_> {
 impl crate::providers::PackageManager for MockPackageManager {
     fn name(&self) -> &str {
         &self.mgr_name
+    }
+
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        (!self.no_upgrade_verb).then_some("upgrade")
     }
 
     fn is_available(&self) -> bool {

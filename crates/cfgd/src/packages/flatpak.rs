@@ -11,7 +11,7 @@ use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 use super::shared::detect_system_method;
 use super::shared::{
     MediatedArms, bootstrap_via_system_manager, parse_version_field, partition_already_installed,
-    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, run_pkg_query, system_manager_arms,
+    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, system_manager_arms,
     tool_cmd_with_resolver, upgrade_each,
 };
 
@@ -35,6 +35,10 @@ pub(super) fn flatpak_cmd() -> Command {
 impl PackageManager for FlatpakManager {
     fn name(&self) -> &str {
         "flatpak"
+    }
+
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("update")
     }
 
     fn tool_version(&self) -> Option<String> {
@@ -70,10 +74,12 @@ impl PackageManager for FlatpakManager {
     }
 
     fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
-        let output = run_pkg_cmd(
+        // A listing read tolerates a nonzero exit (an empty install has
+        // nothing to say about) rather than erroring — the same treatment
+        // every other manager's read side gets.
+        let output = run_pkg_query(
             "flatpak",
             flatpak_cmd().args(["list", "--app", "--columns=application"]),
-            "list",
         )?;
         Ok(parse_flatpak_app_list(&String::from_utf8_lossy(
             &output.stdout,
@@ -84,10 +90,9 @@ impl PackageManager for FlatpakManager {
         &self,
         _cx: &PackageContext<'_>,
     ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
-        let output = run_pkg_cmd(
+        let output = run_pkg_query(
             "flatpak",
             flatpak_cmd().args(["list", "--app", "--columns=application,version"]),
-            "list",
         )?;
         Ok(parse_flatpak_app_list_versions(&String::from_utf8_lossy(
             &output.stdout,
@@ -111,7 +116,7 @@ impl PackageManager for FlatpakManager {
         upgrade_each(cx, "flatpak", &held, "flatpak update -y", |pkg| {
             let mut cmd = flatpak_cmd();
             cmd.args(["update", "-y", pkg]);
-            Some(cmd)
+            cmd
         })?;
         Ok(())
     }
@@ -464,6 +469,22 @@ mod tests {
             let pkgs = FlatpakManager.installed_packages(&cx).expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("org.mozilla.firefox"));
+        }
+
+        #[test]
+        #[serial]
+        fn flatpak_installed_packages_nonzero_exit_is_empty_not_error() {
+            // A listing read tolerates a nonzero exit (`run_pkg_query`, not
+            // `run_pkg_cmd`) the same way scoop's and apk's do — a manager
+            // reporting nothing installed must not abort the whole apply.
+            let _s = ToolShim::install(SHIM_ENV, 1, "", "no apps installed\n");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = FlatpakManager
+                .installed_packages(&cx)
+                .expect("nonzero exit must be Ok(empty), not Err");
+            assert!(pkgs.is_empty());
         }
 
         #[test]

@@ -942,3 +942,11 @@ fn a_fourpart_version_clears_a_shorter_declared_floor() {
     assert!(!fourpart_version_meets_minimum("132.9.9999.99", "133"));
     assert!(!fourpart_comparable(">=1.2"));
 }
+
+/// A fifth dot-separated component is refused outright — the boundary the
+/// `.take(5).count()` length check has to hold without ever collecting a
+/// component past the fourth.
+#[test]
+fn a_fifth_version_component_is_not_comparable() {
+    assert!(!fourpart_comparable("1.2.3.4.5"));
+}

@@ -317,12 +317,15 @@ pub(super) fn brew_comparable(raw: &str) -> bool {
 /// refuses outright, so a `minVersion` against one such listing was a
 /// permanent check error under the shared semver comparator.
 fn fourpart_components(raw: &str) -> Option<[u64; 4]> {
-    let parts: Vec<&str> = raw.trim().trim_start_matches('v').split('.').collect();
-    if parts.is_empty() || parts.len() > 4 {
+    let trimmed = raw.trim().trim_start_matches('v');
+    // `.take(5).count()` answers "more than four?" without collecting every
+    // component into a `Vec` just to read its length.
+    let count = trimmed.split('.').take(5).count();
+    if count == 0 || count > 4 {
         return None;
     }
     let mut out = [0u64; 4];
-    for (slot, part) in out.iter_mut().zip(parts.iter()) {
+    for (slot, part) in out.iter_mut().zip(trimmed.split('.')) {
         *slot = part.parse().ok()?;
     }
     Some(out)

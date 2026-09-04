@@ -80,6 +80,10 @@ impl PackageManager for ChocolateyManager {
         "chocolatey"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
+
     fn tool_version(&self) -> Option<String> {
         super::shared::tool_version_from(Command::new("choco").arg("--version"))
     }
@@ -177,7 +181,7 @@ impl PackageManager for ChocolateyManager {
         upgrade_each(cx, "chocolatey", &held, "choco upgrade -y", |pkg| {
             let mut cmd = Command::new("choco");
             cmd.args(["upgrade", "-y", pkg]);
-            Some(cmd)
+            cmd
         })?;
         Ok(())
     }
