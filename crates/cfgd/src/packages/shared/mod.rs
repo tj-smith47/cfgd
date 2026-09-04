@@ -644,12 +644,13 @@ pub(super) fn partition_already_installed(
 /// Raise packages the manager already holds to the version it currently offers,
 /// one invocation per package so a failure for one does not withhold the rest.
 /// `verb_label` is the command as the reader sees it (`brew upgrade --cask`),
-/// and `build_cmd` supplies the matching argv. A manager with no distinct
-/// upgrade verb never reaches here at all: `PackageManager::upgrade_verb`
+/// and `build_cmd` supplies the matching argv. A manager that cannot raise a
+/// package in place at all never reaches here: `PackageManager::upgrade_verb`
 /// answering `None` turns a below-floor package into a
-/// [`cfgd_core::reconciler::VersionFloor::Unreadable`] check error at PLAN time,
-/// where the floor is known, so this function's every caller already has a
-/// verb to spell.
+/// [`cfgd_core::reconciler::VersionFloor::Unreadable`] check error at PLAN
+/// time, where the floor is known. Every caller therefore spells a verb —
+/// the family's distinct raise, or its install verb where that already
+/// replaces an older copy.
 pub(super) fn upgrade_each<F>(
     cx: &PackageContext<'_>,
     manager: &str,

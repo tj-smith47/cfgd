@@ -306,11 +306,24 @@ pub(super) fn parse_nix_profile_list_versions(
         .collect()
 }
 
+/// The output names a multi-output derivation's store paths end in
+/// (`…-curl-8.4.0-bin`, `…-curl-8.4.0-dev`): nix's own closed vocabulary, so a
+/// trailing `-<output>` is peeled before the version search. `dev` is
+/// deliberately in the set — a `-dev` OUTPUT is far more common in a profile
+/// than a `-dev` PRERELEASE, and misreading the output as a prerelease reports
+/// a converged package as below its floor forever, while misreading a
+/// prerelease as its release number only overstates it by that number.
+const NIX_OUTPUT_NAMES: &[&str] = &[
+    "out", "bin", "dev", "lib", "man", "doc", "info", "devdoc", "devman", "debug", "static", "dist",
+];
+
 /// Extract the version segment from a nix store path basename
 /// (`/nix/store/<32-char-hash>-<name>-<version>` → `<version>`): strip the
 /// store hash prefix up to its first `-` (the hash itself never contains
 /// one), then strip a leading `<name>-` if the remainder still carries it.
-/// The remainder is trusted whole when it parses as a version outright
+/// A trailing `-<output>` from [`NIX_OUTPUT_NAMES`] is peeled next, since
+/// `8.4.0-bin` would otherwise read as a prerelease below `8.4.0`. The
+/// remainder is then trusted whole when it parses as a version outright
 /// (`0.10.0-dev`, `3.0.0-rc1` — a prerelease that carries its own `-`), else
 /// the search peels each `-`-delimited suffix in turn (`ripgrep-14.1.0` under
 /// an element named `rg`, whose remainder does not repeat the store path's
@@ -323,6 +336,10 @@ fn nix_store_path_version(store_path: &str, name: &str) -> Option<String> {
         .strip_prefix(name)
         .and_then(|rest| rest.strip_prefix('-'))
         .unwrap_or(after_hash);
+    let remainder = remainder
+        .rsplit_once('-')
+        .filter(|(_, tail)| NIX_OUTPUT_NAMES.contains(tail))
+        .map_or(remainder, |(head, _)| head);
     std::iter::once(remainder)
         .chain(
             remainder
@@ -484,17 +501,43 @@ mod tests {
         );
     }
 
-    /// A prerelease/dev version carries its own `-` (`0.10.0-dev`) and is a
-    /// version in its own right — peeling to its last `-`-segment (`dev`)
+    /// A prerelease/dev version carries its own `-` (`3.0.0-rc1`) and is a
+    /// version in its own right — peeling to its last `-`-segment (`rc1`)
     /// would discard it, so the whole remainder is tried before any peel.
+    /// `rc1` is deliberately outside [`NIX_OUTPUT_NAMES`], unlike `dev`
+    /// (covered separately by `nix_store_path_version_peels_a_multi_output_suffix`),
+    /// so this fixture stays a clean prerelease-vs-output contrast.
     #[test]
     fn nix_store_path_version_keeps_a_prerelease_whole() {
         assert_eq!(
             nix_store_path_version(
-                "/nix/store/9r9z5r5r5r5r5r5r5r5r5r5r5r5r5r5r-neovim-0.10.0-dev",
-                "neovim"
+                "/nix/store/9r9z5r5r5r5r5r5r5r5r5r5r5r5r5r5r-openssl-3.0.0-rc1",
+                "openssl"
             ),
-            Some("0.10.0-dev".to_string())
+            Some("3.0.0-rc1".to_string())
+        );
+    }
+
+    /// A multi-output derivation's store path ends in `-<output>`
+    /// (`curl-8.4.0-bin`), which a prerelease-preferring reader would
+    /// otherwise misread as `8.4.0-bin` below the real `8.4.0` — a false
+    /// drift no apply can heal. `-dev` is the sharpest case: it is both a
+    /// real nix output name and a plausible-looking prerelease tag.
+    #[test]
+    fn nix_store_path_version_peels_a_multi_output_suffix() {
+        assert_eq!(
+            nix_store_path_version(
+                "/nix/store/9r9z5r5r5r5r5r5r5r5r5r5r5r5r5r5r-curl-8.4.0-bin",
+                "curl"
+            ),
+            Some("8.4.0".to_string())
+        );
+        assert_eq!(
+            nix_store_path_version(
+                "/nix/store/9r9z5r5r5r5r5r5r5r5r5r5r5r5r5r5r-curl-8.4.0-dev",
+                "curl"
+            ),
+            Some("8.4.0".to_string())
         );
     }
 
