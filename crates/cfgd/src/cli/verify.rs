@@ -228,6 +228,7 @@ pub fn cmd_verify(
             &resolved_modules,
             &registry,
         )
+        .rows
     };
     // The recording above persisted the opaque `current`/`missing or
     // changed` markers for every env-var/alias row (the declared value must

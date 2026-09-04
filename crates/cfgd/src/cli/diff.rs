@@ -846,7 +846,8 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         &package_check_errors,
         &resolved_modules,
         registry,
-    );
+    )
+    .rows;
     let has_standing_drift = {
         let sec = printer.section_or_collapse("Standing");
         let _inherit = printer.depth_inheritance();

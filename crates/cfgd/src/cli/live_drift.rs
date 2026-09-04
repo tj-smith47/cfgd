@@ -309,6 +309,15 @@ pub(super) fn chain_owns_row<'c>(
         .map(|(m, _)| m)
 }
 
+/// What a scoped scan left standing, with the scopes it judged them by — so a
+/// caller classifying the rows afterwards reads the same scopes, built once.
+/// Both empty when no recorded row was this chain's to judge.
+#[derive(Default)]
+pub(super) struct ScopedStanding {
+    pub(super) rows: Vec<cfgd_core::state::DriftEvent>,
+    pub(super) scopes: Vec<cfgd_core::reconciler::ModuleScope>,
+}
+
 /// The record half of a SCOPED (`--module`) live check (see the module doc):
 /// one row per finding, then `resolve_drift_in` over `checked` minus the
 /// found set — the keys the check re-checked and proved clean. Nothing
@@ -346,8 +355,8 @@ pub(super) fn record_scoped_scan_findings<'a>(
     check_errors: &[super::output_types::SystemCheckError],
     chain: &[cfgd_core::modules::ResolvedModule],
     registry: &cfgd_core::providers::ProviderRegistry,
-) -> Vec<cfgd_core::state::DriftEvent> {
-    let mut standing = Vec::new();
+) -> ScopedStanding {
+    let mut standing = ScopedStanding::default();
     // Borrowed once over `checked`: the standing filter below asks "is this
     // id one this run re-checked" per recorded row, and a per-row
     // `checked.iter().any(...)` linear scan is quadratic in the recorded row
@@ -385,13 +394,14 @@ pub(super) fn record_scoped_scan_findings<'a>(
                     &dyn cfgd_core::providers::PackageManager,
                 > = managers.iter().map(|(k, v)| (k.as_str(), *v)).collect();
                 let scopes = chain_scopes(chain, &managers);
-                standing = rows
+                standing.rows = rows
                     .into_iter()
                     .filter(|e| {
                         chain_owns_row(chain, &scopes, &e.resource_type, &e.resource_id).is_some()
                             && !checked_ids.contains(&(e.resource_type.as_str(), e.resource_id.as_str()))
                     })
                     .collect();
+                standing.scopes = scopes;
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to read recorded drift; leaving standing rows unreported");
