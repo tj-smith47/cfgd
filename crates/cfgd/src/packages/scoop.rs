@@ -61,7 +61,7 @@ pub(super) fn parse_scoop_export(output: &str) -> HashSet<String> {
 /// Installed apps WITH versions for `installed_packages_with_versions`. Unlike
 /// [`parse_scoop_export`] this preserves the REGISTERED app-name case for display
 /// (the scan/status surface) and carries `scoop export`'s reported `Version`.
-fn parse_scoop_export_versions(output: &str) -> Vec<PackageInfo> {
+pub(super) fn parse_scoop_export_versions(output: &str) -> Vec<PackageInfo> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(output) else {
         return Vec::new();
     };

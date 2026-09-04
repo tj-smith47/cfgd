@@ -17,7 +17,7 @@ pub struct WingetManager;
 /// the version is the first token of the Version column (any trailing `Available`/
 /// `Source` columns are ignored). This is the primitive; [`parse_winget_list`]
 /// derives the case-folded identity set from it.
-fn parse_winget_list_versions(output: &str) -> Vec<PackageInfo> {
+pub(super) fn parse_winget_list_versions(output: &str) -> Vec<PackageInfo> {
     let mut out = Vec::new();
     let mut header_seen = false;
     let mut id_start = 0;
