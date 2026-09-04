@@ -1207,7 +1207,7 @@ fn embedded_version_spec(entry: &str) -> Option<String> {
     if !looks_like_spec {
         return None;
     }
-    let normalized = raw.strip_prefix(['v', 'V']).unwrap_or(raw);
+    let normalized = crate::declared_floor_version(raw);
     semver::VersionReq::parse(normalized).ok()?;
     Some(normalized.to_string())
 }

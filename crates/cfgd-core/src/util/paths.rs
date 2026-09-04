@@ -670,6 +670,19 @@ pub fn resolve_cache_dir(
     }
 }
 
+/// The module cache root under a resolved cache dir: `<cache>/modules`.
+///
+/// The ONE composition of [`resolve_cache_dir`] plus `MODULE_CACHE_SEGMENT`;
+/// every caller resolving a module cache root from an override and a scope
+/// reaches this instead of re-joining the segment by hand, or a re-rooted
+/// cache dir (`--cache-dir`) and the module cache it should carry drift apart.
+pub fn module_cache_root(
+    cache_over: Option<&std::path::Path>,
+    scope: Scope,
+) -> crate::errors::Result<std::path::PathBuf> {
+    Ok(resolve_cache_dir(cache_over, scope)?.join(MODULE_CACHE_SEGMENT))
+}
+
 /// Resolve the runtime directory, applying an explicit override when present.
 ///
 /// When `None`, falls through to [`default_runtime_dir_for`] for the given

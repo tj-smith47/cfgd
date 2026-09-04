@@ -2032,7 +2032,6 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
         &resolved,
         &[],
         dir.path(),
-        dir.path(),
         ApplyPlanOpts {
             sources: &[],
             dry_run: false,
@@ -2043,6 +2042,7 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     );
@@ -2662,7 +2662,6 @@ fn init_apply_copies_an_unmanaged_target_aside_before_writing_it() {
         &resolved,
         &[],
         dir.path(),
-        dir.path(),
         ApplyPlanOpts {
             sources: &[],
             dry_run: false,
@@ -2673,6 +2672,7 @@ fn init_apply_copies_an_unmanaged_target_aside_before_writing_it() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     )
@@ -2727,7 +2727,6 @@ fn init_dry_run_never_copies_anything_aside() {
         &resolved,
         &[],
         dir.path(),
-        dir.path(),
         ApplyPlanOpts {
             sources: &[],
             dry_run: true,
@@ -2738,6 +2737,7 @@ fn init_dry_run_never_copies_anything_aside() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     )
@@ -2790,7 +2790,6 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
         &resolved,
         &[],
         dir.path(),
-        dir.path(),
         ApplyPlanOpts {
             sources: &[],
             dry_run: false,
@@ -2801,6 +2800,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     );
@@ -2866,7 +2866,6 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
         &resolved,
         &[],
         dir.path(),
-        dir.path(),
         ApplyPlanOpts {
             sources: &[],
             dry_run: false,
@@ -2877,6 +2876,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     );
@@ -2961,7 +2961,6 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
         &resolved,
         std::slice::from_ref(&module),
         dir.path(),
-        dir.path(),
         ApplyPlanOpts {
             sources: &[],
             dry_run: false,
@@ -2972,6 +2971,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     );
@@ -3035,7 +3035,6 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
         &resolved,
         &[],
         dir.path(),
-        dir.path(),
         ApplyPlanOpts {
             sources: &[],
             dry_run: false,
@@ -3046,6 +3045,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     );
@@ -3101,7 +3101,6 @@ fn apply_plan_dry_run_skips_apply() {
         &resolved,
         &[],
         dir.path(),
-        dir.path(),
         ApplyPlanOpts {
             sources: &[],
             dry_run: true,
@@ -3112,6 +3111,7 @@ fn apply_plan_dry_run_skips_apply() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     );
@@ -5962,7 +5962,6 @@ fn init_apply_settles_the_hash_of_every_link_deployed_row_before_it_returns() {
         &resolved,
         &modules,
         dir.path(),
-        dir.path(),
         ApplyPlanOpts {
             sources: &[],
             dry_run: false,
@@ -5973,6 +5972,7 @@ fn init_apply_settles_the_hash_of_every_link_deployed_row_before_it_returns() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     )

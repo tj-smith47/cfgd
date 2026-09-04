@@ -265,7 +265,6 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &resolved,
                 &resolved_modules,
                 &target_dir,
-                &cache_base,
                 ApplyPlanOpts {
                     // A module-only apply resolves no profile, so it names no
                     // `Profile` row — but the config it just read still
@@ -281,6 +280,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     state: &store,
                     on_conflict: args.on_conflict,
                     default_strategy: registry.default_file_strategy,
+                    module_cache: &cache_base,
                 },
                 printer,
             )?;
@@ -405,7 +405,6 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &resolved,
                 &resolved_modules,
                 &target_dir,
-                &cache_base,
                 ApplyPlanOpts {
                     sources: &declared_sources,
                     dry_run: args.dry_run,
@@ -416,6 +415,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     state: &store,
                     on_conflict: args.on_conflict,
                     default_strategy: registry.default_file_strategy,
+                    module_cache: &cache_base,
                 },
                 printer,
             )?;
@@ -598,6 +598,9 @@ pub(super) struct ApplyPlanOpts<'a> {
     /// The config's global `fileStrategy`, which decides what a module file
     /// declaring no strategy of its own will actually write.
     pub default_strategy: cfgd_core::config::FileStrategy,
+    /// The run's own resolved module cache root, for the conflict pass's
+    /// judgment of whether a target is cfgd's own deployed symlink.
+    pub module_cache: &'a Path,
 }
 
 /// Run the scaffolded configuration through the one run skeleton: header,
@@ -608,14 +611,12 @@ pub(super) struct ApplyPlanOpts<'a> {
 /// The terminal paths that run no actions (nothing to do, dry-run, declined
 /// confirmation) report [`cfgd_core::state::ApplyStatus::Success`]: nothing failed because
 /// nothing ran.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_plan(
     plan: &mut cfgd_core::reconciler::Plan,
     reconciler: cfgd_core::reconciler::Reconciler<'_>,
     resolved: &config::ResolvedProfile,
     modules: &[cfgd_core::modules::ResolvedModule],
     config_dir: &Path,
-    module_cache: &Path,
     opts: ApplyPlanOpts<'_>,
     printer: &Printer,
 ) -> anyhow::Result<cfgd_core::state::ApplyStatus> {
@@ -629,7 +630,7 @@ pub(super) fn apply_plan(
         reconciler.backing_up(crate::cli::plan_ops::handle_unmanaged_file_targets(
             plan,
             config_dir,
-            module_cache,
+            opts.module_cache,
             opts.state,
             printer,
             opts.yes,

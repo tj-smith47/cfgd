@@ -176,6 +176,12 @@ core → base → macos → work
  └── grandparent (resolved because base inherits it)
 ```
 
+Every command reporting on a resolved profile — `apply`, `plan`, `diff`, `sync`, `status` — opens on
+the same header, and its `Profile` row carries an `(inherits: …)` annotation only for what the
+`inherits` chain actually added beyond the profile you named: `Profile work (inherits: core →
+shared)` when `work` extends other profiles, no annotation at all when it inherits nothing. The
+[`modules` field](#the-modules-field) resolves the same way, and its own row is annotated the same way.
+
 ### Merge Rules
 
 | Resource | Merge Strategy |

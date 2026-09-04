@@ -340,8 +340,8 @@ pub fn query_daemon_status(
     // Cap total bytes read from the daemon so a hijacked or hostile peer
     // can't stream multi-GiB garbage and OOM the CLI. The `Take` wrapper
     // returns Ok(0) once `MAX_RESPONSE_BYTES` are consumed, which BufRead
-    // reports as a clean EOF — we then look at the underlying `limit()`
-    // to distinguish "real EOF" from "cap reached".
+    // reports as a clean EOF — the underlying `limit()` then distinguishes
+    // "real EOF" from "cap reached".
     let mut limited = std::io::Read::take(&mut stream, MAX_RESPONSE_BYTES);
     let reader = BufReader::new(&mut limited);
     let mut lines: Vec<String> = Vec::new();

@@ -1109,10 +1109,9 @@ cold cache changes nothing about the header. The body below reports what the
 pull changed; the plan the closing hint invites reads the new set.
 
 `Profile` and `Modules` carry an annotation only for what the RESOLUTION added
-beyond the declared list: `Profile work (inherits: core -> shared)` when the
-profile extends others, `Modules git, nvim (depends: plugins)` when a
-`dependsOn` pulled a module in that neither the profile nor the invocation
-named. Neither row carries an annotation when the resolution added nothing.
+beyond the declared list — see [Profiles → Inheritance](profiles.md#inheritance)
+and [Modules → Dependency Resolution](modules.md#dependency-resolution) for the
+rule and its `(inherits: …)` / `(depends: …)` shapes.
 
 The `Local Repo` section appears only for a config directory under version
 control — there is nothing to pull from one that is not.
@@ -1125,7 +1124,7 @@ Sync
   Modules  core, editor
 
 Local Repo
-  ✓ Pulled new changes from remote — commit: 9b1c3d4e5f60 -> 4f2a8c1d9e07
+  ✓ Pulled new changes from remote — commit: 9b1c3d4e5f60 → 4f2a8c1d9e07
 
 ✓ Synced
 → Run `cfgd plan` to preview changes, then `cfgd apply`

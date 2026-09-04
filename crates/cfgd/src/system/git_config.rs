@@ -272,8 +272,8 @@ mod tests {
     // Test isolation
     //
     // All tests that touch git config point `GIT_CONFIG_GLOBAL` at a temp file.
-    // Because tests run in parallel and env var mutation is unsafe, we use a
-    // std::sync::Mutex to serialise the tests that need to mutate the env var.
+    // Tests run in parallel and env var mutation is unsafe, so a
+    // std::sync::Mutex serialises the tests that need to mutate the env var.
     // ---------------------------------------------------------------------------
 
     static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());

@@ -668,6 +668,28 @@ mod tests {
         assert_eq!(profile_row.annotation, None);
     }
 
+    /// `icon_arrow` is themeable, so the header's inherits chain renders the
+    /// theme's own glyph, not the default — proving item 3's contract (WARN 14)
+    /// actually reaches a rendered row, not just `ConfigHeader`'s data.
+    #[test]
+    fn a_preset_overriding_the_arrow_renders_the_inherits_chain_in_its_own_glyph() {
+        let theme = crate::output::Theme::preset("minimal").expect("minimal is a preset");
+        let (printer, buf) =
+            crate::output::Printer::for_test_with_theme(theme, crate::output::Verbosity::Normal);
+        printer.kv_rows(config_header_rows(&ConfigHeader {
+            config_path: None,
+            sources: &[],
+            profile: Some("work"),
+            profile_inherits: &["core".to_string(), "shared".to_string()],
+            modules: &super::HeaderModule::of_resolved(&[]),
+            arrow: printer.arrow(),
+        }));
+        drop(printer);
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(out.contains("(inherits: core > shared)"), "{out}");
+        assert!(!out.contains('→'), "{out}");
+    }
+
     #[test]
     fn heading_serializes_with_type_tag() {
         let c = Component::Heading {

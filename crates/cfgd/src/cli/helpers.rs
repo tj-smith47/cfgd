@@ -1047,7 +1047,7 @@ pub(in crate::cli) fn module_cache_dir_for(
     cache_over: Option<&Path>,
     scope: cfgd_core::Scope,
 ) -> anyhow::Result<PathBuf> {
-    Ok(cfgd_core::resolve_cache_dir(cache_over, scope)?.join("modules"))
+    Ok(cfgd_core::module_cache_root(cache_over, scope)?)
 }
 
 /// The ONE state directory a run uses — `state.db`, the apply mutex

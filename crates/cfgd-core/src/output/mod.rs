@@ -70,7 +70,7 @@ pub mod verbosity;
 pub use verbosity::{OutputFormat, Verbosity};
 
 pub mod theme;
-pub use theme::Theme;
+pub use theme::{ICON_ARROW, Theme};
 
 pub mod component;
 pub use component::{

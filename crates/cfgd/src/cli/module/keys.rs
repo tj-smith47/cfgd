@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, ICON_ARROW, Printer, Role};
 
 pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> anyhow::Result<()> {
     if let Err(msg) = cfgd_core::require_tool_with_seam(
@@ -205,7 +205,7 @@ pub fn cmd_module_keys_rotate(
             restore_failures.push(format!(
                 "{} {} {}: {}",
                 backup_key.posix(),
-                printer.arrow(),
+                ICON_ARROW,
                 old_key.posix(),
                 e
             ));
@@ -226,7 +226,7 @@ pub fn cmd_module_keys_rotate(
             restore_failures.push(format!(
                 "{} {} {}: {}",
                 backup_pub.posix(),
-                printer.arrow(),
+                ICON_ARROW,
                 old_pub.posix(),
                 e
             ));

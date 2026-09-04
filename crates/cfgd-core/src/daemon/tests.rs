@@ -17103,7 +17103,7 @@ spec: {}
         let store_path = tmp.path().join("state.db");
         // Open & seed in a scoped block so the connection drops before the
         // handler opens its own connection — SQLite WAL handles concurrent
-        // readers but we keep the test deterministic.
+        // readers, but the scoped drop keeps the test deterministic.
         {
             let store = crate::state::StateStore::open(&store_path).unwrap();
             store

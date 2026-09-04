@@ -640,7 +640,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                 let record =
                     diff_module_file(&fm, &resolved, module, file, config_dir, strategy, printer)?;
                 let rid = super::live_drift::module_file_resource_id(&module.name, &record.target);
-                checked.push(("module".to_string(), rid));
+                checked.push(("module".to_string(), rid.clone()));
                 if record_file_drift(
                     &mut diff_payload,
                     record,
@@ -652,10 +652,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                 {
                     findings.push(cfgd_core::reconciler::VerifyResult {
                         resource_type: "module".to_string(),
-                        resource_id: super::live_drift::module_file_resource_id(
-                            &module.name,
-                            &rec.target,
-                        ),
+                        resource_id: rid,
                         matches: false,
                         expected: rec.expected.clone(),
                         actual: rec.actual.clone(),

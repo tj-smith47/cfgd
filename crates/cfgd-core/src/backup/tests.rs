@@ -2817,9 +2817,9 @@ fn backup_pre_hook_failure_reports_the_shortfall() {
 
 #[test]
 fn backup_tally_counts_the_lines_it_rendered() {
-    // §6.4's arithmetic: three succeeded items and one failed across two units
-    // — a `postBackup` failure still leaves an artifact, so its snapshot line
-    // counts as a success.
+    // Three succeeded items and one failed across two units — a `postBackup`
+    // failure still leaves an artifact, so its snapshot line counts as a
+    // success.
     let h = Harness::new();
     let clean_source = h.seed_file("data.db", b"payload");
     let warned_source = h.seed_file("secrets.env", b"secret");

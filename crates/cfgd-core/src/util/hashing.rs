@@ -175,7 +175,7 @@ pub fn declared_floor_is_range_shaped(floor: &str) -> bool {
 /// refuses what one family cannot read; this one carries DOUBT — a `false`
 /// means "ask the manager", never "reject".
 pub fn declared_floor_parses(floor: &str) -> bool {
-    parse_loose_version(declared_floor_version(floor)).is_some()
+    parse_loose_version(floor).is_some()
 }
 
 /// Whether `version` clears a declared `>=` floor.
@@ -196,10 +196,7 @@ pub fn declared_floor_parses(floor: &str) -> bool {
 /// tag, where a build's own prerelease still ranks below its own release
 /// (`1.2.3-beta` is below `1.2.3`).
 pub fn version_meets_floor(version: &str, floor: &str) -> bool {
-    let (Some(v), Some(f)) = (
-        parse_loose_version(version),
-        parse_loose_version(declared_floor_version(floor)),
-    ) else {
+    let (Some(v), Some(f)) = (parse_loose_version(version), parse_loose_version(floor)) else {
         return false;
     };
     v >= f

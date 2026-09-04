@@ -4,7 +4,7 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::LOCAL_LAYER;
 use cfgd_core::manager_family;
-use cfgd_core::output::{Doc, PhaseLabel, Printer, Role};
+use cfgd_core::output::{Doc, ICON_ARROW, PhaseLabel, Printer, Role};
 
 // --- Plan output rendering ---
 
@@ -495,6 +495,11 @@ pub(in crate::cli) enum DecisionWrites<'a> {
 /// still LISTED — the row says why it cannot run — and is not counted. A plain
 /// sum over the rendered rows counted it, so the plan's footer promised one more
 /// action than the apply performed.
+///
+/// Every action description renders through the wire-safe [`ICON_ARROW`],
+/// never a caller's themed [`Printer::arrow()`] — a `-o json` field is the
+/// SAME bytes under every `--theme`/preset, and a parameter here is the seam
+/// that regresses that promise.
 pub(in crate::cli) fn build_plan_output(
     plan: &reconciler::Plan,
     context_name: &str,
@@ -502,7 +507,6 @@ pub(in crate::cli) fn build_plan_output(
     pending_backups: &[String],
     withheld: &reconciler::WithheldDecisions,
     sources: &[reconciler::ComposedSource],
-    arrow: &str,
 ) -> PlanOutput {
     let tree = reconciler::in_scope_tree(plan, phase_filter, reconciler::PhaseCoverage::Complete);
     let total_actions = reconciler::attempted_count(
@@ -522,7 +526,7 @@ pub(in crate::cli) fn build_plan_output(
                         actions
                             .into_iter()
                             .map(|action| PlanActionOutput {
-                                description: reconciler::format_plan_item(action, arrow),
+                                description: reconciler::format_plan_item(action, ICON_ARROW),
                                 action_type: action_type_str(action).to_string(),
                                 targets: action_targets(action),
                                 origin: action_origin(action),
@@ -764,7 +768,6 @@ pub(in crate::cli) fn display_plan_preview(
         pending_backups,
         withheld,
         run.sources(),
-        printer.arrow(),
     );
 
     // Structured-output routing: when -o yaml/json/etc., emit the plan as the
@@ -991,7 +994,7 @@ pub(in crate::cli) fn pattern_matches_action(
     owner: &reconciler::Owner,
     action_path: &str,
 ) -> bool {
-    if let Some((kind, _name)) = pattern.split_once(':')
+    if let Some((kind, _name)) = cfgd_core::output::split_owner_token(pattern)
         && reconciler::OwnerKind::from_token(kind).is_some()
     {
         return owner.token() == pattern;

@@ -371,10 +371,9 @@ fn manager_action_output_prerequisite_names_the_tool_and_installer() {
 
 #[test]
 fn manager_action_output_refuse_extends_spec_with_a_refused_state_and_reason() {
-    // Spec §7's literal `state` enum is present|provisioned|prerequisite —
-    // it does not name Refuse. This task's own scope names `Refuse` as a
-    // node requiring a payload, so a fourth state carries the reason rather
-    // than the row silently disappearing from `-o json`.
+    // The `state` enum is present|provisioned|prerequisite|refused: `Refuse`
+    // is a node requiring a payload, so the fourth state carries the reason
+    // rather than the row silently disappearing from `-o json`.
     let out = manager_action_output(&Action::Manager(ManagerAction::Refuse {
         manager: "snap".to_string(),
         reason: "no available system manager".to_string(),
@@ -1621,7 +1620,7 @@ fn every_operand_a_plan_action_holds_reaches_the_json_payload() {
     ];
     for (shape, action) in shapes {
         let plan = one_phase_plan(vec![action]);
-        let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
+        let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
         let json = serde_json::to_string(&output).unwrap();
         for name in &names {
             assert!(
@@ -1681,7 +1680,7 @@ fn a_tool_this_plan_provisions_is_named_once_in_the_json_payload() {
         )
         .expect("plan");
 
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
     let json = serde_json::to_string(&output).expect("serialize");
     assert_eq!(
         json.matches("tool-alias").count(),
@@ -1707,7 +1706,7 @@ fn build_plan_output_counts_actions_and_sets_context() {
         ),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "my-machine", None, &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "my-machine", None, &[], &no_decisions(), &[]);
 
     assert_eq!(output.context, "my-machine");
     assert_eq!(output.total_actions, 3);
@@ -1754,7 +1753,6 @@ fn build_plan_output_phase_filter_excludes_other_phases() {
         &[],
         &no_decisions(),
         &[],
-        "→",
     );
 
     assert_eq!(output.phases.len(), 1);
@@ -1768,7 +1766,7 @@ fn build_plan_output_names_the_kind_phase_and_carries_the_module_as_an_owner() {
         PhaseName::PostScripts,
         vec![module_run_script()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Post-Scripts");
@@ -1813,7 +1811,7 @@ fn build_plan_output_orders_groups_profile_first() {
             pkg_install("apt", vec!["sl"]),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     assert_eq!(
         output.phases[0]
@@ -1841,7 +1839,7 @@ fn no_bootstrap_means_no_managers_group_in_the_payload() {
         PhaseName::Packages,
         vec![pkg_install("apt", vec!["sl"])],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     assert_eq!(
         output.phases[0]
@@ -1860,7 +1858,7 @@ fn no_bootstrap_means_no_managers_group_in_the_payload() {
 
 #[test]
 fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
-    // Spec §7: `phases[]` gains a `managers` phase object with one group,
+    // `phases[]` gains a `managers` phase object with one group,
     // `cfgd:managers`, whose actions carry `{manager, state, via, requires}`.
     let plan = make_plan(vec![(
         PhaseName::Prerequisites,
@@ -1881,7 +1879,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
             }),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
     let json = serde_json::to_value(&output).unwrap();
     let groups = json["phases"][0]["groups"].as_array().expect("groups");
     assert_eq!(groups.len(), 1);
@@ -1933,7 +1931,6 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
         &[],
         &no_decisions(),
         &[],
-        "→",
     );
     let other_json = serde_json::to_value(&other).unwrap();
     assert!(
@@ -1947,7 +1944,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
 #[test]
 fn build_plan_output_non_module_phase_omits_module_and_section_keys() {
     let plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     // `skip_serializing_if` back-compat guarantee: a non-module phase's wire
     // form carries no `module`/`section` keys at all, not `null` values.
@@ -1979,7 +1976,7 @@ fn build_plan_output_carries_source_module_origin() {
         PhaseName::Modules,
         vec![module_install_from_source("acme"), module_install()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     let actions = phase_actions(&output.phases[0]);
     let sourced = actions
@@ -2016,7 +2013,7 @@ fn build_plan_output_local_only_omits_all_origins() {
         PhaseName::Modules,
         vec![module_install(), module_deploy_files()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
     for phase in &output.phases {
         for action in phase_actions(phase) {
             assert_eq!(action.origin, None, "local plan must carry no origin");
@@ -2037,10 +2034,64 @@ fn build_plan_output_local_only_omits_all_origins() {
 #[test]
 fn build_plan_output_empty_plan_has_zero_actions() {
     let plan = make_plan(vec![]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
+}
+
+/// A `-o json` plan payload is the SAME BYTES whatever theme rendered it:
+/// `build_plan_output` carries no `arrow` parameter, so a themed printer has
+/// no seam to reach the wire through. Proven through the real
+/// `display_plan_preview` path `cmd_plan` itself calls (header included), not
+/// the isolated builder alone, over a fixture whose action's description does
+/// carry an arrow (`system_set`'s `0 → 1`).
+#[test]
+fn the_plan_json_payload_is_the_same_bytes_under_a_preset_that_overrides_the_arrow() {
+    let plan = make_plan(vec![(PhaseName::System, vec![system_set()])]);
+    let scope = ScopeReport::capture(&plan, false);
+    let decisions = no_decisions();
+    let render = |theme: cfgd_core::output::Theme| {
+        let (printer, buf) =
+            Printer::for_test_with_theme_and_format(theme, cfgd_core::output::OutputFormat::Json);
+        let ctx = reconciler::RunContext {
+            title: reconciler::RunTitle::Plan,
+            config_path: None,
+            profile: None,
+            sources: &[],
+            modules: &[],
+            profile_inherits: &[],
+            trigger: None,
+            subject: None,
+            unit_source: None,
+        };
+        let run = reconciler::ApplyRun::new(ctx, &plan);
+        let args = PlanPreviewArgs {
+            context: "ctx",
+            preview: crate::cli::PreviewScope::unscoped(),
+            phase_filter: None,
+            dry_run_fm: None,
+            scope: &scope,
+            pending_backups: &[],
+            withheld: &decisions,
+        };
+        display_plan_preview(&run, &plan, &printer, &args);
+        drop(printer);
+        cfgd_core::test_helpers::captured_text(&buf)
+    };
+
+    let default_json = render(cfgd_core::output::Theme::default());
+    let minimal_json =
+        render(cfgd_core::output::Theme::preset("minimal").expect("minimal is a preset"));
+
+    assert!(
+        default_json.contains('→'),
+        "fixture must exercise the arrow-bearing description field: {default_json}"
+    );
+    assert_eq!(
+        default_json, minimal_json,
+        "a -o json plan payload must be byte-identical whatever theme rendered it"
+    );
 }
 
 // `build_plan_output`'s `PlanActionOutput.description` is the
@@ -2056,7 +2107,7 @@ fn build_plan_output_script_action_json_preserves_raw_multiline_body() {
         origin: "test".to_string(),
     });
     let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     let desc = &output.phases[0].groups[0].actions()[0].description;
     assert!(
@@ -2081,7 +2132,7 @@ fn build_plan_output_module_script_action_json_preserves_raw_multiline_body() {
         origin: None,
     });
     let plan = make_plan(vec![(PhaseName::Modules, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     let desc = &output.phases[0].groups[0].actions()[0].description;
     assert!(
@@ -2181,10 +2232,11 @@ fn render_plan_tree_unavailable_system_key_renders_neutral() {
 fn is_unmanaged_file_missing_path_returns_false() {
     let state = StateStore::open_in_memory().unwrap();
     let config_dir = PathBuf::from("/config");
+    let module_cache = PathBuf::from("/module-cache");
     let result = is_unmanaged_file(
         &PathBuf::from("/nonexistent/path/that/does/not/exist/abc123"),
         &config_dir,
-        &config_dir,
+        &module_cache,
         &state,
     );
     assert!(!result, "missing file should not be considered unmanaged");
@@ -2211,7 +2263,8 @@ fn is_unmanaged_file_managed_path_returns_false() {
         .unwrap();
 
     let config_dir = PathBuf::from("/config");
-    let result = is_unmanaged_file(&file_path, &config_dir, &config_dir, &state);
+    let module_cache = PathBuf::from("/module-cache");
+    let result = is_unmanaged_file(&file_path, &config_dir, &module_cache, &state);
     assert!(
         !result,
         "state-tracked file should not be considered unmanaged"
@@ -2482,12 +2535,16 @@ fn a_managed_target_is_recognised_by_the_id_the_reconciler_actually_mints() {
     // `--yes` (which now means backup) mints a sidecar for cfgd's OWN files on
     // every apply, forever.
     let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("config");
+    let module_cache = tmp.path().join("cache");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&module_cache).unwrap();
     let target = tmp.path().join("zshrc");
     std::fs::write(&target, "written by cfgd").unwrap();
 
     let state = StateStore::open_in_memory().unwrap();
     assert!(
-        is_unmanaged_file(&target, tmp.path(), tmp.path(), &state),
+        is_unmanaged_file(&target, &config_dir, &module_cache, &state),
         "control: with no row at all the target is unmanaged"
     );
 
@@ -2500,7 +2557,7 @@ fn a_managed_target_is_recognised_by_the_id_the_reconciler_actually_mints() {
         .unwrap();
 
     assert!(
-        !is_unmanaged_file(&target, tmp.path(), tmp.path(), &state),
+        !is_unmanaged_file(&target, &config_dir, &module_cache, &state),
         "a target whose managed id the reconciler minted must be recognised as managed"
     );
 }
@@ -3877,7 +3934,7 @@ fn platform_skip_survives_in_the_plan_payload() {
         (PhaseName::Modules, vec![skip]),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     assert_eq!(output.total_actions, 2, "the skip is a counted action");
     let modules = output
@@ -3931,7 +3988,7 @@ fn the_payload_total_matches_the_plans_own_count_over_a_pre_skipped_action() {
             pkg_install("brew", vec!["rg"]),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     assert_eq!(
         output.total_actions,
@@ -3957,7 +4014,7 @@ fn a_phase_scoped_payload_prices_only_the_scope_it_listed() {
         (PhaseName::Files, vec![file_create("/etc/foo")]),
     ]);
     let filter = reconciler::PhaseFilter::Phase(PhaseName::Files);
-    let output = build_plan_output(&plan, "ctx", Some(&filter), &[], &no_decisions(), &[], "→");
+    let output = build_plan_output(&plan, "ctx", Some(&filter), &[], &no_decisions(), &[]);
 
     assert_eq!(plan.total_actions(), 2, "the plan itself holds both phases");
     assert_eq!(output.total_actions, 1);

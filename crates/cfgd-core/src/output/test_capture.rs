@@ -223,6 +223,27 @@ impl Printer {
         (p, buf)
     }
 
+    /// Like `for_test_with_theme` but also pins the output format, for a test
+    /// proving a structured payload is byte-identical across themes/presets —
+    /// `for_test_with_theme` alone always answers `Table`, so the JSON branch
+    /// a `-o json` command takes is unreachable through it.
+    pub fn for_test_with_theme_and_format(
+        theme: Theme,
+        format: OutputFormat,
+    ) -> (Self, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let p = build_test_printer(
+            buf.clone(),
+            theme,
+            Verbosity::Quiet,
+            format,
+            false,
+            None,
+            None,
+        );
+        (p, buf)
+    }
+
     /// Split-stream capture: stdout and stderr land in SEPARATE buffers —
     /// `(printer, stdout, stderr)` — the relationship the two sinks have in
     /// production. The one constructor that can state a stdout-purity claim

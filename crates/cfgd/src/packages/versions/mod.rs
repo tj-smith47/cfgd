@@ -317,7 +317,7 @@ pub(super) fn brew_comparable(raw: &str) -> bool {
 /// refuses outright, so a `minVersion` against one such listing was a
 /// permanent check error under the shared semver comparator.
 fn fourpart_components(raw: &str) -> Option<[u64; 4]> {
-    let trimmed = raw.trim().trim_start_matches('v');
+    let trimmed = cfgd_core::declared_floor_version(raw.trim());
     // `.take(5).count()` answers "more than four?" without collecting every
     // component into a `Vec` just to read its length.
     let count = trimmed.split('.').take(5).count();

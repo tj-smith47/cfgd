@@ -656,9 +656,7 @@ fn reconcile_tick(
         // modules from — a tick given `--cache-dir` symlinks its module files
         // there, and answering from the per-user default instead would read
         // every one of them as a stranger's file on this tick alone.
-        let module_cache = crate::resolve_cache_dir(cache_dir_override, scope)
-            .map(|d| d.join("modules"))
-            .unwrap_or_else(|_| config_dir.join(".module-cache"));
+        let module_cache = super::tick_module_cache(&config_dir, scope, cache_dir_override);
         match crate::reconciler::sweep_unmanaged_file_targets(
             &mut plan,
             &config_dir,

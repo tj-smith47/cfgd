@@ -138,6 +138,21 @@ pub trait DaemonHooks: Send + Sync {
     }
 }
 
+/// The module cache root a tick deploys into and judges ownership against.
+///
+/// The `--cache-dir`-aware root every daemon tick resolves modules from; the
+/// fallback is what a daemon with no writable cache dir has always used.
+/// [`resolve_daemon_modules`] and `reconcile::reconcile_tick`'s unmanaged-file
+/// sweep both call this instead of re-deriving the same root by hand, or a
+/// re-rooted cache dir and the sweep's own idea of it drift apart.
+pub(super) fn tick_module_cache(
+    config_dir: &Path,
+    scope: crate::Scope,
+    over: Option<&Path>,
+) -> PathBuf {
+    crate::module_cache_root(over, scope).unwrap_or_else(|_| config_dir.join(".module-cache"))
+}
+
 /// Resolve a profile's modules for a daemon tick.
 ///
 /// Builds the platform + available-manager map + module cache base and drives
@@ -161,9 +176,7 @@ pub(crate) fn resolve_daemon_modules(
     }
     let platform = crate::platform::Platform::current();
     let mgr_map = registry.manager_map();
-    let cache_base = crate::resolve_cache_dir(cache_dir_override, scope)
-        .map(|d| d.join("modules"))
-        .unwrap_or_else(|_| config_dir.join(".module-cache"));
+    let cache_base = tick_module_cache(config_dir, scope, cache_dir_override);
     match crate::modules::resolve_modules(
         &resolved.merged.modules,
         config_dir,
