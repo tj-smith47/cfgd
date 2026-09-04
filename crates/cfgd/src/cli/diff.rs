@@ -459,19 +459,33 @@ pub(super) fn env_drift_ordered(
 /// needs an apply, while a check that could not run means the answer is
 /// unknown, which is an error rather than a verdict.
 fn diff_exit_code(summary: &DiffSummary) -> Option<cfgd_core::exit::ExitCode> {
-    let any_drift = summary.has_file_drift
-        || summary.has_pkg_drift
-        || summary.has_system_drift
-        || summary.has_env_drift
-        || summary.has_standing_drift;
-    let check_failed = summary.system_check_failed || summary.env_check_failed;
-    if !cfgd_core::reconciler::has_any_drift(any_drift, check_failed) {
-        return None;
-    }
-    if check_failed {
+    if summary.check_failed() {
         return Some(cfgd_core::exit::ExitCode::Error);
     }
-    Some(cfgd_core::exit::ExitCode::DriftDetected)
+    summary
+        .any_drift()
+        .then_some(cfgd_core::exit::ExitCode::DriftDetected)
+}
+
+impl DiffSummary {
+    /// Whether this diff found anything a reader must act on: a live finding
+    /// on any checked surface, or a standing row this run carried forward.
+    /// The ONE composition of the summary's drift flags — the verdict and the
+    /// `--exit-code` gate both read it, so a flag added to the summary cannot
+    /// reach one and not the other.
+    pub fn any_drift(&self) -> bool {
+        self.has_file_drift
+            || self.has_pkg_drift
+            || self.has_system_drift
+            || self.has_env_drift
+            || self.has_standing_drift
+    }
+
+    /// Whether a check this diff meant to run could not: the answer is
+    /// unknown rather than clean, which outranks any drift `any_drift` found.
+    pub fn check_failed(&self) -> bool {
+        self.system_check_failed || self.env_check_failed
+    }
 }
 
 /// The scoped run's header, the same rows `apply --module` opens on: a title
@@ -1201,16 +1215,12 @@ fn drift_tally(output: &DiffOutput, scope: DiffScope<'_>) -> String {
 }
 
 pub fn build_diff_doc(output: &DiffOutput, scope: DiffScope<'_>) -> Doc {
-    let any_drift = output.summary.has_file_drift
-        || output.summary.has_pkg_drift
-        || output.summary.has_system_drift
-        || output.summary.has_env_drift
-        || output.summary.has_standing_drift;
+    let any_drift = output.summary.any_drift();
     // A run that could not check everything has no clean verdict to give, so
     // it never renders one — whether or not the checks that DID run found
     // drift.
-    let check_failed = output.summary.system_check_failed || output.summary.env_check_failed;
-    let role = if cfgd_core::reconciler::has_any_drift(any_drift, check_failed) {
+    let check_failed = output.summary.check_failed();
+    let role = if any_drift || check_failed {
         Role::Warn
     } else {
         Role::Ok

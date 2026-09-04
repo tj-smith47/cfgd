@@ -573,13 +573,6 @@ fn a_scoped_env_probe_failure_is_reported_and_escalates_on_both_scoped_surfaces(
     }
 }
 
-/// An `env-var`/`alias` standing row is rendered and priced by a scoped
-/// scan exactly like a `package`/`module` one — the asymmetry this closes:
-/// `row_attributable_to_module` used to answer `false` for both types
-/// unconditionally, so a module's own declared env var recorded standing
-/// while its probe could not run (the file exists but is unreadable) was
-/// silently dropped by the scan path even though the recorded-fallback path
-/// attributed it correctly.
 /// A `prefer: [script]` package entry is invisible to live drift detection
 /// by design (`action_drift_rows`'s own doc), so `checked` never names it —
 /// exactly the shape that broke the OLD `effective_packages`, which was
@@ -661,8 +654,30 @@ fn a_scoped_scan_renders_and_prices_a_standing_script_preferred_package_row() {
         serde_json::json!("script:demo"),
         "cfgd {json_args:?}: standing[0].resourceId, got: {payload}"
     );
+
+    let out = run(
+        &["diff", "--module", "scripted", "--exit-code"],
+        config_tmp.path(),
+        state_tmp.path(),
+        home_tmp.path(),
+        None,
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "the standing script-preferred package row is priced as drift, got: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
+/// An `env-var`/`alias` standing row is rendered and priced by a scoped
+/// scan exactly like a `package`/`module` one — the asymmetry this closes:
+/// `row_attributable_to_module` used to answer `false` for both types
+/// unconditionally, so a module's own declared env var recorded standing
+/// while its probe could not run (the file exists but is unreadable) was
+/// silently dropped by the scan path even though the recorded-fallback path
+/// attributed it correctly.
 #[test]
 fn a_scoped_scan_renders_and_prices_a_standing_env_var_row() {
     use cfgd_core::state::StateStore;
@@ -963,6 +978,13 @@ fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
             text.contains(STANDING_ROW_MARKER),
             "cfgd {render_args:?}: renders the row it left standing, got: {text}"
         );
+        // The row's own subject beside its operand: the id as the drift-row
+        // renderer spells a module row, which no header spells that way.
+        let subject = cfgd_core::output::drift_item_subject("module", "envmod");
+        assert!(
+            text.contains(&subject),
+            "cfgd {render_args:?}: the standing row names its id `{subject}`, got: {text}"
+        );
         assert!(
             !text.contains("No drift detected"),
             "cfgd {render_args:?}: verdict must agree with the standing row above, got: {text}"
@@ -1071,6 +1093,10 @@ fn a_module_scoped_scan_renders_and_prices_a_script_shaped_standing_row() {
     assert!(
         text.contains(STANDING_ROW_MARKER),
         "cfgd {render_args:?}: renders the script-shaped row it left standing, got: {text}"
+    );
+    assert!(
+        text.contains("envmod:script"),
+        "cfgd {render_args:?}: the standing row names its own `:script` id, got: {text}"
     );
     assert!(
         !text.contains("No drift detected"),

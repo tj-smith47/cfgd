@@ -278,14 +278,22 @@ pub fn cmd_verify(
         if !output.system_errors.is_empty() {
             cfgd_core::exit::ExitCode::Error.exit();
         }
-        if cfgd_core::reconciler::has_any_drift(
-            output.fail_count > 0 || !output.standing.is_empty(),
-            !output.system_errors.is_empty(),
-        ) {
+        if output.any_drift() {
             cfgd_core::exit::ExitCode::DriftDetected.exit();
         }
     }
     Ok(())
+}
+
+impl VerifyOutput {
+    /// Whether this verify found anything a reader must act on: a failed
+    /// check, or a standing row this run's scope owns but could not
+    /// re-examine. The ONE composition — the verdict, its closing hint and
+    /// the `--exit-code` gate all read it. An erroring check is the other
+    /// question, asked of `system_errors` beside it.
+    pub fn any_drift(&self) -> bool {
+        self.fail_count > 0 || !self.standing.is_empty()
+    }
 }
 
 /// Pure builder: verify Doc from a collected `VerifyOutput`. Used by the live
@@ -337,10 +345,7 @@ pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
         })
     });
 
-    let has_drift = cfgd_core::reconciler::has_any_drift(
-        output.fail_count > 0 || !output.standing.is_empty(),
-        !output.system_errors.is_empty(),
-    );
+    let has_drift = output.any_drift() || !output.system_errors.is_empty();
     doc = if !has_drift {
         doc.status(
             // verdict-row-ok: a match verdict, not an act cfgd performed
@@ -368,7 +373,7 @@ pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
             ));
         }
         let doc = doc.status(Role::Warn, clauses);
-        if output.fail_count > 0 || !output.standing.is_empty() {
+        if output.any_drift() {
             doc.hint(super::heal_drift_hint(module))
         } else {
             doc

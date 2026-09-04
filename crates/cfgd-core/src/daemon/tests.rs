@@ -12647,6 +12647,104 @@ spec:
         );
     }
 
+    /// A per-module tick's narrowed plan carries no env action — the env
+    /// group is machine-wide, owned by no module — so it cannot re-check an
+    /// `env-var` row its module owns, and the row STANDS after the tick. The
+    /// same store under a profile-wide tick whose plan carries the
+    /// `WriteEnvFile` converges the file (auto-apply) and heals the row.
+    /// Driven through the real tick over a real config tree, so the
+    /// `kept_rows` wiring (scope, exclusions, re-find) is what is pinned,
+    /// not the predicate alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_scoped_tick_keeps_an_owned_env_row_a_full_tick_heals() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - envmod\n",
+        )
+        .unwrap();
+        let module_dir = tmp.path().join("modules").join("envmod");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: envmod\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        StateStore::open_in_dir(&state_dir)
+            .unwrap()
+            .record_drift(
+                "env-var",
+                "EDITOR",
+                Some("EDITOR=vim"),
+                Some("missing or changed"),
+                "local",
+            )
+            .unwrap();
+
+        let tick = |module_filter: Option<&'static str>| {
+            let cp = config_path.clone();
+            let sd = state_dir.clone();
+            crate::spawn_blocking_with_test_home(move || {
+                let state = Arc::new(Mutex::new(DaemonState::new()));
+                let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+                let printer = test_printer();
+                handle_reconcile(
+                    &cp,
+                    None,
+                    ReconcileCtx {
+                        state: &state,
+                        notifier: &notifier,
+                        notify_on_drift: false,
+                        hooks: &NoopHooks,
+                        state_dir_override: Some(&sd),
+                        explicit_state_dir: true,
+                        cache_dir_override: None,
+                        printer: &printer,
+                        module_filter,
+                        auto_apply_override: Some(true),
+                        drift_policy_override: Some(config::DriftPolicy::Auto),
+                        scope: crate::Scope::User,
+                        abort: never_abort(),
+                        cache: fresh_tick_cache(),
+                    },
+                );
+            })
+        };
+        let standing = || -> Vec<(String, String)> {
+            StateStore::open_in_dir(&state_dir)
+                .unwrap()
+                .unresolved_drift()
+                .unwrap()
+                .into_iter()
+                .map(|e| (e.resource_type, e.resource_id))
+                .collect()
+        };
+
+        tick(Some("envmod")).await.unwrap();
+        assert_eq!(
+            standing(),
+            vec![("env-var".to_string(), "EDITOR".to_string())],
+            "a per-module tick never re-checks the env file, so the module's own env row stands"
+        );
+
+        tick(None).await.unwrap();
+        assert!(
+            standing().is_empty(),
+            "the profile-wide tick converged the env file and healed the row, got: {:?}",
+            standing()
+        );
+    }
+
     /// A per-module tick probes one module, so it may heal only rows it can
     /// attribute to that module by identity — its own module-file rows —
     /// never another module's, the machine-wide surfaces, or per-package
