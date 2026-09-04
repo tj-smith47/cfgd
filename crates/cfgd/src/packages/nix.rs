@@ -324,11 +324,16 @@ const NIX_OUTPUT_NAMES: &[&str] = &[
 /// A trailing `-<output>` from [`NIX_OUTPUT_NAMES`] is peeled next, since
 /// `8.4.0-bin` would otherwise read as a prerelease below `8.4.0`. The
 /// remainder is then trusted whole when it parses as a version outright
-/// (`0.10.0-dev`, `3.0.0-rc1` — a prerelease that carries its own `-`), else
-/// the search peels each `-`-delimited suffix in turn (`ripgrep-14.1.0` under
-/// an element named `rg`, whose remainder does not repeat the store path's
-/// own name, peels to `14.1.0`). Nothing parsing means the read failed,
-/// never a name reported as a version.
+/// (`3.0.0-rc1` — a prerelease that carries its own `-`; a `-dev` tail is
+/// read as the OUTPUT, per [`NIX_OUTPUT_NAMES`]), else the search peels each
+/// `-`-delimited suffix in turn and takes the first that parses AND carries
+/// a `.` (`ripgrep-14.1.0` under an element named `rg`, whose remainder does
+/// not repeat the store path's own name, peels to `14.1.0`;
+/// `unstable-2024-01-10` peels to nothing). Nothing parsing means the read
+/// failed, never a name reported as a version. Ceiling: a name suffix
+/// outside the output vocabulary (`python3-3.11.6-env`) stays on the
+/// version (`3.11.6-env`), which orders as a prerelease and so reads below
+/// an EXACT floor of `3.11.6` only.
 fn nix_store_path_version(store_path: &str, name: &str) -> Option<String> {
     let basename = store_path.rsplit('/').next()?;
     let after_hash = basename.split_once('-')?.1;
@@ -340,15 +345,20 @@ fn nix_store_path_version(store_path: &str, name: &str) -> Option<String> {
         .rsplit_once('-')
         .filter(|(_, tail)| NIX_OUTPUT_NAMES.contains(tail))
         .map_or(remainder, |(head, _)| head);
-    std::iter::once(remainder)
-        .chain(
-            remainder
-                .match_indices('-')
-                .map(|(i, _)| &remainder[i + 1..]),
-        )
-        .find(|candidate| {
-            !candidate.is_empty() && cfgd_core::parse_loose_version(candidate).is_some()
-        })
+    let parses = |candidate: &str| {
+        !candidate.is_empty() && cfgd_core::parse_loose_version(candidate).is_some()
+    };
+    if parses(remainder) {
+        return Some(remainder.to_string());
+    }
+    // A peeled suffix is trusted only when it looks like a version and not
+    // like a fragment of something else: `unstable-2024-01-10` peels down to
+    // a bare `10` the loose parser would widen to `10.0.0`, so a suffix has
+    // to carry a `.` of its own.
+    remainder
+        .match_indices('-')
+        .map(|(i, _)| &remainder[i + 1..])
+        .find(|candidate| candidate.contains('.') && parses(candidate))
         .map(str::to_string)
 }
 
@@ -538,6 +548,30 @@ mod tests {
                 "curl"
             ),
             Some("8.4.0".to_string())
+        );
+    }
+
+    /// A nixpkgs `unstable` snapshot (`foo-0-unstable-2024-01-10`, the real
+    /// `<pname>-<placeholder-version>-unstable-<date>` shape) has no
+    /// whole-remainder parse, and the peel walk would otherwise reach the
+    /// bare `10` — `parse_loose_version` widens a bare integer to `10.0.0`,
+    /// reporting the day of the month as the installed version. A peeled
+    /// suffix must carry a `.` of its own, so every date fragment refuses.
+    #[test]
+    fn nix_store_path_version_refuses_a_date_fragment() {
+        assert_eq!(
+            nix_store_path_version(
+                "/nix/store/9r9z5r5r5r5r5r5r5r5r5r5r5r5r5r5r-foo-0-unstable-2024-01-10",
+                "foo"
+            ),
+            None
+        );
+        assert_eq!(
+            nix_store_path_version(
+                "/nix/store/9r9z5r5r5r5r5r5r5r5r5r5r5r5r5r5r-foo-unstable-2023-11-15",
+                "foo"
+            ),
+            None
         );
     }
 

@@ -1805,8 +1805,10 @@ pub(crate) struct StubPackageManager {
     /// the FreeBSD `pkg version -t` shape, whose comparator genuinely shells
     /// out and can fail to spawn.
     comparisons_fail: bool,
-    /// Whether `upgrade_verb()` answers `None` — the family with no distinct
-    /// raise verb. `false` by default: most real managers carry one.
+    /// Whether `upgrade_verb()` answers `None` — a manager that cannot raise
+    /// a package in place at all (`brew-tap`, a scripted installer). `false`
+    /// by default: every manager that lists versions carries a raise verb,
+    /// distinct or its own install.
     no_upgrade_verb: bool,
 }
 
@@ -1838,7 +1840,7 @@ impl StubPackageManager {
         self
     }
 
-    /// A family with no distinct verb for raising an already-held package —
+    /// A manager that cannot raise an already-held package in place at all —
     /// `upgrade_verb()` answers `None`, so a below-floor package becomes a
     /// check error rather than a planned raise.
     pub fn without_upgrade_verb(mut self) -> Self {
