@@ -98,6 +98,13 @@ impl PackageManager for GoInstallManager {
         "go"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        // `go install <path>@<version>` always overwrites the binary — there
+        // is no held/fresh split (see `install` below), so `install` itself
+        // is the verb that raises an already-held one.
+        Some("install")
+    }
+
     fn tool_version(&self) -> Option<String> {
         super::shared::tool_version_from(go_cmd().arg("version"))
     }
@@ -142,33 +149,42 @@ impl PackageManager for GoInstallManager {
     }
 
     /// `go install` leaves no listing of its own — the binary directory is
-    /// scanned again, and each binary's module version is read via
-    /// `go version -m`, the only place the version it was built at is
-    /// recorded.
+    /// scanned again, and every binary's module version is read in ONE
+    /// `go version -m <p1> <p2> …` spawn rather than one per binary, which
+    /// turned a bin dir of N tools into N process spawns on every plan and
+    /// verify.
     fn installed_packages_with_versions(
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
         let bin_dir = go_bin_dir();
-        let Ok(entries) = std::fs::read_dir(&bin_dir) else {
+        let mut names: Vec<String> = scan_go_bin_dir(&bin_dir).into_iter().collect();
+        if names.is_empty() {
             return Ok(Vec::new());
-        };
-        let mut out = Vec::new();
-        for entry in entries.flatten() {
-            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-                continue;
-            };
-            let path = entry.path().to_string_lossy().into_owned();
-            let version = run_pkg_query("go", go_cmd().args(["version", "-m", &path]))
-                .ok()
-                .filter(|output| output.status.success())
-                .and_then(|output| {
-                    parse_go_version_m_module_version(&String::from_utf8_lossy(&output.stdout))
-                })
-                .unwrap_or_else(|| cfgd_core::providers::UNKNOWN_PACKAGE_VERSION.to_string());
-            out.push(cfgd_core::providers::PackageInfo { name, version });
         }
-        Ok(out)
+        names.sort();
+        let paths: Vec<String> = names
+            .iter()
+            .map(|name| bin_dir.join(name).to_string_lossy().into_owned())
+            .collect();
+        let versions = run_pkg_query("go", go_cmd().arg("version").arg("-m").args(&paths))
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| {
+                parse_go_version_m_batch(&String::from_utf8_lossy(&output.stdout), &paths)
+            })
+            .unwrap_or_default();
+        Ok(names
+            .into_iter()
+            .zip(paths)
+            .map(|(name, path)| {
+                let version = versions
+                    .get(&path)
+                    .cloned()
+                    .unwrap_or_else(|| cfgd_core::providers::UNKNOWN_PACKAGE_VERSION.to_string());
+                cfgd_core::providers::PackageInfo { name, version }
+            })
+            .collect())
     }
 
     fn install(
@@ -241,15 +257,18 @@ impl PackageManager for GoInstallManager {
     }
 }
 
-/// Scan `<gopath>/bin` and return the file names (binary names) it contains.
-/// Returns an empty set when the directory is missing or unreadable —
-/// matches the prior `if let Ok(entries) = read_dir(...)` permissive behaviour.
-/// Split out so tests can drive the scan against a tempdir without mutating
-/// `$GOPATH` or `$HOME`.
+/// Scan `<gopath>/bin` and return the file names (binary names) it contains,
+/// directories excluded — `go install` never writes one, so a stray
+/// subdirectory is not a package. Returns an empty set when the directory is
+/// missing or unreadable. Split out so tests can drive the scan against a
+/// tempdir without mutating `$GOPATH` or `$HOME`.
 pub(super) fn scan_go_bin_dir(bin_dir: &std::path::Path) -> HashSet<String> {
     let mut packages = HashSet::new();
     if let Ok(entries) = std::fs::read_dir(bin_dir) {
         for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
             if let Some(name) = entry.file_name().to_str() {
                 packages.insert(name.to_string());
             }
@@ -309,6 +328,43 @@ pub(super) fn parse_go_version_m_module_version(output: &str) -> Option<String> 
     None
 }
 
+/// Split a multi-file `go version -m <p1> <p2> …` transcript back into its
+/// per-binary blocks and parse each one's module version. Each block opens
+/// on a line naming one of `paths` followed by `:` (`<path>: go1.21.5`); a
+/// path this host queried but that answers no `mod` line (a plain `go build`
+/// with no embedded module info) is simply absent from the result, which the
+/// caller reads as "unknown version" the same way a single-file lookup would.
+pub(super) fn parse_go_version_m_batch(
+    output: &str,
+    paths: &[String],
+) -> std::collections::HashMap<String, String> {
+    let mut versions = std::collections::HashMap::new();
+    let mut current: Option<&str> = None;
+    let mut block = String::new();
+    let flush = |current: Option<&str>,
+                 block: &str,
+                 versions: &mut std::collections::HashMap<String, String>| {
+        if let (Some(path), Some(version)) = (current, parse_go_version_m_module_version(block)) {
+            versions.insert(path.to_string(), version);
+        }
+    };
+    for line in output.lines() {
+        let header = paths
+            .iter()
+            .find(|p| line.starts_with(p.as_str()) && line[p.len()..].starts_with(':'));
+        if let Some(path) = header {
+            flush(current, &block, &mut versions);
+            current = Some(path.as_str());
+            block.clear();
+        } else {
+            block.push_str(line);
+            block.push('\n');
+        }
+    }
+    flush(current, &block, &mut versions);
+    versions
+}
+
 #[cfg(test)]
 mod tests {
     use cfgd_core::providers::PackageManager;
@@ -333,6 +389,32 @@ mod tests {
     fn parse_go_version_m_module_version_no_mod_line() {
         let output = "/home/user/go/bin/tool: go1.21.5\n\tbuild\t-compiler=gc\n";
         assert_eq!(parse_go_version_m_module_version(output), None);
+    }
+
+    #[test]
+    fn parse_go_version_m_batch_matches_each_path_to_its_own_block() {
+        let output = "/go/bin/a: go1.21.5\n\
+                       \tpath\texample.com/a\n\
+                       \tmod\texample.com/a\tv1.2.3\th1:aaa=\n\
+                       /go/bin/b: go1.21.5\n\
+                       \tpath\texample.com/b\n\
+                       \tmod\texample.com/b\tv4.5.6\th1:bbb=\n";
+        let paths = vec!["/go/bin/a".to_string(), "/go/bin/b".to_string()];
+        let versions = parse_go_version_m_batch(output, &paths);
+        assert_eq!(versions.get("/go/bin/a").map(String::as_str), Some("1.2.3"));
+        assert_eq!(versions.get("/go/bin/b").map(String::as_str), Some("4.5.6"));
+    }
+
+    #[test]
+    fn parse_go_version_m_batch_omits_a_path_with_no_mod_line() {
+        let output = "/go/bin/a: go1.21.5\n\tbuild\t-compiler=gc\n\
+                       /go/bin/b: go1.21.5\n\
+                       \tpath\texample.com/b\n\
+                       \tmod\texample.com/b\tv4.5.6\th1:bbb=\n";
+        let paths = vec!["/go/bin/a".to_string(), "/go/bin/b".to_string()];
+        let versions = parse_go_version_m_batch(output, &paths);
+        assert!(!versions.contains_key("/go/bin/a"));
+        assert_eq!(versions.get("/go/bin/b").map(String::as_str), Some("4.5.6"));
     }
 
     #[test]
@@ -520,16 +602,17 @@ mod tests {
     }
 
     #[test]
-    fn scan_go_bin_dir_includes_subdirectories() {
-        // read_dir does not distinguish file vs directory — anything in
-        // $GOPATH/bin is reported. Pin this so a future "filter to files"
-        // refactor is intentional.
+    fn scan_go_bin_dir_excludes_subdirectories() {
+        // `go install` never writes a directory into its bin dir, so a
+        // stray one (a versioned SDK cache, an editor swap dir) is not a
+        // package — the batched `go version -m` spawn would fail outright
+        // if a directory path were handed to it as a binary.
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("subdir")).unwrap();
         std::fs::write(dir.path().join("gopls"), b"").unwrap();
         let pkgs = scan_go_bin_dir(dir.path());
         assert!(pkgs.contains("gopls"));
-        assert!(pkgs.contains("subdir"));
+        assert!(!pkgs.contains("subdir"));
     }
 
     #[test]
@@ -666,6 +749,48 @@ mod tests {
             assert!(
                 installed.contains("tool"),
                 "the query must scan the GOBIN `go install` writes to, got: {installed:?}"
+            );
+        }
+
+        /// A bin dir of three binaries must cost ONE `go version -m` spawn,
+        /// not three — the per-binary loop this replaces turned a 30-tool
+        /// `$GOBIN` into 30 spawns on every plan and verify.
+        #[test]
+        #[serial]
+        fn installed_packages_with_versions_batches_every_binary_into_one_spawn() {
+            let gobin = tempfile::tempdir().expect("tempdir");
+            for name in ["a", "b", "c"] {
+                std::fs::write(gobin.path().join(name), "").expect("seed installed binary");
+            }
+            let shim_dir = tempfile::tempdir().expect("tempdir");
+            let shim_path = cfgd_core::test_helpers::write_tool_shim(
+                shim_dir.path(),
+                "go",
+                &[
+                    cfgd_core::test_helpers::ShimArm::on(
+                        "env GOBIN GOPATH",
+                        &format!("{}\n\n", gobin.path().display()),
+                    ),
+                    cfgd_core::test_helpers::ShimArm::always("", "", 0),
+                ],
+            );
+            let _shim_env =
+                cfgd_core::test_helpers::EnvVarGuard::set(SHIM_ENV, &shim_path.to_string_lossy());
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+
+            let infos = GoInstallManager
+                .installed_packages_with_versions(&cx)
+                .expect("installed_packages_with_versions must succeed");
+
+            assert_eq!(infos.len(), 3, "every binary in the bin dir is reported");
+            let argv =
+                std::fs::read_to_string(shim_dir.path().join("argv.log")).unwrap_or_default();
+            let version_calls = argv.lines().filter(|l| l.contains("version -m")).count();
+            assert_eq!(
+                version_calls, 1,
+                "three binaries must be queried in ONE `go version -m` call, got: {argv}"
             );
         }
 

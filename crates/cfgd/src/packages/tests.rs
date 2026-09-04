@@ -4606,13 +4606,14 @@ fn a_tool_owned_manager_reaches_its_tool_with_a_floor_it_can_read() {
     }
 }
 
-/// The half of the floor-dedup rule a "simplification" would break. What
-/// `effective::stricter_floor` carries forward when the shared parser balks is
-/// DOUBT, not a verdict: an apt epoch (`1:2.30`) is a floor no
-/// `parse_loose_version` reads, so it wins the dedup over a floor that does —
-/// and then compares CLEANLY at the manager that owns the grammar. Turning the
-/// propagation into a blanket refusal would file a check error against a
-/// declaration `docs/packages.md` promises works.
+/// The half of the floor-dedup rule a "simplification" would break. Both
+/// `2:1.0` and `1:9.0` are apt-epoch floors no `parse_loose_version` reads,
+/// so the dedup can only settle their order in the FAMILY's own grammar —
+/// which puts epoch ahead of upstream, so `2:1.0` wins even though its
+/// upstream digits (`1.0`) read smaller than `9.0`'s. A pair differing only
+/// in whether one carried an epoch AT ALL (an earlier version of this test
+/// used `1:2.30` against a bare `2.5`) would pass under a simpler, wrong
+/// rule too: "explicit epoch always wins", never comparing epoch VALUES.
 // `installed_for(apt)` shells `dpkg-query -f=${Package}\t${Version}\n`, and a
 // newline in an argument is what `Command` refuses to hand a `.cmd` shim.
 #[cfg(unix)]
@@ -4636,7 +4637,7 @@ fn a_family_grammar_floor_propagates_through_the_dedup_and_compares_clean() {
         }];
         m
     };
-    let modules = vec![pinned("base", "1:2.30"), pinned("dev", "2.5")];
+    let modules = vec![pinned("base", "2:1.0"), pinned("dev", "1:9.0")];
 
     let apt = all_package_managers()
         .into_iter()
@@ -4652,14 +4653,14 @@ fn a_family_grammar_floor_propagates_through_the_dedup_and_compares_clean() {
     );
     assert_eq!(
         effective[0].min_version.as_deref(),
-        Some("1:2.30"),
-        "the epoch floor is the stricter of the two in its family's grammar: {effective:?}"
+        Some("2:1.0"),
+        "epoch dominance beats a larger upstream number in apt's own grammar: {effective:?}"
     );
 
     // And the whole check, not two detached trait halves: a shimmed dpkg-query
     // listing driven through the engine `cfgd verify` and the live scan both
     // read. A guard added here that asked the SHARED parser would turn the
-    // `8.2`/`0.11` floors `docs/packages.md` promises into check errors.
+    // epoch-carrying floors `docs/packages.md` promises work into check errors.
     let _shim = cfgd_core::test_helpers::ToolShim::install(
         super::versions::DPKG_QUERY_BIN_ENV,
         0,
@@ -4676,7 +4677,7 @@ fn a_family_grammar_floor_propagates_through_the_dedup_and_compares_clean() {
                 apt.as_ref(),
                 &installed,
                 "vim",
-                Some("1:2.30"),
+                Some("2:1.0"),
             ),
             cfgd_core::reconciler::VersionFloor::Met
         ),

@@ -769,4 +769,39 @@ mod seam_tests {
         let aliases = dnf_manager().package_aliases("fd").unwrap();
         assert_eq!(aliases, vec!["fd-find".to_string()]);
     }
+
+    /// I-4: the `pkg` comparator memo caches only `Ok`. A transient spawn
+    /// failure must not poison the pair for the manager instance's
+    /// lifetime — the next ask for the same `(available, floor)` pair must
+    /// actually spawn `pkg` again, not replay a stale `Err`.
+    #[test]
+    #[serial]
+    fn pkg_version_meets_minimum_checked_does_not_memoize_a_spawn_failure() {
+        let mgr = pkg_manager();
+        {
+            // No shim installed: the env var names a binary that cannot be
+            // found, so the spawn itself fails.
+            let _guard = cfgd_core::test_helpers::EnvVarGuard::set(
+                PKG_BIN_ENV,
+                "/nonexistent/cfgd-test-pkg-bin-does-not-exist",
+            );
+            let first = mgr.version_meets_minimum_checked("1.0", "1.0");
+            assert!(
+                first.is_err(),
+                "a nonexistent pkg binary must fail to spawn: {first:?}"
+            );
+        }
+
+        let shim = ToolShim::install(PKG_BIN_ENV, 0, ">\n", "");
+        let second = mgr.version_meets_minimum_checked("1.0", "1.0");
+        assert_eq!(
+            second,
+            Ok(true),
+            "a memoized spawn failure would still answer Err here: {second:?}"
+        );
+        assert!(
+            !shim.argv_log().is_empty(),
+            "the second ask must actually spawn pkg again, not read a cached failure"
+        );
+    }
 }

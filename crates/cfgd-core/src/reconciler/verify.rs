@@ -308,13 +308,33 @@ pub fn package_version_floor(
             ),
         };
     }
-    if mgr.version_meets_minimum(reported, floor) {
-        VersionFloor::Met
-    } else {
-        VersionFloor::Below {
-            floor: floor.to_string(),
-            installed: reported.to_string(),
+    match mgr.version_meets_minimum_checked(reported, floor) {
+        Ok(true) => VersionFloor::Met,
+        Ok(false) => {
+            if mgr.upgrade_verb().is_none() {
+                // A `Below` verdict promises a plan can raise this package. A
+                // manager with no upgrade verb can never raise an already-held
+                // copy, so reporting `Below` here would be drift no apply could
+                // ever heal — the same class `Unreadable` exists to catch.
+                VersionFloor::Unreadable {
+                    detail: format!(
+                        "cannot raise {package} to {floor}: {} has no upgrade verb",
+                        mgr.name()
+                    ),
+                }
+            } else {
+                VersionFloor::Below {
+                    floor: floor.to_string(),
+                    installed: reported.to_string(),
+                }
+            }
         }
+        Err(detail) => VersionFloor::Unreadable {
+            detail: format!(
+                "{} could not compare {package} {reported} against minVersion {floor}: {detail}",
+                mgr.name()
+            ),
+        },
     }
 }
 

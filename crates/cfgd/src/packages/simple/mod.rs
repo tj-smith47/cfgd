@@ -143,6 +143,17 @@ impl PackageManager for SimpleManager {
         self.mgr_name
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        // A family with no distinct upgrade command still raises a held
+        // package — through its ordinary INSTALL verb (see `install`'s own
+        // doc above `upgrade_cmd`). The verb this method reports is whichever
+        // command actually performs the raise, not merely whether a SEPARATE
+        // one exists; apt/dnf/yum/pacman/zypper/pkg all fall to `install_cmd`.
+        self.upgrade_cmd
+            .or(Some(self.install_cmd))
+            .and_then(|parts| parts.first().copied())
+    }
+
     fn tool_version(&self) -> Option<String> {
         super::shared::tool_version_from(cmd_with_seam(self.mgr_name).arg("--version"))
     }
@@ -203,10 +214,10 @@ impl PackageManager for SimpleManager {
             let verb_label = self.display_cmd(upgrade_parts, &[]);
             super::shared::upgrade_each(cx, self.mgr_name, &held, &verb_label, |pkg| {
                 let effective = strip_sudo_for_exec(upgrade_parts);
-                let (prog, args) = effective.split_first()?;
+                let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
                 let mut cmd = cmd_with_seam(prog);
                 cmd.args(args).arg(pkg);
-                Some(cmd)
+                cmd
             })?;
         }
         Ok(())
@@ -304,6 +315,17 @@ impl PackageManager for SimpleManager {
         }
     }
 
+    /// The infallible trait method stays implemented — `modules::resolve_package`
+    /// (the manager-candidate resolution run while a PLAN is built, never on the
+    /// verify path) is its one production caller, choosing among managers that
+    /// could satisfy a declared package by asking whether each one's AVAILABLE
+    /// version clears the floor. A `pkg version -t` spawn failure there folds to
+    /// `false` — "this candidate does not satisfy the floor" — which only drops
+    /// this manager from consideration; a sibling candidate or `Unreadable`'s own
+    /// check-error report (via [`version_meets_minimum_checked`](Self::version_meets_minimum_checked),
+    /// which the LIVE floor check in `reconciler::package_version_floor` calls
+    /// instead) still surfaces the failure. Folding here would be wrong on the
+    /// verify path, where a spawn failure must never be reported as `Below`.
     fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
         self.version_meets_minimum_checked(available, min_version)
             .unwrap_or(false)
@@ -333,8 +355,12 @@ impl PackageManager for SimpleManager {
             return cached.clone();
         }
         let result = pkg_version_meets_minimum(available, min_version).map_err(|e| e.to_string());
-        if let Ok(mut memo) = self.pkg_version_memo.lock() {
-            memo.insert(key, result.clone());
+        // A spawn failure is transient — memoizing it would poison this pair for
+        // the registry's whole lifetime. Only a successful comparison is cached.
+        if let Ok(v) = &result
+            && let Ok(mut memo) = self.pkg_version_memo.lock()
+        {
+            memo.insert(key, Ok(*v));
         }
         result
     }
