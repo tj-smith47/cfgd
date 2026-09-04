@@ -300,6 +300,32 @@ fn pkg_manager_install_uses_dash_y() {
     assert_eq!(mgr.uninstall_cmd, &["pkg", "remove", "-y"]);
 }
 
+/// Every family's `raise_verb` must be a token of the very command it claims
+/// to name — a verb the family's own `upgrade_cmd`/`install_cmd` no longer
+/// carries would render junk the moment a surface displays it.
+#[test]
+fn every_simple_family_names_its_raise_verb_from_its_own_command() {
+    for mgr in [
+        apt_manager(),
+        dnf_manager(),
+        yum_manager(),
+        apk_manager(),
+        pacman_manager(),
+        zypper_manager(),
+        pkg_manager(),
+    ] {
+        let cmd = mgr.upgrade_cmd.unwrap_or(mgr.install_cmd);
+        let verb = mgr
+            .upgrade_verb()
+            .expect("every SimpleManager family raises a held package");
+        assert!(
+            cmd.contains(&verb),
+            "{}: raise_verb {verb:?} is not a token of its own command {cmd:?}",
+            mgr.name()
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 #[serial_test::serial]
@@ -770,7 +796,7 @@ mod seam_tests {
         assert_eq!(aliases, vec!["fd-find".to_string()]);
     }
 
-    /// I-4: the `pkg` comparator memo caches only `Ok`. A transient spawn
+    /// The `pkg` comparator memo caches only `Ok`: a transient spawn
     /// failure must not poison the pair for the manager instance's
     /// lifetime — the next ask for the same `(available, floor)` pair must
     /// actually spawn `pkg` again, not replay a stale `Err`.

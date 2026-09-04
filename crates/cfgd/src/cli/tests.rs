@@ -26851,6 +26851,9 @@ impl cfgd_core::providers::PackageManager for NamedManagerStub {
     fn name(&self) -> &str {
         self.0
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
     fn is_available(&self) -> bool {
         true
     }

@@ -73,6 +73,10 @@ impl PackageManager for MockPackageManager {
         self.mgr_name
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
+
     fn is_available(&self) -> bool {
         self.available
     }
@@ -141,6 +145,9 @@ impl GoLikeMockManager {
 impl PackageManager for GoLikeMockManager {
     fn name(&self) -> &str {
         "go"
+    }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("install")
     }
     fn is_available(&self) -> bool {
         self.available
@@ -3943,6 +3950,9 @@ impl PackageManager for CiVersionedMockManager {
     fn name(&self) -> &str {
         "winget"
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("install")
+    }
     fn is_available(&self) -> bool {
         true
     }
@@ -4084,6 +4094,9 @@ struct PkgLikeMockManager;
 impl PackageManager for PkgLikeMockManager {
     fn name(&self) -> &str {
         "pkg"
+    }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("install")
     }
     fn is_available(&self) -> bool {
         true
@@ -4606,13 +4619,63 @@ fn a_tool_owned_manager_reaches_its_tool_with_a_floor_it_can_read() {
     }
 }
 
+/// Every registered manager against the verb it raises an already-held
+/// package with, read off each manager's own `upgrade_verb()` at HEAD. A
+/// newly registered manager fails this walk until it is classified here,
+/// which is the mechanism that keeps the next family honest.
+const MANAGER_RAISE_VERBS: &[(&str, Option<&str>)] = &[
+    ("brew", Some("upgrade")),
+    ("brew-cask", Some("upgrade")),
+    ("brew-tap", None),
+    ("apt", Some("install")),
+    ("cargo", Some("install")),
+    ("npm", Some("install")),
+    ("pipx", Some("upgrade")),
+    ("dnf", Some("install")),
+    ("apk", Some("upgrade")),
+    ("pacman", Some("-S")),
+    ("zypper", Some("install")),
+    ("yum", Some("install")),
+    ("pkg", Some("install")),
+    ("snap", Some("refresh")),
+    ("flatpak", Some("update")),
+    ("nix", Some("upgrade")),
+    ("go", Some("install")),
+    ("winget", Some("install")),
+    ("chocolatey", Some("upgrade")),
+    ("scoop", Some("update")),
+];
+
+#[test]
+fn every_registered_manager_declares_how_its_family_raises_a_held_package() {
+    for mgr in all_package_managers() {
+        let (_, verb) = MANAGER_RAISE_VERBS
+            .iter()
+            .find(|(name, _)| *name == mgr.name())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: classify this manager's raise verb — an uninventoried \
+                     manager could silently disagree with what its own \
+                     upgrade_verb() answers",
+                    mgr.name()
+                )
+            });
+        assert_eq!(
+            mgr.upgrade_verb(),
+            *verb,
+            "{}: MANAGER_RAISE_VERBS disagrees with the manager's own \
+             upgrade_verb()",
+            mgr.name()
+        );
+    }
+}
+
 /// The half of the floor-dedup rule a "simplification" would break. Both
 /// `2:1.0` and `1:9.0` are apt-epoch floors no `parse_loose_version` reads,
 /// so the dedup can only settle their order in the FAMILY's own grammar —
 /// which puts epoch ahead of upstream, so `2:1.0` wins even though its
 /// upstream digits (`1.0`) read smaller than `9.0`'s. A pair differing only
-/// in whether one carried an epoch AT ALL (an earlier version of this test
-/// used `1:2.30` against a bare `2.5`) would pass under a simpler, wrong
+/// in whether one carried an epoch AT ALL would pass under a simpler, wrong
 /// rule too: "explicit epoch always wins", never comparing epoch VALUES.
 // `installed_for(apt)` shells `dpkg-query -f=${Package}\t${Version}\n`, and a
 // newline in an argument is what `Command` refuses to hand a `.cmd` shim.

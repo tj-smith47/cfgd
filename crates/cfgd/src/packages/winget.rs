@@ -72,6 +72,12 @@ impl PackageManager for WingetManager {
         "winget"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        // `winget install --id <id>` on a held Id attempts the upgrade of the
+        // installed package — install itself is the raise, as for `go`.
+        Some("install")
+    }
+
     fn tool_version(&self) -> Option<String> {
         super::shared::tool_version_from(Command::new("winget").arg("--version"))
     }
