@@ -673,10 +673,10 @@ log_section "Comment Voice — No Session-Narrative or Self-Citation"
 # of a line via code_only/LAST_COMMENT, never the code half, so an identifier
 # or string literal spelling one of these words is untouched.
 #
-# Test code is walked too: a test's own comments render nowhere a future
-# reader can see who wrote them either, so there is no file-skip case here —
-# every *.rs under SRC_ROOTS and every crate's tests/ directory is scanned
-# whole, test modules and fixtures included.
+# Test code and build scripts are walked too: their comments render nowhere a
+# future reader can see who wrote them either, so there is no file-skip case
+# here — every *.rs under crates/ is scanned whole, test modules, fixtures and
+# build.rs included.
 #
 # `Claude Code` is a real external product name cfgd documents as a peer of
 # Gemini/Copilot/Codex/Cursor in the multi-provider skill renderer, and is
@@ -687,10 +687,6 @@ log_section "Comment Voice — No Session-Narrative or Self-Citation"
 #
 # Escape hatch: `// cite-ok: <why>` on the flagged line itself, for a comment
 # that must quote user-facing text containing one of these words verbatim.
-comment_voice_roots=("${SRC_ROOTS[@]}")
-for crate_tests_dir in crates/*/tests; do
-    [[ -d "$crate_tests_dir" ]] && comment_voice_roots+=("$crate_tests_dir")
-done
 comment_voice_violations=""
 while IFS= read -r -d '' rsfile; do
     file_hits=$(awk -v filepath="$rsfile" "$AWK_LIB"'
@@ -707,7 +703,7 @@ while IFS= read -r -d '' rsfile; do
     if [[ -n "$file_hits" ]]; then
         comment_voice_violations="${comment_voice_violations}${file_hits}"$'\n'
     fi
-done < <(find "${comment_voice_roots[@]}" -name '*.rs' -print0 2>/dev/null)
+done < <(find crates -name '*.rs' -print0 2>/dev/null)
 comment_voice_violations=$(echo "$comment_voice_violations" | sed '/^$/d')
 if [[ -n "$comment_voice_violations" ]]; then
     log_error "a comment narrates the assistant's own turn instead of documenting the code (\"we\"/\"Claude\"/\"this task|session|round\"/a numbered Plan|Phase|Task|Step|Wave|Cycle|Session|Round marker/\"Fix round\"/\"§\" — reword to passive/imperative, or mark // cite-ok: <why> for a quoted user-facing sentence):"
