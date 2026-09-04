@@ -365,6 +365,12 @@ module that neither the profile nor the invocation named directly, no annotation
 resolution added nothing beyond the declared list. See [Profiles → Inheritance](profiles.md#inheritance)
 for the `Profile` row's identical rule.
 
+A module the resolution gated off this host follows the `depends:` one as a further clause in the
+same annotation: `Modules  git, nvim (depends: plugins, rectangle skipped: platform not matched
+(requires: macos))` — the name leaves the list, so the clause is where the reader is told why it
+is missing. The run itself lists the module as a planned, skipped action carrying the same reason;
+nothing is installed for it and no drift row is recorded against it.
+
 ## Script Lifecycle
 
 Modules support lifecycle hooks that run at different points during apply and reconciliation. Scripts can be inline commands or file paths (relative to the module directory).

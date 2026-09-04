@@ -4316,6 +4316,51 @@ enum VersionGrammar {
     },
 }
 
+/// Where a manager's `sample` version really comes from, so the grammar table
+/// cannot classify a family against a version string that family never states.
+enum SampleRead {
+    /// The family's own installed-listing parser, and a fixture in the shape
+    /// its tool prints. `parse` is the production function, not a restatement
+    /// of it: a listing whose grammar moves takes the sample with it.
+    Listed {
+        fixture: &'static str,
+        parse: fn(&str) -> Vec<cfgd_core::providers::PackageInfo>,
+    },
+    /// The family's installed listing states no version at all, so its sample
+    /// is what the single-package version query reads instead. `seam` is the
+    /// `CFGD_*_BIN` variable that query spawns through, and `stdout` what the
+    /// tool answers with.
+    Queried {
+        seam: &'static str,
+        stdout: &'static str,
+    },
+    /// The family states no version anywhere: a brew tap is a repository, and
+    /// its entries carry the unknown sentinel rather than a version at all.
+    Unlisted,
+}
+
+/// The listing parsers whose production signature takes parsed JSON rather
+/// than the tool's stdout, adapted to the one shape the table holds.
+fn npm_listing_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
+    let parsed: serde_json::Value = serde_json::from_str(stdout).expect("npm fixture is JSON");
+    super::npm::parse_npm_list_versions(&parsed)
+}
+
+fn pipx_listing_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
+    let parsed: serde_json::Value = serde_json::from_str(stdout).expect("pipx fixture is JSON");
+    super::pipx::parse_pipx_list_versions(&parsed)
+}
+
+/// go reads its versions per BINARY rather than as one listing, so the batch
+/// parser is fed the one path the fixture's transcript names.
+fn go_listing_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
+    let paths = vec!["/go/bin/gopls".to_string()];
+    super::go::parse_go_version_m_batch(stdout, &paths)
+        .into_iter()
+        .map(|(name, version)| cfgd_core::providers::PackageInfo { name, version })
+        .collect()
+}
+
 /// Every registered manager against its real version grammar. A manager whose
 /// listings carry packaging fields needs its own comparator, or every package
 /// it holds with a declared floor reports a check that could not run AND is
@@ -4324,7 +4369,7 @@ enum VersionGrammar {
 ///
 /// A newly registered manager fails this walk until it is classified here,
 /// which is the mechanism that keeps the next family honest.
-const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
+const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar, SampleRead)] = &[
     // Homebrew: `<upstream>_<revision>` for a formula, `<version>,<build>`
     // for a cask. A tap has no versions, so the default never judges one.
     (
@@ -4333,12 +4378,20 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
             sample: "0.12.5_1",
             floor: "0.11",
         },
+        SampleRead::Listed {
+            fixture: "ripgrep 0.12.5_1\n",
+            parse: super::brew::parse_brew_versions,
+        },
     ),
     (
         "brew-cask",
         VersionGrammar::Packaged {
             sample: "1.2.3,4567",
             floor: "1.2",
+        },
+        SampleRead::Listed {
+            fixture: "rectangle 1.2.3,4567\n",
+            parse: super::brew::parse_brew_versions,
         },
     ),
     (
@@ -4347,6 +4400,7 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
             sample: "1.0.0",
             incomparable: None,
         },
+        SampleRead::Unlisted,
     ),
     // The distro families: `[<epoch>:]<upstream>[-<revision>]`.
     (
@@ -4355,26 +4409,48 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
             sample: "1:2.34-0ubuntu3.4",
             floor: "2",
         },
+        SampleRead::Listed {
+            fixture: "vim\t1:2.34-0ubuntu3.4\n",
+            parse: super::versions::parse_apt_versions,
+        },
     ),
+    // rpm's `%{VERSION}` is the upstream field alone — the release lives in
+    // `%{RELEASE}` and the epoch in `%{EPOCH}`, so this family's listing
+    // never carries a packaging suffix even though a DECLARED floor may.
     (
         "dnf",
         VersionGrammar::Packaged {
-            sample: "1.2.3-2",
+            sample: "1.2.3",
             floor: "1.2",
+        },
+        SampleRead::Listed {
+            fixture: "vim\t1.2.3\n",
+            parse: super::versions::parse_rpm_versions,
         },
     ),
     (
         "yum",
         VersionGrammar::Packaged {
-            sample: "1.2.3-2",
+            sample: "1.2.3",
             floor: "1.2",
         },
+        SampleRead::Listed {
+            fixture: "vim\t1.2.3\n",
+            parse: super::versions::parse_rpm_versions,
+        },
     ),
+    // The four families whose installed listing states no version at all:
+    // their samples are what the single-package version QUERY reads, so the
+    // weld drives each one's own `CFGD_*_BIN` seam instead of a parser.
     (
         "apk",
         VersionGrammar::Packaged {
             sample: "3.0.0-r0",
             floor: "2",
+        },
+        SampleRead::Queried {
+            seam: super::versions::APK_BIN_ENV,
+            stdout: "curl policy:\n  3.0.0-r0:\n    https://dl-cdn.alpinelinux.org/alpine\n",
         },
     ),
     (
@@ -4383,12 +4459,20 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
             sample: "1.2.3-2",
             floor: "1.2",
         },
+        SampleRead::Queried {
+            seam: super::versions::PACMAN_BIN_ENV,
+            stdout: "Repository      : extra\nName            : curl\nVersion         : 1.2.3-2\n",
+        },
     ),
     (
         "zypper",
         VersionGrammar::Packaged {
             sample: "1.2.3-2",
             floor: "1.2",
+        },
+        SampleRead::Queried {
+            seam: super::versions::ZYPPER_BIN_ENV,
+            stdout: "Name           : curl\nVersion        : 1.2.3-2\nArch           : x86_64\n",
         },
     ),
     // FreeBSD carries PORTEPOCH and PORTREVISION and defers to `pkg version -t`.
@@ -4397,6 +4481,10 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
         VersionGrammar::ToolOwned {
             sample: "1.2.0_1,1",
             floor: "v1.2.0",
+        },
+        SampleRead::Queried {
+            seam: super::versions::PKG_BIN_ENV,
+            stdout: "curl\t1.2.0_1,1\n",
         },
     ),
     // Language and app-store managers publish plain semver (`cargo search`,
@@ -4408,12 +4496,20 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
             sample: "0.4.19",
             incomparable: None,
         },
+        SampleRead::Listed {
+            fixture: "ripgrep v0.4.19:\n    rg\n",
+            parse: super::cargo::parse_cargo_install_list,
+        },
     ),
     (
         "npm",
         VersionGrammar::Semver {
             sample: "10.9.2",
             incomparable: None,
+        },
+        SampleRead::Listed {
+            fixture: r#"{"dependencies":{"npm":{"version":"10.9.2"}}}"#,
+            parse: npm_listing_versions,
         },
     ),
     (
@@ -4422,12 +4518,23 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
             sample: "24.0.1",
             incomparable: None,
         },
+        SampleRead::Listed {
+            fixture: r#"{"venvs":{"black":{"metadata":{"main_package":{"package_version":"24.0.1"}}}}}"#,
+            parse: pipx_listing_versions,
+        },
     ),
+    // `go version -m` states the module version with go's own `v` prefix,
+    // which the parser strips: the sample is the version cfgd compares, not
+    // the string the tool printed.
     (
         "go",
         VersionGrammar::Semver {
-            sample: "v0.16.2",
+            sample: "0.16.2",
             incomparable: None,
+        },
+        SampleRead::Listed {
+            fixture: "/go/bin/gopls: go1.21.5\n\tpath\texample.com/gopls\n\tmod\texample.com/gopls\tv0.16.2\th1:aaa=\n",
+            parse: go_listing_versions,
         },
     ),
     (
@@ -4436,12 +4543,20 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
             sample: "0.10.0",
             incomparable: None,
         },
+        SampleRead::Listed {
+            fixture: r#"{"elements":{"ripgrep":{"storePaths":["/nix/store/aaaaaaaa-ripgrep-0.10.0"]}}}"#,
+            parse: super::nix::parse_nix_profile_list_versions,
+        },
     ),
     (
         "snap",
         VersionGrammar::Semver {
             sample: "2.61.3",
             incomparable: None,
+        },
+        SampleRead::Listed {
+            fixture: "Name  Version  Rev  Tracking  Publisher  Notes\ncore  2.61.3  16574  latest/stable  canonical  core\n",
+            parse: super::snap::parse_snap_list_versions,
         },
     ),
     (
@@ -4450,12 +4565,20 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
             sample: "2.10.36",
             incomparable: None,
         },
+        SampleRead::Listed {
+            fixture: "org.gnome.Calculator\t2.10.36\n",
+            parse: super::flatpak::parse_flatpak_app_list_versions,
+        },
     ),
     (
         "winget",
         VersionGrammar::Packaged {
             sample: "133.0.6943.98",
             floor: "133",
+        },
+        SampleRead::Listed {
+            fixture: "Name  Id       Version\n-----------------------\nFoo   Chrome   133.0.6943.98\n",
+            parse: super::winget::parse_winget_list_versions,
         },
     ),
     (
@@ -4464,6 +4587,10 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
             sample: "4.7.1.2019",
             floor: "4.7",
         },
+        SampleRead::Listed {
+            fixture: "Chocolatey v2.2.2\nnodejs 4.7.1.2019\n1 packages installed.\n",
+            parse: super::choco::parse_choco_list_versions,
+        },
     ),
     (
         "scoop",
@@ -4471,15 +4598,19 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
             sample: "22.0.0",
             incomparable: None,
         },
+        SampleRead::Listed {
+            fixture: r#"{"apps":[{"Name":"nodejs","Version":"22.0.0"}]}"#,
+            parse: super::scoop::parse_scoop_export_versions,
+        },
     ),
 ];
 
 #[test]
 fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
     for mgr in all_package_managers() {
-        let (_, grammar) = MANAGER_VERSION_GRAMMARS
+        let (_, grammar, read) = MANAGER_VERSION_GRAMMARS
             .iter()
-            .find(|(name, _)| *name == mgr.name())
+            .find(|(name, _, _)| *name == mgr.name())
             .unwrap_or_else(|| {
                 panic!(
                     "{}: classify this manager's version grammar — a packaging \
@@ -4574,7 +4705,78 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
                 );
             }
         }
+
+        // The sample has to be a version this family really states, or the
+        // classification above is a claim about a string nothing produces.
+        let sample = match grammar {
+            VersionGrammar::Semver { sample, .. }
+            | VersionGrammar::Packaged { sample, .. }
+            | VersionGrammar::ToolOwned { sample, .. } => *sample,
+        };
+        match read {
+            SampleRead::Listed { fixture, parse } => {
+                let listed: Vec<String> = parse(fixture).into_iter().map(|p| p.version).collect();
+                assert!(
+                    listed.iter().any(|v| v == sample),
+                    "{}: {sample} is no version this family's own listing parser \
+                     produces from its tool's output — it read {listed:?}",
+                    mgr.name()
+                );
+            }
+            SampleRead::Unlisted => {
+                assert_eq!(
+                    mgr.upgrade_verb(),
+                    None,
+                    "{}: a family stating no version anywhere raises nothing in \
+                     place either",
+                    mgr.name()
+                );
+            }
+            // Driven through the tool seam by
+            // `every_queried_sample_is_what_its_familys_own_version_query_reads`,
+            // which serializes against every other test using the same seam.
+            SampleRead::Queried { .. } => {}
+        }
     }
+}
+
+/// The half of the sample-provenance weld that needs a tool: four families
+/// list no versions at all, so their samples come from the single-package
+/// version query, which spawns. Split out for the same reason
+/// `a_tool_owned_manager_reaches_its_tool_with_a_floor_it_can_read` is: it
+/// drives a `CFGD_*_BIN` seam and so has to serialize.
+#[test]
+#[serial_test::serial]
+fn every_queried_sample_is_what_its_familys_own_version_query_reads() {
+    let mut driven = 0;
+    for mgr in all_package_managers() {
+        let Some((_, grammar, SampleRead::Queried { seam, stdout })) = MANAGER_VERSION_GRAMMARS
+            .iter()
+            .find(|(name, _, _)| *name == mgr.name())
+        else {
+            continue;
+        };
+        let sample = match grammar {
+            VersionGrammar::Semver { sample, .. }
+            | VersionGrammar::Packaged { sample, .. }
+            | VersionGrammar::ToolOwned { sample, .. } => *sample,
+        };
+        let _shim = cfgd_core::test_helpers::ToolShim::install(seam, 0, stdout, "");
+        let read = mgr
+            .available_version("curl")
+            .unwrap_or_else(|e| panic!("{}: shimmed version query failed: {e}", mgr.name()));
+        assert_eq!(
+            read.as_deref(),
+            Some(sample),
+            "{}: {sample} is no version this family's own query reads back",
+            mgr.name()
+        );
+        driven += 1;
+    }
+    assert_eq!(
+        driven, 4,
+        "the four version-less-listing families each drove their own seam"
+    );
 }
 
 /// The half of the grammar walk that needs the tool itself, split out because
@@ -4589,9 +4791,9 @@ fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
 #[serial_test::serial]
 fn a_tool_owned_manager_reaches_its_tool_with_a_floor_it_can_read() {
     for mgr in all_package_managers() {
-        let Some((_, VersionGrammar::ToolOwned { sample, floor })) = MANAGER_VERSION_GRAMMARS
+        let Some((_, VersionGrammar::ToolOwned { sample, floor }, _)) = MANAGER_VERSION_GRAMMARS
             .iter()
-            .find(|(name, _)| *name == mgr.name())
+            .find(|(name, _, _)| *name == mgr.name())
         else {
             continue;
         };

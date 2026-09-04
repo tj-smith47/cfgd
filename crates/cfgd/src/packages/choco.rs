@@ -61,7 +61,7 @@ pub(super) fn parse_choco_list(output: &str) -> HashSet<String> {
 /// Installed packages WITH versions for `installed_packages_with_versions`. Unlike
 /// [`parse_choco_list`] this preserves the REGISTERED name case for display (the
 /// scan/status surface) and carries the real version.
-fn parse_choco_list_versions(output: &str) -> Vec<PackageInfo> {
+pub(super) fn parse_choco_list_versions(output: &str) -> Vec<PackageInfo> {
     choco_list_entries(output)
         .into_iter()
         .map(|(name, version)| PackageInfo {
