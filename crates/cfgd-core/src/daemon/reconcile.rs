@@ -797,7 +797,12 @@ fn reconcile_tick(
                     outside_tick_scope(&e.resource_type, &e.resource_id)
                         || pending_exclusions
                             .withholds_recorded_row(&e.resource_type, &e.resource_id)
-                        || tick_cannot_refind(&e.resource_type, &e.resource_id, planned)
+                        || tick_cannot_refind(
+                            &e.resource_type,
+                            &e.resource_id,
+                            planned,
+                            module_filter.is_some(),
+                        )
                 })
                 .map(|e| (e.resource_type, e.resource_id))
                 // The ids the prune itself removed from the plan: the
@@ -1373,7 +1378,12 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
 ///   generated env FILE as a whole: a planned rewrite means the file is stale
 ///   and says nothing about which items still mismatch (keep), while no
 ///   planned rewrite means the file converged, which re-finds every declared
-///   item healed (resolve).
+///   item healed (resolve) — but ONLY for a profile-wide tick. `narrow_to_module`
+///   drops the whole env group unconditionally (it is machine-wide, owned by
+///   no module), so a SCOPED tick's `planned` can never carry a `WriteEnvFile`
+///   action whether or not the real file needs one; reading that absence as
+///   "converged" would heal every env-var/alias row this module's chain owns
+///   on every scoped tick, blind. `scoped` is what tells the two cases apart.
 /// * `package` `<manager>:<identity>` — the CLI's per-package spelling, which
 ///   this tick now mints too, so identity governs: a package a planned batch
 ///   still carries is already in the current set, and one no batch carries is
@@ -1413,12 +1423,16 @@ pub(super) fn tick_cannot_refind(
     resource_type: &str,
     resource_id: &str,
     planned: &[&crate::reconciler::Action],
+    scoped: bool,
 ) -> bool {
     use crate::reconciler::{Action, EnvAction, ModuleActionKind, SystemAction};
     match resource_type {
-        "env-var" | "alias" => planned
-            .iter()
-            .any(|a| matches!(a, Action::Env(EnvAction::WriteEnvFile { .. }))),
+        "env-var" | "alias" => {
+            scoped
+                || planned
+                    .iter()
+                    .any(|a| matches!(a, Action::Env(EnvAction::WriteEnvFile { .. })))
+        }
         "package" => {
             if let Some(manager) = resource_id
                 .strip_prefix("provision:")

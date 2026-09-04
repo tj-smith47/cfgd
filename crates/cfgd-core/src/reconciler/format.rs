@@ -1082,6 +1082,18 @@ pub fn row_attributable_to_module(
     }
 }
 
+/// Whether a drift-reporting run has anything to report: real findings (or a
+/// standing row an earlier check already found — the caller ORs the two into
+/// `drift_present` before calling, since which buckets exist differs per
+/// verb) or a check this run could not complete. The ONE predicate `diff`,
+/// `verify` and `status --scan` ask for BOTH their verdict (Ok vs. not) and
+/// their `--exit-code` gate, so a category minted into one boolean chain
+/// cannot silently diverge from the other.
+#[must_use]
+pub fn has_any_drift(drift_present: bool, check_failed: bool) -> bool {
+    drift_present || check_failed
+}
+
 #[cfg(test)]
 mod row_attributable_to_module_tests {
     use super::*;

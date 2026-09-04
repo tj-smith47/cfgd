@@ -37,6 +37,14 @@ const SCOPED_EXIT_CODE_SURFACES: [&[&str]; 2] = [
     &["diff", "--module", "envmod", "--exit-code"],
 ];
 
+/// A whole-module standing row's seeded operand, for a test asserting the
+/// row itself rendered. Never the literal `drift detected`: that word is
+/// also `drift_terse_cause`'s fallback for a row with NO operands at all,
+/// and a substring of the clean "No drift detected" verdict, so it cannot
+/// tell "the row rendered" apart from "the row was empty" or "the renderer
+/// fell back to the clean verdict".
+const STANDING_ROW_MARKER: &str = "standing-row-marker-7f2c";
+
 /// A gpg stand-in that always fails, so the gpgKeys configurator's own
 /// keyring probe errors (gpg exit codes other than 0/2 are probe errors).
 fn failing_gpg(dir: &Path) -> std::path::PathBuf {
@@ -925,7 +933,7 @@ fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
         {
             let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
             state
-                .record_drift("module", "envmod", None, Some("drift detected"), "local")
+                .record_drift("module", "envmod", None, Some(STANDING_ROW_MARKER), "local")
                 .unwrap();
         }
 
@@ -944,11 +952,20 @@ fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
         );
         // `envmod` alone is not proof — every scoped surface's own header
         // names the module regardless of whether the standing row rendered.
-        // The row's own recorded `actual` value only appears if the row
-        // itself made it onto the screen.
+        // Neither is the literal `drift detected`: it is also the terse
+        // fallback `drift_terse_cause` renders for a row with NO operands at
+        // all, and a substring of the clean "No drift detected" verdict, so
+        // either a genuinely empty row or a renderer that fell back to the
+        // clean verdict would satisfy it too. The seeded row's own operand
+        // is a marker no other rendered path can produce, so its presence
+        // proves the STANDING ROW ITSELF made it onto the screen.
         assert!(
-            text.contains("drift detected"),
+            text.contains(STANDING_ROW_MARKER),
             "cfgd {render_args:?}: renders the row it left standing, got: {text}"
+        );
+        assert!(
+            !text.contains("No drift detected"),
+            "cfgd {render_args:?}: verdict must agree with the standing row above, got: {text}"
         );
 
         // The `-o json` twin: the same row under the payload's own
@@ -1029,7 +1046,7 @@ fn a_module_scoped_scan_renders_and_prices_a_script_shaped_standing_row() {
                 "module",
                 "envmod:script",
                 None,
-                Some("drift detected"),
+                Some(STANDING_ROW_MARKER),
                 "local",
             )
             .unwrap();
@@ -1048,9 +1065,16 @@ fn a_module_scoped_scan_renders_and_prices_a_script_shaped_standing_row() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+    // The seeded marker, not the literal `drift detected`: that word is also
+    // the terse fallback a NO-operand row renders and a substring of the
+    // clean "No drift detected" verdict — see the sibling test above.
     assert!(
-        text.contains("drift detected"),
+        text.contains(STANDING_ROW_MARKER),
         "cfgd {render_args:?}: renders the script-shaped row it left standing, got: {text}"
+    );
+    assert!(
+        !text.contains("No drift detected"),
+        "cfgd {render_args:?}: verdict must agree with the standing row above, got: {text}"
     );
 
     let mut json_args: Vec<&str> = render_args.to_vec();

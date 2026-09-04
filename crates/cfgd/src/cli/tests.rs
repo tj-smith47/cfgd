@@ -35160,3 +35160,83 @@ fn no_doctor_section_or_verdict_borrows_the_managed_resource_vocabulary() {
         );
     }
 }
+
+/// `diff`, `verify` and `status` each ask "does this run stand on any drift"
+/// twice — once to word their verdict, once to price `--exit-code` — and a
+/// category minted into one boolean chain but not the other silently
+/// diverges (the bug `has_any_drift` exists to make structurally impossible).
+/// Every one of the three verbs' two call sites names the one shared
+/// predicate; a consumer computing its own `!findings.is_empty()`-shaped
+/// chain instead goes undetected unless a walk floors the call count. A
+/// site with a genuine reason to compute its own boolean carries
+/// `// verdict-ok: <why>` on the same line, which this walk exempts.
+#[test]
+fn every_verdict_and_exit_site_asks_the_one_drift_predicate() {
+    let floors = [("diff.rs", 2usize), ("verify.rs", 2), ("status.rs", 2)];
+    for (source, (path, body)) in cli_production_sources()
+        .into_iter()
+        .filter_map(|(path, body)| {
+            let name = path.file_name()?.to_str()?.to_string();
+            Some((name, (path, body)))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>()
+        .into_iter()
+        .filter(|(name, _)| floors.iter().any(|(f, _)| f == name))
+    {
+        let floor = floors
+            .iter()
+            .find(|(f, _)| *f == source)
+            .map(|(_, n)| *n)
+            .unwrap_or(0);
+        let hatched = body
+            .lines()
+            .filter(|l| l.contains("// verdict-ok:"))
+            .count();
+        let calls = body.matches("has_any_drift(").count();
+        assert!(
+            calls + hatched >= floor,
+            "{} calls `has_any_drift(` {calls} time(s) (plus {hatched} \
+             `// verdict-ok:` hatch(es)), short of the {floor} verdict/exit \
+             sites this verb must route through the shared predicate — see \
+             {}",
+            source,
+            path.display()
+        );
+    }
+}
+
+/// `status --module --scan`'s `-o json` `standing` payload must equal the
+/// set of ids the human render's Drift section lists — the classifier
+/// (`classify_recorded_drift_for_chain`) is what decides which recorded row
+/// this scope can vouch for, and a row it vetoes must vanish from BOTH slots
+/// together. `standing_rows` is therefore sliced off `drift` itself, AFTER
+/// the classify call runs, never captured from the raw `standing` list
+/// `record_scoped_scan_findings` handed over before classification had a
+/// chance to drop anything: a JSON consumer reading `standing` alone must
+/// never see a row the human reader beside it does not.
+#[test]
+fn a_scoped_scans_standing_rows_are_sliced_from_drift_after_classification() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/status.rs");
+    let body = production_body(&std::fs::read_to_string(&path).unwrap());
+    let classify_at = body
+        .find("classify_recorded_drift_for_chain(\n                    standing,")
+        .unwrap_or_else(|| {
+            panic!("the scoped scan's classify call over `standing` was not found in {}; the source reshuffled and this pin needs re-anchoring", path.display())
+        });
+    let slice_at = body
+        .find("standing_rows = drift[drift_len_before_standing..]")
+        .unwrap_or_else(|| {
+            panic!(
+                "the post-classification `standing_rows` slice was not found in {}",
+                path.display()
+            )
+        });
+    assert!(
+        slice_at > classify_at,
+        "`standing_rows` must be sliced from `drift` AFTER \
+         `classify_recorded_drift_for_chain` runs (found the slice at byte \
+         {slice_at}, the classify call at byte {classify_at}) — capturing it \
+         from the raw `standing` list before classification lets `-o json` \
+         claim a row the human render already dropped"
+    );
+}
