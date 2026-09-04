@@ -154,6 +154,12 @@ impl PackageManager for ScriptedManager {
         &self.mgr_name
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        // A config-declared installer states no versions and re-running its
+        // install script is not a raise cfgd can vouch for.
+        None
+    }
+
     fn is_available(&self) -> bool {
         #[cfg(test)]
         let _path_guard = cfgd_core::test_helpers::path_env_read_guard();

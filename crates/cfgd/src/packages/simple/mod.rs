@@ -89,6 +89,9 @@ pub struct SimpleManager {
     /// (apt/dnf/yum/pacman/zypper/pkg all raise a held package via their
     /// ordinary install command).
     pub(super) upgrade_cmd: Option<&'static [&'static str]>,
+    /// The token of `upgrade_cmd`/`install_cmd` that names the raise, for
+    /// `upgrade_verb`.
+    pub(super) raise_verb: &'static str,
     /// When true, non-zero exit from the update command is ignored (dnf/yum
     /// check-update returns 100 when updates are available).
     pub(super) ignore_update_exit: bool,
@@ -146,12 +149,9 @@ impl PackageManager for SimpleManager {
     fn upgrade_verb(&self) -> Option<&'static str> {
         // A family with no distinct upgrade command still raises a held
         // package — through its ordinary INSTALL verb (see `install`'s own
-        // doc above `upgrade_cmd`). The verb this method reports is whichever
-        // command actually performs the raise, not merely whether a SEPARATE
-        // one exists; apt/dnf/yum/pacman/zypper/pkg all fall to `install_cmd`.
-        self.upgrade_cmd
-            .or(Some(self.install_cmd))
-            .and_then(|parts| parts.first().copied())
+        // doc above `upgrade_cmd`). `raise_verb` names the token of whichever
+        // command actually performs the raise, not the program name.
+        Some(self.raise_verb)
     }
 
     fn tool_version(&self) -> Option<String> {
@@ -409,6 +409,7 @@ pub(super) fn apt_manager() -> SimpleManager {
         uninstall_cmd: &["sudo", "apt-get", "remove", "-y"],
         update_cmd: Some(&["sudo", "apt-get", "update"]),
         upgrade_cmd: None,
+        raise_verb: "install",
         ignore_update_exit: false,
         parse_list: parse_simple_lines,
         query_version: query_version_apt,
@@ -430,6 +431,7 @@ pub(super) fn dnf_manager() -> SimpleManager {
         uninstall_cmd: &["sudo", "dnf", "remove", "-y"],
         update_cmd: Some(&["sudo", "dnf", "check-update"]),
         upgrade_cmd: None,
+        raise_verb: "install",
         ignore_update_exit: true,
         parse_list: parse_dnf_lines,
         query_version: query_version_info,
@@ -448,6 +450,7 @@ pub(super) fn yum_manager() -> SimpleManager {
         uninstall_cmd: &["sudo", "yum", "remove", "-y"],
         update_cmd: Some(&["sudo", "yum", "check-update"]),
         upgrade_cmd: None,
+        raise_verb: "install",
         ignore_update_exit: true,
         parse_list: parse_yum_lines,
         query_version: query_version_info,
@@ -469,6 +472,7 @@ pub(super) fn apk_manager() -> SimpleManager {
         uninstall_cmd: &["apk", "del"],
         update_cmd: Some(&["apk", "update"]),
         upgrade_cmd: Some(&["apk", "upgrade"]),
+        raise_verb: "upgrade",
         ignore_update_exit: false,
         parse_list: parse_apk_lines,
         query_version: query_version_apk,
@@ -487,6 +491,7 @@ pub(super) fn pacman_manager() -> SimpleManager {
         uninstall_cmd: &["sudo", "pacman", "-R", "--noconfirm"],
         update_cmd: Some(&["sudo", "pacman", "-Sy", "--noconfirm"]),
         upgrade_cmd: None,
+        raise_verb: "-S",
         ignore_update_exit: false,
         parse_list: parse_simple_lines,
         query_version: query_version_info,
@@ -512,6 +517,7 @@ pub(super) fn zypper_manager() -> SimpleManager {
         uninstall_cmd: &["sudo", "zypper", "remove", "-y"],
         update_cmd: Some(&["sudo", "zypper", "refresh"]),
         upgrade_cmd: None,
+        raise_verb: "install",
         ignore_update_exit: false,
         parse_list: parse_zypper_lines,
         query_version: query_version_info,
@@ -530,6 +536,7 @@ pub(super) fn pkg_manager() -> SimpleManager {
         uninstall_cmd: &["pkg", "remove", "-y"],
         update_cmd: Some(&["pkg", "update"]),
         upgrade_cmd: None,
+        raise_verb: "install",
         ignore_update_exit: false,
         parse_list: parse_pkg_lines,
         query_version: query_version_pkg,

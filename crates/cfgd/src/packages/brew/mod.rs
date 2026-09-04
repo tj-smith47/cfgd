@@ -144,6 +144,13 @@ impl PackageManager for BrewTapManager {
         "brew-tap"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        // A tap is a repository: it has no version to be below, so nothing
+        // ever asks this — declared rather than defaulted so the answer is a
+        // statement, not an omission.
+        None
+    }
+
     fn tool_version(&self) -> Option<String> {
         super::shared::tool_version_from(brew_cmd().arg("--version"))
     }

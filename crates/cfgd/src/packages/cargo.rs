@@ -44,6 +44,12 @@ impl PackageManager for CargoManager {
         "cargo"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        // `cargo install <crate>` replaces an already-held package with the
+        // requested version — install itself is the raise, as for `go`.
+        Some("install")
+    }
+
     fn tool_version(&self) -> Option<String> {
         super::shared::tool_version_from(cargo_cmd().arg("--version"))
     }

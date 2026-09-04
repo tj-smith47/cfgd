@@ -254,6 +254,10 @@ pub enum VersionFloor {
 ///
 /// The listing scan is behind the `min_version` guard, so an unpinned package
 /// — very nearly all of them — costs nothing beyond the `Option` test.
+///
+/// The spawn-failure arm is reachable from no registered manager today
+/// (`pkg`, the one shelling comparator, lists no versions), so it is pinned
+/// through the engine with a stub.
 #[must_use]
 pub fn package_version_floor(
     mgr: &dyn crate::providers::PackageManager,

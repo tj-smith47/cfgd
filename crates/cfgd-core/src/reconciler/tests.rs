@@ -2022,10 +2022,10 @@ fn a_pinned_package_below_its_bound_is_version_drift() {
     );
 }
 
-/// The Critical this round answers: a comparator that genuinely fails to
-/// spawn (`pkg version -t`'s real shape) must propagate as
-/// [`VersionFloor::Unreadable`], never fold to `Below` — a spawn failure is a
-/// check that could not run, not a verdict that the floor was missed.
+/// A comparator that genuinely fails to spawn (`pkg version -t`'s real
+/// shape) must propagate as [`VersionFloor::Unreadable`], never fold to
+/// `Below` — a spawn failure is a check that could not run, not a verdict
+/// that the floor was missed.
 #[test]
 fn a_comparator_that_fails_to_spawn_is_unreadable_not_below() {
     let mgr = MockPackageManager::new("pkg")
@@ -3888,6 +3888,9 @@ impl PackageManager for TrackingPackageManager {
     fn name(&self) -> &str {
         &self.name
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
     fn is_available(&self) -> bool {
         true
     }
@@ -4087,6 +4090,9 @@ struct ScriptedLikeManager {
 impl PackageManager for ScriptedLikeManager {
     fn name(&self) -> &str {
         &self.name
+    }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        None
     }
     fn is_available(&self) -> bool {
         true
@@ -5061,6 +5067,9 @@ impl UpdateCountingPackageManager {
 impl PackageManager for UpdateCountingPackageManager {
     fn name(&self) -> &str {
         &self.name
+    }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
     }
     fn is_available(&self) -> bool {
         true
@@ -6137,6 +6146,9 @@ impl PackageManager for FailingPackageManager {
     fn name(&self) -> &str {
         &self.name
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
     fn is_available(&self) -> bool {
         true
     }
@@ -6399,6 +6411,9 @@ struct PanickingPackageManager {
 impl PackageManager for PanickingPackageManager {
     fn name(&self) -> &str {
         &self.name
+    }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
     }
     fn is_available(&self) -> bool {
         true
@@ -9239,6 +9254,9 @@ impl PackageManager for BootstrappablePackageManager {
     fn name(&self) -> &str {
         &self.name
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
     fn is_available(&self) -> bool {
         *self.bootstrapped.lock().unwrap()
     }
@@ -9484,6 +9502,9 @@ impl PathPopulatingManager {
 impl PackageManager for PathPopulatingManager {
     fn name(&self) -> &str {
         "writer"
+    }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
     }
     fn is_available(&self) -> bool {
         true
@@ -17500,6 +17521,9 @@ impl PackageManager for BootstrappingPackageManager {
     fn name(&self) -> &str {
         &self.name
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
     fn is_available(&self) -> bool {
         *self.available.lock().unwrap()
     }
@@ -22652,6 +22676,9 @@ impl PackageManager for DispatchLogManager {
     fn name(&self) -> &str {
         &self.name
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
     fn is_available(&self) -> bool {
         *self.available.lock().unwrap()
     }
@@ -26398,6 +26425,9 @@ impl NotePushingManager {
 impl PackageManager for NotePushingManager {
     fn name(&self) -> &str {
         &self.name
+    }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
     }
     fn is_available(&self) -> bool {
         true

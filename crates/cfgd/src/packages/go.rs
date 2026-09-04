@@ -167,9 +167,13 @@ impl PackageManager for GoInstallManager {
             .iter()
             .map(|name| bin_dir.join(name).to_string_lossy().into_owned())
             .collect();
+        // `go version -m` exits 1 when ANY argument is not a Go binary (a
+        // script or a hand-copied tool in `$GOBIN`) while still printing every
+        // readable block, so the exit status says nothing about the blocks
+        // that did come back: parse what arrived, and let the batch parser's
+        // own omission mark the unreadable ones unknown.
         let versions = run_pkg_query("go", go_cmd().arg("version").arg("-m").args(&paths))
             .ok()
-            .filter(|output| output.status.success())
             .map(|output| {
                 parse_go_version_m_batch(&String::from_utf8_lossy(&output.stdout), &paths)
             })
@@ -338,6 +342,7 @@ pub(super) fn parse_go_version_m_batch(
     output: &str,
     paths: &[String],
 ) -> std::collections::HashMap<String, String> {
+    let path_set: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
     let mut versions = std::collections::HashMap::new();
     let mut current: Option<&str> = None;
     let mut block = String::new();
@@ -349,12 +354,18 @@ pub(super) fn parse_go_version_m_batch(
         }
     };
     for line in output.lines() {
-        let header = paths
-            .iter()
-            .find(|p| line.starts_with(p.as_str()) && line[p.len()..].starts_with(':'));
+        // Every line of a block but its header is tab-indented, and the header
+        // is `<path>: go<version>` with the path echoed verbatim — so a header
+        // is a non-indented line whose text before the last `:` is one of the
+        // queried paths (the last `:`, because a Windows path carries one).
+        let header = (!line.starts_with('\t'))
+            .then(|| line.rsplit_once(':'))
+            .flatten()
+            .map(|(path, _)| path)
+            .filter(|path| path_set.contains(path));
         if let Some(path) = header {
             flush(current, &block, &mut versions);
-            current = Some(path.as_str());
+            current = Some(path);
             block.clear();
         } else {
             block.push_str(line);
@@ -415,6 +426,24 @@ mod tests {
         let versions = parse_go_version_m_batch(output, &paths);
         assert!(!versions.contains_key("/go/bin/a"));
         assert_eq!(versions.get("/go/bin/b").map(String::as_str), Some("4.5.6"));
+    }
+
+    /// A Windows path's own drive-letter colon (`C:\Users\...`) is not the
+    /// header delimiter — only the LAST `:` on a non-indented line is, which
+    /// is what lets the header lookup split on it unambiguously.
+    #[test]
+    fn parse_go_version_m_batch_matches_a_windows_path_header() {
+        let output = "C:\\Users\\u\\go\\bin\\gopls.exe: go1.21.5\n\
+                       \tpath\tgolang.org/x/tools/gopls\n\
+                       \tmod\tgolang.org/x/tools/gopls\tv0.15.3\th1:xyz=\n";
+        let paths = vec!["C:\\Users\\u\\go\\bin\\gopls.exe".to_string()];
+        let versions = parse_go_version_m_batch(output, &paths);
+        assert_eq!(
+            versions
+                .get("C:\\Users\\u\\go\\bin\\gopls.exe")
+                .map(String::as_str),
+            Some("0.15.3")
+        );
     }
 
     #[test]
@@ -791,6 +820,66 @@ mod tests {
             assert_eq!(
                 version_calls, 1,
                 "three binaries must be queried in ONE `go version -m` call, got: {argv}"
+            );
+        }
+
+        /// `go version -m` exits 1 when ANY argument is not a Go binary while
+        /// still printing every readable block on stdout — a `$GOBIN` file
+        /// that is a script or a hand-copied tool must not blank the versions
+        /// of the real binaries alongside it.
+        #[test]
+        #[serial]
+        fn installed_packages_with_versions_keeps_every_readable_block_when_one_file_is_not_go() {
+            let gobin = tempfile::tempdir().expect("tempdir");
+            for name in ["dlv", "gopls", "notgo"] {
+                std::fs::write(gobin.path().join(name), "").expect("seed installed binary");
+            }
+            let bin_dir = gobin.path().to_string_lossy().into_owned();
+            let stdout = format!(
+                "{bin_dir}/dlv: go1.21.5\n\
+                 \tpath\tgithub.com/go-delve/delve/cmd/dlv\n\
+                 \tmod\tgithub.com/go-delve/delve\tv1.21.0\th1:aaa=\n\
+                 {bin_dir}/gopls: go1.21.5\n\
+                 \tpath\tgolang.org/x/tools/gopls\n\
+                 \tmod\tgolang.org/x/tools/gopls\tv0.15.3\th1:bbb=\n"
+            );
+            let shim_dir = tempfile::tempdir().expect("tempdir");
+            let shim_path = cfgd_core::test_helpers::write_tool_shim(
+                shim_dir.path(),
+                "go",
+                &[
+                    cfgd_core::test_helpers::ShimArm::on(
+                        "env GOBIN GOPATH",
+                        &format!("{}\n\n", gobin.path().display()),
+                    ),
+                    cfgd_core::test_helpers::ShimArm {
+                        matches: "version -m",
+                        stdout: &stdout,
+                        stderr: "notgo: could not read Go build info\n",
+                        exit_code: 1,
+                    },
+                    cfgd_core::test_helpers::ShimArm::always("", "", 0),
+                ],
+            );
+            let _shim_env =
+                cfgd_core::test_helpers::EnvVarGuard::set(SHIM_ENV, &shim_path.to_string_lossy());
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+
+            let infos = GoInstallManager
+                .installed_packages_with_versions(&cx)
+                .expect("installed_packages_with_versions must succeed");
+
+            let by_name: std::collections::HashMap<&str, &str> = infos
+                .iter()
+                .map(|i| (i.name.as_str(), i.version.as_str()))
+                .collect();
+            assert_eq!(by_name.get("dlv"), Some(&"1.21.0"));
+            assert_eq!(by_name.get("gopls"), Some(&"0.15.3"));
+            assert_eq!(
+                by_name.get("notgo"),
+                Some(&cfgd_core::providers::UNKNOWN_PACKAGE_VERSION)
             );
         }
 

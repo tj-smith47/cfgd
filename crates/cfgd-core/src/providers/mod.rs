@@ -825,12 +825,17 @@ pub trait PackageManager: Send + Sync {
         self.version_comparable(floor)
     }
 
-    /// The verb this manager raises an already-held package with (`upgrade`,
-    /// `update`, `refresh`), or `None` for a family that cannot raise one in
-    /// place.
-    fn upgrade_verb(&self) -> Option<&'static str> {
-        None
-    }
+    /// The verb this manager raises an already-held package with. For a
+    /// family whose install verb no-ops on a held package it is the distinct
+    /// raise (`upgrade`, `update`, `refresh`); for a family whose install
+    /// verb already replaces an older copy (`cargo install`, `npm install -g`,
+    /// `go install`, `apt-get install`) it is that install verb. `None` only
+    /// for a manager that cannot raise a package in place at all, which turns
+    /// a below-floor verdict into a check error rather than drift no apply
+    /// could heal. Deliberately no default: a manager inheriting `None`
+    /// silently would report every below-floor package it holds as a false
+    /// "has no upgrade verb" error and elide the raise from the plan.
+    fn upgrade_verb(&self) -> Option<&'static str>;
 
     /// Directories to add to PATH after bootstrap. Empty for managers
     /// that are already on the system PATH (apt, dnf, etc.).
@@ -2027,6 +2032,9 @@ mod tests {
         fn name(&self) -> &str {
             &self.mgr_name
         }
+        fn upgrade_verb(&self) -> Option<&'static str> {
+            Some("upgrade")
+        }
         fn is_available(&self) -> bool {
             self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.available.load(std::sync::atomic::Ordering::SeqCst)
@@ -2079,6 +2087,9 @@ mod tests {
     impl PackageManager for EnumeratingManager {
         fn name(&self) -> &str {
             &self.mgr_name
+        }
+        fn upgrade_verb(&self) -> Option<&'static str> {
+            Some("upgrade")
         }
         fn is_available(&self) -> bool {
             true

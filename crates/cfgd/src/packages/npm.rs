@@ -566,6 +566,12 @@ impl PackageManager for NpmManager {
         "npm"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        // `npm install -g <pkg>` installs latest, replacing an already-held
+        // package — install itself is the raise, as for `go`.
+        Some("install")
+    }
+
     fn tool_version(&self) -> Option<String> {
         super::shared::tool_version_from(npm_cmd().arg("--version"))
     }

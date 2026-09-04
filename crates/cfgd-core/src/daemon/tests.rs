@@ -9793,6 +9793,9 @@ impl PackageManager for RecordingInstallManager {
     fn name(&self) -> &str {
         "cargo"
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("install")
+    }
     fn is_available(&self) -> bool {
         true
     }
@@ -10379,6 +10382,9 @@ struct RecordingUninstallManager {
 impl PackageManager for RecordingUninstallManager {
     fn name(&self) -> &str {
         "cargo"
+    }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("install")
     }
     fn is_available(&self) -> bool {
         true
@@ -20949,6 +20955,9 @@ struct EnumerationCountingManager {
 impl PackageManager for EnumerationCountingManager {
     fn name(&self) -> &str {
         "cargo"
+    }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("install")
     }
     fn is_available(&self) -> bool {
         true

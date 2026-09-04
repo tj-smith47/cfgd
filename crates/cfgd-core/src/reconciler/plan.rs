@@ -1157,6 +1157,9 @@ impl<'a> super::Reconciler<'a> {
     /// judge (`HEAD-a1b2c3d`, a cask's `latest`). Retaining on those re-planned
     /// an install on every run of a machine that already held the package, and
     /// no apply could ever settle it; the report belongs to the verify pass.
+    /// An `Unreadable` verdict elides the package too: a comparator that could
+    /// not run must not drive an install, and the check error is what the run
+    /// reports.
     pub(super) fn package_survives_elision(
         mgr: &dyn PackageManager,
         installed: &crate::providers::InstalledPackages,
