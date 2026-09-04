@@ -7769,9 +7769,11 @@ fn a_result_the_run_never_attempted_writes_no_row_and_heals_none() {
 /// arm-level claim the source walk in the CLI crate cannot see. The second
 /// half records what the producer yields for a plan of executable actions,
 /// runs a real apply against a real store, and requires the store to come
-/// back holding only the four `Skip` variants' rows — a withheld block is not
-/// converged by the run that withheld it, so its row waits for the tick's own
-/// complement instead.
+/// back holding only the four PROVIDER `Skip` variants' rows — a withheld
+/// block is not converged by the run that withheld it, so its row waits for
+/// the tick's own complement instead. The fifth Skip, a module skipped whole,
+/// mints no row in the first place: nothing under it was probed, so five
+/// withheld actions leave four standing rows.
 ///
 /// The env and secret variants are absent from the executable half: the first
 /// writes the user's real shell surfaces and the second needs a live backend,
@@ -7785,10 +7787,21 @@ fn every_row_the_tick_records_is_healed_by_the_apply_that_converges_it() {
     let empty = ProviderRegistry::new();
     for action in every_action_variant() {
         let rows = crate::reconciler::action_drift_rows(&action, &empty);
+        // A module skipped whole probed nothing under it, so it stands for no
+        // finding even though it runs here — the one action that is neither
+        // pre-skipped nor a row producer.
+        let module_skip = matches!(
+            &action,
+            Action::Module(ModuleAction {
+                kind: ModuleActionKind::Skip { .. },
+                ..
+            })
+        );
         assert_eq!(
             rows.is_empty(),
-            action.pre_skip_reason().is_some(),
-            "an action stands for rows exactly when it can run here: {action:?}"
+            action.pre_skip_reason().is_some() || module_skip,
+            "an action stands for rows exactly when it can run here and probed \
+             something: {action:?}"
         );
         for row in &rows {
             assert!(
@@ -7918,6 +7931,15 @@ fn every_row_the_tick_records_is_healed_by_the_apply_that_converges_it() {
             reason: "no backend".to_string(),
             origin: "profile".to_string(),
         }),
+        // The fifth Skip, and the one that mints NO row: a platform-gated
+        // module was never probed, so the tick records nothing for it and the
+        // apply that lists the skip again heals nothing.
+        Action::Module(ModuleAction::local(
+            "gated",
+            ModuleActionKind::Skip {
+                reason: "platforms: [macos]".to_string(),
+            },
+        )),
     ];
 
     // What a tick would record for this plan, through the one producer.
@@ -7957,7 +7979,14 @@ fn every_row_the_tick_records_is_healed_by_the_apply_that_converges_it() {
     assert_eq!(
         expected_standing.len(),
         4,
-        "one standing row per withheld block: {expected_standing:?}"
+        "one standing row per withheld block, and NONE for the module Skip — \
+         five withheld actions, four rows: {expected_standing:?}"
+    );
+    assert!(
+        !recorded
+            .iter()
+            .any(|(rtype, rid)| rtype == "module" && rid.ends_with(":skip")),
+        "the tick records no row for a module skipped whole: {recorded:?}"
     );
 
     let plan = Plan {

@@ -346,6 +346,11 @@ configurator this host does not have) keeps its row through an apply: the run di
 not converge it, so nothing about it was proven. The next reconcile that can check
 it is what clears it.
 
+A module skipped whole (a platform gate, an encryption backend this host cannot
+read) records no row at all, because nothing under it was probed: the skip says
+something about the host, not about a resource that diverged. The plan and the
+apply still list it as a planned, skipped action.
+
 ## Provenance Tracking
 
 When using [multi-source config](sources.md), every action carries an `origin` field so the

@@ -9053,6 +9053,141 @@ async fn handle_reconcile_clean_tick_clears_outstanding_drift() {
     );
 }
 
+/// A module this host is gated out of is information, not divergence: the tick
+/// counts no drift for it, closes on the converged sentence, and leaves no
+/// `module`/`<name>:skip` tracking row behind.
+///
+/// The bug this ends: the plan carries the Skip on EVERY tick, so counting it
+/// reported `drift detected in 1 resource` forever, woke the auto-apply branch
+/// every interval, and flipped the module Drifted → Synced → Drifted while the
+/// apply converged nothing. The policy is `Auto` here precisely so a regression
+/// runs the apply and writes the phantom row this asserts is absent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(daemon_log)]
+async fn a_tick_over_a_platform_gated_module_records_no_drift_and_no_tracking_row() {
+    reset_daemon_log();
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - gated\n",
+    )
+    .unwrap();
+
+    // The tag is chosen against the host so the module is gated wherever the
+    // suite runs, rather than only off macOS.
+    let elsewhere = if cfg!(target_os = "macos") {
+        "linux"
+    } else {
+        "macos"
+    };
+    let module_dir = tmp.path().join("modules").join("gated");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: gated\nspec:\n  platforms: [{elsewhere}]\n  packages:\n    - name: rectangle\n"
+        ),
+    )
+    .unwrap();
+
+    struct GatedHooks;
+    impl DaemonHooks for GatedHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &GatedHooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let logs = daemon_log();
+    assert!(
+        logs.contains("reconcile: complete — nothing to do"),
+        "a tick whose only planned action is a module skip converged nothing \
+         and must close on the converged arm: {logs}"
+    );
+    assert!(
+        !logs.contains("drift detected in"),
+        "a platform gate is information, not divergence: {logs}"
+    );
+
+    let store = StateStore::open_in_dir(&state_dir).unwrap();
+    assert!(
+        store.unresolved_drift().unwrap().is_empty(),
+        "the tick records no drift row for a module it never probed"
+    );
+    let tracked: Vec<(String, String)> = store
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    assert!(
+        !tracked
+            .iter()
+            .any(|(rtype, rid)| rtype == "module" && rid.ends_with(":skip")),
+        "a skipped module is no resource this host manages: {tracked:?}"
+    );
+    assert_eq!(
+        state.lock().await.drift_count,
+        0,
+        "a platform-gated module leaves the in-memory drift count at 0"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_reconcile_with_profile_override() {
     // Test that profile_override is used instead of config's profile field.

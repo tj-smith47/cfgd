@@ -2139,6 +2139,14 @@ impl<'a> super::Reconciler<'a> {
                 None => description,
             };
             let (rtype, rid) = parse_resource_from_description(description);
+            // A module skipped whole was never probed, so the run manages
+            // nothing under it and heals nothing: the skip is information about
+            // this host (a platform gate, an encryption incompatibility), not a
+            // resource cfgd put on the machine. The sibling of the
+            // `SYSTEM_SKIPPED_DETAIL` guard above.
+            if rtype == "module" && super::module_row_facet(&rid) == Some("skip") {
+                continue;
+            }
             // The rows this action stands for, from the ONE producer the daemon
             // tick records through — never re-derived from `description`, which
             // is the `managed_resources` tracking id and spells a module's
