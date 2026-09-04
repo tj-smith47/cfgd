@@ -2755,10 +2755,18 @@ fn join_package_state(
                     state: ModulePackagePresence::PlatformSkipped,
                 };
             }
-            match scanned
-                .get_mut(&p.name)
-                .and_then(std::collections::VecDeque::pop_front)
-            {
+            // A package the Drift section names never reads `not scanned`:
+            // a recorded or scanned VERDICT outranks the scan's own
+            // `NotScanned` seed for a script entry, whichever was pushed
+            // first, so the wide row and `-o json` agree with the finding
+            // beside them.
+            match scanned.get_mut(&p.name).and_then(|queue| {
+                let at = queue
+                    .iter()
+                    .position(|(_, state)| *state != ModulePackagePresence::NotScanned)
+                    .unwrap_or(0);
+                queue.remove(at)
+            }) {
                 Some((manager, state)) => ModulePackageStatus {
                     name: p.name.clone(),
                     manager: Some(manager),
@@ -8120,6 +8128,71 @@ mod tests {
             drift_ids,
             vec!["EDITOR", "go:2fa"],
             "`-o json` carries exactly the rows the human render listed: {parsed}"
+        );
+    }
+
+    /// A package the Drift section names never reads `not scanned` beside
+    /// its finding, on the scan branch as on the recorded one: a `prefer:
+    /// [script]` entry is seeded `NotScanned` by the scan (no manager to
+    /// ask) and `NotInstalled` by its standing row, and `-o json`'s
+    /// `packageState` must carry the verdict whichever seed landed first.
+    #[test]
+    #[serial_test::serial]
+    fn a_scanned_script_package_with_a_standing_row_reads_its_verdict_in_package_state() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_WITH_MODULE_YAML).unwrap();
+        let mod_dir = config_dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\n\
+             kind: Module\n\
+             metadata:\n  name: test-mod\n\
+             spec:\n  packages:\n    - name: mytool\n      prefer: [script]\n      script: \"true\"\n",
+        )
+        .unwrap();
+        cfgd_core::state::StateStore::open(&state_dir.path().join("state.db"))
+            .unwrap()
+            .record_drift(
+                "package",
+                "script:mytool",
+                Some(cfgd_core::PACKAGE_WANT_INSTALLED),
+                Some(cfgd_core::Absence::NotInstalled.as_str()),
+                "local",
+            )
+            .unwrap();
+
+        let mut json_cli = test_cli_for(config_path, state_dir.path());
+        json_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        let (json_printer, json_buf) = test_printers_json();
+        cmd_status_module(
+            &RunContext::new(&json_cli, &json_printer),
+            "test-mod",
+            false,
+            true,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
+        drop(json_printer);
+        let captured = cfgd_core::test_helpers::captured_text(&json_buf);
+        let parsed: serde_json::Value = serde_json::from_str(captured.trim())
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
+        assert_eq!(
+            parsed["drift"][0]["resourceId"],
+            serde_json::json!("script:mytool"),
+            "the standing row is the finding the section names, got: {parsed}"
+        );
+        assert_eq!(
+            parsed["packageState"][0],
+            serde_json::json!({"manager": "script", "name": "mytool", "state": "notInstalled"}),
+            "packageState carries the verdict beside the finding, never `notScanned`, got: {parsed}"
         );
     }
 
