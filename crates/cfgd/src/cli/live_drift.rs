@@ -266,6 +266,49 @@ pub(super) fn scoped_version_drift(
     cfgd_core::reconciler::package_version_drift(&effective, registry, cx)
 }
 
+/// One [`cfgd_core::reconciler::ModuleScope`] per member of `chain`, in
+/// chain order — the shape [`chain_owns_row`] walks. Every scoped surface
+/// that judges a recorded row's ownership builds its scopes here, so the
+/// scan that records, the classifier that renders and the daemon's tick all
+/// fold the same resolved chain through the same builder.
+pub(super) fn chain_scopes(
+    chain: &[cfgd_core::modules::ResolvedModule],
+    managers: &std::collections::HashMap<&str, &dyn cfgd_core::providers::PackageManager>,
+) -> Vec<cfgd_core::reconciler::ModuleScope> {
+    chain
+        .iter()
+        .map(|m| cfgd_core::reconciler::module_scope(chain, &m.name, managers))
+        .collect()
+}
+
+/// The ONE ownership decision over a chain: the member of `chain` whose scope
+/// vouches for the row, asked of
+/// [`cfgd_core::reconciler::row_attributable_to_module`] member by member.
+/// Walked LAST member first — the merge's own precedence for an `env-var`/
+/// `alias` name two members declare; a package or module row is unique to
+/// one scope, so the same walk answers every kind. `None` is a row no member
+/// can vouch for.
+pub(super) fn chain_owns_row<'c>(
+    chain: &'c [cfgd_core::modules::ResolvedModule],
+    scopes: &[cfgd_core::reconciler::ModuleScope],
+    resource_type: &str,
+    resource_id: &str,
+) -> Option<&'c cfgd_core::modules::ResolvedModule> {
+    chain
+        .iter()
+        .zip(scopes)
+        .rev()
+        .find(|(m, scope)| {
+            cfgd_core::reconciler::row_attributable_to_module(
+                resource_type,
+                resource_id,
+                &m.name,
+                scope,
+            )
+        })
+        .map(|(m, _)| m)
+}
+
 /// The record half of a SCOPED (`--module`) live check (see the module doc):
 /// one row per finding, then `resolve_drift_in` over `checked` minus the
 /// found set — the keys the check re-checked and proved clean. Nothing
@@ -304,23 +347,11 @@ pub(super) fn record_scoped_scan_findings<'a>(
     chain: &[cfgd_core::modules::ResolvedModule],
     registry: &cfgd_core::providers::ProviderRegistry,
 ) -> Vec<cfgd_core::state::DriftEvent> {
-    let managers = registry.manager_map();
-    let managers: std::collections::HashMap<&str, &dyn cfgd_core::providers::PackageManager> =
-        managers.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-    let scopes: Vec<cfgd_core::reconciler::ModuleScope> = chain
-        .iter()
-        .map(|m| cfgd_core::reconciler::module_scope(chain, &m.name, &managers))
-        .collect();
-    let owns_row = |rtype: &str, rid: &str| {
-        chain.iter().zip(scopes.iter()).any(|(m, scope)| {
-            cfgd_core::reconciler::row_attributable_to_module(rtype, rid, &m.name, scope)
-        })
-    };
     let mut standing = Vec::new();
-    // Borrowed once over `checked`: the healed filter and the standing
-    // filter below both ask "is this id one this run re-checked", and a
-    // per-row `checked.iter().any(...)` linear scan is quadratic in the
-    // recorded row count for a module declaring many packages.
+    // Borrowed once over `checked`: the standing filter below asks "is this
+    // id one this run re-checked" per recorded row, and a per-row
+    // `checked.iter().any(...)` linear scan is quadratic in the recorded row
+    // count for a module declaring many packages.
     let checked_ids: std::collections::HashSet<(&str, &str)> = checked
         .iter()
         .map(|(t, i)| (t.as_str(), i.as_str()))
@@ -343,11 +374,21 @@ pub(super) fn record_scoped_scan_findings<'a>(
             tracing::warn!(error = %e, "failed to resolve healed drift rows");
         }
         match state.unresolved_drift() {
+            // The scopes are built only once a row exists to judge: the
+            // manager map and the per-member fold are the whole cost of this
+            // read on a converged store.
+            Ok(rows) if rows.is_empty() => {}
             Ok(rows) => {
+                let managers = registry.manager_map();
+                let managers: std::collections::HashMap<
+                    &str,
+                    &dyn cfgd_core::providers::PackageManager,
+                > = managers.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+                let scopes = chain_scopes(chain, &managers);
                 standing = rows
                     .into_iter()
                     .filter(|e| {
-                        owns_row(&e.resource_type, &e.resource_id)
+                        chain_owns_row(chain, &scopes, &e.resource_type, &e.resource_id).is_some()
                             && !checked_ids.contains(&(e.resource_type.as_str(), e.resource_id.as_str()))
                     })
                     .collect();

@@ -35163,80 +35163,92 @@ fn no_doctor_section_or_verdict_borrows_the_managed_resource_vocabulary() {
 
 /// `diff`, `verify` and `status` each ask "does this run stand on any drift"
 /// twice — once to word their verdict, once to price `--exit-code` — and a
-/// category minted into one boolean chain but not the other silently
-/// diverges (the bug `has_any_drift` exists to make structurally impossible).
-/// Every one of the three verbs' two call sites names the one shared
-/// predicate; a consumer computing its own `!findings.is_empty()`-shaped
-/// chain instead goes undetected unless a walk floors the call count. A
-/// site with a genuine reason to compute its own boolean carries
-/// `// verdict-ok: <why>` on the same line, which this walk exempts.
+/// category folded into one hand-written boolean chain but not the other
+/// silently diverges. So each verb COMPOSES its predicate exactly once, on
+/// the type both readers hold: `DiffSummary::any_drift` is the one OR-chain
+/// over the five summary flags, `VerifyOutput::any_drift` the one
+/// `fail_count > 0 || standing` fold, and each `status` surface passes its
+/// machine-wide `(drift, system_errors)` pair to `DriftVerdict::from_checks`
+/// at one site — `ModuleStatus::drift_verdict` for the module report (its
+/// `Status` word and exit gate both call it), the exit gate of `cmd_status`
+/// for the fleet (whose only machine-wide reader it is; the per-owner
+/// Component Health verdicts are a different fact). This walk counts each
+/// verb's composition tell over its production body, whitespace folded so a
+/// rustfmt line break cannot hide a second chain.
 #[test]
-fn every_verdict_and_exit_site_asks_the_one_drift_predicate() {
-    let floors = [("diff.rs", 2usize), ("verify.rs", 2), ("status.rs", 2)];
-    for (source, (path, body)) in cli_production_sources()
-        .into_iter()
-        .filter_map(|(path, body)| {
-            let name = path.file_name()?.to_str()?.to_string();
-            Some((name, (path, body)))
-        })
-        .collect::<std::collections::BTreeMap<_, _>>()
-        .into_iter()
-        .filter(|(name, _)| floors.iter().any(|(f, _)| f == name))
-    {
-        let floor = floors
-            .iter()
-            .find(|(f, _)| *f == source)
-            .map(|(_, n)| *n)
-            .unwrap_or(0);
-        let hatched = body
-            .lines()
-            .filter(|l| l.contains("// verdict-ok:"))
-            .count();
-        let calls = body.matches("has_any_drift(").count();
-        assert!(
-            calls + hatched >= floor,
-            "{} calls `has_any_drift(` {calls} time(s) (plus {hatched} \
-             `// verdict-ok:` hatch(es)), short of the {floor} verdict/exit \
-             sites this verb must route through the shared predicate — see \
-             {}",
-            source,
-            path.display()
-        );
+fn every_verb_composes_its_drift_predicate_once() {
+    fn folded(body: &str) -> String {
+        body.split_whitespace().collect::<Vec<_>>().join(" ")
     }
-}
+    fn count(hay: &str, tell: &str) -> usize {
+        hay.matches(tell).count()
+    }
+    let sources: std::collections::BTreeMap<String, String> = cli_production_sources()
+        .into_iter()
+        .filter_map(|(path, body)| Some((path.file_name()?.to_str()?.to_string(), body)))
+        .collect();
+    let source = |name: &str| {
+        folded(
+            sources
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} is not among the CLI's production sources")),
+        )
+    };
 
-/// `status --module --scan`'s `-o json` `standing` payload must equal the
-/// set of ids the human render's Drift section lists — the classifier
-/// (`classify_recorded_drift_for_chain`) is what decides which recorded row
-/// this scope can vouch for, and a row it vetoes must vanish from BOTH slots
-/// together. `standing_rows` is therefore sliced off `drift` itself, AFTER
-/// the classify call runs, never captured from the raw `standing` list
-/// `record_scoped_scan_findings` handed over before classification had a
-/// chance to drop anything: a JSON consumer reading `standing` alone must
-/// never see a row the human reader beside it does not.
-#[test]
-fn a_scoped_scans_standing_rows_are_sliced_from_drift_after_classification() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/status.rs");
-    let body = production_body(&std::fs::read_to_string(&path).unwrap());
-    let classify_at = body
-        .find("classify_recorded_drift_for_chain(\n                    standing,")
-        .unwrap_or_else(|| {
-            panic!("the scoped scan's classify call over `standing` was not found in {}; the source reshuffled and this pin needs re-anchoring", path.display())
-        });
-    let slice_at = body
-        .find("standing_rows = drift[drift_len_before_standing..]")
-        .unwrap_or_else(|| {
-            panic!(
-                "the post-classification `standing_rows` slice was not found in {}",
-                path.display()
-            )
-        });
-    assert!(
-        slice_at > classify_at,
-        "`standing_rows` must be sliced from `drift` AFTER \
-         `classify_recorded_drift_for_chain` runs (found the slice at byte \
-         {slice_at}, the classify call at byte {classify_at}) — capturing it \
-         from the raw `standing` list before classification lets `-o json` \
-         claim a row the human render already dropped"
+    let diff = source("diff.rs");
+    assert_eq!(
+        count(&diff, "has_file_drift ||"),
+        1,
+        "diff.rs composes the five-flag drift chain exactly once, in \
+         `DiffSummary::any_drift`; the verdict and `diff_exit_code` both call it"
+    );
+    let verify = source("verify.rs");
+    assert_eq!(
+        count(&verify, "fail_count > 0"),
+        1,
+        "verify.rs composes its drift fold exactly once, in \
+         `VerifyOutput::any_drift`; the verdict, its hint and the exit gate all call it"
+    );
+
+    let status = source("status.rs");
+    let pair_sites: Vec<usize> = status
+        .match_indices("drift.is_empty(), !")
+        .map(|(at, _)| at)
+        .filter(|&at| {
+            let rest = &status[at..];
+            rest.contains("self.system_errors.is_empty()")
+                || rest.contains("output.system_errors.is_empty()")
+        })
+        .collect();
+    assert_eq!(
+        pair_sites.len(),
+        2,
+        "status.rs passes its machine-wide (drift, system_errors) pair to \
+         `DriftVerdict::from_checks` at exactly two sites — one per surface — \
+         found {}",
+        pair_sites.len()
+    );
+    // A body is cut at its rustfmt closing brace — column 0 for a free
+    // function, column 4 for a method — on the UNFOLDED source, then folded.
+    let raw_status = sources["status.rs"].as_str();
+    let body_of = |head: &str, close: &str| {
+        let at = raw_status
+            .find(head)
+            .unwrap_or_else(|| panic!("status.rs no longer carries `{head}`; re-anchor this walk"));
+        let rest = &raw_status[at..];
+        folded(&rest[..rest.find(close).map_or(rest.len(), |i| i + close.len())])
+    };
+    assert_eq!(
+        count(
+            &body_of("fn drift_verdict(&self)", "\n    }\n"),
+            "drift.is_empty(), !"
+        ),
+        1,
+        "the module surface composes its pair once, in `ModuleStatus::drift_verdict`"
+    );
+    assert_eq!(
+        count(&body_of("fn cmd_status(", "\n}\n"), "drift.is_empty(), !"),
+        1,
+        "the fleet surface composes its pair once, at `cmd_status`'s exit gate"
     );
 }

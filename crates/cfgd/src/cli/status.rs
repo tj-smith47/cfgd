@@ -276,12 +276,17 @@ impl ModuleStatus {
     /// reason: the Drift section prints them, so the headline above it cannot
     /// claim the verdict they withheld.
     fn state_display(&self) -> (&'static str, Role) {
-        cfgd_core::state::module_status_display(
-            &self.status,
-            cfgd_core::state::DriftVerdict::from_checks(
-                !self.drift.is_empty(),
-                !self.system_errors.is_empty(),
-            ),
+        cfgd_core::state::module_status_display(&self.status, self.drift_verdict())
+    }
+
+    /// The ONE composition of this module's two drift facts — rows in the
+    /// Drift section, checks that could not run — into the verdict both the
+    /// `Status` word and the `--exit-code` gate read, so the word a reader
+    /// sees and the code a script sees cannot rank the two facts differently.
+    fn drift_verdict(&self) -> cfgd_core::state::DriftVerdict {
+        cfgd_core::state::DriftVerdict::from_checks(
+            !self.drift.is_empty(),
+            !self.system_errors.is_empty(),
         )
     }
 }
@@ -337,7 +342,8 @@ pub struct ModuleDrift {
     #[serde(skip)]
     pub surface: &'static str,
     /// The thing itself — a deployed path, the package name(s), or an
-    /// env/alias name. Empty for a whole-module verdict.
+    /// env/alias name; a whole-module verdict carries its `script` / `skip`
+    /// facet here, or nothing for the bare legacy id.
     #[serde(skip)]
     pub item: String,
 }
@@ -351,32 +357,27 @@ pub const SURFACE_PACKAGES: &str = "packages";
 pub const SURFACE_ALIASES: &str = "aliases";
 pub const SURFACE_ENV: &str = "env";
 
-/// Classifies recorded drift events by which member of `chain` owns them,
+/// Classifies recorded drift events by which member of the chain owns them,
 /// appending each attributable row to `drift` (and `drifted_ids` /
 /// `scanned_packages` where its surface needs them for the sibling sections).
-/// A row is attributed by its id alone — no manager or profile resolution: a
-/// `<module>/<path>` file id names its owner outright, a BARE module id is
-/// the daemon's whole-module action spelling, a package id is matched
-/// against the chain's DECLARED names under the id's own manager, and a
-/// machine-scope `env-var`/`alias` id is attributed to the LAST chain module
-/// declaring the name — the merge's own fold order. An id in no grammar the
-/// chain can vouch for is dropped.
 ///
-/// Shared by the recorded-fallback read (every unresolved row) and the live
-/// scan's standing-row fold (the subset this run's own scope owns but did
-/// not re-check), so a recorded row cannot be attributed two different ways
-/// depending on which path last read it.
+/// Ownership is ONE decision, [`super::live_drift::chain_owns_row`] — the
+/// same predicate over the same resolved scopes the scoped scans and the
+/// daemon's per-module tick ask — so a recorded row cannot be attributed two
+/// different ways depending on which path last read it. Everything after
+/// that decision is display: the surface a row files under and the item
+/// name its row prints.
 struct ChainOwnership<'a> {
-    chain: &'a [String],
-    /// The registered managers a package row's manager-folded identity is
-    /// checked against — a pure lookup (`PackageManager::package_identity`
-    /// is a pure function), never a resolution or a live probe, so this
-    /// stays correct on the same "fast, always-available" read whether or
-    /// not any manager is actually installed on this host.
+    /// The module's dependency chain in fold order, as `resolve_modules`
+    /// resolves it — platform-gated members and entries already dropped.
+    chain: &'a [cfgd_core::modules::ResolvedModule],
+    /// One scope per chain member, `chain_scopes` over `chain`, built once by
+    /// the caller.
+    scopes: &'a [cfgd_core::reconciler::ModuleScope],
+    /// Display only: the package arm re-mints a resolved package's drift id
+    /// to find the declared name its row prints. Takes no part in ownership.
     managers: &'a std::collections::HashMap<&'a str, &'a dyn cfgd_core::providers::PackageManager>,
-    all_modules: &'a std::collections::HashMap<String, cfgd_core::modules::LoadedModule>,
     mod_name: &'a str,
-    platform: &'a cfgd_core::platform::Platform,
 }
 
 fn classify_recorded_drift_for_chain(
@@ -389,133 +390,73 @@ fn classify_recorded_drift_for_chain(
         std::collections::VecDeque<(String, ModulePackagePresence)>,
     >,
 ) {
-    let ChainOwnership {
-        chain,
-        managers,
-        all_modules,
-        mod_name,
-        platform,
-    } = *cx;
     for event in events {
-        match event.resource_type.as_str() {
+        let Some(owner) = super::live_drift::chain_owns_row(
+            cx.chain,
+            cx.scopes,
+            &event.resource_type,
+            &event.resource_id,
+        ) else {
+            continue;
+        };
+        let (surface, item) = match event.resource_type.as_str() {
             "module" => {
                 match super::live_drift::split_module_file_resource_id(&event.resource_id) {
-                    Some((owner, item)) => {
-                        if !chain.iter().any(|m| m == owner) {
-                            continue;
-                        }
+                    Some((_, item)) => {
                         drifted_ids.insert(event.resource_id.clone());
-                        drift.push(ModuleDrift {
-                            owner: owner.to_string(),
-                            surface: SURFACE_FILES,
-                            item,
-                            event,
-                        });
+                        (SURFACE_FILES, item)
                     }
-                    // No `/`: either the daemon's action spelling for a
-                    // script/skip row (`<module>:script`, `<module>:skip`)
-                    // or the bare legacy whole-module id an older tick wrote
-                    // with no separator at all — `module_row_owner` reads
-                    // both the same way, up to the first `/` or `:`.
-                    None => {
-                        let owner = cfgd_core::reconciler::module_row_owner(&event.resource_id);
-                        if !chain.iter().any(|m| m == owner) {
-                            continue;
-                        }
-                        drift.push(ModuleDrift {
-                            owner: owner.to_string(),
-                            surface: "",
-                            item: String::new(),
-                            event,
-                        });
-                    }
+                    // The daemon's `<module>:script` / `<module>:skip`
+                    // spelling keeps its facet as the item; the bare legacy
+                    // whole-module id has none.
+                    None => (
+                        "",
+                        cfgd_core::reconciler::module_row_facet(&event.resource_id)
+                            .unwrap_or_default()
+                            .to_string(),
+                    ),
                 }
             }
-            "env-var" | "alias" => {
-                let is_alias = event.resource_type == "alias";
-                let declared_by = |m: &cfgd_core::modules::LoadedModule| {
-                    if is_alias {
-                        m.spec.aliases.iter().any(|a| {
-                            a.name == event.resource_id
-                                && cfgd_core::platform::PlatformGated::applies_to(a, platform)
-                        })
-                    } else {
-                        m.spec.env.iter().any(|e| {
-                            e.name == event.resource_id
-                                && cfgd_core::platform::PlatformGated::applies_to(e, platform)
-                        })
-                    }
-                };
-                let Some(owner) = chain
-                    .iter()
-                    .rev()
-                    .find(|name| all_modules.get(*name).is_some_and(&declared_by))
-                else {
-                    continue;
-                };
-                drift.push(ModuleDrift {
-                    owner: owner.clone(),
-                    surface: if is_alias {
-                        SURFACE_ALIASES
-                    } else {
-                        SURFACE_ENV
-                    },
-                    item: event.resource_id.clone(),
-                    event,
-                });
-            }
-            "package" => {
-                let Some((manager, _)) =
+            "env-var" => (SURFACE_ENV, event.resource_id.clone()),
+            "alias" => (SURFACE_ALIASES, event.resource_id.clone()),
+            _ => {
+                let manager =
                     cfgd_core::reconciler::split_package_drift_resource_id(&event.resource_id)
-                else {
-                    continue;
-                };
-                let pm = managers.get(manager).copied();
-                let identity_of =
-                    |raw: &str| cfgd_core::reconciler::package_entry_drift_id(manager, raw, pm);
-                // Matched under the ROW'S OWN manager, never the row's raw
-                // declared-name spelling: a manager's own `package_identity`
-                // fold (`go` installs `rsc.io/2fa` and lists `2fa`, `choco`
-                // lowercases, FreeBSD `pkg` strips a trailing revision) can
-                // disagree with the declared string, and a batch id a legacy
-                // row still carries (`<mgr>:<a>,<b>`) folds to no single
-                // declared entry — it stands for nobody rather than being
-                // matched by coincidence.
-                let Some((owner, declared)) = chain.iter().find_map(|name| {
-                    let module = all_modules.get(name)?;
-                    let entry = module.spec.packages.iter().find(|entry| {
-                        identity_of(entry.aliases.get(manager).unwrap_or(&entry.name))
-                            == event.resource_id
-                    })?;
-                    Some((name.clone(), entry.name.clone()))
-                }) else {
-                    continue;
-                };
+                        .map(|(manager, _)| manager)
+                        .unwrap_or_default();
+                // The declared name of the resolved package whose drift id IS
+                // this row, minted through the same composer the scope was.
+                let declared = owner
+                    .packages
+                    .iter()
+                    .find(|p| {
+                        cfgd_core::reconciler::package_entry_drift_id(
+                            &p.manager,
+                            &p.resolved_name,
+                            cx.managers.get(p.manager.as_str()).copied(),
+                        ) == event.resource_id
+                    })
+                    .map_or_else(|| event.resource_id.clone(), |p| p.canonical_name.clone());
                 // The recorded verdict seeds the same joined package state a
                 // live scan fills, so the wide inventory row for a package
                 // this report's Drift section names can never read `not
                 // scanned` beside the finding — the file rows' rule, applied
                 // to every resource kind.
-                if let Some(module) = all_modules.get(mod_name)
-                    && let Some(entry) = module.spec.packages.iter().find(|entry| {
-                        identity_of(entry.aliases.get(manager).unwrap_or(&entry.name))
-                            == event.resource_id
-                    })
-                {
+                if owner.name == cx.mod_name {
                     scanned_packages
-                        .entry(entry.name.clone())
+                        .entry(declared.clone())
                         .or_default()
                         .push_back((manager.to_string(), ModulePackagePresence::NotInstalled));
                 }
-                drift.push(ModuleDrift {
-                    owner,
-                    surface: SURFACE_PACKAGES,
-                    item: declared,
-                    event,
-                });
+                (SURFACE_PACKAGES, declared)
             }
-            _ => {}
-        }
+        };
+        drift.push(ModuleDrift {
+            owner: owner.name.clone(),
+            surface,
+            item,
+            event,
+        });
     }
 }
 
@@ -790,10 +731,16 @@ fn render_module_drift_section(
         verified,
         scan_note,
         |s, d| {
-            // A whole-module verdict has no surface or item to name: the
-            // subject is the owner token alone and the recorded cause speaks.
+            // A whole-module verdict has no surface to name: the subject is
+            // the owner token, carrying the `:script` / `:skip` facet the
+            // recording action spelled after it, and the recorded cause speaks.
             let subject = if d.surface.is_empty() {
-                cfgd_core::reconciler::Owner::module(&d.owner).token()
+                let owner = cfgd_core::reconciler::Owner::module(&d.owner).token();
+                if d.item.is_empty() {
+                    owner
+                } else {
+                    format!("{owner}:{}", d.item)
+                }
             } else {
                 format!(
                     "{}:{} {}",
@@ -2756,28 +2703,30 @@ pub(super) fn cmd_status(
     ));
 
     if exit_code {
-        // A check that could not run outranks drift it might have found:
-        // exiting 5 (or 0) on an errored probe would report a verdict the
-        // scan never actually reached — the same split `diff --exit-code`
-        // resolves in `diff_exit_code`.
-        if !output.system_errors.is_empty() {
-            cfgd_core::exit::ExitCode::Error.exit();
-        }
-        // `--exit-code` implies the scan, so this is the union the scan just
-        // rendered: its findings plus the rows it kept standing. Pricing the
-        // findings alone would exit 0 on a machine whose store — written by
-        // this very command — still holds unresolved drift. Routed through the
-        // one shared predicate `diff` and `verify` also exit through, so the
-        // three verbs' `--exit-code` gates cannot silently diverge.
-        if cfgd_core::reconciler::has_any_drift(
+        // `--exit-code` implies the scan, so `drift` is the union the scan
+        // just rendered: its findings plus the rows it kept standing. Pricing
+        // the findings alone would exit 0 on a machine whose store — written
+        // by this very command — still holds unresolved drift. The two facts
+        // rank through the same verdict the module surface prices, so a
+        // check that could not run outranks drift it might have found.
+        exit_on_drift_verdict(cfgd_core::state::DriftVerdict::from_checks(
             !output.drift.is_empty(),
             !output.system_errors.is_empty(),
-        ) {
-            cfgd_core::exit::ExitCode::DriftDetected.exit();
-        }
+        ));
     }
 
     Ok(())
+}
+
+/// The `--exit-code` price of a drift verdict, the ONE mapping both status
+/// surfaces exit through: `Unknown` is `Error` (1) — the answer is missing,
+/// not clean — ahead of `Drifted`'s `DriftDetected` (5); `Clean` returns.
+fn exit_on_drift_verdict(verdict: cfgd_core::state::DriftVerdict) {
+    match verdict {
+        cfgd_core::state::DriftVerdict::Unknown => cfgd_core::exit::ExitCode::Error.exit(),
+        cfgd_core::state::DriftVerdict::Drifted => cfgd_core::exit::ExitCode::DriftDetected.exit(),
+        cfgd_core::state::DriftVerdict::Clean => {}
+    }
 }
 
 /// Pair each DECLARED package with the scan verdict resolution produced for it.
@@ -2883,22 +2832,7 @@ pub(super) fn cmd_status_module(
     // dashboard's header, and one module's files and packages are not evidence
     // the machine was checked.
     //
-    // Hoisted so both the live scan (standing rows) and the recorded fallback
-    // classify a row against the SAME chain, computed once — the chain
-    // degrades to the named module alone when the depends graph cannot
-    // resolve (a READ, so the graph error belongs to `apply`/`plan`), and
-    // platform-gated members are dropped as `resolve_modules` drops them.
     let platform = cfgd_core::platform::Platform::current();
-    let chain: Vec<String> =
-        cfgd_core::modules::resolve_dependency_order(&[mod_name.to_string()], &all_modules)
-            .unwrap_or_else(|_| vec![mod_name.to_string()])
-            .into_iter()
-            .filter(|name| {
-                all_modules.get(name).is_none_or(|m| {
-                    cfgd_core::platform::PlatformGated::applies_to(&m.spec, platform)
-                })
-            })
-            .collect();
     let mut drift: Vec<ModuleDrift> = Vec::new();
     // The raw stored rows behind `drift` above, for the payload's own
     // `standing` key — populated only on the scanning branch, since the
@@ -2922,44 +2856,32 @@ pub(super) fn cmd_status_module(
         std::collections::VecDeque<(String, ModulePackagePresence)>,
     > = std::collections::HashMap::new();
     let mut system_errors: Vec<super::output_types::SystemCheckError> = Vec::new();
-    // The registered managers every package row's ownership and display name
-    // are folded through, on BOTH branches below — a pure collect off the
-    // config-free registry (no resolution, no probe), so a row's own
-    // recorded manager (from its id, not a freshly resolved one) is what
-    // decides which of the chain's declared entries it names. Resolving a
-    // fresh manager choice instead (`resolve_modules`) does not fit here: a
-    // bare entry with no `prefer` falls to the platform default absent a
-    // live probe, which can legitimately differ from whichever manager a
-    // past run actually recorded the row under, and a `prefer` naming a
-    // profile-level custom manager cannot resolve at all against this
-    // config-free registry — either would turn this "fast recorded-only
-    // dashboard" read (no `--scan`) into one that can fail on package
-    // resolution it never used to touch.
-    let scope_registry = ctx.base_registry();
-    let scope_mgr_map = scope_registry.manager_map();
-    let scope_managers: std::collections::HashMap<&str, &dyn cfgd_core::providers::PackageManager> =
-        scope_mgr_map
-            .iter()
-            .map(|(k, v)| (k.as_str(), *v))
-            .collect();
-    if do_scan {
-        // Deliberately the config-FREE registry: a module resolves against the
-        // managers it declares and cannot reach the profile's `packages.custom`,
-        // so resolving it through a config-aware registry would map a module
-        // package onto a manager the module cannot use.
-        let registry = ctx.base_registry();
-        let mgr_map = registry.manager_map();
-        let pkg_cx = ctx.package_context()?;
-        let resolved_modules = modules::resolve_modules(
+    // Deliberately the config-FREE registry: a module resolves against the
+    // managers it declares and cannot reach the profile's `packages.custom`,
+    // so resolving it through a config-aware registry would map a module
+    // package onto a manager the module cannot use. Both branches resolve the
+    // chain through it — the scan against the installed listing, the
+    // recorded fallback without one — so the scopes a recorded row is judged
+    // against are the scopes the scan would have used.
+    let registry = ctx.base_registry();
+    let mgr_map = registry.manager_map();
+    let managers: std::collections::HashMap<&str, &dyn cfgd_core::providers::PackageManager> =
+        mgr_map.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    let resolve_chain = |installed: Option<&cfgd_core::providers::PackageContext<'_>>| {
+        modules::resolve_modules(
             &[mod_name.to_string()],
             config_dir,
             &cache_base,
             &[],
             platform,
             &mgr_map,
-            Some(&pkg_cx),
+            installed,
             printer,
-        )?;
+        )
+    };
+    if do_scan {
+        let pkg_cx = ctx.package_context()?;
+        let resolved_modules = resolve_chain(Some(&pkg_cx))?;
         let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
         // File and package rows only — the recompute is a no-op for both, but
         // `drift_event_from` takes the merge rather than deciding per row.
@@ -3187,30 +3109,29 @@ pub(super) fn cmd_status_module(
                     &resolved_modules,
                     registry,
                 );
-                // Captured AFTER classification, not before: `standing` is
-                // every row `record_scoped_scan_findings` handed over, but
-                // `classify_recorded_drift_for_chain` below drops whatever
-                // this scope cannot vouch for (a row `-o json` must never
-                // claim as `standing` when the human render beside it does
-                // not list it either).
-                let drift_len_before_standing = drift.len();
-                classify_recorded_drift_for_chain(
-                    standing,
-                    &ChainOwnership {
-                        chain: &chain,
-                        managers: &scope_managers,
-                        all_modules: &all_modules,
-                        mod_name,
-                        platform,
-                    },
-                    &mut drift,
-                    &mut drifted_ids,
-                    &mut scanned_packages,
-                );
-                standing_rows = drift[drift_len_before_standing..]
-                    .iter()
-                    .map(|d| d.event.clone())
-                    .collect();
+                // Sliced off `drift` AFTER classification: the payload's
+                // `standing` is exactly the rows the human render lists,
+                // never a list captured upstream of the classifier.
+                if !standing.is_empty() {
+                    let scopes = super::live_drift::chain_scopes(&resolved_modules, &managers);
+                    let drift_len_before_standing = drift.len();
+                    classify_recorded_drift_for_chain(
+                        standing,
+                        &ChainOwnership {
+                            chain: &resolved_modules,
+                            scopes: &scopes,
+                            managers: &managers,
+                            mod_name,
+                        },
+                        &mut drift,
+                        &mut drifted_ids,
+                        &mut scanned_packages,
+                    );
+                    standing_rows = drift[drift_len_before_standing..]
+                        .iter()
+                        .map(|d| d.event.clone())
+                        .collect();
+                }
                 Ok(())
             },
         )?;
@@ -3219,31 +3140,26 @@ pub(super) fn cmd_status_module(
         // `diff`/`verify` record their findings, and a dashboard that holds
         // rows for this module may not render an empty section over them —
         // exactly the fleet dashboard's recorded read, filtered to this
-        // module's chain. A row is attributed by its id alone (no live probe
-        // on the recorded path), one arm per producer grammar: a
-        // `<module>/<path>` file id names its owner outright, a BARE module id
-        // is the daemon's whole-module action spelling, a package id is
-        // matched under its OWN manager against every chain module's declared
-        // entry by manager-folded identity (`package_entry_drift_id`) — never
-        // the row's raw declared-name spelling, which a manager's own
-        // `package_identity` fold can legitimately disagree with — and a
-        // machine-scope `env-var`/`alias` id is attributed to the LAST chain
-        // module declaring the name — the merge's own fold order, so the
-        // recorded owner and the scoped diff's group agree. An id in no
-        // grammar the chain can vouch for stays off the report.
-        classify_recorded_drift_for_chain(
-            state.unresolved_drift()?,
-            &ChainOwnership {
-                chain: &chain,
-                managers: &scope_managers,
-                all_modules: &all_modules,
-                mod_name,
-                platform,
-            },
-            &mut drift,
-            &mut drifted_ids,
-            &mut scanned_packages,
-        );
+        // module's chain by the one ownership predicate every scoped scan
+        // asks. The chain is resolved without an installed listing (no live
+        // probe on the recorded path), and only once a row exists to judge.
+        let rows = state.unresolved_drift()?;
+        if !rows.is_empty() {
+            let resolved_modules = resolve_chain(None)?;
+            let scopes = super::live_drift::chain_scopes(&resolved_modules, &managers);
+            classify_recorded_drift_for_chain(
+                rows,
+                &ChainOwnership {
+                    chain: &resolved_modules,
+                    scopes: &scopes,
+                    managers: &managers,
+                    mod_name,
+                },
+                &mut drift,
+                &mut drifted_ids,
+                &mut scanned_packages,
+            );
+        }
     }
 
     let package_state = join_package_state(&module.spec.packages, &mut scanned_packages, platform);
@@ -3315,20 +3231,10 @@ pub(super) fn cmd_status_module(
     ));
 
     if exit_code {
-        // Unknown outranks known, as on every `--exit-code` surface: a probe
-        // that could not run means the answer is missing, not that the
-        // machine is in sync.
-        if !output.system_errors.is_empty() {
-            cfgd_core::exit::ExitCode::Error.exit();
-        }
-        // Routed through the one shared predicate `diff`, `verify` and the
-        // fleet `status --exit-code` gate also exit through.
-        if cfgd_core::reconciler::has_any_drift(
-            !output.drift.is_empty(),
-            !output.system_errors.is_empty(),
-        ) {
-            cfgd_core::exit::ExitCode::DriftDetected.exit();
-        }
+        // The verdict the `Status` row just rendered, priced: `Unknown`
+        // outranking `Drifted` is what puts a probe that could not run ahead
+        // of drift it might have found, as on every `--exit-code` surface.
+        exit_on_drift_verdict(output.drift_verdict());
     }
 
     Ok(())
@@ -7712,8 +7618,9 @@ mod tests {
     /// `<module>/<path>` file rows, the daemon's BARE module name (a
     /// whole-module verdict with no file granularity), the `manager:pkgs`
     /// package rows, and the machine-scope `env-var`/`alias` rows a scoped
-    /// diff records, attributed by the declared name. Rows outside the
-    /// module's chain stay off the report, and the Deployed Files rows read
+    /// diff records, each attributed through the one ownership predicate
+    /// over the chain the module resolves to. Rows outside the module's
+    /// chain stay off the report, and the Deployed Files rows read
     /// the recorded file verdict instead of a `not scanned` the same
     /// invocation's `-o json` contradicts.
     #[test]
@@ -7735,7 +7642,7 @@ mod tests {
             "apiVersion: cfgd.io/v1alpha1\n\
              kind: Module\n\
              metadata:\n  name: test-mod\n\
-             spec:\n  packages:\n    - name: ripgrep\n\
+             spec:\n  packages:\n    - name: ripgrep\n      prefer: [script]\n      script: \"true\"\n\
              \x20 env:\n    - name: EDITOR\n      value: vim\n\
              \x20 aliases:\n    - name: ll\n      command: ls -l\n",
         )
@@ -7760,7 +7667,7 @@ mod tests {
             store
                 .record_drift(
                     "package",
-                    "brew:ripgrep",
+                    "script:ripgrep",
                     Some("installed"),
                     Some("missing"),
                     "local",
@@ -7973,7 +7880,7 @@ mod tests {
 
     /// The recorded verdicts reach EVERY wide inventory row, not only the
     /// file rows: a recorded package finding seeds the same joined state a
-    /// live scan fills (so the row reads `not installed (brew)` while the
+    /// live scan fills (so the row reads `not installed (script)` while the
     /// Drift section carries the finding, never `not scanned` beside it),
     /// and a recorded env-var/alias row lands its cause on the Shell rows.
     /// `-o json`'s `packageState` reads the same seed, so wide and machine
@@ -7997,7 +7904,7 @@ mod tests {
             "apiVersion: cfgd.io/v1alpha1\n\
              kind: Module\n\
              metadata:\n  name: test-mod\n\
-             spec:\n  packages:\n    - name: ripgrep\n\
+             spec:\n  packages:\n    - name: ripgrep\n      prefer: [script]\n      script: \"true\"\n\
              \x20 env:\n    - name: EDITOR\n      value: vim\n\
              \x20 aliases:\n    - name: ll\n      command: ls -l\n",
         )
@@ -8008,7 +7915,7 @@ mod tests {
             store
                 .record_drift(
                     "package",
-                    "brew:ripgrep",
+                    "script:ripgrep",
                     Some("installed"),
                     Some(cfgd_core::Absence::NotInstalled.as_str()),
                     "local",
@@ -8060,7 +7967,8 @@ mod tests {
             "a package with a recorded finding may not claim nothing looked: {ripgrep}"
         );
         assert!(
-            ripgrep.contains(cfgd_core::Absence::NotInstalled.as_str()) && ripgrep.contains("brew"),
+            ripgrep.contains(cfgd_core::Absence::NotInstalled.as_str())
+                && ripgrep.contains("script"),
             "the recorded verdict and its manager land on the row: {ripgrep}"
         );
         for shell_item in ["EDITOR", "ll"] {
@@ -8072,17 +7980,33 @@ mod tests {
         }
     }
 
-    /// The no-scan recorded-fallback attributes a package row by the SAME
-    /// manager-folded identity the scan's own standing-row fold and the
-    /// daemon's per-module tick judge ownership by, never by comparing the
-    /// row's raw identity against the declared string: `go` mints `2fa` off
-    /// the declared `rsc.io/2fa`, and `chocolatey` lowercases `Wget` to `wget`,
-    /// so a raw-name match fails both. A legacy comma-batch id (`<mgr>:<a>,<b>`)
-    /// folds to no single declared entry and is dropped rather than
-    /// attributed by coincidence.
+    /// The tag of a platform this host is not, for gating a declared entry
+    /// OFF the running test.
+    fn a_platform_this_host_is_not() -> &'static str {
+        if cfgd_core::platform::Platform::current().os == cfgd_core::platform::Os::Windows {
+            "linux"
+        } else {
+            "windows"
+        }
+    }
+
+    /// The no-scan recorded fallback decides a recorded row's owner through
+    /// the ONE predicate the scoped scans and the daemon's per-module tick
+    /// ask — `row_attributable_to_module` over the chain's resolved scopes —
+    /// so the three surfaces cannot disagree about one row on one store.
+    /// A row the scope rejects is exactly what a declared-entry match
+    /// accepted: a package gated off this host (`brew:pkg-gated`), a row
+    /// under a route the entry denies (`apt:jq`, the module resolving to
+    /// `brew`), and a stale manager row for a `prefer: [script]` entry
+    /// (`brew:demo`). A row the scope owns still attributes by the manager's
+    /// own identity fold (`go` mints `2fa` off the declared `rsc.io/2fa`)
+    /// and a declared env var attributes by name. `-o json` agrees.
     #[test]
     #[serial_test::serial]
-    fn a_no_scan_status_attributes_package_rows_by_manager_folded_identity() {
+    // `go` resolves only where its bootstrap has a mediator (brew, apt, dnf,
+    // zypper); the Windows host has none.
+    #[cfg(unix)]
+    fn a_no_scan_status_attributes_rows_through_the_one_ownership_predicate() {
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let config_dir = tempfile::tempdir().unwrap();
@@ -8096,64 +8020,54 @@ mod tests {
         std::fs::create_dir_all(&mod_dir).unwrap();
         std::fs::write(
             mod_dir.join("module.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\n\
-             kind: Module\n\
-             metadata:\n\
-             \x20 name: test-mod\n\
-             spec:\n\
-             \x20 packages:\n\
-             \x20   - name: rsc.io/2fa\n\
-             \x20     aliases:\n\
-             \x20       go: rsc.io/2fa\n\
-             \x20   - name: Wget\n\
-             \x20     aliases:\n\
-             \x20       chocolatey: Wget\n\
-             \x20   - name: jq\n\
-             \x20     aliases:\n\
-             \x20       brew: jq\n\
-             \x20   - name: rg\n\
-             \x20     aliases:\n\
-             \x20       brew: rg\n",
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\n\
+                 kind: Module\n\
+                 metadata:\n\
+                 \x20 name: test-mod\n\
+                 spec:\n\
+                 \x20 env:\n\
+                 \x20   - name: EDITOR\n\
+                 \x20     value: vim\n\
+                 \x20 packages:\n\
+                 \x20   - name: rsc.io/2fa\n\
+                 \x20     prefer: [go]\n\
+                 \x20   - name: pkg-gated\n\
+                 \x20     platforms: [{}]\n\
+                 \x20   - name: jq\n\
+                 \x20     prefer: [brew, script]\n\
+                 \x20     deny: [apt]\n\
+                 \x20     script: \"true\"\n\
+                 \x20   - name: demo\n\
+                 \x20     prefer: [script]\n\
+                 \x20     script: \"true\"\n",
+                a_platform_this_host_is_not()
+            ),
         )
         .unwrap();
         {
             let store =
                 cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
-            // `go`'s `package_identity` mints the binary name off the module
-            // path: `go_binary_name("rsc.io/2fa") == "2fa"`.
-            store
-                .record_drift(
-                    "package",
-                    "go:2fa",
-                    Some("installed"),
-                    Some(cfgd_core::Absence::NotInstalled.as_str()),
-                    "local",
-                )
-                .unwrap();
-            // `chocolatey`'s `package_identity` lowercases: `canonical_ci_pkg_name("Wget") == "wget"`.
-            store
-                .record_drift(
-                    "package",
-                    "chocolatey:wget",
-                    Some("installed"),
-                    Some(cfgd_core::Absence::NotInstalled.as_str()),
-                    "local",
-                )
-                .unwrap();
-            // A legacy batch id no single declared entry's identity can ever
-            // fold to.
-            store
-                .record_drift(
-                    "package",
-                    "brew:jq,rg",
-                    Some("installed"),
-                    Some(cfgd_core::Absence::NotInstalled.as_str()),
-                    "local",
-                )
-                .unwrap();
+            for (rtype, rid) in [
+                ("package", "go:2fa"),
+                ("package", "brew:pkg-gated"),
+                ("package", "apt:jq"),
+                ("package", "brew:demo"),
+                ("env-var", "EDITOR"),
+            ] {
+                store
+                    .record_drift(
+                        rtype,
+                        rid,
+                        Some("installed"),
+                        Some(cfgd_core::Absence::NotInstalled.as_str()),
+                        "local",
+                    )
+                    .unwrap();
+            }
         }
 
-        let cli = test_cli_for(config_path, state_dir.path());
+        let cli = test_cli_for(config_path.clone(), state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
             &RunContext::new(&cli, &printer),
@@ -8165,34 +8079,60 @@ mod tests {
         .unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
+        for owned in ["rsc.io/2fa", "EDITOR"] {
+            assert!(
+                out.contains(owned),
+                "a row the module's resolved scope owns renders on the no-scan \
+                 report ({owned}): {out}"
+            );
+        }
+        for rejected in ["pkg-gated", "jq", "demo"] {
+            assert!(
+                !out.contains(rejected),
+                "a row the scope rejects — gated off, denied route, stale manager \
+                 for a script entry — is not this module's to render ({rejected}): {out}"
+            );
+        }
 
-        assert!(
-            out.contains("rsc.io/2fa"),
-            "the `go` row attributes to its declared entry by identity, not \
-             by the raw `2fa` the row is stored under: {out}"
-        );
-        assert!(
-            out.contains("Wget"),
-            "the `chocolatey` row attributes to its declared entry despite the \
-             row's lowercase-folded id: {out}"
-        );
-        assert!(
-            !out.contains("jq,rg") && !out.contains("jq, rg"),
-            "a legacy comma-batch id names a unit no single declared entry's \
-             identity can fold to, and stands for nobody rather than being \
-             matched by coincidence: {out}"
+        let mut json_cli = test_cli_for(config_path, state_dir.path());
+        json_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        let (json_printer, json_buf) = test_printers_json();
+        cmd_status_module(
+            &RunContext::new(&json_cli, &json_printer),
+            "test-mod",
+            false,
+            false,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
+        drop(json_printer);
+        let captured = cfgd_core::test_helpers::captured_text(&json_buf);
+        let parsed: serde_json::Value = serde_json::from_str(captured.trim())
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
+        let mut drift_ids: Vec<&str> = parsed["drift"]
+            .as_array()
+            .unwrap_or_else(|| panic!("drift must be an array, got: {parsed}"))
+            .iter()
+            .map(|e| e["resourceId"].as_str().unwrap_or_default())
+            .collect();
+        drift_ids.sort_unstable();
+        assert_eq!(
+            drift_ids,
+            vec!["EDITOR", "go:2fa"],
+            "`-o json` carries exactly the rows the human render listed: {parsed}"
         );
     }
 
-    /// `status --module --scan`'s `-o json` `standing` field names the exact
-    /// package this scan could not re-check (a `script`-managed package: no
-    /// manager to ask, so it never joins `checked`) and the human render's
-    /// Drift section names the SAME package — driven from the one store,
-    /// twice, once per format. A `script` package is the one declared shape
-    /// that both stays owned by the chain (`ModuleScope::packages` places no
-    /// manager restriction) and never re-enters `checked`, so a row recorded
-    /// for it on an earlier run survives a fresh scan as `standing` rather
-    /// than being healed or freshly found.
+    /// `status --module --scan`'s `-o json` `standing` set IS the set the
+    /// human render's Drift section lists — driven from the one store, twice,
+    /// once per format. The package this scan could not re-check (a
+    /// `script`-managed package: no manager to ask, so it never joins
+    /// `checked`) stands in both; a recorded row for a package the module
+    /// gates off this host is in neither, because the scope every scoped
+    /// surface judges by never minted it. A `script` package is the one
+    /// declared shape that both stays owned by the chain and never re-enters
+    /// `checked`, so a row recorded for it on an earlier run survives a fresh
+    /// scan as `standing` rather than being healed or freshly found.
     #[test]
     #[serial_test::serial]
     fn a_scoped_scans_json_standing_names_what_its_own_render_lists() {
@@ -8209,29 +8149,36 @@ mod tests {
         std::fs::create_dir_all(&mod_dir).unwrap();
         std::fs::write(
             mod_dir.join("module.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\n\
-             kind: Module\n\
-             metadata:\n\
-             \x20 name: test-mod\n\
-             spec:\n\
-             \x20 packages:\n\
-             \x20   - name: mytool\n\
-             \x20     prefer: [script]\n\
-             \x20     script: \"true\"\n",
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\n\
+                 kind: Module\n\
+                 metadata:\n\
+                 \x20 name: test-mod\n\
+                 spec:\n\
+                 \x20 packages:\n\
+                 \x20   - name: mytool\n\
+                 \x20     prefer: [script]\n\
+                 \x20     script: \"true\"\n\
+                 \x20   - name: pkg-gated\n\
+                 \x20     platforms: [{}]\n",
+                a_platform_this_host_is_not()
+            ),
         )
         .unwrap();
         {
             let store =
                 cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
-            store
-                .record_drift(
-                    "package",
-                    "script:mytool",
-                    Some(cfgd_core::PACKAGE_WANT_INSTALLED),
-                    Some(cfgd_core::Absence::NotInstalled.as_str()),
-                    "local",
-                )
-                .unwrap();
+            for rid in ["script:mytool", "brew:pkg-gated"] {
+                store
+                    .record_drift(
+                        "package",
+                        rid,
+                        Some(cfgd_core::PACKAGE_WANT_INSTALLED),
+                        Some(cfgd_core::Absence::NotInstalled.as_str()),
+                        "local",
+                    )
+                    .unwrap();
+            }
         }
 
         let mut json_cli = test_cli_for(config_path.clone(), state_dir.path());
@@ -8258,7 +8205,18 @@ mod tests {
         assert_eq!(
             standing_ids,
             vec!["script:mytool"],
-            "the unrecheckable script package must stand, got: {parsed}"
+            "the unrecheckable script package must stand, and the gated-off \
+             package's row is nobody's, got: {parsed}"
+        );
+        let drift_ids: Vec<&str> = parsed["drift"]
+            .as_array()
+            .unwrap_or_else(|| panic!("drift must be an array, got: {parsed}"))
+            .iter()
+            .map(|e| e["resourceId"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            drift_ids, standing_ids,
+            "`standing` is exactly the set the Drift section renders, got: {parsed}"
         );
 
         let human_cli = test_cli_for(config_path, state_dir.path());
@@ -8277,6 +8235,10 @@ mod tests {
             out.contains("mytool"),
             "the human render's Drift section must name the same package \
              `-o json`'s standing carries, got: {out}"
+        );
+        assert!(
+            !out.contains("pkg-gated"),
+            "a row the scope rejected renders nowhere, got: {out}"
         );
     }
 

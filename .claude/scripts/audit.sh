@@ -989,6 +989,11 @@ ALLOWED_FN_PAIRS=(
     # convention for a compliance snapshot's verdict, a second sanctioned
     # vocabulary rather than a duplicate to hunt down.
     "human_display crates/cfgd-core/src/compliance/mod.rs"
+    # `DiffSummary::any_drift` and `VerifyOutput::any_drift` are the same
+    # convention on two verbs' summary types (shared-utils.md, "each
+    # drift-reporting verb COMPOSES ... once"): one name per verb so a reader
+    # of either exit gate finds the same question, over different fields.
+    "any_drift crates/cfgd/src/cli/verify.rs"
 )
 allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"

@@ -975,6 +975,21 @@ pub fn module_row_owner(resource_id: &str) -> &str {
     }
 }
 
+/// The facet of a `"module"` drift row that names no file: the `script` /
+/// `skip` tail of the daemon's `<module>:script` / `<module>:skip` ids, or
+/// `None` for the bare whole-module id and for every per-file row.
+///
+/// The one reader of that tail, kept beside [`module_row_owner`] because it
+/// is the same split read from the other side; a report rendering the row
+/// spells the facet after the owner exactly as the action that minted it did.
+#[must_use]
+pub fn module_row_facet(resource_id: &str) -> Option<&str> {
+    match resource_id.find(['/', ':']) {
+        Some(at) if resource_id.as_bytes()[at] == b':' => Some(&resource_id[at + 1..]),
+        _ => None,
+    }
+}
+
 /// Whether a `"module"` drift row NAMES A FILE — the `<module>/<target>`
 /// grammar [`module_file_resource_id`] mints — rather than a script, a skip,
 /// or the bare legacy whole-module id.
@@ -1082,18 +1097,6 @@ pub fn row_attributable_to_module(
     }
 }
 
-/// Whether a drift-reporting run has anything to report: real findings (or a
-/// standing row an earlier check already found — the caller ORs the two into
-/// `drift_present` before calling, since which buckets exist differs per
-/// verb) or a check this run could not complete. The ONE predicate `diff`,
-/// `verify` and `status --scan` ask for BOTH their verdict (Ok vs. not) and
-/// their `--exit-code` gate, so a category minted into one boolean chain
-/// cannot silently diverge from the other.
-#[must_use]
-pub fn has_any_drift(drift_present: bool, check_failed: bool) -> bool {
-    drift_present || check_failed
-}
-
 #[cfg(test)]
 mod row_attributable_to_module_tests {
     use super::*;
@@ -1104,6 +1107,17 @@ mod row_attributable_to_module_tests {
             env_vars: env_vars.iter().map(|s| s.to_string()).collect(),
             aliases: aliases.iter().map(|s| s.to_string()).collect(),
         }
+    }
+
+    /// The facet is the tail of a `:`-separated id alone: a per-file row and
+    /// the bare whole-module id have none, and a file whose path carries a
+    /// `:` is still a file.
+    #[test]
+    fn the_facet_is_read_only_off_a_colon_separated_module_id() {
+        assert_eq!(module_row_facet("nvim:script"), Some("script"));
+        assert_eq!(module_row_facet("nvim:skip"), Some("skip"));
+        assert_eq!(module_row_facet("nvim"), None);
+        assert_eq!(module_row_facet("nvim/home/u/.config/a:b"), None);
     }
 
     /// A `:script`/`:skip` module id attributes to its owner exactly like the
