@@ -150,13 +150,22 @@ fn stricter_floor(
         (Some(a), Some(b)) => {
             let winner = match mgr {
                 Some(m) => match (m.floor_comparable(a), m.floor_comparable(b)) {
-                    (true, true) => {
-                        if m.version_meets_minimum(a, b) {
-                            a
-                        } else {
-                            b
+                    (true, true) => match m.version_meets_minimum_checked(a, b) {
+                        Ok(true) => a,
+                        Ok(false) => b,
+                        // The manager's own comparator failed to spawn (FreeBSD
+                        // `pkg version -t`) rather than answering — fall to the
+                        // order-independent shared comparator so a transient
+                        // spawn failure cannot make this dedup depend on which
+                        // module happened to be scanned first.
+                        Err(_) => {
+                            if crate::version_meets_floor(a, b) {
+                                a
+                            } else {
+                                b
+                            }
                         }
-                    }
+                    },
                     (false, _) => a,
                     (_, false) => b,
                 },
@@ -433,6 +442,31 @@ mod tests {
 
     fn yaml(value: &str) -> serde_yaml::Value {
         serde_yaml::from_str(value).expect("valid yaml fixture")
+    }
+
+    // --- stricter_floor --------------------------------------------------
+
+    #[test]
+    fn a_failed_floor_comparator_falls_to_the_order_independent_shared_comparator() {
+        let mgr = crate::test_helpers::MockPackageManager::new("pkg").failing_version_comparisons();
+        let a = Some("1.2".to_string());
+        let b = Some("1.9".to_string());
+
+        let forward = stricter_floor(&a, &b, Some(&mgr));
+        let backward = stricter_floor(&b, &a, Some(&mgr));
+
+        assert_eq!(forward, Some("1.9".to_string()));
+        assert_eq!(backward, Some("1.9".to_string()));
+    }
+
+    #[test]
+    fn a_working_floor_comparator_is_still_asked_before_any_fallback() {
+        let mgr = crate::test_helpers::MockPackageManager::new("pkg");
+        let a = Some("1.2".to_string());
+        let b = Some("1.9".to_string());
+
+        assert_eq!(stricter_floor(&a, &b, Some(&mgr)), Some("1.9".to_string()));
+        assert_eq!(stricter_floor(&b, &a, Some(&mgr)), Some("1.9".to_string()));
     }
 
     // --- effective_system_map ------------------------------------------------

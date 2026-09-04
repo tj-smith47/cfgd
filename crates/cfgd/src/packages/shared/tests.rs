@@ -2293,3 +2293,46 @@ fn a_version_probe_reaches_a_sibling_the_manager_shim_finds_through_the_bootstra
         "the shim's sibling resolves only through the dirs this run bootstrapped"
     );
 }
+
+#[test]
+fn upgrade_each_returns_no_upgrade_verb_error_when_build_cmd_answers_none() {
+    let notes = NoteSink::default();
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let err = upgrade_each(
+        &cx_for(&printer, &notes),
+        "test-mgr",
+        &["ripgrep".to_string()],
+        "test-mgr upgrade",
+        |_pkg| None,
+    )
+    .expect_err("a build_cmd answering None must refuse rather than skip silently");
+    assert!(
+        matches!(&err, PackageError::BootstrapFailed { manager, message }
+            if manager == "test-mgr" && message == "cannot raise ripgrep: test-mgr has no upgrade verb"),
+        "expected the no-upgrade-verb BootstrapFailed shape, got: {err:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn upgrade_each_spawns_the_built_command_once_per_held_package() {
+    let notes = NoteSink::default();
+    let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_SH_UPGRADE_BIN", 0, "", "");
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    upgrade_each(
+        &cx_for(&printer, &notes),
+        "test-mgr",
+        &["ripgrep".to_string(), "fd".to_string()],
+        "test-mgr upgrade",
+        |pkg| {
+            let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_UPGRADE_BIN").unwrap());
+            cmd.arg(pkg);
+            Some(cmd)
+        },
+    )
+    .expect("every build_cmd answering Some must spawn and succeed");
+    let argv = _shim.argv_log();
+    assert!(argv.contains("ripgrep"), "argv must name ripgrep: {argv}");
+    assert!(argv.contains("fd"), "argv must name fd: {argv}");
+}

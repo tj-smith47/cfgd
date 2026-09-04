@@ -143,7 +143,7 @@ declarations fold together rather than replace one another); on Linux only the f
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `name` | yes | string | Canonical package name |
-| `minVersion` | no | string | Minimum acceptable version (semver). Also checked LIVE, by the whole-machine surfaces (`cfgd diff`, `cfgd status --scan`, `cfgd verify`) and by their `--module` scoped forms alike: an installed copy below the floor is drift (`want: 0.9, have: 0.8.3`), and a version the manager cannot state (or states in a form nothing can compare against) is a check that could not run |
+| `minVersion` | no | string | Minimum acceptable version (semver). Also checked LIVE, by the whole-machine surfaces (`cfgd diff`, `cfgd status --scan`, `cfgd verify`) and by their `--module` scoped forms alike: an installed copy below the floor is drift (`want: 0.9, have: 0.8.3`), and a version the manager cannot state (or states in a form nothing can compare against) is a check that could not run. `apk`, `pacman`, `zypper` and FreeBSD `pkg` list installed names only, and `brew-tap` entries are repositories with no version to state — a `minVersion` against any of these is always such a check |
 | `prefer` | no | list | Ordered list of managers to try. `"script"` uses the `script` field as a custom installer. If omitted, the available manager that already holds the package wins (the platform's native manager is asked first), and a package nobody holds installs through the native manager. |
 | `deny` | no | list | Managers to never use for this package, even if available and preferred |
 | `aliases` | no | map | Per-manager name overrides when the package name differs |

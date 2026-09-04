@@ -231,7 +231,7 @@ impl PackageManager for PipxManager {
         upgrade_each(cx, "pipx", &held, "pipx upgrade", |pkg| {
             let mut cmd = pipx_cmd();
             cmd.args(["upgrade", pkg]);
-            cmd
+            Some(cmd)
         })?;
         Ok(())
     }

@@ -180,8 +180,25 @@ pub fn declared_floor_parses(floor: &str) -> bool {
 /// [`declared_floor_version`]: the semver families compose their requirement
 /// here, and a comparator owned by a manager's own tool strips through that
 /// helper before handing the floor over.
+///
+/// Compares parsed [`semver::Version`] ORDER directly (`version >= floor`)
+/// rather than composing a `VersionReq` and calling `matches`: semver's
+/// default matching EXCLUDES a prerelease from any requirement whose
+/// comparator carries none, so `>=1.9` never matched `2.0.0-rc1` even though
+/// 2.0.0 is well past 1.9 — a real release candidate reported as failing to
+/// clear a floor it had long since cleared. `Version`'s `Ord` is
+/// prerelease-aware per the semver spec: it orders on `(major, minor,
+/// patch)` first, and only a TIE in those falls to comparing the prerelease
+/// tag, where a build's own prerelease still ranks below its own release
+/// (`1.2.3-beta` is below `1.2.3`).
 pub fn version_meets_floor(version: &str, floor: &str) -> bool {
-    version_satisfies(version, &format!(">={}", declared_floor_version(floor))) // floor-composer-ok: the one home
+    let (Some(v), Some(f)) = (
+        parse_loose_version(version),
+        parse_loose_version(declared_floor_version(floor)),
+    ) else {
+        return false;
+    };
+    v >= f
 }
 
 /// Check whether `version_str` satisfies `requirement_str` (semver range).
@@ -216,6 +233,26 @@ mod tests {
             );
         }
         assert!(version_meets_floor("v0.16.2", "v0.16.2"));
+    }
+
+    /// `version_meets_floor` compares `Version` ORDER, prerelease-aware per
+    /// semver's `Ord` — not `VersionReq::matches`, which excludes a
+    /// prerelease from any comparator carrying none and would call a real
+    /// `2.0.0-rc1` release candidate below a `1.9` floor it had long cleared.
+    #[test]
+    fn a_prerelease_clears_a_floor_its_normal_version_outranks() {
+        assert!(
+            version_meets_floor("2.0.0-rc1", "1.9"),
+            "2.0.0-rc1's normal version (2.0.0) is well past a 1.9 floor"
+        );
+        assert!(
+            version_meets_floor("1.2.4-beta", "1.2.3"),
+            "1.2.4-beta's normal version (1.2.4) already clears 1.2.3"
+        );
+        assert!(
+            !version_meets_floor("1.2.3-beta", "1.2.3"),
+            "same normal version: a prerelease build ranks below its own release"
+        );
     }
 
     /// The three floor questions are ordered by strength, and the ordering is

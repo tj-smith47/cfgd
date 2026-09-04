@@ -4440,16 +4440,16 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar)] = &[
     ),
     (
         "winget",
-        VersionGrammar::Semver {
-            sample: "1.22.10580",
-            incomparable: Some("133.0.6943.98"),
+        VersionGrammar::Packaged {
+            sample: "133.0.6943.98",
+            floor: "133",
         },
     ),
     (
         "chocolatey",
-        VersionGrammar::Semver {
-            sample: "21.4.0",
-            incomparable: Some("4.7.1.2019"),
+        VersionGrammar::Packaged {
+            sample: "4.7.1.2019",
+            floor: "4.7",
         },
     ),
     (
@@ -4684,18 +4684,19 @@ fn a_family_grammar_floor_propagates_through_the_dedup_and_compares_clean() {
     );
     // The contrast that makes the `Met` above non-vacuous: a package absent
     // from the listing is `Met` too, so only a floor the listed version misses
-    // proves the shimmed row was read at all.
+    // proves the shimmed row was read at all. Same epoch as the listing (2) so
+    // the miss comes from the upstream comparison, not from epoch dominance.
     assert!(
         matches!(
             cfgd_core::reconciler::package_version_floor(
                 apt.as_ref(),
                 &installed,
                 "vim",
-                Some("9.0"),
+                Some("2:9.0"),
             ),
             cfgd_core::reconciler::VersionFloor::Below { .. }
         ),
-        "and upstream 8.2.3995 misses a 9.0 floor, so the listing really was read"
+        "and upstream 8.2.3995 misses a same-epoch 2:9.0 floor, so the listing really was read"
     );
 }
 
@@ -4747,9 +4748,12 @@ fn a_floor_the_manager_cannot_read_survives_the_dedup_in_either_order() {
 
 /// The other direction of the same rule, and the one the round-5 propagate rule
 /// got wrong on its own: `1:2.30` is unreadable to the SHARED parser but
-/// perfectly comparable to apt, and `9.0` is stricter in that family's grammar
-/// (upstream `2.30` < `9.0`). Letting the unparseable floor win here would drop
-/// a real constraint with no check error anywhere to show for it.
+/// perfectly comparable to apt. Its explicit epoch of 1 outranks `9.0`'s
+/// implicit epoch of 0 — dpkg's own comparator lets epoch dominate upstream
+/// entirely, so `1:2.30` is the STRICTER floor here even though its upstream
+/// number reads smaller. Letting the unparseable floor lose to a same-epoch
+/// upstream comparison here would drop a real constraint with no check error
+/// anywhere to show for it.
 #[test]
 fn a_stricter_readable_floor_beats_a_family_grammar_one_the_manager_can_read() {
     let resolved = cfgd_core::test_helpers::make_empty_resolved();
@@ -4785,7 +4789,7 @@ fn a_stricter_readable_floor_beats_a_family_grammar_one_the_manager_can_read() {
         );
         assert_eq!(
             effective[0].min_version.as_deref(),
-            Some("9.0"),
+            Some("1:2.30"),
             "the strictest floor in the family's own grammar survives: {effective:?}"
         );
     }

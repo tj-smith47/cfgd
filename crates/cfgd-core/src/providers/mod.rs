@@ -780,6 +780,19 @@ pub trait PackageManager: Send + Sync {
         crate::version_meets_floor(available, min_version)
     }
 
+    /// The fallible twin of [`version_meets_minimum`](Self::version_meets_minimum),
+    /// for a comparator that genuinely shells out (FreeBSD `pkg version -t`)
+    /// and can fail to spawn. A spawn failure is a check that could not RUN,
+    /// never a verdict that the floor was missed — the default answers `Ok`
+    /// unconditionally because every other manager's comparator is pure.
+    fn version_meets_minimum_checked(
+        &self,
+        available: &str,
+        min_version: &str,
+    ) -> std::result::Result<bool, String> {
+        Ok(self.version_meets_minimum(available, min_version))
+    }
+
     /// Whether [`version_meets_minimum`](Self::version_meets_minimum) can judge
     /// this version at all. A version scheme is the manager's, so only the
     /// manager can say that a string it listed carries no comparable version —

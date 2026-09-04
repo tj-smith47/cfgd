@@ -83,6 +83,12 @@ pub struct SimpleManager {
     pub(super) install_cmd: &'static [&'static str],
     pub(super) uninstall_cmd: &'static [&'static str],
     pub(super) update_cmd: Option<&'static [&'static str]>,
+    /// The family's distinct verb for raising an already-held package
+    /// (`apk upgrade`), for a family whose install verb no-ops on one already
+    /// installed. `None` for a family whose install verb upgrades on its own
+    /// (apt/dnf/yum/pacman/zypper/pkg all raise a held package via their
+    /// ordinary install command).
+    pub(super) upgrade_cmd: Option<&'static [&'static str]>,
     /// When true, non-zero exit from the update command is ignored (dnf/yum
     /// check-update returns 100 when updates are available).
     pub(super) ignore_update_exit: bool,
@@ -96,6 +102,14 @@ pub struct SimpleManager {
     pub(super) list_with_versions: Option<ListWithVersionsFn>,
     /// Override for package_aliases. When None, returns empty vec (default).
     pub(super) aliases_fn: Option<fn(&str) -> Vec<String>>,
+    /// Per-run memo of `pkg version -t` outcomes, keyed by the `(available,
+    /// floor)` pair compared. `all_package_managers()` builds a fresh
+    /// `SimpleManager` per invocation, so this field's lifetime IS "for the
+    /// run" with no TTL or process-global state required. Every manager but
+    /// `pkg` has a pure comparator and never touches this field.
+    pub(super) pkg_version_memo: std::sync::Mutex<
+        std::collections::HashMap<(String, String), std::result::Result<bool, String>>,
+    >,
 }
 
 impl SimpleManager {
@@ -165,16 +179,36 @@ impl PackageManager for SimpleManager {
         if packages.is_empty() {
             return Ok(());
         }
-        let effective = strip_sudo_for_exec(self.install_cmd);
-        let label = self.display_cmd(self.install_cmd, packages);
-        let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
-        run_pkg_cmd_live(
-            cx,
-            self.mgr_name,
-            cmd_with_seam(prog).args(args).args(packages),
-            &label,
-            "install",
-        )?;
+        // Only a family with a distinct upgrade verb (apk) needs the held/fresh
+        // split at all — every other family's install verb already raises a
+        // held package, so partitioning would just spawn a second, redundant
+        // command.
+        let (held, fresh) = match self.upgrade_cmd {
+            Some(_) => super::shared::partition_already_installed(self, packages, cx),
+            None => (Vec::new(), packages.to_vec()),
+        };
+        if !fresh.is_empty() {
+            let effective = strip_sudo_for_exec(self.install_cmd);
+            let label = self.display_cmd(self.install_cmd, &fresh);
+            let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
+            run_pkg_cmd_live(
+                cx,
+                self.mgr_name,
+                cmd_with_seam(prog).args(args).args(&fresh),
+                &label,
+                "install",
+            )?;
+        }
+        if let Some(upgrade_parts) = self.upgrade_cmd {
+            let verb_label = self.display_cmd(upgrade_parts, &[]);
+            super::shared::upgrade_each(cx, self.mgr_name, &held, &verb_label, |pkg| {
+                let effective = strip_sudo_for_exec(upgrade_parts);
+                let (prog, args) = effective.split_first()?;
+                let mut cmd = cmd_with_seam(prog);
+                cmd.args(args).arg(pkg);
+                Some(cmd)
+            })?;
+        }
         Ok(())
     }
 
@@ -271,19 +305,38 @@ impl PackageManager for SimpleManager {
     }
 
     fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
-        if self.mgr_name == "pkg" {
-            // FreeBSD pkg versions carry PORTEPOCH (`,N`) / PORTREVISION (`_N`)
-            // and are not semver, so the default semver comparison mis-orders
-            // them. Defer to pkg's own comparator. Fail-closed (not satisfied)
-            // when the comparison cannot run, matching resolve's skip-this-manager
-            // behavior on an unresolved version.
-            pkg_version_meets_minimum(available, min_version).unwrap_or(false)
-        } else {
+        self.version_meets_minimum_checked(available, min_version)
+            .unwrap_or(false)
+    }
+
+    fn version_meets_minimum_checked(
+        &self,
+        available: &str,
+        min_version: &str,
+    ) -> std::result::Result<bool, String> {
+        if self.mgr_name != "pkg" {
             // Every other manager reaching this type is a distro family
             // (apt/dnf/yum/apk/pacman/zypper), whose listings carry the
-            // packaging's epoch and revision around the upstream version.
-            distro_version_meets_minimum(available, min_version)
+            // packaging's epoch and revision around the upstream version, and
+            // whose comparison is pure — nothing here can fail to spawn.
+            return Ok(distro_version_meets_minimum(available, min_version));
         }
+        // FreeBSD pkg versions carry PORTEPOCH (`,N`) / PORTREVISION (`_N`) and
+        // are not semver, so the default semver comparison mis-orders them.
+        // `pkg version -t` genuinely shells out and can fail to spawn — that
+        // is a check that could not run, never a verdict that the floor was
+        // missed, so the failure is propagated rather than folded to `false`.
+        let key = (available.to_string(), min_version.to_string());
+        if let Ok(memo) = self.pkg_version_memo.lock()
+            && let Some(cached) = memo.get(&key)
+        {
+            return cached.clone();
+        }
+        let result = pkg_version_meets_minimum(available, min_version).map_err(|e| e.to_string());
+        if let Ok(mut memo) = self.pkg_version_memo.lock() {
+            memo.insert(key, result.clone());
+        }
+        result
     }
 
     fn version_comparable(&self, version: &str) -> bool {
@@ -329,12 +382,14 @@ pub(super) fn apt_manager() -> SimpleManager {
         install_cmd: &["sudo", "apt-get", "install", "-y"],
         uninstall_cmd: &["sudo", "apt-get", "remove", "-y"],
         update_cmd: Some(&["sudo", "apt-get", "update"]),
+        upgrade_cmd: None,
         ignore_update_exit: false,
         parse_list: parse_simple_lines,
         query_version: query_version_apt,
         is_available_fn: None,
         list_with_versions: Some(list_apt_with_versions),
         aliases_fn: Some(apt_aliases),
+        pkg_version_memo: std::sync::Mutex::new(std::collections::HashMap::new()),
     }
 }
 
@@ -348,12 +403,14 @@ pub(super) fn dnf_manager() -> SimpleManager {
         install_cmd: &["sudo", "dnf", "install", "-y"],
         uninstall_cmd: &["sudo", "dnf", "remove", "-y"],
         update_cmd: Some(&["sudo", "dnf", "check-update"]),
+        upgrade_cmd: None,
         ignore_update_exit: true,
         parse_list: parse_dnf_lines,
         query_version: query_version_info,
         is_available_fn: None,
         list_with_versions: Some(list_dnf_with_versions),
         aliases_fn: Some(dnf_aliases),
+        pkg_version_memo: std::sync::Mutex::new(std::collections::HashMap::new()),
     }
 }
 
@@ -364,6 +421,7 @@ pub(super) fn yum_manager() -> SimpleManager {
         install_cmd: &["sudo", "yum", "install", "-y"],
         uninstall_cmd: &["sudo", "yum", "remove", "-y"],
         update_cmd: Some(&["sudo", "yum", "check-update"]),
+        upgrade_cmd: None,
         ignore_update_exit: true,
         parse_list: parse_yum_lines,
         query_version: query_version_info,
@@ -373,6 +431,7 @@ pub(super) fn yum_manager() -> SimpleManager {
         }),
         list_with_versions: Some(list_dnf_with_versions),
         aliases_fn: Some(dnf_aliases),
+        pkg_version_memo: std::sync::Mutex::new(std::collections::HashMap::new()),
     }
 }
 
@@ -383,12 +442,14 @@ pub(super) fn apk_manager() -> SimpleManager {
         install_cmd: &["apk", "add"],
         uninstall_cmd: &["apk", "del"],
         update_cmd: Some(&["apk", "update"]),
+        upgrade_cmd: Some(&["apk", "upgrade"]),
         ignore_update_exit: false,
         parse_list: parse_apk_lines,
         query_version: query_version_apk,
         is_available_fn: None,
         list_with_versions: None,
         aliases_fn: None,
+        pkg_version_memo: std::sync::Mutex::new(std::collections::HashMap::new()),
     }
 }
 
@@ -399,12 +460,14 @@ pub(super) fn pacman_manager() -> SimpleManager {
         install_cmd: &["sudo", "pacman", "-S", "--noconfirm"],
         uninstall_cmd: &["sudo", "pacman", "-R", "--noconfirm"],
         update_cmd: Some(&["sudo", "pacman", "-Sy", "--noconfirm"]),
+        upgrade_cmd: None,
         ignore_update_exit: false,
         parse_list: parse_simple_lines,
         query_version: query_version_info,
         is_available_fn: None,
         list_with_versions: None,
         aliases_fn: None,
+        pkg_version_memo: std::sync::Mutex::new(std::collections::HashMap::new()),
     }
 }
 
@@ -422,12 +485,14 @@ pub(super) fn zypper_manager() -> SimpleManager {
         install_cmd: &["sudo", "zypper", "install", "-y"],
         uninstall_cmd: &["sudo", "zypper", "remove", "-y"],
         update_cmd: Some(&["sudo", "zypper", "refresh"]),
+        upgrade_cmd: None,
         ignore_update_exit: false,
         parse_list: parse_zypper_lines,
         query_version: query_version_info,
         is_available_fn: None,
         list_with_versions: None,
         aliases_fn: None,
+        pkg_version_memo: std::sync::Mutex::new(std::collections::HashMap::new()),
     }
 }
 
@@ -438,12 +503,14 @@ pub(super) fn pkg_manager() -> SimpleManager {
         install_cmd: &["pkg", "install", "-y"],
         uninstall_cmd: &["pkg", "remove", "-y"],
         update_cmd: Some(&["pkg", "update"]),
+        upgrade_cmd: None,
         ignore_update_exit: false,
         parse_list: parse_pkg_lines,
         query_version: query_version_pkg,
         is_available_fn: None,
         list_with_versions: None,
         aliases_fn: None,
+        pkg_version_memo: std::sync::Mutex::new(std::collections::HashMap::new()),
     }
 }
 
