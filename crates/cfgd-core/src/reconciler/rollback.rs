@@ -67,7 +67,7 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        // Track which file paths we've already restored (avoid duplicate restores)
+        // Track which file paths are already restored (avoid duplicate restores)
         let mut restored_paths = HashSet::new();
 
         // Restore from target apply's post-apply snapshots, in reverse-apply

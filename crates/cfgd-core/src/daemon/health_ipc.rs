@@ -14,8 +14,8 @@ pub(crate) const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
 /// directory is owner-private. Used by `run_health_server` to guarantee the
 /// IPC socket cannot be dropped into a world-traversable location. Refuses
 /// to proceed if the final mode has any group/other bits set — an attacker
-/// with `+w` on the parent could rename our socket and substitute theirs,
-/// defeating the 0600 we set on the socket itself.
+/// with `+w` on the parent could rename the socket and substitute theirs,
+/// defeating the 0600 set on the socket itself.
 ///
 /// The check is mode-only: it covers the umask-leak case
 /// (mkdir under default 0o022 leaving 0755) as well as operator-pre-created
@@ -68,7 +68,7 @@ pub(crate) async fn run_health_server(
 
     // Stale socket from a crashed daemon — `UnixListener::bind` would error
     // with EADDRINUSE. `check_already_running` cleans up the dead-daemon case
-    // before we get here, but a stale leftover from a kill -9 still slips
+    // before this point, but a stale leftover from a kill -9 still slips
     // through; remove it best-effort.
     if ipc_path_buf.exists() {
         let _ = std::fs::remove_file(&ipc_path_buf);
@@ -359,7 +359,7 @@ pub fn query_daemon_status(
         }
     }
 
-    // `Take::limit()` is the remaining unread budget; zero means we hit the cap
+    // `Take::limit()` is the remaining unread budget; zero means the cap was hit
     // before the peer closed the socket, i.e. the response was truncated.
     if limited.limit() == 0 {
         return Err(DaemonError::HealthSocketError {

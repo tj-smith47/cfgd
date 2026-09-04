@@ -172,8 +172,8 @@ pub(super) fn clone_into(
     drop(row);
 
     // Checkout the requested branch if HEAD isn't already on it.
-    // git clone checks out the remote's default branch; if the user asked for
-    // a different one we need to switch.
+    // git clone checks out the remote's default branch; switch when the user
+    // asked for a different one.
     let repo = git2::Repository::open(target_dir)
         .map_err(|e| anyhow::anyhow!("Failed to open cloned repo: {}", e))?;
     let current_branch = repo

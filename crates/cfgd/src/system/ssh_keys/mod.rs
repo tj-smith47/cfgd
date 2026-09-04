@@ -100,7 +100,7 @@ impl SshKeysConfigurator {
 
     /// Detect the key type of an existing key by reading the public key header.
     ///
-    /// We read `<path>.pub` rather than the private key to avoid any passphrase prompt.
+    /// Reads `<path>.pub` rather than the private key to avoid any passphrase prompt.
     fn detect_key_type(private_path: &Path) -> Option<String> {
         let pub_path = {
             let mut p = private_path.to_path_buf();
@@ -306,7 +306,7 @@ impl SystemConfigurator for SshKeysConfigurator {
                     Self::apply_permissions(spec, &path, cx)?;
                 }
 
-                // Type mismatch is drift but we do NOT regenerate an existing key
+                // Type mismatch is drift but an existing key is NOT regenerated
                 // to avoid destroying data. Warn the user instead.
                 if let Some(actual_type) = Self::detect_key_type(&path)
                     && actual_type != spec.key_type

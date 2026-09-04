@@ -93,7 +93,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
     // 3. Check if already initialized
     // When --from is used, resolve_from handles the "already initialized" case
-    // and the clone creates cfgd.yaml — skip this check so we reach the apply step
+    // and the clone creates cfgd.yaml — skip this check to reach the apply step
     if target_dir.join(cfgd_core::config::CONFIG_FILENAME).exists() && !from_used {
         let mut row = printer.status(
             Role::Info,
@@ -858,6 +858,7 @@ pub(super) fn scaffold(
 
     // Create directories
     std::fs::create_dir_all(dir.join("profiles"))?;
+    // module-dir-ok: the config dir's own declared modules/ directory being scaffolded, not the module cache
     std::fs::create_dir_all(dir.join("modules"))?;
     printer.status_simple(Role::Ok, "Created profiles/ modules/");
 
@@ -950,6 +951,7 @@ cfgd apply
 /// Called by init and also by module create / profile create.
 pub(crate) fn regenerate_workflow(config_dir: &Path, printer: &Printer) -> anyhow::Result<()> {
     let profiles = scan_profile_names(&config_dir.join("profiles"), printer)?;
+    // module-dir-ok: the config dir's own declared modules/ directory, not the module cache
     let modules = scan_module_names(&config_dir.join("modules"), printer)?;
 
     if profiles.is_empty() && modules.is_empty() {

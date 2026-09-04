@@ -7,9 +7,9 @@
 //! and the underlying `--enable-event-log` service argument.
 //!
 //! Implementation is a thin `unsafe` wrapper over `RegisterEventSourceW` /
-//! `ReportEventW` / `DeregisterEventSource`. We deliberately avoid third-party
-//! event-log crates because they are largely unmaintained and the surface
-//! we need is small (~3 FFI calls).
+//! `ReportEventW` / `DeregisterEventSource`. Third-party event-log crates are
+//! deliberately avoided because they are largely unmaintained and the needed
+//! surface is small (~3 FFI calls).
 //!
 //! Event source registration is performed at service install time
 //! (`install_windows_service`) so that Event Viewer can render messages
@@ -72,13 +72,13 @@ fn register_source() -> HANDLE {
     handle
 }
 
-/// Tear down the registered source. Called from the service stop path so we
-/// don't leak a kernel handle on graceful shutdown. Safe to call without a
+/// Tear down the registered source. Called from the service stop path so no
+/// kernel handle leaks on graceful shutdown. Safe to call without a
 /// matching `register_source()`.
 pub fn deregister_source() {
     let handle = EVENT_SOURCE.swap(std::ptr::null_mut(), Ordering::AcqRel);
     if !handle.is_null() {
-        // SAFETY: we owned this handle from a successful RegisterEventSourceW.
+        // SAFETY: this handle was owned from a successful RegisterEventSourceW.
         unsafe {
             DeregisterEventSource(handle);
         }

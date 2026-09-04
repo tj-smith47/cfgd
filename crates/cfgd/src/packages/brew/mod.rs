@@ -591,7 +591,7 @@ impl PackageManager for BrewManager {
 
 /// Parse `brew list --versions` output (format: `package 1.2.3`) into PackageInfo.
 /// Each line has package name followed by one or more version tokens separated by spaces.
-/// We take the last version token as the installed version.
+/// The last version token is taken as the installed version.
 pub(super) fn parse_brew_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
     stdout
         .lines()

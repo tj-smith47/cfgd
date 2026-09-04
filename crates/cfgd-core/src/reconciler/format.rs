@@ -1254,10 +1254,12 @@ mod tests {
     };
 
     /// `icon_arrow` is themeable, so `format_plan_item`'s `set` arm renders the
-    /// theme's own glyph — the SECOND WARN 14 render pin (the header's chain
-    /// is the first, `system.rs`'s parenthetical the third): nothing proves
-    /// `printer.arrow()` under a non-default preset actually reaches a plan
-    /// item's description without this.
+    /// theme's own glyph: nothing proves `printer.arrow()` under a non-default
+    /// preset actually reaches a plan item's description without this.
+    /// Siblings: the header's chain is pinned by
+    /// `a_preset_overriding_the_arrow_renders_the_inherits_chain_in_its_own_glyph`,
+    /// the settled system row by
+    /// `a_preset_overriding_the_arrow_reaches_the_settled_system_rows_parenthetical`.
     #[test]
     fn a_preset_overriding_the_arrow_reaches_format_plan_items_set_arm() {
         let theme = crate::output::Theme::preset("minimal").expect("minimal is a preset");

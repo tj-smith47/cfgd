@@ -64,9 +64,9 @@ const COMMON_STYLES: &str = r#"
 /// Web UI auth: checks Authorization header, session cookie, or ?token= query param.
 /// When CFGD_API_KEY is not set, all requests are allowed.
 ///
-/// On successful `?token=` auth we mint a fresh random session ID (NOT the admin
-/// key) and store its hash in `state.web_sessions`, then set it as the
-/// `cfgd_session` cookie with `Secure; HttpOnly; SameSite=Strict`. A leaked
+/// On successful `?token=` auth a fresh random session ID (NOT the admin
+/// key) is minted and its hash stored in `state.web_sessions`, then set as
+/// the `cfgd_session` cookie with `Secure; HttpOnly; SameSite=Strict`. A leaked
 /// cookie therefore cannot be replayed to recover `CFGD_API_KEY`, and the
 /// server can invalidate sessions without rotating the admin key.
 async fn web_auth_middleware(
@@ -522,7 +522,7 @@ async fn device_detail(
         var deviceId = {device_id_js};
         function getAuthHeader() {{
             // If CFGD_API_KEY is set on the server, users must provide a token.
-            // For the web UI, we read it from localStorage if available.
+            // For the web UI, read it from localStorage if available.
             var token = localStorage.getItem("cfgd_api_token");
             if (token) return {{"Authorization": "Bearer " + token}};
             return {{}};

@@ -87,7 +87,7 @@ impl<'a> super::Reconciler<'a> {
 
                 // Each secret source resolves to exactly ONE value.
                 // All env names in `envs` receive the same resolved value.
-                // Expose the secret at the boundary where we need the plaintext for env injection.
+                // Expose the secret at the boundary where the plaintext is needed for env injection.
                 let plaintext = templated_secret(template.as_deref(), value.expose_secret());
                 for env_name in envs {
                     secret_env_collector.push((env_name.clone(), plaintext.clone()));

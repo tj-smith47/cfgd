@@ -74,7 +74,7 @@ impl RateLimiter {
 
         // Opportunistic eviction — bounds memory if attackers cycle IPs.
         // O(n) but capped via `idle_evict` window; small relative to the
-        // request cost we're guarding against.
+        // request cost being guarded against.
         if buckets.len() > 1024 {
             let cutoff = self.inner.idle_evict;
             buckets.retain(|_, b| now.duration_since(b.last) < cutoff);

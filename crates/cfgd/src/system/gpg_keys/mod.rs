@@ -117,7 +117,7 @@ impl KeyringEntry {
 fn parse_gpg_colon_output(output: &str) -> Vec<KeyringEntry> {
     let mut entries: Vec<KeyringEntry> = Vec::new();
 
-    // We build entries per `pub` block. State carried across lines:
+    // Entries are built per `pub` block. State carried across lines:
     let mut current_validity: char = '-';
     let mut current_expiry_ts: u64 = 0;
     let mut current_capabilities: String = String::new();

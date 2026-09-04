@@ -655,7 +655,7 @@ pub fn all_package_managers() -> Vec<Box<dyn PackageManager>> {
 /// that were uninstalled successfully, for the caller to GC. Groups by manager so
 /// a batch template runs once; a failed uninstall leaves its row intact (warned)
 /// so a later run can retry. Rows with no persisted command are reported via the
-/// printer and skipped (cannot remove what we have no script for).
+/// printer and skipped (cannot remove what has no persisted script).
 pub fn prune_orphaned_packages(
     orphans: &[OrphanedPackage],
     cx: &PackageContext<'_>,

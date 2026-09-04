@@ -49,6 +49,7 @@ impl GenerateSession {
             }
             .into());
         }
+        // module-dir-ok: the generated repo's own declared modules/ directory, not the module cache
         let dir = self.repo_root.join("modules").join(name);
         std::fs::create_dir_all(&dir)?;
         let path = dir.join("module.yaml");
@@ -114,6 +115,7 @@ impl GenerateSession {
     }
 
     pub fn get_existing_modules(&self) -> Result<Vec<String>, CfgdError> {
+        // module-dir-ok: the generated repo's own declared modules/ directory, not the module cache
         let modules_dir = self.repo_root.join("modules");
         if !modules_dir.exists() {
             return Ok(vec![]);

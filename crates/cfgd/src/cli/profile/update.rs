@@ -67,6 +67,7 @@ pub fn cmd_profile_update(
     }
 
     // Add modules — detect remote references and handle accordingly
+    // module-dir-ok: config_dir's own declared modules/ directory, not the module cache
     let modules_dir = config_dir.join("modules");
     for m in &add_modules {
         if doc.spec.modules.contains(m) {

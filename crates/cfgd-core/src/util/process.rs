@@ -207,8 +207,8 @@ pub fn terminate_process(pid: u32) {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
     // SAFETY: `OpenProcess` is always sound to call with valid flags; it
-    // returns NULL on failure (checked below) or a valid handle we own. We
-    // call `TerminateProcess` and `CloseHandle` only with that owned
+    // returns NULL on failure (checked below) or a valid owned handle.
+    // `TerminateProcess` and `CloseHandle` are called only with that owned
     // handle, and `CloseHandle` runs exactly once per successful open, so
     // there is no double-close or use-after-close.
     unsafe {

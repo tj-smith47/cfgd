@@ -454,10 +454,10 @@ pub(super) fn sign_with_gpg(nonce: &str, gpg_key_id: &str) -> anyhow::Result<Str
     std::fs::write(&data_path, nonce)?;
 
     // Sign with the user's own GnuPG keyring (default GNUPGHOME, or ~/.gnupg) — that
-    // is where the requested secret key actually lives. We must NOT redirect --homedir
+    // is where the requested secret key actually lives. --homedir must NOT redirect
     // to a private dir: a fresh homedir holds no secret key, so signing always failed
     // with "no secret key". gpg reuses the user's running gpg-agent for any passphrase
-    // pinentry, and we deliberately do not kill that agent afterward — it belongs to
+    // pinentry, and that agent is deliberately left running afterward — it belongs to
     // the user's session, not to this process.
     // `--batch` makes gpg fail rather than prompt on its own stdin, but a
     // misconfigured gpg-agent/pinentry can still block. Close stdin and bound

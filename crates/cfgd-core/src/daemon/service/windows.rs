@@ -198,13 +198,13 @@ fn windows_service_is_running() -> bool {
 
 /// Register the `cfgd` source in the Application Event Log so Event Viewer
 /// renders ReportEventW messages cleanly. Best-effort — the service install
-/// already succeeded by the time we get here, and a missing source only
+/// already succeeded by the time this runs, and a missing source only
 /// degrades to "the description for Event ID X cannot be found" warnings in
 /// Event Viewer rather than dropping events.
 ///
 /// `EventCreate.exe` ships with every supported Windows version and contains
 /// generic message templates (`%1`...`%n`) that just echo the inserted
-/// strings — so we get readable Event Viewer rendering without owning a
+/// strings — giving readable Event Viewer rendering without owning a
 /// resource DLL.
 #[cfg(windows)]
 fn register_event_source() {
@@ -226,8 +226,8 @@ fn register_event_source() {
         .output();
 
     // TypesSupported = 0x7 → ERROR | WARNING | INFORMATION (the three the
-    // Layer emits). Higher bits would cover audit success/failure if we ever
-    // surface those.
+    // Layer emits). Higher bits would cover audit success/failure if those
+    // are ever surfaced.
     let _ = std::process::Command::new("reg.exe")
         .args([
             "add",
@@ -421,7 +421,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
 
     let status_handle = service_control_handler::register("cfgd", event_handler)?;
 
-    // Report StartPending while we initialize
+    // Report StartPending during initialization
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: ServiceState::StartPending,
@@ -485,7 +485,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
         .ok_or("SERVICE_VERSION not initialized — run_as_windows_service must be called first")?
         .clone();
 
-    // Create the tokio runtime on the main service thread so we can shut it down gracefully
+    // Create the tokio runtime on the main service thread so it can shut down gracefully
     let rt = tokio::runtime::Runtime::new()?;
     let printer = Arc::new(crate::output::Printer::silent());
 

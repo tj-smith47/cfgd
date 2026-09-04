@@ -78,7 +78,7 @@ impl Cache {
         }
 
         // Atomic move — if another thread already placed the entry, discard ours.
-        // On rename failure, we can't blindly `Ok(entry_dir)` — that's only
+        // On rename failure, `Ok(entry_dir)` can't be returned blindly — that's only
         // correct when the failure was "lost the race" (another thread/process
         // completed the pull and placed a valid entry). Any other rename error
         // (destination permission issue, parent removed, dest on a different

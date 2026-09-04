@@ -624,7 +624,7 @@ fn download_to_file(
     const MAX_DOWNLOAD_SIZE: u64 = 256 * 1024 * 1024;
     let mut reader = response.into_body().into_reader().take(MAX_DOWNLOAD_SIZE);
 
-    // Use progress bar if we know the size, spinner otherwise
+    // Use progress bar when the size is known, spinner otherwise
     match (printer, content_length) {
         (Some(p), Some(total)) => {
             download_with_progress_bar(p, url, total, &mut reader, &mut tmp)?;
@@ -1018,8 +1018,8 @@ fn atomic_replace(source: &Path, target: &Path) -> std::result::Result<(), Upgra
 }
 
 /// Replace `target` with `source` using the Windows rename-dance.
-/// Windows cannot overwrite a running executable, so we rename the current
-/// binary to `.exe.old`, copy the new one into place, and clean up `.old`
+/// Windows cannot overwrite a running executable, so the current binary is
+/// renamed to `.exe.old`, the new one copied into place, and `.old` cleaned up
 /// on next startup via `cleanup_old_binary`.
 #[cfg(windows)]
 fn atomic_replace(source: &Path, target: &Path) -> std::result::Result<(), UpgradeError> {

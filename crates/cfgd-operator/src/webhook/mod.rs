@@ -125,8 +125,8 @@ pub async fn run_webhook_server(
 }
 
 // 1 MiB cap on AdmissionReview request bodies. Typical reviews are a few KiB;
-// the kube-apiserver enforces a ~3 MiB server-side cap, but we bound it
-// tighter at the webhook to shed DoS load before we spend CPU on JSON.
+// the kube-apiserver enforces a ~3 MiB server-side cap, but it is bound
+// tighter at the webhook to shed DoS load before CPU is spent on JSON.
 const WEBHOOK_MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// Build the webhook Router with the same middleware stack the production
@@ -185,7 +185,7 @@ fn handle_validate<S: Validatable + serde::de::DeserializeOwned + 'static>(
 }
 
 // Liveness probe for the webhook pod. Kubernetes liveness semantics are
-// "the process is alive and serving" — if we're accepting TCP here we are.
+// "the process is alive and serving" — accepting TCP here already proves that.
 // Intentionally does not consult `HealthState` (which gates readiness /
 // leader status) because liveness must stay green even when the operator
 // is voluntarily paused. Matches `health::healthz_handler`'s unconditional

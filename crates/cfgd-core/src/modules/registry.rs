@@ -106,7 +106,7 @@ pub fn fetch_remote_module(
 
     let local_path = fetch_git_source(&git_src, cache_base, "remote", printer)?;
 
-    // The repo root is the cache dir (before subdir), we need it for commit hash
+    // The repo root is the cache dir (before subdir), needed for the commit hash
     let repo_dir = git_cache_dir(cache_base, &git_src.repo_url);
     let commit = get_head_commit_sha(&repo_dir)?;
 

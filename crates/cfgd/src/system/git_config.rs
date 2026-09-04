@@ -166,7 +166,7 @@ impl SystemConfigurator for GitConfigurator {
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {
-        // We report an empty mapping; the reconciler uses diff() for drift detection.
+        // An empty mapping is reported; the reconciler uses diff() for drift detection.
         Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
     }
 

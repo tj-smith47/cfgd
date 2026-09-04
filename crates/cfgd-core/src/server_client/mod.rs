@@ -131,7 +131,7 @@ pub struct DeviceCredential {
 /// and path) points at localhost, `127.0.0.1/8`, or `::1`. Used to suppress
 /// the plaintext-scheme warning for loopback dev setups.
 fn is_loopback_host(authority: &str) -> bool {
-    // Strip any path suffix so we compare just the host[:port].
+    // Strip any path suffix to compare just the host[:port].
     let host_port = authority.split('/').next().unwrap_or(authority);
     // Handle bracketed IPv6 host + port: `[::1]:8080`.
     let host = if let Some(rest) = host_port.strip_prefix('[') {

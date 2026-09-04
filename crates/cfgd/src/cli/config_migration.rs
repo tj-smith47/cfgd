@@ -21,9 +21,9 @@ const XDG_EXPORT_LINE: &str = r#"export XDG_CONFIG_HOME="$HOME/.config""#;
 /// files).
 const FISH_XDG_LINE: &str = r#"set -gx XDG_CONFIG_HOME "$HOME/.config""#;
 
-/// Substring marking an existing `XDG_CONFIG_HOME` assignment, so we never append
-/// a second (possibly conflicting) one regardless of the exact syntax the user
-/// already used.
+/// Substring marking an existing `XDG_CONFIG_HOME` assignment, so a second
+/// (possibly conflicting) one is never appended regardless of the exact
+/// syntax the user already used.
 const XDG_VAR_MARKER: &str = "XDG_CONFIG_HOME";
 
 /// Sentinel filename recording that the user chose "keep ~/.config" on the macOS

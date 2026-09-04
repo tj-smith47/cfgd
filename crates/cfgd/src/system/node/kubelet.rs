@@ -116,7 +116,7 @@ impl SystemConfigurator for KubeletConfigurator {
             current = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         }
         let Some(current_map) = current.as_mapping_mut() else {
-            // Unreachable: we set current to Mapping above. If this somehow
+            // Unreachable: current was just set to Mapping above. If this somehow
             // triggers, it's an internal logic error — surface it as an error.
             return Err(CfgdError::Io(std::io::Error::other(
                 "kubelet config: value is not a mapping after explicit set",

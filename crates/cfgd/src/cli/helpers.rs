@@ -697,7 +697,7 @@ pub(in crate::cli) use cfgd_core::reconciler::{CFGD_BACKUP_SUFFIX, cfgd_backup_p
 pub(in crate::cli) fn parse_file_spec(spec: &str) -> anyhow::Result<(PathBuf, PathBuf)> {
     // On Windows, paths like C:\foo contain colons that are NOT source:target separators.
     // A drive letter is a single ASCII letter followed by `:` and `\` or `/`.
-    // We skip the first colon if it's part of a drive letter prefix.
+    // The first colon is skipped when it's part of a drive letter prefix.
     let split_pos = spec.char_indices().find_map(|(i, c)| {
         if c == ':' {
             // Skip if this colon is at position 1 and preceded by a single ASCII letter

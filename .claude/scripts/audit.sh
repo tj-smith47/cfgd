@@ -663,6 +663,47 @@ else
     log_ok "No tracing::info! outside daemon/"
 fi
 
+log_section "Comment Voice — No Session-Narrative or Self-Citation"
+# critical.md item 8 bans assistant citations ("we", "I", "Claude") and
+# session-narrative markers in comments: a comment renders nowhere a future
+# reader can see who wrote it, so a first-person or session-relative word in
+# one is the assistant narrating its own turn rather than documenting the
+# code. Anchored on the COMMENT half of a line via code_only/LAST_COMMENT,
+# never the code half, so an identifier or string literal spelling one of
+# these words is untouched.
+#
+# `Claude Code` is a real external product name cfgd documents as a peer of
+# Gemini/Copilot/Codex/Cursor in the multi-provider skill renderer, and is
+# exempted as a compound; a bare `Claude` outside that phrase is still the
+# self-citation the rule bans.
+#
+# Escape hatch: `// cite-ok: <why>` on the flagged line itself, for a comment
+# that must quote user-facing text containing one of these words verbatim.
+comment_voice_violations=""
+while IFS= read -r -d '' rsfile; do
+    case "$rsfile" in
+        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
+    esac
+    file_hits=$(strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+        { code = code_only($0); comment = LAST_COMMENT }
+        comment != "" &&
+        (comment ~ /(^|[^A-Za-z])[Ww]e([^A-Za-z]|$)/ ||
+         comment ~ /(^|[^A-Za-z])this (task|session|round)([^A-Za-z]|$)/ ||
+         (comment ~ /(^|[^A-Za-z])Claude([^A-Za-z]|$)/ && comment !~ /Claude Code/)) &&
+        !carries_marker(comment, "cite-ok:") { print }
+    ')
+    if [[ -n "$file_hits" ]]; then
+        comment_voice_violations="${comment_voice_violations}${file_hits}"$'\n'
+    fi
+done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null)
+comment_voice_violations=$(echo "$comment_voice_violations" | sed '/^$/d')
+if [[ -n "$comment_voice_violations" ]]; then
+    log_error "a comment narrates the assistant's own turn instead of documenting the code (\"we\"/\"Claude\"/\"this task|session|round\" — reword to passive/imperative, or mark // cite-ok: <why> for a quoted user-facing sentence):"
+    echo "$comment_voice_violations" | head -20
+else
+    log_ok "No session-narrative or self-citation comments"
+fi
+
 log_section "Controlled Shell Execution"
 # gateway/ allowed for SSH/GPG enrollment signature verification
 # output/ allowed for Printer::run (controlled execution layer for progress UI)
