@@ -664,41 +664,53 @@ else
 fi
 
 log_section "Comment Voice — No Session-Narrative or Self-Citation"
-# critical.md item 8 bans assistant citations ("we", "I", "Claude") and
-# session-narrative markers in comments: a comment renders nowhere a future
-# reader can see who wrote it, so a first-person or session-relative word in
-# one is the assistant narrating its own turn rather than documenting the
-# code. Anchored on the COMMENT half of a line via code_only/LAST_COMMENT,
-# never the code half, so an identifier or string literal spelling one of
-# these words is untouched.
+# critical.md item 8 bans assistant citations ("we", "I", "Claude"),
+# session-narrative markers (Plan/Phase/Task/Step/Wave/Cycle/Session/Round +
+# a number, "Fix round", "§") in comments: a comment renders nowhere a future
+# reader can see who wrote it or which turn produced it, so a first-person,
+# session-relative or numbered-marker word in one is the assistant narrating
+# its own turn rather than documenting the code. Anchored on the COMMENT half
+# of a line via code_only/LAST_COMMENT, never the code half, so an identifier
+# or string literal spelling one of these words is untouched.
+#
+# Test code is walked too: a test's own comments render nowhere a future
+# reader can see who wrote them either, so there is no file-skip case here —
+# every *.rs under SRC_ROOTS and every crate's tests/ directory is scanned
+# whole, test modules and fixtures included.
 #
 # `Claude Code` is a real external product name cfgd documents as a peer of
 # Gemini/Copilot/Codex/Cursor in the multi-provider skill renderer, and is
 # exempted as a compound; a bare `Claude` outside that phrase is still the
-# self-citation the rule bans.
+# self-citation the rule bans. A numbered marker matches only a CAPITALIZED
+# label (`Phase 9`, `Step 3`) immediately followed by a number, so an
+# ordinary lowercase word ("phase" as in "gated-off phase") is untouched.
 #
 # Escape hatch: `// cite-ok: <why>` on the flagged line itself, for a comment
 # that must quote user-facing text containing one of these words verbatim.
+comment_voice_roots=("${SRC_ROOTS[@]}")
+for crate_tests_dir in crates/*/tests; do
+    [[ -d "$crate_tests_dir" ]] && comment_voice_roots+=("$crate_tests_dir")
+done
 comment_voice_violations=""
 while IFS= read -r -d '' rsfile; do
-    case "$rsfile" in
-        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
-    esac
-    file_hits=$(strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+    file_hits=$(awk -v filepath="$rsfile" "$AWK_LIB"'
         { code = code_only($0); comment = LAST_COMMENT }
         comment != "" &&
         (comment ~ /(^|[^A-Za-z])[Ww]e([^A-Za-z]|$)/ ||
          comment ~ /(^|[^A-Za-z])this (task|session|round)([^A-Za-z]|$)/ ||
-         (comment ~ /(^|[^A-Za-z])Claude([^A-Za-z]|$)/ && comment !~ /Claude Code/)) &&
-        !carries_marker(comment, "cite-ok:") { print }
-    ')
+         (comment ~ /(^|[^A-Za-z])Claude([^A-Za-z]|$)/ && comment !~ /Claude Code/) ||
+         comment ~ /(^|[^A-Za-z])(Plan|Phase|Task|Step|Wave|Cycle|Session|Round)[[:space:]]+[0-9]/ ||
+         comment ~ /(^|[^A-Za-z])Fix round([^A-Za-z]|$)/ ||
+         comment ~ /§/) &&
+        !carries_marker(comment, "cite-ok:") { print filepath ":" NR ":" $0 }
+    ' "$rsfile")
     if [[ -n "$file_hits" ]]; then
         comment_voice_violations="${comment_voice_violations}${file_hits}"$'\n'
     fi
-done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null)
+done < <(find "${comment_voice_roots[@]}" -name '*.rs' -print0 2>/dev/null)
 comment_voice_violations=$(echo "$comment_voice_violations" | sed '/^$/d')
 if [[ -n "$comment_voice_violations" ]]; then
-    log_error "a comment narrates the assistant's own turn instead of documenting the code (\"we\"/\"Claude\"/\"this task|session|round\" — reword to passive/imperative, or mark // cite-ok: <why> for a quoted user-facing sentence):"
+    log_error "a comment narrates the assistant's own turn instead of documenting the code (\"we\"/\"Claude\"/\"this task|session|round\"/a numbered Plan|Phase|Task|Step|Wave|Cycle|Session|Round marker/\"Fix round\"/\"§\" — reword to passive/imperative, or mark // cite-ok: <why> for a quoted user-facing sentence):"
     echo "$comment_voice_violations" | head -20
 else
     log_ok "No session-narrative or self-citation comments"

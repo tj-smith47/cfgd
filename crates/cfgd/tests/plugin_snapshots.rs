@@ -10,7 +10,7 @@
 //!   paths are covered E2E by `tests/cli_integration.rs` and the cluster
 //!   smoke tests.
 //!
-//!   What we DO snapshot here are the deterministic validation/error
+//!   What this DOES snapshot here are the deterministic validation/error
 //!   branches that never touch kube/kubectl: missing-module, command-required,
 //!   and invalid-resource-format. These all exit via the `error_doc(...)`
 //!   path so the JSON payload carries a stable `error` kind even on failure.

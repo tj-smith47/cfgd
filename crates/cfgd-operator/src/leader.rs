@@ -538,7 +538,7 @@ mod tests {
     #[tokio::test]
     async fn try_acquire_takes_over_when_existing_lease_expired() {
         // Existing holder is someone else, renew_time is 60s ago, lease_duration 15s
-        // → expired → we patch to take over.
+        // → expired → the lease is patched to take over.
         let existing = lease_json("other-pod", 15, 60);
         let (ctx, _reg, harness) = MockKubeHarness::new(vec![
             ExpectedCall::get(lease_path()).returning_json(&existing),
@@ -625,7 +625,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_acquire_self_renews_when_currently_holder() {
-        // We already hold the lease; SSA apply for renewal must NOT be force=true.
+        // The lease is already held; SSA apply for renewal must NOT be force=true.
         let existing = lease_json(TEST_ID, 15, 5);
         let (ctx, _reg, harness) = MockKubeHarness::new(vec![
             ExpectedCall::get(lease_path()).returning_json(&existing),
@@ -658,7 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_acquire_returns_false_when_other_holder_and_unexpired() {
-        // Another pod owns the lease and it's still valid → we DO NOT patch.
+        // Another pod owns the lease and it's still valid → no patch happens.
         let existing = lease_json("other-pod", 60, 5);
         let (ctx, _reg, harness) = MockKubeHarness::new(vec![
             ExpectedCall::get(lease_path()).returning_json(&existing),
@@ -784,8 +784,8 @@ mod tests {
 
     #[tokio::test]
     async fn try_acquire_takes_over_when_existing_lease_has_no_renew_time() {
-        // Spec carries no renewTime → `expired` is set to true and we take
-        // over with force=true.
+        // Spec carries no renewTime → `expired` is set to true and the lease
+        // is taken over with force=true.
         let existing = lease_json_no_renew_time("ghost-pod", 15);
         let (ctx, _reg, harness) = MockKubeHarness::new(vec![
             ExpectedCall::get(lease_path()).returning_json(&existing),
@@ -811,7 +811,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_acquire_self_renew_with_missing_transitions_defaults_to_zero() {
-        // We hold the lease; the existing spec doesn't carry leaseTransitions.
+        // The lease is held; the existing spec doesn't carry leaseTransitions.
         // The `leaseTransitions` `unwrap_or(0)` arm must produce 0 in the patch.
         let existing = lease_json_no_transitions(TEST_ID, 15, 3);
         let (ctx, _reg, harness) = MockKubeHarness::new(vec![
@@ -909,7 +909,7 @@ mod tests {
     async fn try_acquire_returns_false_when_lease_has_no_spec_at_all() {
         // A Lease whose spec field is null is still treated as not-held — the
         // current_holder fall-through (empty string) means our identity does
-        // NOT match, but the lease IS expired (no renewTime), so we take over.
+        // NOT match, but the lease IS expired (no renewTime), so this pod takes over.
         let existing = serde_json::json!({
             "apiVersion": "coordination.k8s.io/v1",
             "kind": "Lease",

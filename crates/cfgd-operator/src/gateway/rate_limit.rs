@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn bucket_refills_after_elapsed_time() {
-        // burst=1, refill=10/s — after 200ms we should have at least one token back.
+        // burst=1, refill=10/s — after 200ms at least one token should be back.
         let limiter = RateLimiter::with_refill(1, 10.0);
         let ip: IpAddr = "10.0.0.3".parse().unwrap();
         assert!(limiter.check(ip).is_ok());

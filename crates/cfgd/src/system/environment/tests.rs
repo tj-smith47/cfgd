@@ -282,7 +282,7 @@ fn environment_current_state_returns_mapping() {
 
 #[test]
 fn environment_diff_matching_values_no_drift() {
-    // We can only test this reliably by setting an env var that matches
+    // This can only reliably be tested by setting an env var that matches
     // On Linux, parse_env_file/parse_export_file are used
     let ec = EnvironmentConfigurator;
     let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());

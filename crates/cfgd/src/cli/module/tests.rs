@@ -4689,8 +4689,8 @@ mod keys_with_fake_cosign {
         let msg = err.to_string();
         // require_tool_with_seam might fail first if cosign is missing
         // on PATH (no env var, no real binary). Accept either error path
-        // here; the rotate-without-key precondition is the one we care
-        // most about, but both are valid early-failures.
+        // here; the rotate-without-key precondition is the one that matters
+        // most, but both are valid early-failures.
         assert!(
             msg.contains("No existing cosign.key") || msg.contains("cosign not found"),
             "expected missing-key or cosign-not-installed error: {msg}"
@@ -6340,7 +6340,7 @@ mod cmd_module_add_from_registry_local {
 
     /// Overwrite cfgd.yaml in `config_dir` so the registry entry shows up
     /// under `spec.modules.registries`. `setup_config_dir` seeded the file
-    /// with the bare "profile only" shape — we replace it wholesale rather
+    /// with the bare "profile only" shape — this replaces it wholesale rather
     /// than YAML-merging.
     fn write_cfgd_yaml_with_registry(config_dir: &Path, reg_name: &str, reg_url: &str) {
         let yaml = format!(
@@ -6797,7 +6797,7 @@ fn cmd_module_create_apply_declined_emits_applied_false_and_leaves_unapplied() {
 
     // The module.yaml is still written (create succeeded), but the env
     // var must NOT have been pushed into the live session: declining
-    // returns before reconciler.apply runs. We assert the module exists
+    // returns before reconciler.apply runs. This asserts the module exists
     // on disk with the env entry recorded in its spec.
     let (doc, _) = load_module_document(dir.path(), "apply-declined-mod").unwrap();
     assert_eq!(doc.spec.env.len(), 1);

@@ -377,7 +377,7 @@ mod tests {
         std::fs::write(&source_path, "[Unit]\nDescription=Test\n").unwrap();
 
         // The diff function checks if /etc/systemd/system/{name} exists.
-        // Since cfgd-test-phantom.service won't exist there, we get "missing".
+        // Since cfgd-test-phantom.service won't exist there, the result is "missing".
         let yaml_str = format!(
             "- name: cfgd-test-phantom.service\n  enabled: true\n  unitFile: {}\n",
             source_path.display()

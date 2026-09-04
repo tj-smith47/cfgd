@@ -2884,7 +2884,7 @@ use cfgd_core::test_helpers::EditorGuard;
 #[serial_test::serial]
 fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
     // EDITOR=/bin/true → open_in_editor exits 0 without touching the
-    // file, so the post-edit validation reads the same valid manifest we
+    // file, so the post-edit validation reads the same valid manifest this test
     // wrote and lands in the "Source manifest is valid" success arm.
     let dir = create_test_config_dir();
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
@@ -5878,7 +5878,7 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
     };
     // The contract: exit 0 (Ok). winget/chocolatey treat any non-zero exit
     // from `<bin>` (no args) as a failed install. Clap's `print_help()`
-    // writes directly to stdout (not through Printer), so we don't assert
+    // writes directly to stdout (not through Printer), so this does not assert
     // on captured output here — exit-code 0 is the part of the contract that
     // moves the needle if it regresses.
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
@@ -6088,7 +6088,7 @@ fn execute_completions_bash() {
     };
     let printer = test_printer();
     // Completions write directly to stdout via clap_complete, not through Printer.
-    // We verify execution succeeds; output content is clap_complete's responsibility.
+    // This verifies execution succeeds; output content is clap_complete's responsibility.
     let result = super::execute(&cli, &printer, &super::paths::DirSources::all_default());
     assert!(
         result.is_ok(),
@@ -8557,7 +8557,7 @@ fn open_state_store_default() {
         "open_state_store with default path should not panic: {:?}",
         result.err()
     );
-    // Verify we can actually use the store
+    // Verify the store can actually be used
     let state = result.unwrap();
     assert!(
         state.history(1).is_ok(),
@@ -11387,7 +11387,7 @@ spec:
 fn cmd_source_list_structured_output() {
     let (config_dir, state_dir) = setup_test_env();
 
-    // Write config with a source so we can verify the source name appears in output
+    // Write config with a source to verify the source name appears in output
     let config_with_source = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: team-config\n      origin:\n        url: https://github.com/team/config\n        branch: main\n        type: Git\n      subscription:\n        priority: 100\n";
     std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
 
@@ -26099,7 +26099,7 @@ mod cmd_source_add_local {
     #[serial]
     fn cmd_source_add_with_empty_provided_profiles_bails_at_source_load() {
         // Manifest declares no profiles and no modules. SourceManager::load_source
-        // rejects the source before we ever reach the profile-selection arms
+        // rejects the source before ever reaching the profile-selection arms
         // of cmd_source_add — encoding the contract that a subscribable
         // source must expose at least one profile or at least one module.
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
@@ -26266,7 +26266,7 @@ mod cmd_source_add_local {
             )
             .unwrap();
 
-            // Snapshot the buffer length so we only inspect output from
+            // Snapshot the buffer length to only inspect output from
             // cmd_source_update — cmd_source_add ran twice above and its
             // success messages would otherwise satisfy the assertions.
             let baseline_len = h.output().len();
@@ -33981,14 +33981,17 @@ fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
     );
 }
 
-/// A module cache root is `module_cache_root` (`util/paths.rs`) plus, for the
-/// daemon's fallback, `daemon::tick_module_cache`. A fourth expression joining
-/// `"modules"` onto a resolved cache dir, or a second spelling of
-/// `".module-cache"`, is how a `--cache-dir` run read its own deployed symlinks
-/// as strangers' files. A config dir's, a repo's, or a source checkout's own
-/// declared `modules/` subdirectory is a different concept and hatches with
-/// `// module-dir-ok:`; a registry repo's own `modules/`
-/// (`modules/registry.rs`) is exempt by path instead, since it stays untouched.
+/// Two owners split the whole population of `"modules"` joins. A module
+/// CACHE root — materialized git sources — is `module_cache_root`
+/// (`util/paths.rs`) plus, for the daemon's fallback, `daemon::tick_module_cache`.
+/// A DECLARED `modules/` directory under a config root — a config dir, a
+/// source checkout or a generated repo alike — is `declared_modules_dir`
+/// (`modules/loader.rs`), which owns the one literal join the walk exempts by
+/// path. A fourth expression joining `"modules"` onto a resolved cache dir, or
+/// a second spelling of `".module-cache"`, is how a `--cache-dir` run read its
+/// own deployed symlinks as strangers' files; a hand-joined declared-directory
+/// expression outside `declared_modules_dir` is the same drift one level up.
+/// `// module-dir-ok:` stays for a genuine future exception neither owner covers.
 #[test]
 fn no_production_site_joins_the_module_cache_segment_by_hand() {
     const HATCH: &str = "module-dir-ok:";
@@ -34012,7 +34015,7 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
                 || path.components().any(|c| c.as_os_str() == "tests")
                 || path.ends_with("util/paths.rs")
                 || path.ends_with("daemon/mod.rs")
-                || path.ends_with("modules/registry.rs")
+                || path.ends_with("modules/loader.rs")
             {
                 continue;
             }
@@ -34056,6 +34059,56 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
     );
 }
 
+/// Strip `"…"` string-literal bodies to spaces, so an identifier scan never
+/// mistakes a quoted key (`"restoreErrors"`) for a variable reference; a `\`
+/// inside a literal consumes the char it escapes rather than closing early.
+fn blank_string_literals(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_str = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if in_str {
+            out.push(' ');
+            if c == '\\' {
+                if chars.next().is_some() {
+                    out.push(' ');
+                }
+            } else if c == '"' {
+                in_str = false;
+            }
+        } else if c == '"' {
+            in_str = true;
+            out.push(' ');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Every identifier-shaped token in `text`, quoted literals blanked first.
+fn identifier_tokens(text: &str) -> Vec<String> {
+    let blanked = blank_string_literals(text);
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for c in blanked.chars().chain(std::iter::once(' ')) {
+        if c.is_alphanumeric() || c == '_' {
+            cur.push(c);
+        } else if !cur.is_empty() {
+            if cur
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphabetic() || c == '_')
+            {
+                out.push(std::mem::take(&mut cur));
+            } else {
+                cur.clear();
+            }
+        }
+    }
+    out
+}
+
 /// A `-o json` field is the same bytes under every theme, so nothing a
 /// serialized payload carries is built from `Printer::arrow()` / `Theme::arrow()`
 /// / `SystemContext::arrow()`. `ICON_ARROW` is the wire glyph; a themed reader
@@ -34066,12 +34119,19 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
 fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
     const HATCH: &str = "themed-arrow-ok:";
     const FLOOR_FILES: [usize; 2] = [80, 90];
-    // `json!(` alone is excluded: a bare `json!({..})` is as often an
-    // error-path `cli_error(.., json!({..}))` argument as a structured
-    // success payload, and the paren-scoped check below already reads
-    // inside `with_data(...)`'s own argument list — including a
-    // `with_data(serde_json::json!(...))` payload built inline.
-    const DATA_TELLS: [&str; 2] = ["with_data(", "serde_json::to_"];
+    // `json!(` is a tell in its own right: `restoreErrors: restore_failures`
+    // (keys.rs) proved a bare `json!({..})` carries a themed value through a
+    // BOUND identifier with no `with_data`/`to_` in sight. The paren-scoped
+    // check below still reads inside `with_data(...)`'s own argument list —
+    // including a `with_data(serde_json::json!(...))` payload built inline —
+    // so the two tells overlap rather than compete.
+    const DATA_TELLS: [&str; 3] = ["with_data(", "serde_json::to_", "json!("];
+    const RUST_KEYWORDS: &[&str] = &[
+        "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
+        "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move",
+        "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait",
+        "true", "try", "type", "unsafe", "use", "where", "while", "union",
+    ];
 
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
@@ -34098,6 +34158,14 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
             seen += 1;
             let production = cfgd_core::test_helpers::production_slice(&body);
             let lines: Vec<&str> = production.lines().collect();
+            // Tokens the tell's own spelling contributes (`with_data`,
+            // `serde_json`, `to_`, `json`) are never themselves the bound
+            // identifier being resolved.
+            let tell_tokens: std::collections::HashSet<&str> = DATA_TELLS
+                .iter()
+                .flat_map(|t| t.split(|c: char| !(c.is_alphanumeric() || c == '_')))
+                .filter(|t| !t.is_empty())
+                .collect();
 
             // A themed reader's value reaching a serialized field is a LOCAL
             // coupling: `.arrow()` sitting inside the SAME call's own
@@ -34107,7 +34175,12 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
             // argument built from `.arrow()` and an unrelated
             // `.with_data(...)` payload in the very same statement (even the
             // same chain), and that pairing is not the bug; only `.arrow()`
-            // text that falls WITHIN the tell's own parens is.
+            // text that falls WITHIN the tell's own parens is — DIRECTLY, or
+            // through a `let <ident>` / `<ident>.push(...)` binding the args
+            // span merely NAMES. `restore_failures.push(format!(.. arrow ..))`
+            // (keys.rs) is the shape the binding half exists for: the
+            // `let mut restore_failures = Vec::new()` binding itself carries
+            // no glyph, and a later push does.
             for tell in DATA_TELLS {
                 for (byte_pos, _) in production.match_indices(tell) {
                     let after_tell = byte_pos + tell.len();
@@ -34135,10 +34208,61 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
                             _ => {}
                         }
                     }
-                    if !production[args_start..end].contains(".arrow()") {
-                        continue;
+                    let args_text = &production[args_start..end];
+                    let tell_line_no = production[..byte_pos].matches('\n').count();
+
+                    let mut offender_line_no = None;
+                    if args_text.contains(".arrow()") {
+                        offender_line_no = Some(tell_line_no);
+                    } else {
+                        'idents: for ident in identifier_tokens(args_text) {
+                            if RUST_KEYWORDS.contains(&ident.as_str())
+                                || tell_tokens.contains(ident.as_str())
+                            {
+                                continue;
+                            }
+                            let lo = tell_line_no.saturating_sub(60);
+                            for j in (lo..tell_line_no).rev() {
+                                let trimmed = lines[j].trim_start();
+                                let opens_binding = trimmed
+                                    .strip_prefix("let ")
+                                    .map(|r| r.strip_prefix("mut ").unwrap_or(r).trim_start())
+                                    .is_some_and(|r| {
+                                        r.strip_prefix(&ident).is_some_and(|after| {
+                                            !after
+                                                .chars()
+                                                .next()
+                                                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                                        })
+                                    });
+                                let opens_push = trimmed.starts_with(&format!("{ident}.push("));
+                                if !opens_binding && !opens_push {
+                                    continue;
+                                }
+                                // The statement `j` opens may run several
+                                // lines; join forward to its `;` (bounded) and
+                                // judge the WHOLE statement, matching the real
+                                // multi-line `format!(..)` push shape.
+                                let stmt_end = (j + 20).min(lines.len());
+                                let mut stmt = String::new();
+                                for l in &lines[j..stmt_end] {
+                                    stmt.push_str(l);
+                                    stmt.push('\n');
+                                    if l.contains(';') {
+                                        break;
+                                    }
+                                }
+                                if stmt.contains(".arrow()") {
+                                    offender_line_no = Some(j);
+                                    break 'idents;
+                                }
+                            }
+                        }
                     }
-                    let line_no = production[..byte_pos].matches('\n').count();
+
+                    let Some(line_no) = offender_line_no else {
+                        continue;
+                    };
                     let hatched = lines.get(line_no).is_some_and(|l| l.contains(HATCH))
                         || (line_no > 0
                             && lines.get(line_no - 1).is_some_and(|l| l.contains(HATCH)));
@@ -34163,7 +34287,8 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
     }
     assert!(
         offenders.is_empty(),
-        "a themed `.arrow()` never sits near a serialized-field build ({}) \
+        "a themed `.arrow()` never sits near a serialized-field build ({}), directly or \
+         through a bound identifier the tell's argument span only names \
          (or carries `// {HATCH} <why>`):\n{}",
         DATA_TELLS.join(" / "),
         offenders.join("\n")

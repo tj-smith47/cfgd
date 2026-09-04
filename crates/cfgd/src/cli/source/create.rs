@@ -60,8 +60,7 @@ pub fn cmd_source_create(
     };
 
     let profile_names = scan_profile_names(&dir.join("profiles"), printer)?;
-    // module-dir-ok: the just-scaffolded config dir's own declared modules/ directory, not the module cache
-    let module_names = scan_module_names(&dir.join("modules"), printer)?;
+    let module_names = scan_module_names(&cfgd_core::declared_modules_dir(dir), printer)?;
 
     // Build profiles YAML block
     let profiles_yaml = if profile_names.is_empty() {

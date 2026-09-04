@@ -474,7 +474,7 @@ fn diff_nested_mapping_passes_outer_key_to_get_actual() {
     let desired = serde_yaml::Value::Mapping(outer);
 
     let drifts = diff_nested_mapping(&desired, |prefix, key| {
-        // Echo back the arguments so we can verify they were correct
+        // Echo back the arguments so they can be verified as correct
         format!("{}:{}", prefix, key)
     })
     .unwrap();
@@ -687,7 +687,7 @@ fn diff_yaml_mapping_get_actual_receives_bare_key() {
     );
 
     let drifts = diff_yaml_mapping(&desired, "ns", yaml_value_to_string, |k| {
-        // Echo back the key we received to verify it's the raw key
+        // Echo back the received key to verify it's the raw key
         assert_eq!(k, "mykey", "get_actual should receive the bare key");
         "val".to_string()
     });

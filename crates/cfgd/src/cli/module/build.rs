@@ -478,7 +478,7 @@ mod tests {
         let (printer, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         // No --target and no --base-image. The build will still fail because
-        // the default base (ubuntu:22.04) requires network — but we get to
+        // the default base (ubuntu:22.04) requires network — but this gets to
         // exercise the default-platform branch and the header-construction
         // logic that omits the optional kv entries first.
         let _ = cmd_module_build(

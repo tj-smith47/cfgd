@@ -1562,7 +1562,7 @@ fn desired_packages_for_new_managers() {
 #[test]
 fn yum_skipped_when_dnf_available() {
     // yum_manager().is_available() returns false when dnf is present
-    // We can't directly test this without the actual system, but we can verify
+    // Cannot directly test this without the actual system, but this verifies
     // the manager's name is correct
     let yum = yum_manager();
     assert_eq!(yum.name(), "yum");
@@ -2392,8 +2392,8 @@ fn simple_manager_default_versions_unknown() {
     // Managers without list_with_versions return "unknown" for all packages
     let mgr = pacman_manager();
     assert!(mgr.list_with_versions.is_none());
-    // We can't call installed_packages_with_versions without pacman installed,
-    // but we verify the field is None
+    // Cannot call installed_packages_with_versions without pacman installed,
+    // but this verifies the field is None
 }
 
 // --- SimpleManager available_version dispatch ---
@@ -3448,7 +3448,7 @@ fn mock_manager_installed_packages_empty() {
 // --- ScriptedManager error variants ---
 
 // --- run_pkg_cmd error kind dispatch ---
-// We test all error_kind paths through ScriptedManager since it calls
+// These tests cover all error_kind paths through ScriptedManager since it calls
 // run_pkg_cmd_msg (for {package} mode) and run_pkg_cmd (for batch mode)
 
 // --- apply_packages output verification ---
@@ -3649,8 +3649,8 @@ fn plan_brew_cask_installs_when_brew_bootstrapping() {
 // =========================================================================
 
 // --- query_version_apt string parsing logic ---
-// query_version_apt parses `apt-cache policy` output. We can't call the function
-// directly without apt, but we replicate its parsing logic to verify correctness.
+// query_version_apt parses `apt-cache policy` output. The function cannot be called
+// directly without apt, so this replicates its parsing logic to verify correctness.
 
 // --- query_version_apk string parsing logic ---
 
@@ -3671,7 +3671,7 @@ fn plan_brew_cask_installs_when_brew_bootstrapping() {
 // --- ScriptedManager from_spec comprehensive field verification ---
 
 // --- run_pkg_cmd_prefixed error kind branches ---
-// We test these through ScriptedManager since it uses run_pkg_cmd_msg/run_pkg_cmd
+// These tests cover them through ScriptedManager since it uses run_pkg_cmd_msg/run_pkg_cmd
 // with different error_kind values.
 
 // --- parse_dnf_yum_lines with whitespace-only lines ---
@@ -3917,7 +3917,7 @@ fn brew_path_dirs_through_trait() {
 
 // --- SimpleManager::update with ignore_update_exit ---
 
-// Note: We can't easily test ignore_update_exit through SimpleManager directly
+// Note: ignore_update_exit cannot easily be tested through SimpleManager directly
 // without the actual commands, but the dnf/yum managers have this flag set.
 // Verify the flag is properly set on the managers that need it.
 
@@ -3926,7 +3926,7 @@ fn brew_path_dirs_through_trait() {
 // --- SimpleManager query_version function pointers ---
 
 // These call the actual query_version functions which shell out to system
-// commands. We can verify they at least return Ok when the command is not found.
+// commands. This verifies they at least return Ok when the command is not found.
 
 // --- SimpleManager::display_cmd with packages ---
 

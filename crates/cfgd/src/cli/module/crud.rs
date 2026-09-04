@@ -42,8 +42,7 @@ pub fn cmd_module_create(
     printer.heading_title(&TitleLabel::new("Create Module", name));
 
     let config_dir = config_dir(cli);
-    // module-dir-ok: config_dir's own declared modules/ directory, not the module cache
-    let module_dir = config_dir.join("modules").join(name);
+    let module_dir = cfgd_core::declared_modules_dir(&config_dir).join(name);
     let module_yaml_path = module_dir.join("module.yaml");
 
     if module_yaml_path.exists() {
@@ -465,8 +464,7 @@ pub fn cmd_module_update_local(
             ));
         }
     };
-    // module-dir-ok: config_dir's own declared modules/ directory, not the module cache
-    let module_dir = config_dir.join("modules").join(name);
+    let module_dir = cfgd_core::declared_modules_dir(&config_dir).join(name);
     let files_dir = module_dir.join("files");
     let mut changes = 0u32;
 
@@ -790,8 +788,9 @@ pub fn cmd_module_update_local(
 pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
     validate_resource_name(name, "Module")?;
     let config_dir = config_dir(cli);
-    // module-dir-ok: config_dir's own declared modules/ directory, not the module cache
-    let module_yaml = config_dir.join("modules").join(name).join("module.yaml");
+    let module_yaml = cfgd_core::declared_modules_dir(&config_dir)
+        .join(name)
+        .join("module.yaml");
 
     if !module_yaml.exists() {
         // Carry the typed ModuleError::NotFound so the exit-code downcast resolves
@@ -878,8 +877,7 @@ pub fn cmd_module_delete(
     printer.heading_title(&TitleLabel::new("Delete Module", name));
 
     let config_dir = config_dir(cli);
-    // module-dir-ok: config_dir's own declared modules/ directory, not the module cache
-    let module_dir = config_dir.join("modules").join(name);
+    let module_dir = cfgd_core::declared_modules_dir(&config_dir).join(name);
 
     if !module_dir.exists() {
         if ignore_not_found {

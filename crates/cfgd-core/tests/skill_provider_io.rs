@@ -86,7 +86,7 @@ fn agents_md_managed_section_surgery_preserves_user_content() {
 
         // Seed user content BOTH above and below where the cfgd block will splice.
         // The block appends after existing content, so both halves are "before" the
-        // block on disk; we assert every original byte survives verbatim.
+        // block on disk; this asserts every original byte survives verbatim.
         let seed = "# My AGENTS.md\n\nTop user guidance.\n\nBottom user guidance.\n";
         std::fs::write(&target, seed).expect("seed AGENTS.md");
 

@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn ensure_owner_private_dir_refuses_world_traversable_after_chmod_recovery() {
         // ensure_owner_private_dir attempts to chmod the dir to 0700. If the
-        // chmod fails (we make the path immutable-style via a symlink to a
+        // chmod fails (the path is made immutable-style via a symlink to a
         // file), the function errors out. Cheaper alternative: feed it a path
         // that points at a regular file — create_dir_all errors, surfacing
         // the HealthSocketError.
@@ -593,10 +593,10 @@ mod tests {
         std::thread::spawn(move || {
             if let Ok((mut conn, _)) = listener.accept() {
                 // Drain the request line + headers (until blank line) so the
-                // client's write side completes before we respond.
+                // client's write side completes before responding.
                 let mut buf = [0u8; 1024];
                 // A single read is enough: the client's request is well under 1 KiB
-                // and we don't need every byte — we just need the kernel buffer
+                // and not every byte is needed — only the kernel buffer needs to be
                 // drained enough that our write isn't blocked.
                 let _ = conn.read(&mut buf);
                 let _ = conn.write_all(raw_response);

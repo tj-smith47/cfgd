@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn detect_returns_valid_platform() {
     let platform = Platform::detect();
-    // We can't assert specific values since tests run on different platforms,
-    // but we can verify the struct is populated
+    // Specific values cannot be asserted since tests run on different platforms,
+    // but this verifies the struct is populated
     assert!(!format!("{}", platform.os).is_empty());
     assert!(!format!("{}", platform.arch).is_empty());
 }

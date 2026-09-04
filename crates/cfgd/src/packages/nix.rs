@@ -816,7 +816,7 @@ mod tests {
 
     #[test]
     fn parse_nix_env_query_strips_version_suffix() {
-        // nix-env -q --no-name --attr-path emits `attr-path` lines; we strip
+        // nix-env -q --no-name --attr-path emits `attr-path` lines; this strips
         // the trailing `-X.Y.Z` per the strip_version_suffix contract.
         let stdout = "ripgrep-14.1.0\nfd-9.0.0\n";
         let pkgs = parse_nix_env_query(stdout);

@@ -93,8 +93,7 @@ pub(super) fn load_module_document(
     config_dir: &Path,
     module_name: &str,
 ) -> Result<(config::ModuleDocument, PathBuf), ModuleLoadError> {
-    // module-dir-ok: config_dir's own declared modules/ directory, not the module cache
-    let module_dir = config_dir.join("modules").join(module_name);
+    let module_dir = cfgd_core::declared_modules_dir(config_dir).join(module_name);
     let module_yaml = module_dir.join("module.yaml");
     if !module_yaml.exists() {
         return Err(ModuleLoadError::NotFound(format!(

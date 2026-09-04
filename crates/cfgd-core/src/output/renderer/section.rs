@@ -825,8 +825,8 @@ mod tests {
 
     /// The top-level section (`header_depth == 0`) keeps `theme.header`
     /// regardless of how many subsections it later opens — the depth check
-    /// reads the SECTION's own `header_depth`, not some global "have we
-    /// opened a subsection yet" flag.
+    /// reads the SECTION's own `header_depth`, not some global "has a
+    /// subsection already opened" flag.
     // Serial: `supports_truecolor()` reads COLORTERM / NO_COLOR, and the
     // rendered line is compared against a slot render taken separately —
     // a concurrent env mutation between the two splits the comparison.

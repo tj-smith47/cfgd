@@ -1346,8 +1346,7 @@ impl SourceManager {
             .ok_or_else(|| SourceError::NotFound {
                 name: source_name.to_string(),
             })?;
-        // module-dir-ok: a source checkout's own declared modules/ directory, not the module cache
-        Ok(cached.local_path.join("modules"))
+        Ok(crate::declared_modules_dir(&cached.local_path))
     }
 
     /// The module names this source declares as deliverable — the manifest's

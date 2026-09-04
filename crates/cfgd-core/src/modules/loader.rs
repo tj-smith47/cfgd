@@ -1,7 +1,7 @@
 //! Module loading and dependency resolution.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::PathDisplayExt;
 use crate::config::parse_module;
@@ -42,11 +42,17 @@ fn read_module_yaml_capped(module_yaml: &Path) -> Result<String> {
     })
 }
 
+/// The declared `modules/` directory under a config root — a config dir, a
+/// source checkout or a generated repo alike. Distinct from the module CACHE
+/// (`module_cache_root`), which holds materialized git sources.
+pub fn declared_modules_dir(root: &Path) -> PathBuf {
+    root.join("modules")
+}
+
 /// Load all modules from the `modules/` directory under the given config dir.
 /// Returns a map of module name → LoadedModule.
 pub fn load_modules(config_dir: &Path) -> Result<HashMap<String, LoadedModule>> {
-    // module-dir-ok: the config dir's own declared modules/ directory this loads bodies from, not the module cache
-    let modules_dir = config_dir.join("modules");
+    let modules_dir = declared_modules_dir(config_dir);
     // The LISTING is the input here, not any one manifest: a module directory
     // appearing or disappearing changes what this returns, and a directory's
     // own stamp is what reports that.

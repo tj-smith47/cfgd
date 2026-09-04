@@ -58,8 +58,8 @@ fn no_drift_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
 }
 
 /// Profile where the target does NOT exist on disk; `fm.diff` reports drift.
-/// Same shape as `common::tiny_profile_setup`, inlined here because we add a
-/// custom-manager profile entry in other fixtures and want consistency.
+/// Same shape as `common::tiny_profile_setup`, inlined here because a
+/// custom-manager profile entry is added in other fixtures for consistency.
 fn file_drift_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     let config_dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
@@ -274,7 +274,7 @@ fn diff_multi_surface_drift_human() {
 /// Synthetic system-drift payload — exercises the `SystemDriftOutput` rendering
 /// path in `build_diff_doc`. Real system drift requires platform-privileged
 /// state mutation (sysctl, launchd, etc.) that is intractable from an
-/// integration test, so we anchor the buffered summary's role + payload shape
+/// integration test, so this anchors the buffered summary's role + payload shape
 /// via the pure Doc constructor. The streaming-side rendering of system
 /// drift status lines is exercised by the `print_package_drift`-shaped
 /// in-module tests (drift.rs) and the renderer bucket-g anchors.

@@ -425,7 +425,7 @@ async fn checkin_with_device_token_succeeds_after_enrollment() {
     }
     let (state, _tmp) = test_state();
 
-    // Provision a device + credential directly via the DB so we don't need
+    // Provision a device + credential directly via the DB to avoid needing
     // to round-trip through the enrollment handler.
     state
         .db

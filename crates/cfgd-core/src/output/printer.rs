@@ -2260,7 +2260,7 @@ mod tests {
     }
 
     /// In debug builds, a top-level emit reached while a section is open
-    /// trips `debug_assert!` in `Renderer::enforce_structural_top_level`. We catch
+    /// trips `debug_assert!` in `Renderer::enforce_structural_top_level`. This catches
     /// the panic to verify the assert fires.
     #[cfg(feature = "test-helpers")]
     #[test]

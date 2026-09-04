@@ -880,7 +880,7 @@ mod tests {
         #[test]
         #[serial]
         fn push_states_a_named_platform_once_in_the_settled_row() {
-            // Mock a successful push (no sign / attest) so we reach the
+            // Mock a successful push (no sign / attest) to reach the
             // happy-path doc emit and the settled row's detail.
             let dir = tempfile::tempdir().expect("tempdir");
             write_module_yaml(dir.path());

@@ -717,7 +717,7 @@ fn absolutize_path_relative_input_resolves_against_cwd() {
     std::env::set_current_dir(original_cwd).unwrap();
 
     assert!(result.is_absolute(), "must be absolute: {result:?}");
-    // Canonicalize the handle we chdir'd through before deriving the
+    // Canonicalize the handle chdir'd through before deriving the
     // expectation, so both sides of the comparison sit on the same
     // (resolved) side of the symlink `getcwd(3)` already walked past.
     let expected_dir = link_dir.canonicalize().unwrap();

@@ -5422,7 +5422,7 @@ fn git_pull_no_remote_returns_up_to_date() {
         .push(&["refs/heads/master:refs/heads/master"], None)
         .unwrap();
 
-    // Now pull — should be up-to-date since we just pushed
+    // Now pull — should be up-to-date after just pushing
     let result = git_pull(&work_dir);
     assert!(result.is_ok(), "git_pull failed: {:?}", result);
     assert!(result.unwrap().is_none(), "expected no changes");
@@ -7690,7 +7690,7 @@ fn install_service_then_uninstall_service_round_trips_via_dispatcher() {
     .expect("install_service ok");
     // Whether macOS (plist) or Linux (unit), uninstall must round-trip without
     // panic. Skip exists() assertions — the dispatcher branch depends on
-    // target_os and we just want both arms exercised.
+    // target_os and both arms just need exercising.
     crate::daemon::service::uninstall_service(&test_printer(), crate::Scope::User)
         .expect("uninstall_service ok");
 }
@@ -7959,7 +7959,7 @@ fn handle_reconcile_with_no_config_file() {
             &printer,
         ),
     );
-    // If we got here without panic, the function handled the missing config gracefully.
+    // Reaching here without panic means the function handled the missing config gracefully.
     // Verify the state wasn't updated (no reconciliation occurred).
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -9060,7 +9060,7 @@ async fn handle_reconcile_with_profile_override() {
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
-    // Config with profile "other" but we override to "default"
+    // Config with profile "other" but overridden to "default"
     let config_path = tmp.path().join("config.yaml");
     std::fs::write(
             &config_path,
@@ -9493,7 +9493,7 @@ async fn handle_reconcile_auto_policy_apply_failure_notifies() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_reconcile_runs_on_drift_scripts() {
     // Profile with `scripts.onDrift` populated → on-drift script loop runs.
-    // The script writes a marker file we can assert on.
+    // The script writes a marker file the test can assert on.
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().join("state");
@@ -10690,7 +10690,7 @@ async fn handle_reconcile_auto_policy_gcs_stale_tracking_row() {
 async fn handle_reconcile_notify_only_with_notify_on_drift_sends_notification() {
     // NotifyOnly policy + notify_on_drift=true + drift → notifier.notify
     // called for "drift detected". Stdout notifier just logs, but the call
-    // path is what we want to exercise (it's a distinct branch from the
+    // path is the one under test here (a distinct branch from the
     // notify_on_drift=false NotifyOnly case already covered).
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
@@ -10765,7 +10765,7 @@ async fn handle_reconcile_notify_only_with_notify_on_drift_sends_notification() 
     .await
     .unwrap();
 
-    // Drift event recorded. notify ran (stdout notifier just traces; we assert
+    // Drift event recorded. notify ran (stdout notifier just traces; asserting
     // the call path was reached by checking the drift bookkeeping side-effects).
     let store = StateStore::open(&state_dir.join("state.db")).unwrap();
     let drift_events = store.unresolved_drift().unwrap();
@@ -12188,8 +12188,8 @@ spec:
         let mut last_change: HashMap<PathBuf, Instant> = HashMap::new();
         let path = PathBuf::from("/tmp/observed-3.txt");
         // on_change_reconcile=true sends handle_reconcile through spawn_blocking.
-        // With a nonexistent config_path the handler returns early — we only
-        // care that the branch ran without panicking.
+        // With a nonexistent config_path the handler returns early — the only
+        // requirement is that the branch ran without panicking.
         let res = runner::handle_file_change_tick(
             &ctx,
             &mut last_change,
@@ -13502,7 +13502,7 @@ spec:
     // (loop dispatch of file-change events is covered by
     // `handle_file_change_tick_*` direct-helper tests; a parallel loop test
     // running under `cargo llvm-cov` flaked on the StateStore opening inside
-    // record_file_drift, so we exercise the branch by calling the helper
+    // record_file_drift, so the branch is exercised by calling the helper
     // directly rather than through run_daemon_loop's select!.)
 
     // ----- Per-tick failure isolation -----
@@ -13756,7 +13756,7 @@ spec:
     async fn select_loop_continues_after_sync_tick_error() {
         // A sync tick whose repo_path does not exist exercises the sync
         // handler's error path (git2 returns Err from `Repository::open`).
-        // After the failing tick we fire a reconcile tick that panics, then
+        // After the failing tick, a reconcile tick that panics fires, then
         // a no-op sync tick, then shutdown — proving the loop keeps
         // servicing both error and panic flavors of failure.
         let tmp = tempfile::TempDir::new().unwrap();
@@ -13810,7 +13810,7 @@ spec:
         // which reads/writes a small JSON cache under HOME (guarded to the
         // tempdir). With no network reachable the upgrade module errors
         // gracefully and the tick must not abort the loop. After the tick
-        // we fire a panicking reconcile to confirm the loop's
+        // a panicking reconcile fires to confirm the loop's
         // continue-on-error behavior is engaged, then shutdown.
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -14027,7 +14027,7 @@ spec:
     async fn per_module_reconcile_respects_drift_policy_notify_only() {
         // Per-module patch with drift_policy=NotifyOnly + a tick that
         // doesn't produce drift (empty profile). The reconciler is invoked
-        // but apply is NOT (the NotifyOnly branch). We assert the per-module
+        // but apply is NOT (the NotifyOnly branch). Asserts the per-module
         // entry shows up in state and that profile-wide drift_count is 0.
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -14155,14 +14155,14 @@ spec:
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn interval_pump_clamps_zero_to_one_second() {
         // A 0-second interval would spin tight — the pump must clamp to >=1s.
-        // We don't actually wait a full second; instead, we trip the abort path.
+        // Does not actually wait a full second; instead, trips the abort path.
         let secs = Arc::new(AtomicU64::new(0));
         let (tx, mut rx) = mpsc::channel::<()>(8);
         let handle = super::super::spawn_interval_pump(secs, tx);
         // sleep-ok: give the runtime a chance to schedule the pump task; no observable exists for "the pump task has been polled once"
         tokio::time::sleep(StdDuration::from_millis(10)).await;
         handle.abort();
-        // No assertion on rx — we only verify the pump didn't spin or panic before
+        // No assertion on rx — only verifies the pump didn't spin or panic before
         // abort. If the clamp were missing this test would hang the runtime.
         let _ = rx.try_recv();
     }
@@ -14325,7 +14325,7 @@ spec:
     // non-git directory, all git calls fail gracefully and the handler
     // still returns false (no changes). The orchestration around it — the
     // last_synced bump, the state.last_sync update via block_on — is what
-    // we cover here.
+    // this covers.
 
     /// Create a bare upstream repo + a working clone of it. Returns the
     /// (bare_path, work_path) pair. The clone starts with a single commit
@@ -16516,7 +16516,7 @@ spec: {}
     async fn run_daemon_with_processes_file_change_tick_via_external_trigger() {
         // A file-change tick goes through the dispatch arm in run_daemon_loop
         // and lands in handle_file_change_tick → debounce::record_change.
-        // The daemon should keep running until we send shutdown.
+        // The daemon should keep running until shutdown is sent.
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
@@ -16871,7 +16871,7 @@ spec: {}
         assert_eq!(resp.last_sync.as_deref(), Some("2026-05-25T00:05:00Z"));
         assert_eq!(resp.drift_count, 7);
         assert_eq!(resp.update_available.as_deref(), Some("0.5.0"));
-        // Default ctor adds a "local" source; we pushed one more.
+        // Default ctor adds a "local" source; this test pushed one more.
         assert_eq!(resp.sources.len(), 2);
         assert_eq!(resp.sources[0].name, "local");
         assert_eq!(resp.sources[1].name, "remote");
@@ -16883,7 +16883,7 @@ spec: {}
     // ----- Notifier::notify_webhook with a real (mock) HTTP endpoint -----
     //
     // notify_webhook spawns a tokio::task::spawn_blocking, so this test
-    // sleeps briefly after .notify() to let the POST land. We assert via the
+    // sleeps briefly after .notify() to let the POST land. Asserts via the
     // mockito expectation count rather than inspecting tracing output.
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -16926,7 +16926,7 @@ spec: {}
     // The other run_daemon_with tests in this module install
     // `external_triggers: Some(...)`. This one leaves it None so the function
     // takes the `else` branch and spawns real interval pumps, the SIGHUP pump
-    // (Unix), and the shutdown listener. We bound the test with an outer
+    // (Unix), and the shutdown listener. The test is bounded with an outer
     // tokio::time::timeout so it terminates deterministically even though no
     // shutdown signal is sent — the assertion is that the function progressed
     // past the trigger-setup block and ran the loop until forcibly aborted.
@@ -17304,8 +17304,8 @@ fn process_source_decisions_three_new_items_all_become_pending_in_one_call() {
     let store = test_state();
     // The plural-vs-singular branch (lines 730-742 in reconcile.rs) fires
     // inside `notifier.notify(...)` rendering when new_pending_count > 1.
-    // We can't inspect the formatted body directly via Stdout notifier, but
-    // we CAN pin the precondition: a single call must register all three
+    // Cannot inspect the formatted body directly via Stdout notifier, but
+    // the precondition can be pinned: a single call must register all three
     // items as pending in the store, all of which then withhold. That's the
     // shape that would trigger the plural message in the notifier body.
     let notifier = Notifier::new(NotifyMethod::Stdout, None);
@@ -17567,7 +17567,7 @@ async fn handle_reconcile_resolves_non_empty_modules_when_module_dir_exists() {
     // Profile lists a module that DOES exist on disk; load_all_modules and
     // resolve_dependency_order both succeed, the Ok arm at reconcile.rs:282-283
     // fires, and the resulting Vec<ResolvedModule> flows into reconciler.plan
-    // (covered by sibling tests; here we only assert the reconcile completes).
+    // (covered by sibling tests; only asserts here that the reconcile completes).
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -18341,7 +18341,7 @@ mod ipc_socket_security {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
-        // run_health_server creates the parent dir with 0700 itself; we point
+        // run_health_server creates the parent dir with 0700 itself; pointing
         // at a nested path so the create-and-chmod arms both fire.
         let sock_path = tmp.path().join("runtime").join("cfgd.sock");
 

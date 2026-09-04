@@ -6832,7 +6832,7 @@ fn apply_continue_on_error_default_post_script_continues() {
         )
         .unwrap();
 
-    // Post-script fails but default continueOnError=true means we get a result
+    // Post-script fails but default continueOnError=true means a result is returned
     assert_eq!(result.status, ApplyStatus::Failed);
     assert_eq!(result.failed(), 1);
 }

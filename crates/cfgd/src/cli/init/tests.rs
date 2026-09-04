@@ -2828,7 +2828,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     // path. With an empty registry the apply runs a no-op flow (no package
     // managers registered → no manager spawn), but the code path that's
     // covered is the post-prompt sequence: default_state_dir, acquire_apply_lock,
-    // reconciler.apply, render_apply_result. We assert the apply lock was
+    // reconciler.apply, render_apply_result. This asserts the apply lock was
     // observed (no "Skipped" output) and that apply completed without panic.
     let dir = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(dir.path());
@@ -2849,7 +2849,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
 
     // Build a plan whose only "action" is a no-op manager that doesn't exist
     // in the registry. The reconciler will surface a planning issue but apply
-    // will short-circuit gracefully — we care about the post-prompt branches
+    // will short-circuit gracefully — what matters is the post-prompt branches
     // executing, not the final outcome.
     let mut plan = cfgd_core::reconciler::Plan {
         phases: vec![cfgd_core::reconciler::Phase::from_actions(
@@ -5211,8 +5211,8 @@ mod cmd_init_apply_orchestration {
         // arm end-to-end:
         //   clone → resolve_profile → build_registry → reconciler.plan() →
         //   apply_plan(dry_run=true) → "Nothing to do" early return.
-        // The cloned profile is empty, so plan.total_actions() == 0 and we
-        // hit the apply_plan zero-action branch.
+        // The cloned profile is empty, so plan.total_actions() == 0, hitting
+        // the apply_plan zero-action branch.
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
         let bare = make_bare_config_repo_with_default(tmp.path(), "");
@@ -5621,7 +5621,7 @@ mod cmd_init_apply_orchestration {
         // module_names with names passed in --apply-module that the profile
         // doesn't already list). With dry_run=true, the reconciler plan
         // bails at "Nothing to do" since the module declares nothing — what
-        // we're pinning is the *control flow*: profile validated + persisted
+        // this pins is the *control flow*: profile validated + persisted
         // + module name carried through into the plan.
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());

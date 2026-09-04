@@ -428,7 +428,7 @@ fn explain_sources_origin_has_children() {
     );
 }
 
-// --- Task 18: array-of-object + oneOf (untagged-enum) expansion ---
+// --- array-of-object + oneOf (untagged-enum) expansion ---
 
 #[test]
 fn explain_resolve_field_path_array_of_object_lists_element_fields() {
@@ -574,7 +574,7 @@ fn explain_field_path_oneof_json_shape_is_additive() {
     assert!(string_variant.get("variants").is_none());
 }
 
-// --- Fix round 1: resolve_field_path must continue PAST a variant boundary ---
+// --- resolve_field_path must continue PAST a variant boundary ---
 
 #[test]
 fn explain_resolve_field_path_traverses_past_a_variant_into_its_object_shape() {

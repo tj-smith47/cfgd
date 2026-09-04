@@ -73,7 +73,7 @@ mod tests {
     #[serial]
     fn parse_port_env_falls_back_on_garbage() {
         // Operator startup contract: a typo in the deployment YAML must
-        // NOT crash the process; we log + fall through to the default.
+        // NOT crash the process; it logs + falls through to the default.
         with_test_env_var("CFGD_TEST_PORT_GARBAGE", Some("not-a-number"), || {
             assert_eq!(parse_port_env("CFGD_TEST_PORT_GARBAGE", 8081), 8081);
         });
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     #[serial]
     fn parse_bool_env_rejects_yes_on_off_etc() {
-        // We do NOT accept "yes", "on", "y", "T", "True" — only the two
+        // This does NOT accept "yes", "on", "y", "T", "True" — only the two
         // exact tokens. Pinning this rejects accidental loosening that
         // would silently change deployment behavior.
         for val in ["yes", "on", "y", "T", "True", "TRUE", "enable"] {

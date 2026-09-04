@@ -479,8 +479,8 @@ mod tests {
         let registry = registry_from_url(&server.url());
 
         // The registry addresses the manifest by a digest of its own, which is
-        // the one the attestation tag is named after — hashing the body we
-        // received would look for a tag cosign never pushed.
+        // the one the attestation tag is named after — hashing the received body
+        // would look for a tag cosign never pushed.
         server
             .mock("GET", "/v2/test/attmod/manifests/v1")
             .with_status(200)

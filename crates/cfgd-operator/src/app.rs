@@ -503,7 +503,7 @@ mod tests {
         // Result is Ok or Err — both are acceptable. What matters is that
         // the function is called and the branch logic is exercised.
         let result = init_otel_tracer();
-        // Either outcome is fine; we just must not panic.
+        // Either outcome is fine; the call just must not panic.
         let _ = result;
     }
 
@@ -552,7 +552,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let db_path = tmp.path().join("test-gateway.db");
         let _g2 = EnvVarGuard::set("CFGD_SERVER_DB_PATH", db_path.to_str().expect("valid utf8"));
-        // Let the OS pick a free port so we never clash with other tests.
+        // Let the OS pick a free port to never clash with other tests.
         let _g3 = EnvVarGuard::set("DEVICE_GATEWAY_PORT", "0");
 
         let (client, m, _registry) = test_client_and_metrics();

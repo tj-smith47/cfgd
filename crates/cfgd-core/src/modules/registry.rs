@@ -182,7 +182,7 @@ pub fn fetch_registry_modules(
         clone_repo(&cache_dir, &git_src, &registry.name, printer)?;
     }
 
-    let modules_dir = cache_dir.join("modules");
+    let modules_dir = crate::declared_modules_dir(&cache_dir);
     if !modules_dir.is_dir() {
         return Err(ModuleError::SourceFetchFailed {
             url: registry.url.clone(),

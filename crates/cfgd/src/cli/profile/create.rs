@@ -139,8 +139,7 @@ pub fn cmd_profile_create(
     };
 
     // Warn about modules that don't exist locally (could be remote)
-    // module-dir-ok: config_dir's own declared modules/ directory, not the module cache
-    let modules_dir = config_dir.join("modules");
+    let modules_dir = cfgd_core::declared_modules_dir(&config_dir);
     for m in &mods {
         if !modules_dir.join(m).join("module.yaml").exists() {
             printer

@@ -855,7 +855,7 @@ fn compose_with_sources_no_sources_returns_local_profile_unchanged() {
     )
     .unwrap();
 
-    // No sources → resolved must equal the local profile we passed in.
+    // No sources → resolved must equal the local profile passed in.
     assert_eq!(result.resolved.merged.modules, local.merged.modules);
     assert!(result.conflicts.is_empty());
     assert!(result.source_env.is_empty());

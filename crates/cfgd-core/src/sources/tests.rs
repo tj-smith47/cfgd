@@ -548,8 +548,8 @@ fn verify_head_signature_surfaces_git_log_failure_on_non_git_dir() {
     // verify_head_signature non-zero-exit arm (lines 571-579): pass a tempdir
     // that was NEVER `git init`'d → `git log -1 --format=%G?` exits non-zero
     // → SourceError::SignatureVerificationFailed with the "git log failed"
-    // message + stderr-trimmed body. Pins the contract: we surface the git
-    // error context, not just a generic "not signed" rejection.
+    // message + stderr-trimmed body. Pins the contract: the git
+    // error context surfaces, not just a generic "not signed" rejection.
     let tmp = tempfile::tempdir().unwrap();
     let result = verify_head_signature("non-git-source", tmp.path());
     assert!(result.is_err());
@@ -3184,7 +3184,7 @@ mod local_source_fixture {
     // clone_source / clone_with_fallback — ssh:// URL branch
     //
     // The ssh:// branch installs the git_ssh_credentials callback before
-    // attempting the libgit2 clone. We can't satisfy that callback in a
+    // attempting the libgit2 clone. That callback cannot be satisfied in a
     // sandbox (no SSH agent, no real remote), so the clone fails — but the
     // failure must surface as a FetchFailed error with the source name and
     // a network-related message, not a panic or generic error.
@@ -4443,8 +4443,8 @@ fn verify_commit_signature_returns_ok_when_constraints_disabled_even_with_no_rep
         require_signed_commits: false,
         ..Default::default()
     };
-    // Repo path doesn't exist — but require_signed_commits=false means we
-    // return Ok(()) without ever invoking git or git2.
+    // Repo path doesn't exist — but require_signed_commits=false means
+    // Ok(()) returns without ever invoking git or git2.
     let nonexistent = tmp.path().join("does-not-exist");
     let spec = source_spec_named("test");
     let result = mgr.verify_commit_signature(&spec, &nonexistent, &constraints, &test_printer());

@@ -530,7 +530,7 @@ mod tests {
 
         // Stand up a mock OCI registry that accepts the two blob uploads and
         // returns 201 on the manifest PUT, so the pack happy path completes and
-        // we reach the sign/attest + doc-emit stage.
+        // reaches the sign/attest + doc-emit stage.
         fn mock_pack_registry() -> (mockito::ServerGuard, String) {
             let mut server = mockito::Server::new();
             let registry = server.url().trim_start_matches("http://").to_string();

@@ -113,7 +113,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // 4. Clone or scaffold
     // When --from is a git source, resolve_from already cloned it above.
     // Only clone here if resolve_from didn't handle it (non-git --from or no --from).
-    // An existing cfgd.yaml means the target is already a config repo. Step 3
+    // An existing cfgd.yaml means the target is already a config repo. The check above
     // returns early on that without `--from`; WITH `--from` control reaches
     // here, and neither branch below may run over it — `git clone` cannot write
     // into a populated directory (and the failed attempt used to take the
@@ -858,8 +858,7 @@ pub(super) fn scaffold(
 
     // Create directories
     std::fs::create_dir_all(dir.join("profiles"))?;
-    // module-dir-ok: the config dir's own declared modules/ directory being scaffolded, not the module cache
-    std::fs::create_dir_all(dir.join("modules"))?;
+    std::fs::create_dir_all(cfgd_core::declared_modules_dir(dir))?;
     printer.status_simple(Role::Ok, "Created profiles/ modules/");
 
     // cfgd.yaml
@@ -951,8 +950,7 @@ cfgd apply
 /// Called by init and also by module create / profile create.
 pub(crate) fn regenerate_workflow(config_dir: &Path, printer: &Printer) -> anyhow::Result<()> {
     let profiles = scan_profile_names(&config_dir.join("profiles"), printer)?;
-    // module-dir-ok: the config dir's own declared modules/ directory, not the module cache
-    let modules = scan_module_names(&config_dir.join("modules"), printer)?;
+    let modules = scan_module_names(&cfgd_core::declared_modules_dir(config_dir), printer)?;
 
     if profiles.is_empty() && modules.is_empty() {
         return Ok(());

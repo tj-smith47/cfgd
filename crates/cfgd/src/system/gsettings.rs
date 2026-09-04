@@ -588,7 +588,7 @@ mod tests {
         let yaml = serde_yaml::Value::Mapping(outer);
         // Whether gsettings is on PATH or not, diff_nested_mapping returns Ok
         // and produces at most one drift entry (depends on whether the schema
-        // is registered). We assert only that diff itself does not fail.
+        // is registered). This asserts only that diff itself does not fail.
         let drifts = gc.diff(&yaml).unwrap();
         assert!(drifts.len() <= 1);
     }

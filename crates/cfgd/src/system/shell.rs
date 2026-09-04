@@ -520,7 +520,7 @@ mod tests {
     // windows_terminal_settings_path — drive the candidate-priority logic from
     // Linux by setting LOCALAPPDATA at a tempdir + creating one of the
     // candidate paths. The function is OS-agnostic: it reads the env var and
-    // walks a fixed candidate list. We only need to ensure the priority order
+    // walks a fixed candidate list. Only the priority order needs to be ensured
     // is honored.
     // ---------------------------------------------------------------------------
 

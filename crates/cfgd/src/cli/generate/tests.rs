@@ -1378,8 +1378,8 @@ mod cmd_generate_mockito {
         // Drives the consent-disclosure branch with yes=false. The
         // Printer::for_test_at(cfgd_core::output::Verbosity::Normal) prompt_confirm returns Err in non-interactive
         // mode (via non_interactive_err) → `let proceed = ...?` propagates
-        // the Err out of cmd_generate. The user-facing contract is that we
-        // never hit the API.
+        // the Err out of cmd_generate. The user-facing contract is that the API
+        // is never hit.
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-xyz");
@@ -1388,7 +1388,7 @@ mod cmd_generate_mockito {
         let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
 
         // A mock that MUST NOT fire — if the consent path failed open and
-        // an HTTP call went out, this would record a hit. We assert below
+        // an HTTP call went out, this would record a hit. This asserts below
         // that it never matched, proving the abort happened before /v1/messages.
         let must_not_fire = server
             .mock("POST", "/v1/messages")
@@ -1421,7 +1421,7 @@ mod cmd_generate_mockito {
         // Either:
         //   (a) prompt_confirm returns Err → cmd_generate returns Err via `?`
         //   (b) some prompt impls return Ok(false) → "Aborted." printed + Ok
-        // Both are acceptable contracts — what we pin is that NO API call
+        // Both are acceptable contracts — what this pins is that NO API call
         // went out and the consent-warning text printed to the user.
         let output = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -1439,7 +1439,7 @@ mod cmd_generate_mockito {
             }
             Err(e) => {
                 let msg = e.to_string();
-                // Non-interactive prompt error — fine, just confirm we didn't
+                // Non-interactive prompt error — fine, just confirm it didn't
                 // mention any API-side problem.
                 assert!(
                     !msg.contains("API") && !msg.contains("api"),
