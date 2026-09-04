@@ -176,9 +176,9 @@ fn compliance_diff_empty_human() {
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_diff/empty.txt");
 }
 
-/// Ruled 2026-09-03 (R-A): a changed row's two status words each carry their
-/// OWN role. The row's role is the NEW status's, so a shared coat would paint
-/// `Compliant` in Violation's red — the word's colour belongs to the word.
+/// A changed row's two status words each carry their OWN role: the row's role
+/// is the NEW status's, so a shared coat would paint `Compliant` in
+/// Violation's red — the word's colour belongs to the word.
 ///
 /// The subject is painted by the renderer through `PaintedSubject`, so only a
 /// coloured capture can see it: the plain render collapses both spans.

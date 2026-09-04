@@ -1108,6 +1108,12 @@ a failed pull is still attributed to a named one. `Sources` names what
 cold cache changes nothing about the header. The body below reports what the
 pull changed; the plan the closing hint invites reads the new set.
 
+`Profile` and `Modules` carry an annotation only for what the RESOLUTION added
+beyond the declared list: `Profile work (inherits: core -> shared)` when the
+profile extends others, `Modules git, nvim (depends: plugins)` when a
+`dependsOn` pulled a module in that neither the profile nor the invocation
+named. Neither row carries an annotation when the resolution added nothing.
+
 The `Local Repo` section appears only for a config directory under version
 control — there is nothing to pull from one that is not.
 

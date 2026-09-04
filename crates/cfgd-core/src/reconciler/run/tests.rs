@@ -883,8 +883,8 @@ fn report_align_width_spans_every_phase() {
         ),
     ]);
 
-    let wide_width = report_align_width(&wide, None, None);
-    let narrow_width = report_align_width(&narrow, None, None);
+    let wide_width = report_align_width(&wide, None, None, crate::output::theme::ICON_ARROW);
+    let narrow_width = report_align_width(&narrow, None, None, crate::output::theme::ICON_ARROW);
     assert!(
         wide_width > narrow_width,
         "the long subject in the first phase must widen the report column: \
@@ -912,9 +912,10 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
         vars: 3,
         aliases: 3,
     });
-    let subject = super::action_display_subject_within(&write_env, None)
-        .body
-        .clone();
+    let subject =
+        super::action_display_subject_within(&write_env, None, crate::output::theme::ICON_ARROW)
+            .body
+            .clone();
     let detail = super::super::action_produced_detail(&write_env, None, 0, &[])
         .expect("a write of 3 vars and 3 aliases states what it produced");
     let deploy = Action::Module(crate::reconciler::ModuleAction::local(
@@ -945,7 +946,7 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
             ),
         ],
     )]);
-    let width = report_align_width(&plan, None, None);
+    let width = report_align_width(&plan, None, None, crate::output::theme::ICON_ARROW);
 
     let dash_column = |render: &dyn Fn(&Printer)| -> usize {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -1010,9 +1011,10 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
             )
         })
         .expect("the phase holds the deploy action");
-    let deploy_subject = super::action_display_subject_within(deploy, None)
-        .body
-        .clone();
+    let deploy_subject =
+        super::action_display_subject_within(deploy, None, crate::output::theme::ICON_ARROW)
+            .body
+            .clone();
     let child_dash_column = |render: &dyn Fn(&Printer)| -> usize {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         render(&printer);
@@ -1073,11 +1075,12 @@ fn report_align_width_ignores_a_filtered_out_phase() {
     ]);
     let filter = PhaseFilter::Phase(PhaseName::Files);
     assert_eq!(
-        report_align_width(&plan, Some(&filter), None),
+        report_align_width(&plan, Some(&filter), None, crate::output::theme::ICON_ARROW),
         report_align_width(
             &plan_of(vec![phase(PhaseName::Files, vec![create("dotfile")])]),
             None,
-            None
+            None,
+            crate::output::theme::ICON_ARROW
         ),
         "an excluded phase's widest action must not pad the phase that renders"
     );
@@ -1343,9 +1346,9 @@ fn header_omits_every_empty_row_and_skips_the_modules_phase() {
     );
 }
 
-/// Ruled 2026-09-03: a scoped command never echoes its invocation-named scope
-/// back as an annotation. `--phase files` puts `Files` on the command line, so
-/// a `Phases   Files` row states nothing the reader did not just type.
+/// A scoped command never echoes its invocation-named scope back as an
+/// annotation: `--phase files` puts `Files` on the command line, so a
+/// `Phases   Files` row would state nothing the reader did not just type.
 ///
 /// The row survives wherever it is still news: an unfiltered run named no
 /// phase, and `--phase modules` is an owner filter spanning every phase module
@@ -1534,7 +1537,7 @@ fn preview_bullet_matches_the_execution_subject_for_a_sourced_script() {
         "preview bullet must be the execution subject verbatim: {out:?}"
     );
     assert_eq!(
-        report_align_width(&plan, None, None),
+        report_align_width(&plan, None, None, crate::output::theme::ICON_ARROW),
         measure_width(&executed),
         "the alignment column must measure the subject the execution renders"
     );
@@ -1574,7 +1577,7 @@ fn preview_bullet_matches_the_execution_subject_for_a_condensed_script() {
         "preview bullet must be the condensed execution subject verbatim: {out:?}"
     );
     assert_eq!(
-        report_align_width(&plan, None, None),
+        report_align_width(&plan, None, None, crate::output::theme::ICON_ARROW),
         measure_width(&executed),
         "the alignment column must measure the condensed subject"
     );
@@ -1718,7 +1721,7 @@ fn a_deploy_row_enumerates_every_file_with_its_method_at_the_reports_column() {
         PhaseName::Prerequisites,
         vec![deploy, install("apt", &["a-very-long-package-name-indeed"])],
     )]);
-    let width = report_align_width(&plan, None, None);
+    let width = report_align_width(&plan, None, None, crate::output::theme::ICON_ARROW);
     let deploy = plan.phases[0]
         .actions()
         .find(|a| {
@@ -1731,9 +1734,10 @@ fn a_deploy_row_enumerates_every_file_with_its_method_at_the_reports_column() {
             )
         })
         .expect("the phase holds the deploy action");
-    let subject = super::action_display_subject_within(deploy, None)
-        .body
-        .clone();
+    let subject =
+        super::action_display_subject_within(deploy, None, crate::output::theme::ICON_ARROW)
+            .body
+            .clone();
     assert_eq!(
         subject, "deploy 2 files",
         "a two-file deploy states a count"
@@ -1819,10 +1823,9 @@ fn a_deploy_row_enumerates_every_file_with_its_method_at_the_reports_column() {
     );
 }
 
-/// The user ruling this task shipped: EVERY deploy enumerates, even a module
-/// that writes a single file — `deploy 1 file` plus its one child row, never
-/// an inline `deploy ~/.config/app/a.conf` shorthand that skips the child
-/// entirely.
+/// Every deploy enumerates, even a module that writes a single file —
+/// `deploy 1 file` plus its one child row, never an inline
+/// `deploy ~/.config/app/a.conf` shorthand that skips the child entirely.
 #[test]
 fn a_one_file_deploy_still_enumerates_its_single_child() {
     let deploy = Action::Module(crate::reconciler::ModuleAction::local(
@@ -1840,9 +1843,10 @@ fn a_one_file_deploy_still_enumerates_its_single_child() {
             declared_total: 1,
         },
     ));
-    let subject = super::action_display_subject_within(&deploy, None)
-        .body
-        .clone();
+    let subject =
+        super::action_display_subject_within(&deploy, None, crate::output::theme::ICON_ARROW)
+            .body
+            .clone();
     assert_eq!(
         subject, "deploy 1 file",
         "a one-file deploy still states a count, never the bare target"
@@ -1910,7 +1914,7 @@ fn a_deploy_child_too_long_for_the_line_budget_glues_without_costing_the_report_
     let plan = plan_of(vec![phase(PhaseName::Files, vec![short, long])]);
     let (printer, screen) = Printer::for_test_live_terminal(40, 80);
     let budget = report_subject_budget(&plan, None, &printer);
-    let width = report_align_width(&plan, None, budget);
+    let width = report_align_width(&plan, None, budget, crate::output::theme::ICON_ARROW);
     render_plan_tree(&plan, None, &printer);
     drop(printer);
     let shown = screen.contents();
@@ -2659,8 +2663,8 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
     let cols: u16 = 128;
     let (printer, screen) = Printer::for_test_live_terminal(60, cols);
     let budget = report_subject_budget(&plan, None, &printer);
-    let width = report_align_width(&plan, None, budget);
-    let trailing = report_trailing_allowance(&plan, None, budget);
+    let width = report_align_width(&plan, None, budget, crate::output::theme::ICON_ARROW);
+    let trailing = report_trailing_allowance(&plan, None, budget, crate::output::theme::ICON_ARROW);
     // The WHOLE report: the header the run opens on, then the tree. A tree
     // rendered alone passed the home-fold claim while the `Config` row six
     // lines above it still spelled `/home/tj/.config/cfgd/cfgd.yaml`.
@@ -2801,7 +2805,12 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
         for read in [budget, None] {
             assert!(
                 names_operand(
-                    &super::action_display_subject_within(apt, read).to_string(),
+                    &super::action_display_subject_within(
+                        apt,
+                        read,
+                        crate::output::theme::ICON_ARROW
+                    )
+                    .to_string(),
                     named
                 ),
                 "no budget cuts an operand list: {named} missing at {read:?}"
@@ -2823,7 +2832,8 @@ fn a_report_wide_enough_for_its_wait_reasons_keeps_its_one_column() {
         "the folded spelling is what the rows print:\n{shown}"
     );
     assert!(
-        super::super::format_plan_item(deploy).contains("/home/tj/.config/nvim/init.lua"),
+        super::super::format_plan_item(deploy, crate::output::theme::ICON_ARROW)
+            .contains("/home/tj/.config/nvim/init.lua"),
         "the `-o json` description keeps the absolute path"
     );
 }
@@ -2879,12 +2889,13 @@ fn the_reports_column_is_claimed_and_its_subjects_bounded_at_every_width() {
             b >= floor,
             "{cols} cols: the budget never narrows below the floor"
         );
-        let width = report_align_width(&plan, None, budget);
+        let width = report_align_width(&plan, None, budget, crate::output::theme::ICON_ARROW);
         assert!(
             width <= b,
             "{cols} cols: the claim is priced over subjects within the budget ({width} > {b})"
         );
-        let trailing = report_trailing_allowance(&plan, None, budget);
+        let trailing =
+            report_trailing_allowance(&plan, None, budget, crate::output::theme::ICON_ARROW);
         let line = printer
             .action_row_line_budget()
             .expect("an emulated screen has a width");
@@ -2909,7 +2920,10 @@ fn the_reports_column_is_claimed_and_its_subjects_bounded_at_every_width() {
             .phases
             .iter()
             .flat_map(|p| p.actions())
-            .map(|a| super::action_display_subject_within(a, budget).to_string())
+            .map(|a| {
+                super::action_display_subject_within(a, budget, crate::output::theme::ICON_ARROW)
+                    .to_string()
+            })
             .filter(|s| crate::output::measure_width(s) > b)
             .collect();
         assert!(

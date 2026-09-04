@@ -1225,6 +1225,13 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
         format!("# {}:", "manager"),
     ];
     let dialects = ["export ", "$env:"];
+    // A PATH line carries no owner comment (`comment(owner)` is only called
+    // for a declared env var), so `spells_a_line` above never sees it — a
+    // fixture hand-spelling the PATH export line itself needed no owner tell
+    // beside it to slip through. These four are hits on their own.
+    let dialect_tells_alone = ["export PATH=", "$env:PATH =", "set -gx PATH"];
+    const ENVIRONMENT_D_TELL: &str = "environment.d";
+    const ENVIRONMENT_D_PATH_TELL: &str = "PATH=";
     // Every producer is named in FULL and matched as a WHOLE identifier: the
     // crate also holds `generate_` functions for systemd units and SLSA
     // provenance, and `recorded_managed_env_files` is a state-store query —
@@ -1245,6 +1252,19 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
         "plan_env_with_home",
         "ScriptShell",
     ];
+    // The dialect-alone tells above earn a NARROWER hatch than a fixture's
+    // name/owner-comment tells do: `apply_does_not_reorder_the_env_file_…`
+    // names `primary_env_file` for an unrelated existence check and, under
+    // the wider list, that alone used to excuse a hand-spelled `export PATH=`
+    // literal it never derived from anything. Only a function that calls the
+    // dialect-emitting generator itself may spell the dialect it just called.
+    let generator_calls = [
+        "env_targets",
+        "generate_env_file_content",
+        "generate_fish_env_content",
+        "generate_powershell_env_content",
+        "generate_environment_d_content",
+    ];
     let core_src = workspace_root().join("crates/cfgd-core/src");
     let mut offenders = Vec::new();
     let mut checked = 0usize;
@@ -1256,20 +1276,40 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
+        // The dialect-alone tells' one path-based hatch: the file that OWNS
+        // the dialect (`env_engine.rs`, home of `path_line`/`fold_path_line`)
+        // pins the raw assignment syntax through helpers with no `generate_*`
+        // name of their own to match on.
+        let is_env_engine_owner = path.ends_with(Path::new("reconciler/env_engine.rs"));
         for (open, func) in source_functions(&body) {
             checked += 1;
-            if names_a_producer.iter().any(|n| names_identifier(&func, n)) {
+            let names_producer = names_a_producer.iter().any(|n| names_identifier(&func, n));
+            let calls_generator =
+                is_env_engine_owner || generator_calls.iter().any(|n| names_identifier(&func, n));
+            if names_producer && calls_generator {
                 continue;
             }
             let folded = crate::test_helpers::logical_source_lines(&func);
-            let spells_a_name = folded
-                .iter()
-                .any(|(_, l)| joins.iter().any(|j| l.contains(j.as_str())));
-            let spells_a_line = folded.iter().any(|(_, l)| {
-                dialects.iter().any(|d| l.contains(d))
-                    && owner_comments.iter().any(|c| l.contains(c.as_str()))
-            });
-            if spells_a_name || spells_a_line {
+            let spells_a_name = !names_producer
+                && folded
+                    .iter()
+                    .any(|(_, l)| joins.iter().any(|j| l.contains(j.as_str())));
+            let spells_a_line = !names_producer
+                && folded.iter().any(|(_, l)| {
+                    dialects.iter().any(|d| l.contains(d))
+                        && owner_comments.iter().any(|c| l.contains(c.as_str()))
+                });
+            let spells_a_dialect_alone = !calls_generator
+                && folded
+                    .iter()
+                    .any(|(_, l)| dialect_tells_alone.iter().any(|d| l.contains(d)));
+            let spells_environment_d_path = !calls_generator
+                && func.contains(ENVIRONMENT_D_TELL)
+                && folded
+                    .iter()
+                    .any(|(_, l)| l.contains(ENVIRONMENT_D_PATH_TELL));
+            if spells_a_name || spells_a_line || spells_a_dialect_alone || spells_environment_d_path
+            {
                 offenders.push(format!(
                     "{}:{}: {}",
                     path.display(),

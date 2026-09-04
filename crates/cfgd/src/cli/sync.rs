@@ -177,6 +177,7 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
             profile: Some(profile_name),
             profile_inherits: &profile_inherits,
             modules: &header_modules,
+            arrow: printer.arrow(),
         },
     ));
 

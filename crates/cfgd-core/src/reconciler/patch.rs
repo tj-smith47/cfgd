@@ -977,13 +977,13 @@ fn ini_scalar(value: &serde_yaml::Value, target: &Path, key: &str) -> Result<Str
         serde_yaml::Value::Sequence(_) => Err(shape_error(
             target,
             PatchFormat::Ini,
-            format!("'{key}' is a list — INI supports section → key → scalar only"),
+            format!("'{key}' is a list — INI supports section, key, scalar nesting only"),
         )
         .into()),
         serde_yaml::Value::Mapping(_) => Err(shape_error(
             target,
             PatchFormat::Ini,
-            format!("'{key}' is nested — INI supports section → key → scalar only"),
+            format!("'{key}' is nested — INI supports section, key, scalar nesting only"),
         )
         .into()),
     }

@@ -203,8 +203,9 @@ pub fn cmd_module_keys_rotate(
             && let Err(e) = std::fs::rename(&backup_key, &old_key)
         {
             restore_failures.push(format!(
-                "{} → {}: {}",
+                "{} {} {}: {}",
                 backup_key.posix(),
+                printer.arrow(),
                 old_key.posix(),
                 e
             ));
@@ -223,8 +224,9 @@ pub fn cmd_module_keys_rotate(
             && let Err(e) = std::fs::rename(&backup_pub, &old_pub)
         {
             restore_failures.push(format!(
-                "{} → {}: {}",
+                "{} {} {}: {}",
                 backup_pub.posix(),
+                printer.arrow(),
                 old_pub.posix(),
                 e
             ));

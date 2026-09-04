@@ -38,9 +38,10 @@ impl<'a> super::Reconciler<'a> {
                         if sc.name() == configurator {
                             sc.apply(desired_value, &cx)?;
                             return Ok(format!(
-                                "system:{} ({} → {})",
+                                "system:{} ({} {} {})",
                                 super::system_resource_key(configurator, key),
                                 current,
+                                printer.arrow(),
                                 desired
                             ));
                         }

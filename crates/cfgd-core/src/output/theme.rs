@@ -12,7 +12,12 @@ const ICON_RUNNING: &str = "◐";
 // once. U+2205 over the circled `⊘`/`⊗` shapes because it is present in
 // FiraCode Nerd Font Mono, which the recorded demos render in.
 const ICON_SKIPPED: &str = "∅";
-const ICON_ARROW: &str = "→";
+/// The default arrow glyph, before any preset or `spec.output.theme` override.
+/// `pub(crate)` for the handful of call sites whose `arrow` argument is
+/// provably never rendered (a Skip variant's subject, an operand-list swap
+/// that never reaches a Secret/System action) but still needs a valid `&str`
+/// — never reach for it where the theme's own choice might actually paint.
+pub(crate) const ICON_ARROW: &str = "→";
 // U+25C9, verified present in FiraCode Nerd Font Mono (the recorded demos'
 // font), JetBrains Mono and DejaVu Sans Mono via `fc-list ":charset=25C9"`.
 // It stays in the ○/◐ family the rest of the set draws from without being the

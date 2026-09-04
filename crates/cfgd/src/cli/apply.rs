@@ -237,6 +237,7 @@ pub fn run_apply(
     let mut resolved_modules = desired.modules;
     let mut effective_resolved = desired.resolved;
     registry.set_system_config_dir(&config_dir);
+    let module_cache = module_cache_dir(cli)?;
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
     ctx.resolve_manifest_packages(&mut effective_resolved.merged.packages)?;
@@ -537,6 +538,7 @@ pub fn run_apply(
     let reconciler = reconciler.backing_up(handle_unmanaged_file_targets(
         &mut plan,
         &config_dir,
+        &module_cache,
         state,
         printer,
         yes,

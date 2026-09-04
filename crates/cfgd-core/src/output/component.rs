@@ -333,6 +333,11 @@ pub struct ConfigHeader<'a> {
     pub profile_inherits: &'a [String],
     /// The modules that profile puts on this machine, dependency-first.
     pub modules: &'a [HeaderModule],
+    /// The theme's arrow glyph, joining the `inherits:` chain — an ASCII
+    /// preset overriding `icon_arrow` must not leave a literal `→` in the
+    /// header. Sourced from [`crate::output::Printer::arrow`] at every
+    /// constructor.
+    pub arrow: &'a str,
 }
 
 /// The header block every surface reporting ON a resolved configuration opens
@@ -358,6 +363,7 @@ pub fn config_header_rows(head: &ConfigHeader<'_>) -> Vec<KvPair> {
         profile,
         profile_inherits,
         modules,
+        arrow,
     } = head;
     let mut rows = Vec::new();
     if let Some(path) = config_path {
@@ -385,13 +391,10 @@ pub fn config_header_rows(head: &ConfigHeader<'_>) -> Vec<KvPair> {
         if profile_inherits.is_empty() {
             rows.push(KvPair::new("Profile", profile));
         } else {
-            // A literal `→` joining a LIST, not `Theme::arrow()` — that glyph
-            // is reserved for an old->new relationship the theme may recolor;
-            // an inheritance chain has no "new" half to tint.
             rows.push(KvPair::annotated(
                 "Profile",
                 profile,
-                format!("inherits: {}", profile_inherits.join(" → ")),
+                format!("inherits: {}", profile_inherits.join(&format!(" {arrow} "))),
             ));
         }
     }
@@ -637,6 +640,7 @@ mod tests {
             profile: Some("base"),
             profile_inherits: &chain,
             modules: &[],
+            arrow: "->",
         });
         let profile_row = rows
             .iter()
@@ -645,7 +649,7 @@ mod tests {
         assert_eq!(profile_row.value, "base");
         assert_eq!(
             profile_row.annotation.as_deref(),
-            Some("inherits: core → shared")
+            Some("inherits: core -> shared")
         );
 
         let rows = config_header_rows(&ConfigHeader {
@@ -654,6 +658,7 @@ mod tests {
             profile: Some("base"),
             profile_inherits: &[],
             modules: &[],
+            arrow: "->",
         });
         let profile_row = rows
             .iter()

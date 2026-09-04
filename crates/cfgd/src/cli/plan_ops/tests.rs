@@ -801,7 +801,7 @@ fn provision_lines(plan: &cfgd_core::reconciler::Plan) -> Vec<String> {
         .iter()
         .flat_map(|phase| phase.actions())
         .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
-        .map(cfgd_core::reconciler::format_plan_item)
+        .map(|a| cfgd_core::reconciler::format_plan_item(a, "→"))
         .collect()
 }
 
@@ -1621,7 +1621,7 @@ fn every_operand_a_plan_action_holds_reaches_the_json_payload() {
     ];
     for (shape, action) in shapes {
         let plan = one_phase_plan(vec![action]);
-        let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+        let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
         let json = serde_json::to_string(&output).unwrap();
         for name in &names {
             assert!(
@@ -1681,7 +1681,7 @@ fn a_tool_this_plan_provisions_is_named_once_in_the_json_payload() {
         )
         .expect("plan");
 
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
     let json = serde_json::to_string(&output).expect("serialize");
     assert_eq!(
         json.matches("tool-alias").count(),
@@ -1707,7 +1707,7 @@ fn build_plan_output_counts_actions_and_sets_context() {
         ),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "my-machine", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "my-machine", None, &[], &no_decisions(), &[], "→");
 
     assert_eq!(output.context, "my-machine");
     assert_eq!(output.total_actions, 3);
@@ -1754,6 +1754,7 @@ fn build_plan_output_phase_filter_excludes_other_phases() {
         &[],
         &no_decisions(),
         &[],
+        "→",
     );
 
     assert_eq!(output.phases.len(), 1);
@@ -1767,7 +1768,7 @@ fn build_plan_output_names_the_kind_phase_and_carries_the_module_as_an_owner() {
         PhaseName::PostScripts,
         vec![module_run_script()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
 
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Post-Scripts");
@@ -1812,7 +1813,7 @@ fn build_plan_output_orders_groups_profile_first() {
             pkg_install("apt", vec!["sl"]),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
 
     assert_eq!(
         output.phases[0]
@@ -1840,7 +1841,7 @@ fn no_bootstrap_means_no_managers_group_in_the_payload() {
         PhaseName::Packages,
         vec![pkg_install("apt", vec!["sl"])],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
 
     assert_eq!(
         output.phases[0]
@@ -1880,7 +1881,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
             }),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
     let json = serde_json::to_value(&output).unwrap();
     let groups = json["phases"][0]["groups"].as_array().expect("groups");
     assert_eq!(groups.len(), 1);
@@ -1932,6 +1933,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
         &[],
         &no_decisions(),
         &[],
+        "→",
     );
     let other_json = serde_json::to_value(&other).unwrap();
     assert!(
@@ -1945,7 +1947,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
 #[test]
 fn build_plan_output_non_module_phase_omits_module_and_section_keys() {
     let plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
 
     // `skip_serializing_if` back-compat guarantee: a non-module phase's wire
     // form carries no `module`/`section` keys at all, not `null` values.
@@ -1977,7 +1979,7 @@ fn build_plan_output_carries_source_module_origin() {
         PhaseName::Modules,
         vec![module_install_from_source("acme"), module_install()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
 
     let actions = phase_actions(&output.phases[0]);
     let sourced = actions
@@ -2014,7 +2016,7 @@ fn build_plan_output_local_only_omits_all_origins() {
         PhaseName::Modules,
         vec![module_install(), module_deploy_files()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
     for phase in &output.phases {
         for action in phase_actions(phase) {
             assert_eq!(action.origin, None, "local plan must carry no origin");
@@ -2035,7 +2037,7 @@ fn build_plan_output_local_only_omits_all_origins() {
 #[test]
 fn build_plan_output_empty_plan_has_zero_actions() {
     let plan = make_plan(vec![]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
 
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
@@ -2054,7 +2056,7 @@ fn build_plan_output_script_action_json_preserves_raw_multiline_body() {
         origin: "test".to_string(),
     });
     let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
 
     let desc = &output.phases[0].groups[0].actions()[0].description;
     assert!(
@@ -2079,7 +2081,7 @@ fn build_plan_output_module_script_action_json_preserves_raw_multiline_body() {
         origin: None,
     });
     let plan = make_plan(vec![(PhaseName::Modules, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
 
     let desc = &output.phases[0].groups[0].actions()[0].description;
     assert!(
@@ -2182,6 +2184,7 @@ fn is_unmanaged_file_missing_path_returns_false() {
     let result = is_unmanaged_file(
         &PathBuf::from("/nonexistent/path/that/does/not/exist/abc123"),
         &config_dir,
+        &config_dir,
         &state,
     );
     assert!(!result, "missing file should not be considered unmanaged");
@@ -2208,7 +2211,7 @@ fn is_unmanaged_file_managed_path_returns_false() {
         .unwrap();
 
     let config_dir = PathBuf::from("/config");
-    let result = is_unmanaged_file(&file_path, &config_dir, &state);
+    let result = is_unmanaged_file(&file_path, &config_dir, &config_dir, &state);
     assert!(
         !result,
         "state-tracked file should not be considered unmanaged"
@@ -2370,6 +2373,7 @@ fn an_unanswerable_prompt_reserves_the_file_instead_of_overwriting_it() {
     let backups = handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         false,
@@ -2440,6 +2444,7 @@ fn unmanaged_prompt_never_backs_up_a_patch_target() {
     let backups = handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         false,
@@ -2482,7 +2487,7 @@ fn a_managed_target_is_recognised_by_the_id_the_reconciler_actually_mints() {
 
     let state = StateStore::open_in_memory().unwrap();
     assert!(
-        is_unmanaged_file(&target, tmp.path(), &state),
+        is_unmanaged_file(&target, tmp.path(), tmp.path(), &state),
         "control: with no row at all the target is unmanaged"
     );
 
@@ -2495,7 +2500,7 @@ fn a_managed_target_is_recognised_by_the_id_the_reconciler_actually_mints() {
         .unwrap();
 
     assert!(
-        !is_unmanaged_file(&target, tmp.path(), &state),
+        !is_unmanaged_file(&target, tmp.path(), tmp.path(), &state),
         "a target whose managed id the reconciler minted must be recognised as managed"
     );
 }
@@ -2520,6 +2525,7 @@ fn a_module_file_inheriting_the_global_copy_strategy_is_not_re_adopted() {
 
     let backups = handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
@@ -2569,6 +2575,7 @@ fn skip_drops_the_chmod_planned_beside_the_write_it_skipped() {
     handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         true,
@@ -2613,6 +2620,7 @@ fn a_skipped_module_file_reports_the_same_reason_the_profile_arm_does() {
 
     handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
@@ -2660,6 +2668,7 @@ fn a_skipped_module_file_leaves_the_declared_set_with_it() {
 
     handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
@@ -2726,6 +2735,7 @@ fn the_prompts_abort_answer_stops_the_run_without_touching_the_file() {
 
     let err = handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
@@ -2824,6 +2834,7 @@ fn unmanaged_prompt_skips_patch_module_files() {
     handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         false,
@@ -2916,6 +2927,7 @@ fn a_module_deployed_target_is_never_a_strangers_file() {
     let backups = handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         true,
@@ -2957,6 +2969,7 @@ fn a_module_target_already_holding_the_desired_bytes_is_never_backed_up() {
     let backups = handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         true,
@@ -2996,6 +3009,7 @@ fn a_module_target_holding_different_bytes_is_reserved_under_yes() {
 
     let backups = handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
@@ -3040,6 +3054,7 @@ fn on_conflict_overwrite_keeps_no_copy() {
     handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         true,
@@ -3074,6 +3089,7 @@ fn on_conflict_skip_drops_the_file_from_the_deployment() {
     handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         true,
@@ -3104,6 +3120,7 @@ fn on_conflict_fail_aborts_naming_the_module_and_the_file() {
 
     let err = handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
@@ -3140,6 +3157,7 @@ fn a_profile_target_already_holding_the_planned_content_is_left_alone() {
 
     let backups = handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
@@ -3183,6 +3201,7 @@ fn a_reserved_target_is_still_the_users_file_until_the_write_runs() {
 
     let backups = handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
@@ -3858,7 +3877,7 @@ fn platform_skip_survives_in_the_plan_payload() {
         (PhaseName::Modules, vec![skip]),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
 
     assert_eq!(output.total_actions, 2, "the skip is a counted action");
     let modules = output
@@ -3912,7 +3931,7 @@ fn the_payload_total_matches_the_plans_own_count_over_a_pre_skipped_action() {
             pkg_install("brew", vec!["rg"]),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], "→");
 
     assert_eq!(
         output.total_actions,
@@ -3938,7 +3957,7 @@ fn a_phase_scoped_payload_prices_only_the_scope_it_listed() {
         (PhaseName::Files, vec![file_create("/etc/foo")]),
     ]);
     let filter = reconciler::PhaseFilter::Phase(PhaseName::Files);
-    let output = build_plan_output(&plan, "ctx", Some(&filter), &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", Some(&filter), &[], &no_decisions(), &[], "→");
 
     assert_eq!(plan.total_actions(), 2, "the plan itself holds both phases");
     assert_eq!(output.total_actions, 1);
@@ -4310,6 +4329,7 @@ fn a_settled_conflict_sweep_narrates_the_owner_it_is_reading() {
     handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         true,
@@ -4344,6 +4364,7 @@ fn an_unsettled_conflict_sweep_opens_no_bar() {
     // No seeded answer: the prompt fails and the sweep falls back to Backup.
     handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,

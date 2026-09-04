@@ -193,6 +193,7 @@ fn daemon_status_running_human() {
         &[],
         &declared_sources(),
         DAEMON_STATUS_NOW,
+        printer.arrow(),
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "daemon_status/running.txt");
@@ -207,6 +208,7 @@ fn daemon_status_running_json() {
         &[],
         &declared_sources(),
         DAEMON_STATUS_NOW,
+        printer.arrow(),
     ));
     drop(printer);
     let json = cap.json().expect("doc captured json");
@@ -224,6 +226,7 @@ fn daemon_status_running_no_timestamps_human() {
         &[],
         &[],
         DAEMON_STATUS_NOW,
+        printer.arrow(),
     ));
     drop(printer);
     cap.assert_human_snapshot_in(
@@ -241,6 +244,7 @@ fn daemon_status_running_with_update_human() {
         &[],
         &declared_sources(),
         DAEMON_STATUS_NOW,
+        printer.arrow(),
     ));
     drop(printer);
     cap.assert_human_snapshot_in(
@@ -284,7 +288,10 @@ fn install_payload_windows() -> DaemonInstallOutput {
 #[test]
 fn daemon_install_installed_linux_human() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_install_doc(&install_payload_linux()));
+    printer.emit(build_daemon_install_doc(
+        &install_payload_linux(),
+        printer.arrow(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -295,7 +302,10 @@ fn daemon_install_installed_linux_human() {
 #[test]
 fn daemon_install_installed_linux_json() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_install_doc(&install_payload_linux()));
+    printer.emit(build_daemon_install_doc(
+        &install_payload_linux(),
+        printer.arrow(),
+    ));
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["platform"], "linux");
@@ -309,7 +319,10 @@ fn daemon_install_installed_linux_json() {
 #[test]
 fn daemon_install_installed_macos_human() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_install_doc(&install_payload_macos()));
+    printer.emit(build_daemon_install_doc(
+        &install_payload_macos(),
+        printer.arrow(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -320,7 +333,10 @@ fn daemon_install_installed_macos_human() {
 #[test]
 fn daemon_install_installed_macos_json() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_install_doc(&install_payload_macos()));
+    printer.emit(build_daemon_install_doc(
+        &install_payload_macos(),
+        printer.arrow(),
+    ));
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["platform"], "macos");
@@ -334,7 +350,10 @@ fn daemon_install_installed_macos_json() {
 #[test]
 fn daemon_install_installed_windows_human() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_install_doc(&install_payload_windows()));
+    printer.emit(build_daemon_install_doc(
+        &install_payload_windows(),
+        printer.arrow(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -345,7 +364,10 @@ fn daemon_install_installed_windows_human() {
 #[test]
 fn daemon_install_installed_windows_json() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_install_doc(&install_payload_windows()));
+    printer.emit(build_daemon_install_doc(
+        &install_payload_windows(),
+        printer.arrow(),
+    ));
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["platform"], "windows");

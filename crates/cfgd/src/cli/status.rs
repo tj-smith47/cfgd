@@ -1250,7 +1250,7 @@ fn recorded_owner(r: &cfgd_core::state::ManagedResource, profile_owner: &str) ->
 /// after: `None` is that cell, and [`owner_render_order`] leaves it out of the
 /// order, which sorts every such row after the last named owner.
 fn owner_from_token(token: &str) -> Option<cfgd_core::reconciler::Owner> {
-    let (kind, name) = token.split_once(':')?;
+    let (kind, name) = cfgd_core::output::split_owner_token(token)?;
     Some(cfgd_core::reconciler::Owner {
         kind: cfgd_core::reconciler::OwnerKind::from_token(kind)?,
         name: name.to_string(),
@@ -2630,12 +2630,14 @@ pub(super) fn cmd_status(
         let cfgd_installed = cfgd_installed_packages(state)?;
         let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
         let fm = crate::files::CfgdFileManager::new(&config_dir, &resolved)?;
+        let module_cache = module_cache_dir(cli)?;
         let report = super::live_drift::live_drift_results(
             &config_dir,
             &resolved,
             &registry,
             &resolved_modules,
             &cfgd_installed,
+            &module_cache,
             state,
             &pkg_cx,
             &fm,
@@ -2698,6 +2700,7 @@ pub(super) fn cmd_status(
             profile: derivable_profile(profile_name),
             profile_inherits: &resolved.inherits_chain(),
             modules: &cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
+            arrow: printer.arrow(),
         },
         &configured_sources,
         &cfgd_core::utc_now_iso8601(),
@@ -2930,6 +2933,7 @@ pub(super) fn cmd_status_module(
                     &resolved,
                     &resolved_modules,
                     registry.default_file_strategy,
+                    &cache_base,
                     state,
                 )?;
                 for r in &file_results {
@@ -2977,8 +2981,8 @@ pub(super) fn cmd_status_module(
                         // reading that as "installed" would report a verdict
                         // no manager gave. Only an answerable entry joins the
                         // scope the record can vouch for.
-                        let scannable =
-                            pkg.manager != "script" && mgr_map.contains_key(pkg.manager.as_str());
+                        let scannable = pkg.manager != cfgd_core::SCRIPT_SENTINEL
+                            && mgr_map.contains_key(pkg.manager.as_str());
                         if scannable {
                             checked.push((
                                 "package".to_string(),
@@ -4106,6 +4110,7 @@ mod tests {
                 &declared,
                 &[],
                 "2026-05-12T14:30:25Z",
+                p.arrow(),
             ))
         });
 
@@ -4154,9 +4159,9 @@ mod tests {
             crate::cli::apply::run_apply(&cli, p, &args).unwrap();
         });
         for (surface, rows, module) in [
-            // Ruled 2026-09-03: a run the invocation named states only what
-            // its invocation did not. `scratch` was just created by name and
-            // depends on nothing, so its row says nothing.
+            // A run the invocation named states only what its invocation did
+            // not: `scratch` was just created by name and depends on
+            // nothing, so its row says nothing.
             ("module create --apply", &created, None),
             // Every isolate surface renders the SAME delta-only row: what the
             // resolution ADDED, in the `Profile` row's own annotated shape,
@@ -4299,6 +4304,7 @@ mod tests {
                 profile: Some("default"),
                 profile_inherits: &[],
                 modules: &[],
+                arrow: printer.arrow(),
             },
             &[],
             "2026-05-12T14:30:25Z",
@@ -4376,6 +4382,7 @@ mod tests {
                     profile: Some("default"),
                     profile_inherits: &[],
                     modules: &[],
+                    arrow: printer.arrow(),
                 },
                 &[],
                 // Pinned, never the wall clock: the age is a rendered value.
@@ -4882,6 +4889,7 @@ mod tests {
                 profile: Some("default"),
                 profile_inherits: &[],
                 modules: &[],
+                arrow: printer.arrow(),
             },
             &[],
             "2026-05-14T10:05:00Z",
@@ -7355,10 +7363,10 @@ mod tests {
     /// The `Status` row leads a module's report — nothing between it and the
     /// recorded `Last Applied`.
     ///
-    /// A `Scope` row sat under it until the 2026-09-03 ruling that a scoped
-    /// command never echoes its invocation-named scope back as an annotation:
-    /// `cfgd status nvim` naming `module:nvim` told the reader only what they
-    /// had just typed. The recorded scope stays in `-o json`.
+    /// No `Scope` row sits under it: a scoped command never echoes its
+    /// invocation-named scope back as an annotation, so `cfgd status nvim`
+    /// naming `module:nvim` would tell the reader only what they had just
+    /// typed. The recorded scope stays in `-o json`.
     #[test]
     fn the_status_row_leads_a_module_report() {
         for recorded in [Some("module:nvim"), Some("base"), Some(""), None] {
@@ -8148,9 +8156,24 @@ mod tests {
                  report ({owned}): {out}"
             );
         }
+        // A plain substring check is the wrong tool for `rg`: two characters
+        // are cheap to find inside an unrelated word (a target path, a
+        // heading) that has nothing to do with the rejected package, so the
+        // assertion would fail for a reason that names no real regression.
+        // Word-bounded matching is what "this package name did not render"
+        // actually means, and it is the correct check for every name here.
+        fn renders_as_a_word(haystack: &str, word: &str) -> bool {
+            let bytes = haystack.as_bytes();
+            haystack.match_indices(word).any(|(i, _)| {
+                let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+                let after = i + word.len();
+                let after_ok = after >= bytes.len() || !bytes[after].is_ascii_alphanumeric();
+                before_ok && after_ok
+            })
+        }
         for rejected in ["pkg-gated", "jq", "demo", "rg"] {
             assert!(
-                !out.contains(rejected),
+                !renders_as_a_word(&out, rejected),
                 "a row the scope rejects — gated off, denied route, stale manager \
                  for a script entry — is not this module's to render ({rejected}): {out}"
             );

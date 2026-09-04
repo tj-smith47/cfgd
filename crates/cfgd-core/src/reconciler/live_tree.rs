@@ -209,6 +209,12 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
         self.printer.subject_budget()
     }
 
+    /// The theme's arrow glyph, for a wait row naming a Secret or System
+    /// blocker's value change.
+    pub(super) fn arrow(&self) -> &str {
+        self.printer.arrow()
+    }
+
     /// Whether outcomes settle HERE, in the rows the region already shows.
     ///
     /// The negative answer is the whole off-TTY contract: the caller holds each
@@ -224,7 +230,9 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
     /// that row is where the reader has been watching it, and starting it
     /// somewhere else is the jump this whole module exists to prevent.
     pub(super) fn dispatched(&mut self, owner: &'p Owner, action: &'p Action) -> LaneHandle<'p> {
-        let subject = action_display_subject_within(action, self.subject_budget()).to_string();
+        let subject =
+            action_display_subject_within(action, self.subject_budget(), self.printer.arrow())
+                .to_string();
         if !self.live {
             return self.printer.lane_at(self.depth, subject);
         }

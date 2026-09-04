@@ -7,7 +7,7 @@ pub const MODULES_ANNOTATION: &str = "cfgd.io/modules";
 /// script rather than a manager command. It names no registry entry, so no
 /// manager map holds it, no live listing reports it and no drift row is minted
 /// under it.
-pub(crate) const SCRIPT_SENTINEL: &str = "script";
+pub const SCRIPT_SENTINEL: &str = "script";
 
 /// Default namespace the cfgd operator + CSI driver are deployed into. Used by
 /// `kubectl cfgd version` to locate the operator Deployment and CSI DaemonSet

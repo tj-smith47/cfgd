@@ -54,7 +54,12 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
     let doc = Doc::new()
         .status(
             Role::Ok,
-            format!("Switched profile: {} → {}", old_profile, name),
+            format!(
+                "Switched profile: {} {} {}",
+                old_profile,
+                printer.arrow(),
+                name
+            ),
         )
         .hint(crate::cli::success_next_step(
             crate::cli::Mutation::ProfileSwitched,

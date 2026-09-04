@@ -93,15 +93,27 @@ impl StatusTransition {
     }
 }
 
+/// Split a single owner token at its FIRST colon into `(kind, name)`, or
+/// `None` when either half is empty. An owner NAME may itself carry a colon,
+/// which is why this splits once from the left rather than validating shape.
+///
+/// The one split behind every owner-token reader: [`owner_tokens`] folds it
+/// over a whole recorded scope, and `cli::status::owner_from_token` asks it of
+/// a single displayed token, so the two cannot disagree about where a token's
+/// kind ends.
+pub fn split_owner_token(token: &str) -> Option<(&str, &str)> {
+    let (kind, name) = token.split_once(':')?;
+    (!kind.is_empty() && !name.is_empty()).then_some((kind, name))
+}
+
 /// The owner tokens a RECORDED scope string carries, or `None` when the string
 /// is not one.
 ///
 /// A recorded scope is either a profile name or the `Owner::TOKEN_SEPARATOR`-
-/// joined tokens of an isolated run, and only the second is an owner list. A
-/// token splits at its FIRST colon — an owner NAME may carry one — and every
-/// token must read as `kind:name` for the string to be a scope: a half-parsed
-/// list rendered half-styled would be a third spelling of a token the tree
-/// already renders two ways.
+/// joined tokens of an isolated run, and only the second is an owner list.
+/// Every token must read as `kind:name` for the string to be a scope: a
+/// half-parsed list rendered half-styled would be a third spelling of a token
+/// the tree already renders two ways.
 ///
 /// This is the ONE reading of that string for display; `-o json` keeps it raw.
 pub fn owner_tokens(recorded: &str) -> Option<Vec<OwnerLabel>> {
@@ -110,10 +122,7 @@ pub fn owner_tokens(recorded: &str) -> Option<Vec<OwnerLabel>> {
         .collect();
     let mut owners = Vec::with_capacity(raw.len());
     for token in raw {
-        let (kind, name) = token.split_once(':')?;
-        if kind.is_empty() || name.is_empty() {
-            return None;
-        }
+        let (kind, name) = split_owner_token(token)?;
         owners.push(OwnerLabel::new(kind, name));
     }
     (!owners.is_empty()).then_some(owners)

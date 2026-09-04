@@ -582,10 +582,12 @@ fn blocking_node<'s, 'p>(slots: &'s [Slot<'p>], index: usize) -> Option<&'s Slot
 /// A prerequisite is the one narrowing, named by its TOOL rather than by
 /// `apt install curl — required by npm`: curl not arriving is what the
 /// dependent was waiting for, and its tool is the head of that row already.
-fn node_subject(action: &Action, budget: Option<usize>) -> Option<String> {
+fn node_subject(action: &Action, budget: Option<usize>, arrow: &str) -> Option<String> {
     match action {
         Action::Manager(ManagerAction::Prerequisite { tool, .. }) => Some(tool.clone()),
-        Action::Manager(_) => Some(action_display_subject_within(action, budget).to_string()),
+        Action::Manager(_) => {
+            Some(action_display_subject_within(action, budget, arrow).to_string())
+        }
         _ => None,
     }
 }
@@ -597,9 +599,9 @@ fn node_subject(action: &Action, budget: Option<usize>) -> Option<String> {
 /// every operand spelled out, so a reason repeating them puts one install's
 /// package list on two rows. Every other shape's subject is already its own
 /// head.
-fn blocker_subject(action: &Action, budget: Option<usize>) -> String {
+fn blocker_subject(action: &Action, budget: Option<usize>, arrow: &str) -> String {
     action_display_head(action)
-        .unwrap_or_else(|| action_display_subject_within(action, budget).to_string())
+        .unwrap_or_else(|| action_display_subject_within(action, budget, arrow).to_string())
 }
 
 /// Every wait reason a phase holding `actions` can put on a row, worded as
@@ -611,7 +613,11 @@ fn blocker_subject(action: &Action, budget: Option<usize>) -> String {
 /// rows over: priced over every action, it reserved for `queued behind deploy
 /// <two absolute paths>` — a sentence no code path emits — and refused the
 /// whole report its column.
-pub(super) fn phase_wait_reasons(actions: &[&Action], budget: Option<usize>) -> Vec<String> {
+pub(super) fn phase_wait_reasons(
+    actions: &[&Action],
+    budget: Option<usize>,
+    arrow: &str,
+) -> Vec<String> {
     let mut reasons = Vec::new();
     for (at, action) in actions.iter().enumerate() {
         if let Action::Manager(node) = action {
@@ -620,7 +626,7 @@ pub(super) fn phase_wait_reasons(actions: &[&Action], budget: Option<usize>) -> 
                 Action::Manager(dependent) => dependent.depends_on().contains(&id),
                 _ => false,
             });
-            if depended_on && let Some(subject) = node_subject(action, budget) {
+            if depended_on && let Some(subject) = node_subject(action, budget, arrow) {
                 reasons.push(wait_reason(Hold::Edge(&subject)));
             }
         }
@@ -630,7 +636,9 @@ pub(super) fn phase_wait_reasons(actions: &[&Action], budget: Option<usize>) -> 
                 .enumerate()
                 .any(|(other_at, other)| other_at != at && action_lane(other) == Some(lane))
         {
-            reasons.push(wait_reason(Hold::Lane(&blocker_subject(action, budget))));
+            reasons.push(wait_reason(Hold::Lane(&blocker_subject(
+                action, budget, arrow,
+            ))));
         }
     }
     reasons
@@ -656,10 +664,10 @@ fn lane_occupant<'s, 'p>(slots: &'s [Slot<'p>], lane: &str) -> Option<&'s Slot<'
 /// otherwise. Named by [`blocker_subject`] for the same reason
 /// [`node_subject`] narrows a prerequisite; the bare lane name is the
 /// fallback when no row occupies it.
-fn lane_hold_reason(slots: &[Slot<'_>], lane: &str, budget: Option<usize>) -> String {
+fn lane_hold_reason(slots: &[Slot<'_>], lane: &str, budget: Option<usize>, arrow: &str) -> String {
     match lane_occupant(slots, lane) {
         Some(occupant) => {
-            let name = blocker_subject(occupant.action, budget);
+            let name = blocker_subject(occupant.action, budget, arrow);
             if occupant.registers_sources {
                 wait_reason(Hold::Source(&name))
             } else {
@@ -747,7 +755,8 @@ fn fail_dependents<'p>(
     let Some(root_node) = slots[root].node.clone() else {
         return;
     };
-    let cause = node_subject(root_action, None).unwrap_or_else(|| root_node.clone());
+    let cause = node_subject(root_action, None, crate::output::theme::ICON_ARROW)
+        .unwrap_or_else(|| root_node.clone());
     let mut failed: Vec<String> = vec![root_node];
     loop {
         let mut progressed = false;
@@ -934,6 +943,9 @@ struct WaitInputs<'a, 'p> {
     /// The tree's subject budget, so a wait line names its subject — and the
     /// row it waits on — exactly as their own rows do.
     budget: Option<usize>,
+    /// The theme's arrow glyph, for a wait row whose blocker is a Secret or
+    /// System action naming a value change.
+    arrow: &'a str,
 }
 
 /// Every distinct owner in the phase, in the order the dispatch offers them,
@@ -1181,6 +1193,7 @@ impl super::Reconciler<'_> {
                         deps: &deps,
                         lanes_busy: &lanes_busy,
                         budget: collect.tree.subject_budget(),
+                        arrow: collect.tree.arrow(),
                     }));
                 }
                 // Nothing new dispatches after an abort, so no refresh follows
@@ -1432,7 +1445,7 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
                 // Only a manager node carries edges, so a blocker always has a
                 // name. If that ever stops holding, say nothing rather than
                 // "waiting on " with the claim's object missing.
-                let named = node_subject(blocker.action, inputs.budget);
+                let named = node_subject(blocker.action, inputs.budget, inputs.arrow);
                 debug_assert!(
                     named.is_some(),
                     "a node is blocked by an action with no subject to name"
@@ -1465,13 +1478,14 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
                 // `brew-cask` held back by a running `brew install neovim` is
                 // queued behind that row, and one held for its family's tap
                 // is waiting on it.
-                lane_hold_reason(slots, lane, inputs.budget)
+                lane_hold_reason(slots, lane, inputs.budget, inputs.arrow)
             }
         };
         rows.push(Wait {
             owner: slot.owner,
             action: Some(slot.action),
-            subject: action_display_subject_within(slot.action, inputs.budget).to_string(),
+            subject: action_display_subject_within(slot.action, inputs.budget, inputs.arrow)
+                .to_string(),
             reason: Some(reason),
         });
     }
@@ -1639,12 +1653,22 @@ mod tests {
         let tap = install("brew-tap", "charmbracelet/tap");
 
         // Nothing contends and nothing depends: no reason at all.
-        assert!(phase_wait_reasons(&[&deploy, &write_env, &brew, &apt], None).is_empty());
+        assert!(
+            phase_wait_reasons(
+                &[&deploy, &write_env, &brew, &apt],
+                None,
+                crate::output::theme::ICON_ARROW
+            )
+            .is_empty()
+        );
         // The depended-on node and the two contenders for one lane, each
         // worded as the dispatcher words it; the sole apt occupant, the deploy
         // and the env write are named by nothing.
-        let mut reasons =
-            phase_wait_reasons(&[&brew, &npm, &pipx, &apt, &deploy, &write_env], None);
+        let mut reasons = phase_wait_reasons(
+            &[&brew, &npm, &pipx, &apt, &deploy, &write_env],
+            None,
+            crate::output::theme::ICON_ARROW,
+        );
         reasons.sort();
         assert_eq!(
             reasons,
@@ -1655,7 +1679,7 @@ mod tests {
             ]
         );
         // Two package rows of one family contend by FAMILY, the unit a lane is.
-        let mut reasons = phase_wait_reasons(&[&gum, &tap], None);
+        let mut reasons = phase_wait_reasons(&[&gum, &tap], None, crate::output::theme::ICON_ARROW);
         reasons.sort();
         assert_eq!(
             reasons,
@@ -1801,8 +1825,13 @@ mod tests {
         ];
         for node in variants {
             let action = Action::Manager(node);
-            let named = node_subject(&action, None).expect("a manager node has a subject");
-            let rendered = crate::reconciler::action_display_subject(&action).to_string();
+            let named = node_subject(&action, None, crate::output::theme::ICON_ARROW)
+                .expect("a manager node has a subject");
+            let rendered = crate::reconciler::action_display_subject(
+                &action,
+                crate::output::theme::ICON_ARROW,
+            )
+            .to_string();
             let Action::Manager(node) = &action else {
                 unreachable!()
             };
@@ -1823,7 +1852,7 @@ mod tests {
             }
         }
         assert!(
-            node_subject(&probe_action(), None).is_none(),
+            node_subject(&probe_action(), None, crate::output::theme::ICON_ARROW).is_none(),
             "only a manager node is ever a blocker"
         );
     }
@@ -1964,6 +1993,7 @@ mod tests {
             deps,
             lanes_busy,
             budget: None,
+            arrow: crate::output::theme::ICON_ARROW,
         })
     }
 
@@ -2867,7 +2897,9 @@ mod tests {
         // the wiring: every finished action becomes a `Fail`-role outcome
         // carrying the real error `fail_dependents` produced.
         let mut record = |_owner: &Owner, action: &Action, collected: LaneCollected| {
-            let subject = crate::reconciler::action_display_subject(action).to_string();
+            let subject =
+                crate::reconciler::action_display_subject(action, crate::output::theme::ICON_ARROW)
+                    .to_string();
             let mut outcome = ActionOutcome::for_test(&subject, Duration::ZERO);
             outcome.role = crate::output::Role::Fail;
             outcome.duration = None;

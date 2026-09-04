@@ -110,9 +110,9 @@ fn paths_user_scope_json() {
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "paths/user.json");
 }
 
-/// Ruled 2026-09-03: a scoped command never echoes its invocation-named scope
-/// back as an annotation. `cfgd --scope system paths` renders no `Scope` row —
-/// the reader wrote the word. A defaulted scope is the only thing that can say
+/// A scoped command never echoes its invocation-named scope back as an
+/// annotation: `cfgd --scope system paths` renders no `Scope` row, because the
+/// reader wrote the word. A defaulted scope is the only thing that can say
 /// which family these roots belong to, so its row stays.
 ///
 /// The payload is unconditional either way: a scripting consumer never saw the

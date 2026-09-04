@@ -111,6 +111,7 @@ pub fn cmd_daemon_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         &declared_sources,
         &catalog,
         &cfgd_core::utc_now_iso8601(),
+        printer.arrow(),
     ));
     Ok(())
 }
@@ -175,6 +176,7 @@ pub fn build_daemon_status_doc(
     declared_sources: &[cfgd_core::reconciler::ComposedSource],
     catalog: &[SourceListEntry],
     now: &str,
+    arrow: &str,
 ) -> Doc {
     let mut doc = Doc::new().heading("Daemon Status");
 
@@ -193,6 +195,7 @@ pub fn build_daemon_status_doc(
                     profile: s.profile.as_deref(),
                     profile_inherits: &s.profile_inherits,
                     modules: &s.modules,
+                    arrow,
                 });
             rows.push(KvPair::new("PID", s.pid.to_string()));
             // A measured duration, not a declared one: the intervals below
@@ -394,14 +397,14 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
         }
     };
 
-    printer.emit(build_daemon_install_doc(&payload));
+    printer.emit(build_daemon_install_doc(&payload, printer.arrow()));
     Ok(())
 }
 
 /// Build the Doc emitted for `cfgd daemon install`. Carries the heading,
 /// platform-specific success messages, and `with_data(payload)` so structured
 /// consumers see a stable shape.
-pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
+pub fn build_daemon_install_doc(payload: &DaemonInstallOutput, arrow: &str) -> Doc {
     let mut doc = Doc::new().heading("Install Daemon Service");
     match payload.platform.as_str() {
         "windows" => {
@@ -424,7 +427,9 @@ pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
             if payload.windows_event_log.unwrap_or(false) {
                 doc = doc.status(
                     Role::Info,
-                    "Event Log mirror: Application → Source 'cfgd' (also at the file path above)",
+                    format!(
+                        "Event Log mirror: Application {arrow} Source 'cfgd' (also at the file path above)"
+                    ),
                 );
             } else {
                 doc = doc.status(
@@ -708,7 +713,7 @@ mod tests {
     #[test]
     fn build_daemon_status_doc_none_contains_not_running() {
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(None, &[], &[], DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(None, &[], &[], DAEMON_STATUS_NOW, "->");
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -720,7 +725,7 @@ mod tests {
     #[test]
     fn build_daemon_status_doc_none_json_payload() {
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(None, &[], &[], DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(None, &[], &[], DAEMON_STATUS_NOW, "->");
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["running"], false);
@@ -731,7 +736,7 @@ mod tests {
     fn build_daemon_status_doc_some_contains_pid() {
         let status = make_status(true);
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW, "->");
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -744,7 +749,7 @@ mod tests {
     fn build_daemon_status_doc_some_json_payload() {
         let status = make_status(true);
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW, "->");
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["running"], true);
@@ -763,6 +768,7 @@ mod tests {
             &[],
             &[],
             DAEMON_STATUS_NOW,
+            printer.arrow(),
         ));
         let human = cap.human();
         assert!(
@@ -784,6 +790,7 @@ mod tests {
             &[],
             &[],
             DAEMON_STATUS_NOW,
+            printer.arrow(),
         ));
         let human = cap.human();
         assert!(
@@ -797,7 +804,7 @@ mod tests {
         let mut status = make_status(true);
         status.update_available = Some("v1.2.3".to_string());
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW, "->");
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -816,7 +823,7 @@ mod tests {
             windows_event_log: None,
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_install_doc(&payload);
+        let doc = build_daemon_install_doc(&payload, printer.arrow());
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["platform"], "linux");
@@ -840,7 +847,7 @@ mod tests {
             windows_event_log: None,
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_install_doc(&payload);
+        let doc = build_daemon_install_doc(&payload, printer.arrow());
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["platform"], "macos");
@@ -862,7 +869,7 @@ mod tests {
             windows_event_log: Some(true),
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_install_doc(&payload);
+        let doc = build_daemon_install_doc(&payload, printer.arrow());
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["platform"], "windows");
@@ -885,7 +892,7 @@ mod tests {
             windows_event_log: Some(false),
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_install_doc(&payload);
+        let doc = build_daemon_install_doc(&payload, printer.arrow());
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["windowsEventLog"], false);
@@ -968,7 +975,7 @@ mod tests {
             windows_event_log: Some(true),
         };
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_daemon_install_doc(&payload));
+        printer.emit(build_daemon_install_doc(&payload, printer.arrow()));
         let human = cap.human();
         assert!(
             human.contains("Installed the cfgd service but it is not yet running")
@@ -993,7 +1000,7 @@ mod tests {
             windows_event_log: Some(false),
         };
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_daemon_install_doc(&payload));
+        printer.emit(build_daemon_install_doc(&payload, printer.arrow()));
         let human = cap.human();
         assert!(
             human.contains("Installed and started the cfgd service"),
@@ -1151,7 +1158,7 @@ mod tests {
             },
         ];
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW, "->");
         printer.emit(doc);
         let human = cap.human();
         assert!(human.contains("infra"), "infra source must appear: {human}");
@@ -1185,6 +1192,7 @@ mod tests {
             &[],
             &[],
             DAEMON_STATUS_NOW,
+            printer.arrow(),
         ));
         let human = cap.human();
         let header = human
@@ -1223,6 +1231,7 @@ mod tests {
             &[],
             std::slice::from_ref(&declared),
             DAEMON_STATUS_NOW,
+            printer.arrow(),
         ));
         let human = cap.human();
         let local_row = human
@@ -1265,6 +1274,7 @@ mod tests {
             &[],
             &[],
             DAEMON_STATUS_NOW,
+            printer.arrow(),
         ));
         let human = cap.human();
         assert!(human.contains("Commit"), "the column is filled: {human}");
@@ -1300,7 +1310,7 @@ mod tests {
         let mut status = make_status(true);
         status.last_reconcile = Some("2026-05-14T10:00:00Z".into());
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW, "->");
         printer.emit(doc);
         let human = cap.human();
         let age = cfgd_core::humanize_age_since("2026-05-14T10:00:00Z", DAEMON_STATUS_NOW)
@@ -1328,6 +1338,7 @@ mod tests {
             &[],
             &[],
             DAEMON_STATUS_NOW,
+            printer.arrow(),
         ));
         let human = cap.human();
         assert_eq!(
@@ -1367,7 +1378,7 @@ mod tests {
             windows_event_log: None,
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_install_doc(&payload);
+        let doc = build_daemon_install_doc(&payload, printer.arrow());
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -1386,7 +1397,7 @@ mod tests {
             windows_event_log: None,
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_install_doc(&payload);
+        let doc = build_daemon_install_doc(&payload, printer.arrow());
         printer.emit(doc);
         let human = cap.human();
         assert!(

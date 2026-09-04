@@ -542,6 +542,7 @@ impl<'a> ApplyRun<'a> {
                 profile: self.ctx.profile,
                 profile_inherits: self.ctx.profile_inherits,
                 modules: &self.header_modules(),
+                arrow: printer.arrow(),
             });
         if let Some(trigger) = self.ctx.trigger {
             rows.push(KvPair::new("Trigger", trigger.to_string()));
@@ -717,8 +718,9 @@ impl<'a> ApplyRun<'a> {
         let budget = report_subject_budget(plan, self.filter, printer);
         let _column = printer.report_column_beside(
             budget,
-            report_align_width(plan, self.filter, budget).max(self.backup_align_width()),
-            report_trailing_allowance(plan, self.filter, budget),
+            report_align_width(plan, self.filter, budget, printer.arrow())
+                .max(self.backup_align_width()),
+            report_trailing_allowance(plan, self.filter, budget, printer.arrow()),
         );
         if self.preview_only {
             self.preview(printer);
@@ -982,11 +984,11 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
     // position mid-report. A run that already claimed one — an apply, which saw
     // its backup labels too — keeps it, so its preview and its tree agree.
     let budget = report_subject_budget(plan, filter, printer);
-    let width = report_align_width(plan, filter, budget);
+    let width = report_align_width(plan, filter, budget, printer.arrow());
     let _column = printer.report_column_beside(
         budget,
         width,
-        report_trailing_allowance(plan, filter, budget),
+        report_trailing_allowance(plan, filter, budget, printer.arrow()),
     );
     for (phase, groups) in in_scope_tree(plan, filter, PhaseCoverage::Rendered) {
         let phase_section = printer.section_phase(&phase.name.section_label());
@@ -995,7 +997,7 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
             let owner_section = phase_section.section_owner(&label);
             owner_section.live_column(width);
             for action in actions {
-                let subject = action_display_subject_within(action, budget);
+                let subject = action_display_subject_within(action, budget, printer.arrow());
                 // Both settled rows go through `action_status`, the seam the
                 // apply tree settles through, so the two trees paint the same
                 // action identically one beat apart.
@@ -1213,6 +1215,7 @@ pub fn report_align_width(
     plan: &Plan,
     filter: Option<&PhaseFilter>,
     budget: Option<usize>,
+    arrow: &str,
 ) -> usize {
     let actions: Vec<&Action> = in_scope_tree(plan, filter, PhaseCoverage::Rendered)
         .iter()
@@ -1221,7 +1224,7 @@ pub fn report_align_width(
         .collect();
     let subjects: Vec<String> = actions
         .iter()
-        .map(|action| action_display_subject_within(action, budget).to_string())
+        .map(|action| action_display_subject_within(action, budget, arrow).to_string())
         .filter(|subject| budget.is_none_or(|b| measure_width(subject) <= b))
         .collect();
     let subject_width = align_width_of(subjects.iter().map(String::as_str));
@@ -1268,7 +1271,7 @@ pub fn report_subject_budget(
     let line = printer.action_row_line_budget()?;
     let reserved = |budget: usize| {
         crate::output::renderer::status::GLYPH_PREFIX_WIDTH
-            + report_trailing_allowance(plan, filter, Some(budget))
+            + report_trailing_allowance(plan, filter, Some(budget), printer.arrow())
     };
     let widened = line.saturating_sub(reserved(floor));
     if widened <= floor {
@@ -1304,6 +1307,7 @@ pub fn report_trailing_allowance(
     plan: &Plan,
     filter: Option<&PhaseFilter>,
     budget: Option<usize>,
+    arrow: &str,
 ) -> usize {
     let separator = measure_width(" — ");
     in_scope_tree(plan, filter, PhaseCoverage::Rendered)
@@ -1314,7 +1318,7 @@ pub fn report_trailing_allowance(
                 .flat_map(|(_, actions)| actions.iter().copied())
                 .collect();
             let beside = |width: usize| budget.is_none_or(|b| width <= b);
-            let held = super::lanes::phase_wait_reasons(&actions, budget)
+            let held = super::lanes::phase_wait_reasons(&actions, budget, arrow)
                 .iter()
                 .map(|reason| measure_width(reason))
                 .filter(|width| beside(*width))

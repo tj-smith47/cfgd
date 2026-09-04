@@ -849,7 +849,33 @@ pub fn normalize_path_entry(entry: &str, home: &std::path::Path) -> String {
             (rest.is_empty() || rest.starts_with('/')).then(|| format!("{home}{rest}"))
         })
         .unwrap_or_else(|| entry.into_owned());
-    expanded.trim_end_matches('/').to_string()
+    fold_path_case(expanded.trim_end_matches('/').to_string())
+}
+
+/// Fold a normalized `PATH` entry to the case two spellings of the same
+/// directory compare equal in: identity on every host but Windows, where
+/// `fold_path_case_windows` runs (a plain code span, not a link — the
+/// function is compiled out under a normal, non-Windows doc build).
+fn fold_path_case(s: String) -> String {
+    #[cfg(windows)]
+    {
+        fold_path_case_windows(s)
+    }
+    #[cfg(not(windows))]
+    {
+        s
+    }
+}
+
+/// The WINDOWS arm of [`fold_path_case`], split out and compiled under test on
+/// every host (not just Windows) so a test can assert `C:\Tools` and
+/// `c:\tools` fold to the same string — Windows paths are case-insensitive,
+/// so two spellings of one directory that reach `normalize_path_entry`
+/// differing only in case must compare equal or a `PATH` fold reads the same
+/// directory as two.
+#[cfg(any(windows, test))]
+fn fold_path_case_windows(s: String) -> String {
+    s.to_ascii_lowercase()
 }
 
 /// Resolve the user's home directory, consulting the test override first.

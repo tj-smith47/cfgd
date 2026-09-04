@@ -182,7 +182,12 @@ pub(crate) fn run_profile_migrate(
                 PlanItem::Move { name, from, to } => {
                     printer.status_simple(
                         Role::Pending,
-                        format!("Would move {} → {}", from.posix(), to.posix()),
+                        format!(
+                            "Would move {} {} {}",
+                            from.posix(),
+                            printer.arrow(),
+                            to.posix()
+                        ),
                     );
                     records.push(MigrationRecord {
                         name: name.clone(),
@@ -263,7 +268,7 @@ pub(crate) fn run_profile_migrate(
                     Ok(()) => {
                         printer.status_simple(
                             Role::Ok,
-                            format!("Migrated '{}' → {}", name, to.posix()),
+                            format!("Migrated '{}' {} {}", name, printer.arrow(), to.posix()),
                         );
                         records.push(MigrationRecord {
                             name: name.clone(),

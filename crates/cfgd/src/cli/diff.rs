@@ -50,12 +50,19 @@ fn record_file_drift(
     mut record: cfgd_core::providers::FileDriftResult,
     strategy: cfgd_core::config::FileStrategy,
     config_dir: &std::path::Path,
+    module_cache: &std::path::Path,
     state: &cfgd_core::state::StateStore,
 ) -> bool {
     if record.matches {
         return false;
     }
-    cfgd_core::reconciler::mark_unmanaged_drift(&mut record, strategy, config_dir, state);
+    cfgd_core::reconciler::mark_unmanaged_drift(
+        &mut record,
+        strategy,
+        config_dir,
+        module_cache,
+        state,
+    );
     payload.files.push(record);
     true
 }
@@ -93,6 +100,7 @@ pub fn cmd_diff(
         return cmd_diff_module(&ctx, mod_name, exit_code);
     }
 
+    let module_cache = module_cache_dir(cli)?;
     printer.heading("Diff");
 
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
@@ -134,6 +142,7 @@ pub fn cmd_diff(
             profile: Some(profile_name),
             profile_inherits: &resolved.inherits_chain(),
             modules: &cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
+            arrow: printer.arrow(),
         },
     ));
 
@@ -162,6 +171,7 @@ pub fn cmd_diff(
             &registry,
             &resolved_modules,
             &cfgd_installed,
+            &module_cache,
             state,
             &pkg_cx,
             &fm,
@@ -211,7 +221,14 @@ pub fn cmd_diff(
                 }
                 let record = fm.diff_managed_one(managed, printer)?;
                 let strategy = strategies.for_target(&cfgd_core::expand_tilde(&managed.target));
-                if record_file_drift(&mut diff_payload, record, strategy, config_dir, state) {
+                if record_file_drift(
+                    &mut diff_payload,
+                    record,
+                    strategy,
+                    config_dir,
+                    &module_cache,
+                    state,
+                ) {
                     drift = true;
                 }
             }
@@ -230,7 +247,14 @@ pub fn cmd_diff(
                     .for_target(&cfgd_core::expand_tilde(std::path::Path::new(&file.target)));
                 let record =
                     diff_module_file(&fm, &resolved, module, file, config_dir, strategy, printer)?;
-                if record_file_drift(&mut diff_payload, record, strategy, config_dir, state) {
+                if record_file_drift(
+                    &mut diff_payload,
+                    record,
+                    strategy,
+                    config_dir,
+                    &module_cache,
+                    state,
+                ) {
                     drift = true;
                 }
             }
@@ -511,6 +535,7 @@ fn emit_isolate_header(
             profile: None,
             profile_inherits: &[],
             modules,
+            arrow: ctx.printer().arrow(),
         },
     ));
     Ok(())
@@ -615,13 +640,22 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                 let record =
                     diff_module_file(&fm, &resolved, module, file, config_dir, strategy, printer)?;
                 let rid = super::live_drift::module_file_resource_id(&module.name, &record.target);
-                checked.push(("module".to_string(), rid.clone()));
-                if record_file_drift(&mut diff_payload, record, strategy, config_dir, state)
-                    && let Some(rec) = diff_payload.files.last()
+                checked.push(("module".to_string(), rid));
+                if record_file_drift(
+                    &mut diff_payload,
+                    record,
+                    strategy,
+                    config_dir,
+                    &cache_base,
+                    state,
+                ) && let Some(rec) = diff_payload.files.last()
                 {
                     findings.push(cfgd_core::reconciler::VerifyResult {
                         resource_type: "module".to_string(),
-                        resource_id: rid,
+                        resource_id: super::live_drift::module_file_resource_id(
+                            &module.name,
+                            &rec.target,
+                        ),
                         matches: false,
                         expected: rec.expected.clone(),
                         actual: rec.actual.clone(),
@@ -648,7 +682,9 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                 // A `script` package and an unregistered manager are questions
                 // nothing can answer, so neither joins the scope this run can
                 // vouch for.
-                if pkg.manager != "script" && mgr_map.contains_key(pkg.manager.as_str()) {
+                if pkg.manager != cfgd_core::SCRIPT_SENTINEL
+                    && mgr_map.contains_key(pkg.manager.as_str())
+                {
                     checked.push((
                         "package".to_string(),
                         package_entry_drift_id(
@@ -919,7 +955,7 @@ pub(super) fn package_missing_drift(
     mgr_map: &std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager>,
     cx: &cfgd_core::providers::PackageContext<'_>,
 ) -> Option<PackageDrift> {
-    if pkg.manager == "script" {
+    if pkg.manager == cfgd_core::SCRIPT_SENTINEL {
         return None;
     }
     let mgr = mgr_map.get(pkg.manager.as_str())?;

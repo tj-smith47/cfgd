@@ -17,7 +17,7 @@ fn plan_items(actions: Vec<PackageAction>) -> Vec<String> {
     actions
         .into_iter()
         .map(|a| {
-            cfgd_core::reconciler::format_plan_item(&cfgd_core::reconciler::Action::Package(a))
+            cfgd_core::reconciler::format_plan_item(&cfgd_core::reconciler::Action::Package(a), "→")
         })
         .collect()
 }

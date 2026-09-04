@@ -431,6 +431,7 @@ pub(super) fn file_verify_results(
     resolved: &ResolvedProfile,
     modules: &[ResolvedModule],
     default_strategy: cfgd_core::config::FileStrategy,
+    module_cache: &std::path::Path,
     state: &cfgd_core::state::StateStore,
 ) -> anyhow::Result<Vec<VerifyResult>> {
     let drift = fm.file_drift_results(&resolved.merged)?;
@@ -449,7 +450,13 @@ pub(super) fn file_verify_results(
             // wrote is a decision to make, not a write to repeat.
             let strategy =
                 strategies.for_target(&cfgd_core::expand_tilde(std::path::Path::new(&d.target)));
-            cfgd_core::reconciler::mark_unmanaged_drift(&mut d, strategy, config_dir, state);
+            cfgd_core::reconciler::mark_unmanaged_drift(
+                &mut d,
+                strategy,
+                config_dir,
+                module_cache,
+                state,
+            );
             VerifyResult {
                 resource_type: "file".to_string(),
                 resource_id: d.target,
@@ -480,6 +487,7 @@ pub(super) fn module_file_verify_results(
     resolved: &ResolvedProfile,
     modules: &[ResolvedModule],
     default_strategy: cfgd_core::config::FileStrategy,
+    module_cache: &std::path::Path,
     state: &cfgd_core::state::StateStore,
 ) -> anyhow::Result<Vec<VerifyResult>> {
     let strategies = cfgd_core::effective::effective_file_strategies(
@@ -512,7 +520,13 @@ pub(super) fn module_file_verify_results(
                 }
                 None => fm.file_drift_one(&file.source, &file.target, None, Some(strategy))?,
             };
-            cfgd_core::reconciler::mark_unmanaged_drift(&mut drift, strategy, config_dir, state);
+            cfgd_core::reconciler::mark_unmanaged_drift(
+                &mut drift,
+                strategy,
+                config_dir,
+                module_cache,
+                state,
+            );
             results.push(VerifyResult {
                 resource_type: "module".to_string(),
                 resource_id: module_file_resource_id(&module.name, &drift.target),
@@ -600,6 +614,7 @@ pub(super) fn live_drift_results(
     registry: &ProviderRegistry,
     modules: &[ResolvedModule],
     cfgd_installed: &std::collections::HashSet<String>,
+    module_cache: &std::path::Path,
     state: &cfgd_core::state::StateStore,
     cx: &cfgd_core::providers::PackageContext<'_>,
     fm: &CfgdFileManager,
@@ -612,6 +627,7 @@ pub(super) fn live_drift_results(
             registry,
             modules,
             cfgd_installed,
+            module_cache,
             state,
             cx,
             fm,
@@ -627,6 +643,7 @@ fn live_drift_results_inner(
     registry: &ProviderRegistry,
     modules: &[ResolvedModule],
     cfgd_installed: &std::collections::HashSet<String>,
+    module_cache: &std::path::Path,
     state: &cfgd_core::state::StateStore,
     cx: &cfgd_core::providers::PackageContext<'_>,
     fm: &CfgdFileManager,
@@ -642,6 +659,7 @@ fn live_drift_results_inner(
             resolved,
             modules,
             registry.default_file_strategy,
+            module_cache,
             state,
         )?
         .into_iter()
@@ -657,6 +675,7 @@ fn live_drift_results_inner(
             resolved,
             modules,
             registry.default_file_strategy,
+            module_cache,
             state,
         )?
         .into_iter()
@@ -1072,6 +1091,7 @@ mod tests {
             &resolved,
             &[],
             cfgd_core::config::FileStrategy::default(),
+            dir.path(),
             &cfgd_core::state::StateStore::open_in_memory().unwrap(),
         )
         .unwrap();
@@ -1112,6 +1132,7 @@ mod tests {
             &resolved,
             &[],
             cfgd_core::config::FileStrategy::default(),
+            dir.path(),
             &state,
         )
         .unwrap();
@@ -1140,6 +1161,7 @@ mod tests {
             &resolved,
             &[],
             cfgd_core::config::FileStrategy::default(),
+            dir.path(),
             &cfgd_core::state::StateStore::open_in_memory().unwrap(),
         )
         .unwrap();
@@ -1165,6 +1187,7 @@ mod tests {
             &resolved,
             &[],
             cfgd_core::config::FileStrategy::default(),
+            dir.path(),
             &cfgd_core::state::StateStore::open_in_memory().unwrap(),
         )
         .unwrap();
@@ -1191,6 +1214,7 @@ mod tests {
             &registry,
             &[],
             &std::collections::HashSet::new(),
+            dir.path(),
             &state,
             &cx,
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
@@ -1221,6 +1245,7 @@ mod tests {
             &registry,
             &[],
             &std::collections::HashSet::new(),
+            dir.path(),
             &state,
             &cx,
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
@@ -1294,6 +1319,7 @@ mod tests {
             &registry,
             &[],
             &std::collections::HashSet::new(),
+            dir.path(),
             &state,
             &cx,
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
@@ -1359,6 +1385,7 @@ mod tests {
             &resolved,
             &modules,
             cfgd_core::config::FileStrategy::default(),
+            dir.path(),
             &cfgd_core::state::StateStore::open_in_memory().unwrap(),
         )
         .unwrap();
@@ -1401,6 +1428,7 @@ mod tests {
             &resolved,
             &modules,
             cfgd_core::config::FileStrategy::default(),
+            dir.path(),
             &state,
         )
         .unwrap();
@@ -1440,6 +1468,7 @@ mod tests {
             &resolved,
             &modules,
             cfgd_core::config::FileStrategy::default(),
+            dir.path(),
             &cfgd_core::state::StateStore::open_in_memory().unwrap(),
         )
         .unwrap();
@@ -1493,6 +1522,7 @@ mod tests {
             &resolved,
             &modules,
             cfgd_core::config::FileStrategy::default(),
+            dir.path(),
             &cfgd_core::state::StateStore::open_in_memory().unwrap(),
         )
         .unwrap();
@@ -1555,6 +1585,7 @@ mod tests {
             &resolved,
             &modules,
             cfgd_core::config::FileStrategy::default(),
+            dir.path(),
             &cfgd_core::state::StateStore::open_in_memory().unwrap(),
         )
         .unwrap();
@@ -1596,6 +1627,7 @@ mod tests {
             &resolved,
             &modules,
             cfgd_core::config::FileStrategy::default(),
+            dir.path(),
             &cfgd_core::state::StateStore::open_in_memory().unwrap(),
         )
         .expect("one unevaluable file must not fail the scan");
@@ -1634,6 +1666,7 @@ mod tests {
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            dir.path(),
             &state,
             &cx,
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
@@ -1717,6 +1750,7 @@ mod tests {
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            dir.path(),
             &state,
             &cx,
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
@@ -1769,6 +1803,7 @@ mod tests {
             &registry,
             &[module],
             &std::collections::HashSet::new(),
+            dir.path(),
             &state,
             &cx,
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
@@ -1879,6 +1914,7 @@ mod tests {
             &registry,
             &[module],
             &std::collections::HashSet::new(),
+            dir.path(),
             &state,
             &cx,
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
@@ -1951,6 +1987,7 @@ mod tests {
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            dir.path(),
             &state,
             &cx,
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
@@ -2010,6 +2047,7 @@ mod tests {
                 &registry,
                 &modules,
                 &std::collections::HashSet::new(),
+                dir.path(),
                 &state,
                 &cx,
                 &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
@@ -2076,6 +2114,7 @@ mod tests {
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            dir.path(),
             &state,
             &cx,
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
@@ -2135,6 +2174,7 @@ mod tests {
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            dir.path(),
             &state,
             &cx,
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
@@ -2178,6 +2218,7 @@ mod tests {
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            dir.path(),
             &state,
             &cx,
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
@@ -2416,6 +2457,7 @@ mod tests {
             &registry,
             &[module],
             &std::collections::HashSet::new(),
+            dir.path(),
             &state,
             &cx,
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
@@ -2455,6 +2497,7 @@ mod tests {
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            dir.path(),
             &state,
             &cx,
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
@@ -2523,6 +2566,7 @@ mod tests {
             &registry,
             &[],
             &std::collections::HashSet::new(),
+            dir.path(),
             &state,
             &cx,
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),

@@ -1130,6 +1130,14 @@ impl<'a> SystemContext<'a> {
     ) -> std::io::Result<crate::output::CommandOutput> {
         self.printer.run_silent(cmd, label)
     }
+
+    /// The theme's arrow glyph, for a note describing an `old {arrow} new`
+    /// relationship — a copy's source and destination, a rename. Narrower
+    /// than the banned `printer()` accessor: it hands back one glyph, not
+    /// the bypass that method would re-open.
+    pub fn arrow(&self) -> &str {
+        self.printer.arrow()
+    }
 }
 
 pub trait SystemConfigurator: Send + Sync {

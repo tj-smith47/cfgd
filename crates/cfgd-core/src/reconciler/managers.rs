@@ -1277,10 +1277,13 @@ mod tests {
             provisions.len(),
             1,
             "one apt-get install serves both, so one node says so: {:?}",
-            actions.iter().map(format_plan_item).collect::<Vec<_>>()
+            actions
+                .iter()
+                .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+                .collect::<Vec<_>>()
         );
         assert_eq!(
-            format_plan_item(provisions[0]),
+            format_plan_item(provisions[0], crate::output::theme::ICON_ARROW),
             "provision npm, pipx via apt",
             "the line has to account for every manager the command installs"
         );
@@ -1314,7 +1317,7 @@ mod tests {
         let lines: Vec<String> = actions
             .iter()
             .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
-            .map(format_plan_item)
+            .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
             .collect();
         assert_eq!(
             lines,
@@ -1410,7 +1413,7 @@ mod tests {
             .iter()
             .flat_map(|phase| phase.actions())
             .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
-            .map(format_plan_item)
+            .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
             .collect();
         assert_eq!(
             lines,
@@ -1742,7 +1745,10 @@ mod tests {
             ],
             "a provision waits on both its tool and its installer"
         );
-        let items: Vec<String> = actions.iter().map(format_plan_item).collect();
+        let items: Vec<String> = actions
+            .iter()
+            .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+            .collect();
         assert_eq!(
             items,
             vec![
@@ -1775,7 +1781,10 @@ mod tests {
              visible in the phase the user is told to look at: {ids:?}"
         );
         assert_eq!(
-            actions.iter().map(format_plan_item).collect::<Vec<_>>(),
+            actions
+                .iter()
+                .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+                .collect::<Vec<_>>(),
             vec![format!(
                 "cannot provision npm — {ABSENT_TOOL} is missing and no system manager is available"
             )],
@@ -1797,7 +1806,10 @@ mod tests {
             ],
         );
         assert_eq!(
-            actions.iter().map(format_plan_item).collect::<Vec<_>>(),
+            actions
+                .iter()
+                .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+                .collect::<Vec<_>>(),
             vec![format!(
                 "cannot provision npm — {ABSENT_TOOL} is missing and apt does not install it \
                  under that name"
@@ -1827,7 +1839,10 @@ mod tests {
              left promising `provision npm via brew` with no brew: {ids:?}"
         );
         assert_eq!(
-            actions.iter().map(format_plan_item).collect::<Vec<_>>(),
+            actions
+                .iter()
+                .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+                .collect::<Vec<_>>(),
             vec![
                 "cannot provision npm — it installs through brew, which cannot be provisioned"
                     .to_string()
@@ -2206,7 +2221,7 @@ mod tests {
             .iter()
             .flat_map(|phase| phase.actions())
             .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
-            .map(format_plan_item)
+            .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
             .collect()
     }
 

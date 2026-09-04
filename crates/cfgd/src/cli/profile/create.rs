@@ -307,6 +307,7 @@ pub fn cmd_profile_create(
             sources: &[],
             profile: None,
             profile_inherits: &[],
+            arrow: printer.arrow(),
             modules: &doc
                 .spec
                 .modules

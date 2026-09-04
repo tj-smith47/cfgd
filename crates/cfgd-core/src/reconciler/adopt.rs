@@ -61,7 +61,19 @@ pub enum ResolvedConflict {
 /// bytes the write would put there (converged is not conflicted), a `Patch`
 /// entry (it merges in place, so every conflict outcome is wrong for it), and a
 /// symlink into the config dir or the module cache (cfgd's own).
-pub fn is_unmanaged_file(target: &Path, config_dir: &Path, state: &StateStore) -> bool {
+///
+/// `module_cache` is the run's OWN resolved root
+/// ([`crate::ResolvedDirs::module_cache_dir`]), never re-derived from the
+/// per-user default: a run given `--cache-dir` deploys its module symlinks
+/// under that override, and answering from the default root instead reads
+/// every one of them as a stranger's file the moment the override diverges
+/// from it.
+pub fn is_unmanaged_file(
+    target: &Path,
+    config_dir: &Path,
+    module_cache: &Path,
+    state: &StateStore,
+) -> bool {
     if !target.exists() && target.symlink_metadata().is_err() {
         return false;
     }
@@ -72,15 +84,7 @@ pub fn is_unmanaged_file(target: &Path, config_dir: &Path, state: &StateStore) -
         if link_target.starts_with(config_dir) {
             return false;
         }
-        // Off the resolved cache root, never a `~/.cache` literal: the root is
-        // `%LOCALAPPDATA%\cfgd` on Windows and `~/Library/Caches/cfgd` on
-        // macOS, so a hand-spelled POSIX path answers about a directory that
-        // exists on Linux alone and cfgd's own deployment reads as a
-        // stranger's everywhere else. An unresolvable cache root leaves the
-        // question unanswered here, exactly as an unreadable link does.
-        if let Ok(module_cache) = crate::modules::default_module_cache_dir()
-            && link_target.starts_with(&module_cache)
-        {
+        if link_target.starts_with(module_cache) {
             return false;
         }
     }
@@ -131,6 +135,7 @@ pub fn mark_unmanaged_drift(
     record: &mut crate::providers::FileDriftResult,
     strategy: FileStrategy,
     config_dir: &Path,
+    module_cache: &Path,
     state: &StateStore,
 ) {
     // Only a CONTENT comparison may be re-worded. A finding whose desired
@@ -145,7 +150,7 @@ pub fn mark_unmanaged_drift(
     {
         return;
     }
-    if is_unmanaged_file(Path::new(&record.target), config_dir, state) {
+    if is_unmanaged_file(Path::new(&record.target), config_dir, module_cache, state) {
         record.unmanaged = true;
         record.actual = UNMANAGED_DRIFT_CAUSE.to_string();
     }
@@ -267,9 +272,11 @@ pub type ConflictResolver<'a> =
 /// Nothing here announces a conflict ahead of the run header. The sweep is
 /// silent, the prompt says its own piece, and a settled `Backup` reports itself
 /// on the action row that performs the copy.
+#[allow(clippy::too_many_arguments)]
 pub fn sweep_unmanaged_file_targets(
     plan: &mut Plan,
     config_dir: &Path,
+    module_cache: &Path,
     state: &StateStore,
     printer: &Printer,
     strategies: &crate::effective::FileStrategies,
@@ -313,7 +320,7 @@ pub fn sweep_unmanaged_file_targets(
                     let desired = source_hash.clone();
                     if !adopts_in_place(strategy)
                         && !target_holds_desired_content(&target, desired.as_deref())
-                        && is_unmanaged_file(&target, config_dir, state)
+                        && is_unmanaged_file(&target, config_dir, module_cache, state)
                     {
                         let chosen = resolve(&target, None)?;
                         if chosen == ResolvedConflict::Skip {
@@ -338,7 +345,7 @@ pub fn sweep_unmanaged_file_targets(
                         let desired = module_file_desired_hash(&files[j], strategy);
                         if !adopts_in_place(strategy)
                             && !target_holds_desired_content(&file_target, desired.as_deref())
-                            && is_unmanaged_file(&file_target, config_dir, state)
+                            && is_unmanaged_file(&file_target, config_dir, module_cache, state)
                         {
                             match resolve(&file_target, Some(&module_name))? {
                                 ResolvedConflict::Backup => {

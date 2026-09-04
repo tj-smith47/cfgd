@@ -994,6 +994,14 @@ ALLOWED_FN_PAIRS=(
     # drift-reporting verb COMPOSES ... once"): one name per verb so a reader
     # of either exit gate finds the same question, over different fields.
     "any_drift crates/cfgd/src/cli/verify.rs"
+    # `Theme::arrow`/`Printer::arrow` are the output/-excused pair (the ONE
+    # arrow glyph, shared-utils.md); these two CALL `Printer::arrow` to narrow
+    # the surface a caller outside output/ gets, the same shape the two
+    # delegates above take — `SystemContext::arrow` in place of the banned
+    # `printer()` accessor (output-module.md), `LiveTree::arrow` for a wait
+    # row naming a value change.
+    "arrow crates/cfgd-core/src/providers/mod.rs"
+    "arrow crates/cfgd-core/src/reconciler/live_tree.rs"
 )
 allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
