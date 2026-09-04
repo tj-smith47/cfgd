@@ -7,13 +7,13 @@
 //!   with the `CFGD_GITHUB_API_BASE` mockito seam.
 //!
 //!   The "update available" branch in `--check` mode calls
-//!   `ExitCode::UpdateAvailable.exit()` which terminates the process — we
-//!   cannot drive it from inside a test. The download path requires a
+//!   `ExitCode::UpdateAvailable.exit()` which terminates the process — it
+//!   cannot be driven from inside a test. The download path requires a
 //!   tarball + cosign signature + checksums, an end-to-end-only surface
 //!   that is exercised by `crates/cfgd-core/src/upgrade/tests.rs`'s
 //!   `download_and_install_to_*` cases.
 //!
-//!   What we DO snapshot here is the `--check` path's "up to date" branch
+//!   What this DOES snapshot here is the `--check` path's "up to date" branch
 //!   (the safe, no-exit, no-network-mutation case). The release-info
 //!   payload is stubbed via mockito and the buffered Doc is captured
 //!   for both human (`up_to_date.txt`) and JSON (`up_to_date.json`)

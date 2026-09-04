@@ -4313,7 +4313,7 @@ fn diff_permissions_changed_ignored_when_either_side_is_none() {
     let mut target = FileTree {
         files: BTreeMap::new(),
     };
-    // Different None permissions — hashes match so we enter the permissions arm,
+    // Different None permissions — hashes match, entering the permissions arm,
     // but `if let (Some, Some)` fails and Unchanged is emitted.
     target.files.insert(
         target_path.clone(),

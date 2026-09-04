@@ -497,7 +497,7 @@ async fn validate_module_returns_response_with_uid_matching_request() {
 //         Err(e) => { record "error" metric; return invalid review }
 //     }
 // The garbage-body test above exercises body parsing (4xx before the
-// handler), not the typed-conversion Err arm. To reach it we post a
+// handler), not the typed-conversion Err arm. To reach it, this posts a
 // well-formed AdmissionReview JSON with NO `request` field — that
 // deserializes (request: Option<AdmissionRequest> = None) but the
 // TryFrom<AdmissionReview<T>> for AdmissionRequest<T> impl in kube-rs
@@ -531,7 +531,7 @@ async fn assert_invalid_review_body(response: axum::response::Response) {
     let review = parse_response(response).await;
     let resp = review.response.expect("response present");
     // AdmissionResponse::invalid sets allowed=false and includes the failure
-    // message in `result.message`. We pin both so the contract is locked in.
+    // message in `result.message`. Both are pinned so the contract is locked in.
     assert!(
         !resp.allowed,
         "TryInto-Err arm must produce a not-allowed review"

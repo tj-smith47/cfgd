@@ -112,7 +112,7 @@ fn run_with_stdin_capture_stdout_at(
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
-    //! Unit coverage for the kubectl shell-out helpers. We drive `run_argv_inherit`
+    //! Unit coverage for the kubectl shell-out helpers. This drives `run_argv_inherit`
     //! through `/bin/true`, `/bin/false`, and a nonexistent binary so the
     //! Ok(0) / Ok(non-zero) / spawn-Err arms each fire. The `run_inherit`
     //! entry deliberately scrubs PATH to pin its spawn-Err arm without
@@ -131,7 +131,7 @@ mod tests {
         // `/usr/bin/true` is silent and exits 0 on every POSIX system —
         // present on both Linux (coreutils) and macOS (BSD). `/bin/true`
         // does NOT exist on modern macOS, so prefer the /usr/bin path.
-        // If it's absent we skip rather than fail — this test is about
+        // If it's absent this skips rather than fails — this test is about
         // exercising the success branch, not the platform.
         if !std::path::Path::new("/usr/bin/true").exists() {
             return;

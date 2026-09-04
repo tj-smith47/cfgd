@@ -2164,7 +2164,7 @@ spec:
     .unwrap();
 
     // Write a lockfile with a remote module that has the same cache structure
-    // For this test we verify the function doesn't crash on missing cache
+    // This verifies the function doesn't crash on missing cache
     // (it will error on missing git repo, which is expected)
     let lockfile = ModuleLockfile {
         modules: vec![ModuleLockEntry {
@@ -5093,12 +5093,12 @@ fn load_module_oversized_yaml_rejected() {
     std::fs::create_dir(&mod_dir).unwrap();
 
     // Create a module.yaml that exceeds 10 MB
-    // We create a sparse-ish file by writing a moderate amount since we can't
-    // easily create a 10MB file in tests. Instead, verify the error path
+    // This creates a sparse-ish file by writing a moderate amount since a
+    // 10MB file cannot easily be created in tests. Instead, verify the error path
     // by checking the error message format against the constant.
     //
     // The actual size check is: meta.len() > 10 * 1024 * 1024
-    // We can't practically create a 10MB+ file in a test, but we can verify
+    // A 10MB+ file cannot practically be created in a test, but this verifies
     // that the check exists and that normal files pass through.
     let mod_dir = dir.path().join("normal");
     std::fs::create_dir(&mod_dir).unwrap();
@@ -5846,7 +5846,7 @@ mod git_fixture_tests {
 
     #[test]
     fn check_tag_signature_detects_pgp_signature_in_annotated_tag_message() {
-        // We're emulating what `git tag -s` writes: the PGP block is
+        // This emulates what `git tag -s` writes: the PGP block is
         // embedded in the annotated-tag message. cfgd's policy gate
         // (allow_unsigned=false) trusts this detection — so the marker
         // string MUST stay aligned with what git/gpg actually writes.
@@ -6011,14 +6011,14 @@ mod git_fixture_tests {
             dest.ends_with("docs"),
             "returned path should end in the requested subdir, got: {dest:?}"
         );
-        // And the subdir must physically exist in the clone since we
+        // And the subdir must physically exist in the clone since the test
         // created `docs/index.md` in source.
         assert!(dest.join("index.md").exists());
     }
 
     #[test]
     fn fetch_git_source_errors_with_module_name_when_tag_is_unknown() {
-        // Unknown tag → checkout_ref's revparse chain exhausts and we get
+        // Unknown tag → checkout_ref's revparse chain exhausts, giving
         // a GitFetchFailed surfaced with the module name in the message.
         // cfgd's CLI uses this error path to tell the user which module
         // failed.
@@ -6071,9 +6071,9 @@ mod git_fixture_tests {
     #[test]
     fn fetch_git_source_checks_out_branch_via_git_ref() {
         // The `ref` field (from `?ref=branchname`) takes the branch lookup
-        // path in checkout_ref — first as `refs/remotes/origin/<ref>`. We
-        // create a `topic` branch on source, point it at the first commit,
-        // then add a new commit to master so default-branch HEAD differs.
+        // path in checkout_ref — first as `refs/remotes/origin/<ref>`. This test
+        // creates a `topic` branch on source, points it at the first commit,
+        // then adds a new commit to master so default-branch HEAD differs.
         let src_dir = tempfile::tempdir().unwrap();
         let (src_repo, first_commit) = init_repo_with_commit(src_dir.path());
         let _tip = add_commit(&src_repo, "advance.txt", "advance");

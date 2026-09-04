@@ -274,8 +274,8 @@ mod tests {
     // ─── send_message HTTP round-trip via mockito ────────────────────────
     //
     // The `CFGD_ANTHROPIC_URL` env-shim redirects the production
-    // `POST {base_url}/v1/messages` call at a `mockito::Server` so we can
-    // drive `AnthropicClient::send_message` end-to-end against canned
+    // `POST {base_url}/v1/messages` call at a `mockito::Server`, driving
+    // `AnthropicClient::send_message` end-to-end against canned
     // responses — same pattern as upgrade/server_client/oci tests.
 
     #[test]

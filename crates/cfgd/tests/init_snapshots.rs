@@ -274,12 +274,12 @@ fn init_with_apply_renders_apply_status_streaming() {
     let target = tmp.path().join("bridge-cfg");
     let target_str = target.to_string_lossy().into_owned();
 
-    // We let scaffold create cfgd.yaml + .gitignore + .github workflow, but
-    // need profiles/default.yaml to exist BEFORE --apply-profile runs. The
-    // scaffold step creates the profiles/ directory, so we drop the profile
-    // file in after `cmd_init` finishes scaffolding but before apply…
+    // Scaffold creates cfgd.yaml + .gitignore + .github workflow, but
+    // profiles/default.yaml needs to exist BEFORE --apply-profile runs. The
+    // scaffold step creates the profiles/ directory, so the profile
+    // file is dropped in after `cmd_init` finishes scaffolding but before apply…
     // except cmd_init runs scaffold-then-apply atomically inside a single
-    // call. So we pre-create the profiles dir + profile file, then let
+    // call. So this pre-creates the profiles dir + profile file, then lets
     // scaffold's create_dir_all be a no-op for that subdir.
     std::fs::create_dir_all(target.join("profiles")).unwrap();
     std::fs::write(
@@ -536,7 +536,7 @@ fn init_apply_lock_honors_state_dir_override() {
     std::fs::create_dir_all(&home).unwrap();
     let _home_guard = cfgd_core::test_helpers::EnvVarGuard::set("HOME", home.to_str().unwrap());
     // The override must win over CFGD_STATE_DIR too; leave it unset so the only
-    // way the lock reaches `state_dir` is via the flag chain we are testing.
+    // way the lock reaches `state_dir` is via the flag chain under test.
     let _state_env = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_STATE_DIR");
 
     let state_dir = tmp.path().join("explicit-state");

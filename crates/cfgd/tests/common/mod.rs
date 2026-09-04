@@ -133,7 +133,7 @@ pub fn profile_with_one_failure_setup() -> (tempfile::TempDir, tempfile::TempDir
     let state_dir = tempfile::tempdir().unwrap();
 
     // Both source files exist (plan stage hard-errors on missing source
-    // for non-private files; we need the failure to surface at apply time).
+    // for non-private files; the failure needs to surface at apply time).
     let files_dir = config_dir.path().join("files");
     std::fs::create_dir_all(&files_dir).unwrap();
     std::fs::write(files_dir.join("hello.txt"), "hello world").unwrap();

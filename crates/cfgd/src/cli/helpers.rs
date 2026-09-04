@@ -1160,7 +1160,7 @@ pub(in crate::cli) fn set_nested_yaml_value(
     Ok(())
 }
 
-// --- Plan integration with sources (Phase 9) ---
+// --- Plan integration with sources ---
 
 /// Effective desired state every command resolves through.
 ///

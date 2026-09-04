@@ -591,7 +591,7 @@ fn test_scan_installed_packages_sorted_by_name_then_manager() {
 #[test]
 fn test_scan_system_settings_returns_valid_result() {
     // Just verify it returns a valid SystemSettingsResult without crashing.
-    // Values are platform-dependent so we only check structural validity.
+    // Values are platform-dependent so only structural validity is checked.
     let result = scan_system_settings().unwrap();
     // systemd_units and launch_agents are always sorted
     let mut sorted_units = result.systemd_units.clone();
@@ -2023,7 +2023,7 @@ fn test_scan_dotfiles_counts_only_file_content_for_size() {
 #[test]
 fn test_scan_system_settings_collects_and_sorts_launch_agent_plists() {
     // The launch_agents block reads `~/Library/LaunchAgents` via expand_tilde,
-    // which honors the thread-local test-home override — so we can exercise it
+    // which honors the thread-local test-home override — so this can exercise it
     // deterministically on any platform without touching the real HOME.
     let tmp = TempDir::new().unwrap();
     let agents = tmp.path().join("Library").join("LaunchAgents");

@@ -3605,7 +3605,7 @@ fn composition_error_variant_encryption_mode_mismatch() {
 fn composition_error_variant_template_sandbox_violation() {
     // The variant is produced by the binary crate's template renderer when a
     // source template references a variable outside its sandbox. The variant
-    // itself is constructed in production code; here we directly instantiate
+    // itself is constructed in production code; this directly instantiates
     // and `matches!`-pin so a rename or signature change trips the test. The
     // production code path is exercised in
     // `crates/cfgd/src/files/tests.rs::source_template_sandbox_violation_pins_variant`.

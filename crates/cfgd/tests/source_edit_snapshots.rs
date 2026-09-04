@@ -63,7 +63,7 @@ fn strip_ansi(s: &str) -> String {
 #[serial]
 fn source_edit_valid_human() {
     // EDITOR=/bin/true exits 0 without touching the file, so the post-edit
-    // validation reads the same valid manifest we wrote and lands in the
+    // validation reads the same valid manifest this test wrote and lands in the
     // "Source manifest is valid" success arm.
     let (config_dir, _state_dir) = source_test_config_setup();
     std::fs::write(config_dir.path().join("cfgd-source.yaml"), VALID_MANIFEST).unwrap();

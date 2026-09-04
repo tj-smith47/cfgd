@@ -53,7 +53,7 @@ fn profile_delete_happy_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    // Delete the inheritor first so we don't trip the active-profile refusal
+    // Delete the inheritor first to avoid tripping the active-profile refusal
     // (the fixture's active profile is `default`, so `work` is safely deletable).
     cmd_profile_delete(&cli, &printer, "work", true, false).unwrap();
     drop(printer);

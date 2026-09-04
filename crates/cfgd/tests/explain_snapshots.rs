@@ -100,7 +100,7 @@ fn explain_module_json() {
 #[test]
 fn explain_recursive_drops_plus_marker() {
     // Recursive mode replaces the `[+]` marker with nested subsections —
-    // confirm the marker is absent so we don't regress to the manual-indent
+    // confirm the marker is absent to avoid regressing to the manual-indent
     // shape.
     let schema = find_schema("profile").expect("profile schema is registered");
     let (printer, cap) = Printer::for_test_doc();

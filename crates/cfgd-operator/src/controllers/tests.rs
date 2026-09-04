@@ -1620,7 +1620,7 @@ fn log_reconcile_ok_does_not_panic() {
     let result: ReconcileResult<MachineConfig> = Ok((obj_ref.clone(), action));
 
     // log_reconcile is a logging-only callback — it returns ().
-    // We verify both Ok and Err paths complete without panic.
+    // This verifies both Ok and Err paths complete without panic.
     let future = log_fn(result);
     futures::executor::block_on(future);
 
@@ -2013,10 +2013,9 @@ fn record_error_and_requeue_increments_error_counter() {
     let mut registry = Registry::default();
     let metrics = Metrics::new(&mut registry);
 
-    // Build a ControllerContext with a real metrics instance (we can't
-    // call record_error_and_requeue directly because it requires a full
-    // ControllerContext with a kube Client, but we can exercise the same
-    // code path that it runs).
+    // Build a ControllerContext with a real metrics instance (record_error_and_requeue
+    // cannot be called directly because it requires a full ControllerContext with a
+    // kube Client, but this exercises the same code path that it runs).
     let error = OperatorError::Reconciliation("test failure".into());
     let controller = "machine_config";
 
@@ -2057,7 +2056,7 @@ fn record_error_and_requeue_increments_error_counter() {
     );
 
     // Verify action has 30s requeue
-    // (Action doesn't expose its duration, but we verify it's constructed)
+    // (Action doesn't expose its duration, but this verifies it's constructed)
     let _ = action;
 }
 
@@ -2837,7 +2836,7 @@ fn validate_spec_both_empty_returns_both_errors() {
 #[tokio::test]
 async fn namespaced_api_empty_namespace_returns_error() {
     // Construct a dummy kube Client via a tower service that always errors
-    // (we just need the Client type, not actual HTTP calls)
+    // (only the Client type is needed, not actual HTTP calls)
     let client = make_test_client();
     let result = namespaced_api::<MachineConfig>(&client, "");
     assert!(result.is_err());
@@ -2894,8 +2893,8 @@ async fn record_error_and_requeue_returns_30s_action_and_increments_counter() {
         .get();
     assert_eq!(success_count, 0, "success counter should remain 0");
 
-    // Verify the Action is a requeue (we can't inspect duration directly,
-    // but we can confirm the function returned without panic)
+    // Verify the Action is a requeue (duration cannot be inspected directly,
+    // but this confirms the function returned without panic)
     let _ = action;
 }
 
@@ -3238,7 +3237,7 @@ async fn record_error_and_requeue_returns_30s_requeue_and_bumps_error_counter() 
     let action = record_error_and_requeue(&err, &ctx, "config_policy");
 
     // Format check: Action does not expose its requeue Duration directly, but
-    // the Debug representation contains the duration we asked for.
+    // the Debug representation contains the duration requested.
     let dbg = format!("{:?}", action);
     assert!(
         dbg.contains("30s") || dbg.contains("30"),
@@ -3311,7 +3310,7 @@ async fn namespaced_api_returns_api_when_namespace_non_empty() {
 #[tokio::test]
 async fn publish_event_does_not_panic_on_failure() {
     // The mock service returns 200 with "{}" which causes the recorder's
-    // publish to fail to deserialize an Event back; we only need to verify
+    // publish to fail to deserialize an Event back; this only needs to verify
     // the function completes (the failure branch is logged at debug!).
     use k8s_openapi::api::core::v1::ObjectReference;
     use kube::runtime::events::{Event, EventType};

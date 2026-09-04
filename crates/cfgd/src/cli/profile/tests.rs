@@ -3101,7 +3101,7 @@ fn profile_create_with_all_script_types() {
 // remove the lockfile entry, wipe the cached git checkout, list deployed
 // files from the state store, and clear the module's state-store records.
 // The prompt to actually restore backups defaults to `false` in test mode
-// (Printer::for_test() drops to `unwrap_or(false)`), so we exercise the
+// (Printer::for_test() drops to `unwrap_or(false)`), so this exercises the
 // listing arm + the state-cleanup arms only — the per-file restore loop
 // itself remains uncovered until a prompt-mock harness lands.
 
@@ -3283,8 +3283,8 @@ mod profile_update_module_cleanup {
         drop(printer);
 
         // The listing arm prints the deployed-file path. The prompt to
-        // restore returns false in a non-interactive printer, so we don't
-        // assert on the restore loop body — we only pin the listing +
+        // restore returns false in a non-interactive printer, so this does not
+        // assert on the restore loop body — only the listing +
         // state-cleanup arms.
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -3334,7 +3334,7 @@ mod profile_update_module_cleanup {
     ) {
         let tmp = tempfile::tempdir().unwrap();
         // The setup_with_module_in_profile helper above writes its tmpdir
-        // contents at $TMP/{cfgd.yaml, profiles/default.yaml}; we replicate
+        // contents at $TMP/{cfgd.yaml, profiles/default.yaml}; this replicates
         // it inline so the file targets here can live alongside (not inside)
         // the config_dir.
         let cfg_dir = tmp.path().join("cfg");

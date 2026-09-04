@@ -1124,7 +1124,7 @@ fn age_backend_recipient_extracts_from_key_content() {
 
 #[test]
 fn one_password_provider_resolve_builds_op_ref() {
-    // We can't actually run `op`, but we can verify the provider builds
+    // `op` cannot actually be run, but this verifies the provider builds
     // the right command structure by checking what would be constructed.
     // The resolve method adds op:// prefix if missing.
     let provider = OnePasswordProvider;
@@ -1689,7 +1689,7 @@ mod sops_shim {
         // shell to dump env vars. Easier path: build the command directly
         // and inspect what env it set.
         //
-        // Since `sops_command()` is `pub(super)`, we can call it from this
+        // Since `sops_command()` is `pub(super)`, it can be called from this
         // tests module directly and inspect get_envs().
         let backend = SopsBackend::new(Some(PathBuf::from("/keys/age-key.txt")));
         let cmd = backend.sops_command();

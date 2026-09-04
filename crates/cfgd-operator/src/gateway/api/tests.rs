@@ -2474,7 +2474,7 @@ async fn verify_enrollment_rejects_nonexistent_challenge() {
 async fn verify_enrollment_rejects_when_no_keys_registered() {
     // Drives lines 197-202 (matching_keys.is_empty() branch). The challenge
     // exists but no user public keys are registered for that username, so
-    // the filtered list is empty and we return InvalidRequest.
+    // the filtered list is empty and InvalidRequest is returned.
     let (state, _tmp) = test_state_key_enrollment();
     let challenge = state
         .db

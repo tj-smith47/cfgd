@@ -513,7 +513,7 @@ fn cache_ttl_boundary_just_expired() {
 
 #[test]
 fn version_cache_deserialization_from_known_json() {
-    // Ensure we can deserialize a known JSON payload (simulates reading from disk)
+    // Ensure a known JSON payload deserializes (simulates reading from disk)
     let json = r#"{"checkedAtSecs":1700000000,"latestTag":"v1.2.3","latestVersion":"1.2.3","currentVersion":"1.0.0"}"#;
     let cache: VersionCache = serde_json::from_str(json).expect("deserialize known JSON");
     assert_eq!(cache.checked_at_secs, 1700000000);
@@ -650,7 +650,7 @@ fn find_asset_no_matching_platform() {
         }],
     };
     let result = find_asset_for_platform(&release);
-    // Unless we're running on mips, this should fail
+    // Unless running on mips, this should fail
     if std::env::consts::ARCH != "mips" {
         let err = result.unwrap_err();
         let msg = err.to_string();
@@ -2662,7 +2662,7 @@ mod download_and_install_to {
         let checksums = checksum_body(&sha);
 
         let mut server = mockito::Server::new();
-        // Mockito does not set Content-Length unless we ask, so download_to_file
+        // Mockito does not set Content-Length unless asked, so download_to_file
         // takes the (Some(p), None) spinner arm — exactly the branch the
         // None-printer happy_path test cannot reach.
         let _m_archive = server

@@ -776,7 +776,7 @@ mod gpg_shim {
     #[test]
     #[serial]
     fn is_available_false_when_seam_points_to_missing_file() {
-        // Snapshot + restore so we don't pollute other serial tests.
+        // Snapshot + restore to avoid polluting other serial tests.
         let prev = std::env::var_os("CFGD_GPG_BIN");
         // SAFETY: serial test, no concurrent reader.
         unsafe {

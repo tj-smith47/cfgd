@@ -503,11 +503,11 @@ mod tests {
         std::fs::write(tmp.path().join("cosign.pub"), "old-public-key").expect("write old pub");
 
         // Make the directory read-only AFTER the cosign shim runs but BEFORE
-        // restore. We can't intercept exactly there, so instead approximate
+        // restore. That point cannot be intercepted exactly, so instead approximate
         // by relying on the shim's behavior: with_exit(1) means the shim
         // exits non-zero before writing keys, so the backups exist and rename
         // back will be attempted on a writable dir. To force restore-failure,
-        // we replace the target path with a directory so the rename errors.
+        // this replaces the target path with a directory so the rename errors.
         std::fs::remove_file(tmp.path().join("cosign.key")).expect("remove old key");
         std::fs::create_dir(tmp.path().join("cosign.key.placeholder"))
             .expect("create placeholder dir to occupy a sibling path");
@@ -663,7 +663,7 @@ mod tests {
             .expect("handler returns CliErrorMeta");
         assert_eq!(meta.error_kind, "tool_missing");
         assert_eq!(meta.name, "cosign");
-        // Old key must remain — we bailed before any rename.
+        // Old key must remain — this bailed before any rename.
         assert!(
             tmp.path().join("cosign.key").exists(),
             "old key should remain when cosign is missing"
@@ -698,8 +698,8 @@ mod tests {
             "no backup pub should exist because there was no old pub to rename"
         );
         // The doc records the rotation completed; backupPrivateKey path is
-        // always set, backupPublicKey may or may not be — we don't pin its
-        // shape beyond rotation success.
+        // always set, backupPublicKey may or may not be — its shape is not pinned
+        // beyond rotation success.
         let json = cap.json().expect("doc should have json payload");
         assert_eq!(json["dir"], dir_str, "doc must record key dir");
         assert!(
@@ -719,7 +719,7 @@ mod tests {
         // No cosign.key — exercises the priv_path.exists()==false arm.
 
         let _cwd = cfgd_core::test_helpers::CwdGuard::set(tmp.path()).expect("cwd guard");
-        // Redirect HOME so we don't accidentally pick up a real ~/.cfgd/cosign.pub.
+        // Redirect HOME to avoid accidentally picking up a real ~/.cfgd/cosign.pub.
         let _home = with_test_home_guard(tmp.path());
 
         let (printer, cap) = Printer::for_test_doc();

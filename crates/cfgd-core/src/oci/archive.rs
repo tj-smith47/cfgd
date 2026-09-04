@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn extract_tar_gz_prevents_path_traversal_via_dotdot() {
         // Build a tar.gz archive with an entry whose path contains ".."
-        // We must write the raw tar bytes to bypass the tar crate's own
+        // This must write the raw tar bytes to bypass the tar crate's own
         // set_path safety checks (which also reject "..")
         let mut buf = Vec::new();
         {

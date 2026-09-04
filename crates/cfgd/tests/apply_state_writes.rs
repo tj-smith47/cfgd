@@ -1,6 +1,6 @@
 //! State-write regression test for `cfgd apply`.
 //!
-//! Guards against accidental "while we're here" side-effect rewrites
+//! Guards against accidental drive-by side-effect rewrites
 //! during the output-system migration. Verifies:
 //!   1. cmd_apply against a tempdir with one file action increments the
 //!      apply-log row count by exactly +1.

@@ -4716,7 +4716,7 @@ mod tests {
 
         // Verify files from commits are present. `read_to_string` returns the
         // on-disk bytes — on a Windows git checkout with default
-        // `core.autocrlf=true`, that is CRLF even though we committed LF.
+        // `core.autocrlf=true`, that is CRLF even though LF was committed.
         // Compare after `normalize_line_endings` so the assertion is about
         // logical content, not the OS-specific eol translation policy.
         let readme = std::fs::read_to_string(clone_dir.path().join("README.md")).unwrap();

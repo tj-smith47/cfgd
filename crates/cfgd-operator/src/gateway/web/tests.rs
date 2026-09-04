@@ -106,7 +106,7 @@ async fn dashboard_stat_cards_reflect_device_statuses() {
     let html = result.unwrap().0;
     // Total = 2, Healthy = 1, Drifted = 1, Offline = 0
     // The stat cards are: total, healthy, drifted, offline in that order
-    // We check the stat card structure
+    // Checks the stat card structure
     assert!(html.contains(r#"<div class="stat-card total">"#));
     assert!(html.contains(r#"<div class="stat-card healthy">"#));
     assert!(html.contains(r#"<div class="stat-card drifted">"#));
@@ -592,7 +592,7 @@ async fn auth_middleware_rejects_unknown_session_cookie() {
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_rejects_raw_api_key_as_session_cookie() {
-    // Regression: we must NOT accept the raw CFGD_API_KEY as a cfgd_session value.
+    // Regression: the raw CFGD_API_KEY must NOT be accepted as a cfgd_session value.
     unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
 
     let (state, _tmp) = test_state();

@@ -1109,7 +1109,7 @@ spec:
     // Target 2: cmd_config_show with a broken YAML file yields parse_failed.
     // `config show` uses `load_config` (the typed serde path), so a valid-YAML
     // but schema-violating file hits a different code path than cmd_config_get.
-    // We use the same syntactically-invalid YAML to ensure the serde_yaml layer
+    // This uses the same syntactically-invalid YAML to ensure the serde_yaml layer
     // rejects it before schema validation is even reached.
     #[test]
     fn cmd_config_show_broken_yaml_yields_parse_failed_error_kind() {

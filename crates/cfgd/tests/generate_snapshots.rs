@@ -12,7 +12,7 @@
 //!   gets included in the buffered Doc and Anthropic chooses non-deterministic
 //!   IDs and timing.
 //!
-//!   What we DO snapshot is the deterministic `--scan-only` branch which
+//!   What this DOES snapshot is the deterministic `--scan-only` branch which
 //!   walks the home directory looking for dotfiles + shell config and
 //!   emits a buffered Doc with stable key names (`toolsScanned`,
 //!   `settingsCaptured`, `dotfileEntries`, …). The home dir is a tempdir

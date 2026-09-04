@@ -2724,7 +2724,7 @@ fn seccomp_apply_uses_default_profiles_dir_when_unset() {
     let sc = SeccompConfigurator;
 
     // profiles key with empty sequence — should try to create /etc/cfgd/seccomp
-    // but that requires root, so we just verify the no-profiles case
+    // but that requires root, so this just verifies the no-profiles case
     let mut m = serde_yaml::Mapping::new();
     m.insert(
         serde_yaml::Value::String("profiles".into()),
@@ -2732,7 +2732,7 @@ fn seccomp_apply_uses_default_profiles_dir_when_unset() {
     );
     let desired = serde_yaml::Value::Mapping(m);
     // Empty profiles list - should still try to create dir but won't error
-    // because we catch the permission error at fs::create_dir_all
+    // because the permission error is caught at fs::create_dir_all
     // Actually, let's verify this specific case doesn't panic
     let result = sc.apply(
         &desired,
@@ -2770,8 +2770,8 @@ fn kernel_modules_apply_with_non_sequence_value_emits_no_output_and_does_not_cal
 fn kernel_modules_apply_with_empty_sequence_emits_no_modprobe_line() {
     // Empty `Sequence([])` → match Ok(Some([])) → for-loop body doesn't run,
     // desired_names stays empty, persist_modules is called with an empty
-    // slice (which removes any prior conf file; we can't observe that path
-    // without writing to /etc/, so we pin only the user-visible signal:
+    // slice (which removes any prior conf file; that path cannot be observed
+    // without writing to /etc/, so only the user-visible signal is pinned:
     // no `modprobe` info line fires).
     let km = KernelModuleConfigurator;
     let (printer, buf) =
@@ -3159,7 +3159,7 @@ fn kubelet_apply_writes_config_then_returns_err_when_systemctl_fails() {
     // to fail, so the failure arm runs on every host — including a real k8s
     // node, where "in CI/tests systemctl is either absent or the kubelet unit
     // doesn't exist" is false and this test would otherwise restart the
-    // node's kubelet and then fail on the Ok it got back. We assert:
+    // node's kubelet and then fail on the Ok it got back. Assertions:
     //   (a) the merged config IS written to disk (atomic_write fired)
     //   (b) the returned Err carries a systemctl-related message
     let _shim = cfgd_core::test_helpers::ToolShim::install(

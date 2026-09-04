@@ -197,8 +197,8 @@ mod tests {
     }
 
     // GatewayConfig construction is exercised via test_kube_harness, which
-    // already lives in cfgd-operator and supplies a mock `Client`. We don't
-    // construct a Client here because tests in this module should remain
+    // already lives in cfgd-operator and supplies a mock `Client`. No Client is
+    // constructed here because tests in this module should remain
     // free of kube-mock setup; `build_gateway_config` is a pure mapping
     // function whose env-side is covered above and whose output schema is
     // pinned by the existing gateway tests.

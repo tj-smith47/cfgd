@@ -423,7 +423,7 @@ fn module_add_fetch_settle_line_nests_under_the_fetch_section_header() {
 #[serial]
 fn module_add_from_registry_bridge_one_blank_line() {
     // The registry resolver assembles a synthetic git URL and delegates
-    // to cmd_module_add_remote, so we get the same streaming clone +
+    // to cmd_module_add_remote, so this gets the same streaming clone +
     // buffered summary bridge from a one-step-removed entry point.
     let (config_dir, state_dir) = registry_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());

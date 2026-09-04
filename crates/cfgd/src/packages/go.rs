@@ -747,7 +747,7 @@ mod tests {
     #[test]
     fn go_install_path_treats_at_anywhere_as_pre_pinned() {
         // The check is `contains('@')` — even if `@` is in the wrong place,
-        // the input is left untouched (we trust the user's intent).
+        // the input is left untouched (trusting the user's intent).
         assert_eq!(go_install_path("@oddly/placed"), "@oddly/placed");
     }
 

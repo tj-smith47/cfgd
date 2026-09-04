@@ -400,7 +400,7 @@ fn oci_descriptor_with_annotations_round_trips() {
 #[test]
 fn is_insecure_registry_false_when_env_not_set() {
     // With the env var not containing our test registry, it should be false
-    // (we cannot safely unset env vars in parallel tests, but the default
+    // (env vars cannot safely be unset in parallel tests, but the default
     // is empty which means no registry is insecure)
     assert!(!is_insecure_registry("totally-not-insecure.example.com"));
 }
