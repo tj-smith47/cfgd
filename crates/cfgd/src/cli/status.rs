@@ -419,7 +419,7 @@ fn classify_recorded_drift_for_chain(
             }
             "env-var" => (SURFACE_ENV, event.resource_id.clone()),
             "alias" => (SURFACE_ALIASES, event.resource_id.clone()),
-            _ => {
+            "package" => {
                 let manager =
                     cfgd_core::reconciler::split_package_drift_resource_id(&event.resource_id)
                         .map(|(manager, _)| manager)
@@ -450,6 +450,9 @@ fn classify_recorded_drift_for_chain(
                 }
                 (SURFACE_PACKAGES, declared)
             }
+            // The predicate vouches for no other type today; a type it learns
+            // to own still needs a surface of its own here.
+            _ => continue,
         };
         drift.push(ModuleDrift {
             owner: owner.name.clone(),
@@ -2759,11 +2762,18 @@ fn join_package_state(
             // a recorded or scanned VERDICT outranks the scan's own
             // `NotScanned` seed for a script entry, whichever was pushed
             // first, so the wide row and `-o json` agree with the finding
-            // beside them.
+            // beside them. Only a verdict for the SAME manager as the queue
+            // head may jump the queue: the two seeds of one entry name one
+            // manager, and a same-named sibling under another manager keeps
+            // its own row, per the order rule above.
             match scanned.get_mut(&p.name).and_then(|queue| {
+                let head = queue.front().map(|(manager, _)| manager.clone());
                 let at = queue
                     .iter()
-                    .position(|(_, state)| *state != ModulePackagePresence::NotScanned)
+                    .position(|(manager, state)| {
+                        *state != ModulePackagePresence::NotScanned
+                            && Some(manager) == head.as_ref()
+                    })
                     .unwrap_or(0);
                 queue.remove(at)
             }) {
@@ -3120,14 +3130,13 @@ pub(super) fn cmd_status_module(
                 // Sliced off `drift` AFTER classification: the payload's
                 // `standing` is exactly the rows the human render lists,
                 // never a list captured upstream of the classifier.
-                if !standing.is_empty() {
-                    let scopes = super::live_drift::chain_scopes(&resolved_modules, &managers);
+                if !standing.rows.is_empty() {
                     let drift_len_before_standing = drift.len();
                     classify_recorded_drift_for_chain(
-                        standing,
+                        standing.rows,
                         &ChainOwnership {
                             chain: &resolved_modules,
-                            scopes: &scopes,
+                            scopes: &standing.scopes,
                             managers: &managers,
                             mod_name,
                         },
@@ -6535,6 +6544,35 @@ mod tests {
         assert_eq!(rows[1].state, ModulePackagePresence::NotInstalled);
     }
 
+    /// A `NotScanned` seed jumps to a later verdict only for ITS OWN manager:
+    /// one name declared twice, first `prefer: [script]` (seeded `NotScanned`
+    /// by the scan) and second under `brew` (seeded `Installed`), keeps
+    /// `script` on row 1 and `brew` on row 2 — the order rule above — rather
+    /// than handing row 1 its sibling's manager and verdict.
+    #[test]
+    fn a_not_scanned_seed_never_takes_a_same_named_siblings_verdict_under_another_manager() {
+        let mut scanned = std::collections::HashMap::new();
+        scanned.insert(
+            "tool".to_string(),
+            std::collections::VecDeque::from(vec![
+                ("script".to_string(), ModulePackagePresence::NotScanned),
+                ("brew".to_string(), ModulePackagePresence::Installed),
+            ]),
+        );
+
+        let rows = join_package_state(
+            &[declared("tool", &[]), declared("tool", &[])],
+            &mut scanned,
+            Platform::current(),
+        );
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].manager.as_deref(), Some("script"));
+        assert_eq!(rows[0].state, ModulePackagePresence::NotScanned);
+        assert_eq!(rows[1].manager.as_deref(), Some("brew"));
+        assert_eq!(rows[1].state, ModulePackagePresence::Installed);
+    }
+
     /// A gated entry resolved to nothing, so it must not consume the verdict
     /// its same-named sibling earned.
     #[test]
@@ -8006,15 +8044,22 @@ mod tests {
     /// accepted: a package gated off this host (`brew:pkg-gated`), a row
     /// under a route the entry denies (`apt:jq`, the module resolving to
     /// `brew`), and a stale manager row for a `prefer: [script]` entry
-    /// (`brew:demo`). A row the scope owns still attributes by the manager's
-    /// own identity fold (`go` mints `2fa` off the declared `rsc.io/2fa`)
-    /// and a declared env var attributes by name. `-o json` agrees.
+    /// (`brew:demo`), and a legacy comma-batch id (`brew:jq,rg`) that no
+    /// scope entry is ever spelled as. A row the scope owns still attributes
+    /// by the manager's own identity fold (`go` mints `2fa` off the declared
+    /// `rsc.io/2fa`, `chocolatey` lowercases `Wget`) and a declared env var
+    /// attributes by name. `-o json` agrees.
+    ///
+    /// Every named manager is a probe-`PATH` stand-in, so the resolution the
+    /// scope is built from is the same on every host that can run the probe.
     #[test]
     #[serial_test::serial]
-    // `go` resolves only where its bootstrap has a mediator (brew, apt, dnf,
-    // zypper); the Windows host has none.
     #[cfg(unix)]
     fn a_no_scan_status_attributes_rows_through_the_one_ownership_predicate() {
+        let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _fresh = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+        let _probe = cfgd_core::test_helpers::ProbePath::containing(&["go", "choco", "brew"]);
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let config_dir = tempfile::tempdir().unwrap();
@@ -8040,6 +8085,10 @@ mod tests {
                  \x20 packages:\n\
                  \x20   - name: rsc.io/2fa\n\
                  \x20     prefer: [go]\n\
+                 \x20   - name: Wget\n\
+                 \x20     prefer: [chocolatey]\n\
+                 \x20   - name: rg\n\
+                 \x20     prefer: [brew]\n\
                  \x20   - name: pkg-gated\n\
                  \x20     platforms: [{}]\n\
                  \x20   - name: jq\n\
@@ -8058,6 +8107,11 @@ mod tests {
                 cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
             for (rtype, rid) in [
                 ("package", "go:2fa"),
+                // `chocolatey`'s identity fold lowercases the declared `Wget`.
+                ("package", "chocolatey:wget"),
+                // A legacy batch id no single scope entry is ever spelled as,
+                // though both names are declared under that manager.
+                ("package", "brew:jq,rg"),
                 ("package", "brew:pkg-gated"),
                 ("package", "apt:jq"),
                 ("package", "brew:demo"),
@@ -8087,14 +8141,14 @@ mod tests {
         .unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
-        for owned in ["rsc.io/2fa", "EDITOR"] {
+        for owned in ["rsc.io/2fa", "Wget", "EDITOR"] {
             assert!(
                 out.contains(owned),
                 "a row the module's resolved scope owns renders on the no-scan \
                  report ({owned}): {out}"
             );
         }
-        for rejected in ["pkg-gated", "jq", "demo"] {
+        for rejected in ["pkg-gated", "jq", "demo", "rg"] {
             assert!(
                 !out.contains(rejected),
                 "a row the scope rejects — gated off, denied route, stale manager \
@@ -8126,7 +8180,7 @@ mod tests {
         drift_ids.sort_unstable();
         assert_eq!(
             drift_ids,
-            vec!["EDITOR", "go:2fa"],
+            vec!["EDITOR", "chocolatey:wget", "go:2fa"],
             "`-o json` carries exactly the rows the human render listed: {parsed}"
         );
     }
