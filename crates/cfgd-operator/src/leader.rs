@@ -158,10 +158,10 @@ impl LeaderElection {
                         // take it from.
                         PatchParams::apply(&field_manager).force()
                     } else {
-                        // Self-renewal: we already own the fields; a plain
+                        // Self-renewal: the fields are already owned; a plain
                         // SSA apply is a no-conflict renewal. If another pod
-                        // silently took over, SSA returns 409 Conflict and
-                        // we treat that as lost-lease below.
+                        // silently took over, SSA returns 409 Conflict, treated
+                        // as lost-lease below.
                         PatchParams::apply(&field_manager)
                     };
 

@@ -123,10 +123,10 @@ impl OciReference {
         } else if let Some((name, tag)) = reference.rsplit_once(':') {
             // Be careful not to split on port numbers. A port number is preceded
             // by the registry hostname (no slashes after the colon before the next
-            // slash). We check: if the part after ':' contains '/' it's not a tag.
+            // slash): the part after ':' containing '/' means it's not a tag.
             // Also, if the name part has no '/' at all, and the tag looks numeric,
             // it might be a port — but that would make the reference invalid without
-            // a repo path. We handle by checking if 'tag' looks like a port (all digits)
+            // a repo path. Handled by checking if 'tag' looks like a port (all digits)
             // AND the name_part has no slash.
             if tag.chars().all(|c| c.is_ascii_digit()) && !name.contains('/') {
                 // Looks like host:port with no repo — invalid

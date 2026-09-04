@@ -652,7 +652,7 @@ impl Notifier {
                 .show()
                 .map(|_| ())
                 .map_err(|e| e.to_string());
-            // The receiver is gone once we time out below; ignore the drop.
+            // The receiver is gone once the timeout below fires; ignore the drop.
             let _ = tx.send(outcome);
         });
 
@@ -1352,7 +1352,7 @@ pub(super) async fn run_daemon_with(
     if let Some(h) = health_handle {
         h.abort();
         // Drain the cancellation; the JoinError is always Cancelled here
-        // (we just sent abort), nothing actionable to surface.
+        // (abort was just sent), nothing actionable to surface.
         let _ = h.await;
     }
     cleanup_ipc_socket(&ipc_path);

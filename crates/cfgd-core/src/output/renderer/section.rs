@@ -50,7 +50,7 @@ pub(crate) struct SectionFrame {
     pub children_emitted: bool,
     /// The depth at which this section's header should sit (parent depth).
     pub header_depth: usize,
-    /// True if the header has been written. We defer header emit until the first
+    /// True if the header has been written. Header emit is deferred until the first
     /// child renders so that collapsed sections leave no trace.
     pub header_emitted: bool,
     /// Statuses awaiting flush at section close. Buffering lets us right-pad

@@ -42,6 +42,7 @@ pub fn cmd_module_create(
     printer.heading_title(&TitleLabel::new("Create Module", name));
 
     let config_dir = config_dir(cli);
+    // module-dir-ok: config_dir's own declared modules/ directory, not the module cache
     let module_dir = config_dir.join("modules").join(name);
     let module_yaml_path = module_dir.join("module.yaml");
 
@@ -464,6 +465,7 @@ pub fn cmd_module_update_local(
             ));
         }
     };
+    // module-dir-ok: config_dir's own declared modules/ directory, not the module cache
     let module_dir = config_dir.join("modules").join(name);
     let files_dir = module_dir.join("files");
     let mut changes = 0u32;
@@ -788,6 +790,7 @@ pub fn cmd_module_update_local(
 pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
     validate_resource_name(name, "Module")?;
     let config_dir = config_dir(cli);
+    // module-dir-ok: config_dir's own declared modules/ directory, not the module cache
     let module_yaml = config_dir.join("modules").join(name).join("module.yaml");
 
     if !module_yaml.exists() {
@@ -875,6 +878,7 @@ pub fn cmd_module_delete(
     printer.heading_title(&TitleLabel::new("Delete Module", name));
 
     let config_dir = config_dir(cli);
+    // module-dir-ok: config_dir's own declared modules/ directory, not the module cache
     let module_dir = config_dir.join("modules").join(name);
 
     if !module_dir.exists() {
@@ -930,8 +934,8 @@ pub fn cmd_module_delete(
     {
         if purge {
             // Purge mode: remove all files deployed by this module to target locations.
-            // This replaces symlink restoration — there's nothing to restore if we're
-            // removing everything.
+            // This replaces symlink restoration — there's nothing to restore when
+            // everything is being removed.
             let purge_sec = printer.section("Purging Files");
             for file_entry in &doc.spec.files {
                 let target = cfgd_core::expand_tilde(std::path::Path::new(&file_entry.target));
@@ -949,7 +953,7 @@ pub fn cmd_module_delete(
         } else {
             // Default: restore symlinked files before deleting the module directory.
             // When module create adopts files, it moves them into the module dir and
-            // symlinks the original location back. On delete, we reverse that.
+            // symlinks the original location back. Delete reverses that.
             let restore_sec = printer.section("Restoring Files");
             for file_entry in &doc.spec.files {
                 let target = cfgd_core::expand_tilde(std::path::Path::new(&file_entry.target));

@@ -9,6 +9,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
 
     // Scan for profiles and modules
     let profile_names = scan_profile_names(&config_dir.join("profiles"), printer)?;
+    // module-dir-ok: config_dir's own declared modules/ directory, not the module cache
     let module_names = scan_module_names(&config_dir.join("modules"), printer)?;
 
     let default_branch =

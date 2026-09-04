@@ -60,7 +60,7 @@ pub fn cmd_module_add_from_registry(
             printer
                 .status(Role::Info, "No tag specified")
                 .detail(format!("looking up latest for '{}'", reg_ref.module));
-            // Fetch the registry repo so we can read tags. The lib call
+            // Fetch the registry repo to read tags. The lib call
             // takes a Printer; the Quiet sink suppresses the lib's
             // progress emissions so this command's status surface above
             // owns the user-facing line (inversion of control).

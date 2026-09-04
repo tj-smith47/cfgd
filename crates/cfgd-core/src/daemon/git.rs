@@ -146,7 +146,7 @@ pub(crate) fn git_pull(repo_path: &Path) -> std::result::Result<Option<RefMoveme
             .map_err(|e| PullFailureKind::Fetch.because(e))?;
     }
 
-    // Check if we need to fast-forward
+    // Check whether a fast-forward is needed
     let fetch_head = repo
         .find_reference("FETCH_HEAD")
         .map_err(|e| PullFailureKind::FindFetchHead.because(e))?;

@@ -442,7 +442,7 @@ impl Printer {
     pub fn heading(&self, text: impl Into<String>) {
         let depth = self.renderer.enforce_structural_top_level(0);
         // render_heading is hardcoded to depth 0 today; for the runtime-check
-        // re-route path we emit a styled bold line at the section's depth so
+        // re-route path a styled bold line is emitted at the section's depth so
         // the output stays readable despite the shape being wrong.
         if depth == 0 {
             self.renderer
@@ -513,7 +513,7 @@ impl Printer {
     pub fn kv(&self, key: impl Into<String>, value: impl Into<String>) {
         // kv buffers; flush will use the renderer's current depth, so the
         // runtime check is informational here — no depth value to thread
-        // through, but we still want the warn/assert at the call site.
+        // through, but the warn/assert is still wanted at the call site.
         let _depth = self.renderer.enforce_structural_top_level(0);
         self.renderer.render_kv(&key.into(), &value.into());
     }

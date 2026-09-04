@@ -429,7 +429,7 @@ fn pack_image_inner(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Combined Accept header advertising every base-doc media type we can parse:
+/// Combined Accept header advertising every base-doc media type this can parse:
 /// OCI image manifest + OCI index + Docker manifest list.
 fn base_accept_header() -> String {
     format!("{MEDIA_TYPE_OCI_MANIFEST}, {MEDIA_TYPE_OCI_INDEX}, {MEDIA_TYPE_DOCKER_MANIFEST_LIST}")
@@ -481,7 +481,7 @@ fn resolve_base_manifest(
 
     // An index has a `manifests` array (and an index `mediaType`); an image
     // manifest has `config` + `layers`. Branch on the presence of `manifests`
-    // so we tolerate registries that omit/abbreviate `mediaType`.
+    // so registries that omit/abbreviate `mediaType` are tolerated.
     let value: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| OciError::RequestFailed {
             message: format!("invalid base manifest JSON: {e}"),

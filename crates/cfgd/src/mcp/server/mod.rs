@@ -142,7 +142,7 @@ impl McpServer {
             };
 
             // Notifications (no id) don't require a response per JSON-RPC 2.0,
-            // but MCP expects we handle them silently.
+            // but MCP expects them handled silently.
             if request.id.is_none() {
                 self.handle_notification(&request);
                 continue;

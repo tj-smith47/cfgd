@@ -24,7 +24,7 @@ pub const HTTP_OCI_TIMEOUT: Duration = Duration::from_secs(300);
 pub const HTTP_UPGRADE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Anthropic API requests from `cfgd generate` and `cfgd ai`.
-/// Claude latency for agentic tool use is normally a few seconds; 120s is a
+/// Model latency for agentic tool use is normally a few seconds; 120s is a
 /// ceiling for pathological slow networks. Must have *some* timeout — before
 /// this constant the request had none at all.
 pub const HTTP_AI_TIMEOUT: Duration = Duration::from_secs(120);

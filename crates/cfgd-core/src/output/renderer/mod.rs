@@ -1044,7 +1044,7 @@ impl Renderer {
         s.last_top_group = None;
     }
 
-    /// Set blank-pending iff we're at the root group level (no open section).
+    /// Set blank-pending iff at the root group level (no open section).
     /// Called at the end of every top-level group emission (heading, kv_block,
     /// status, hint, note, table) so the next top-level emit gets one blank.
     /// One blank line precedes every top-level GROUP after the first —

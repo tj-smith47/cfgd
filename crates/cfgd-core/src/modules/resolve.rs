@@ -130,7 +130,7 @@ pub fn resolve_package(
         let manager_declared = !entry.prefer.is_empty() || entry.aliases.contains_key(candidate);
 
         // If the manager isn't installed yet but can be bootstrapped, resolve
-        // optimistically — we can't query versions until it's installed.
+        // optimistically — versions cannot be queried until it's installed.
         if bootstrappable {
             return Ok(Some(ResolvedPackage {
                 canonical_name: entry.name.clone(),

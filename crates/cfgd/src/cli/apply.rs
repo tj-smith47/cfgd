@@ -272,8 +272,8 @@ pub fn run_apply(
     // memo, so nothing downstream of an action can read a stale set.
     let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
 
-    // In dry-run mode we don't need secret providers wired up — just plan files for display.
-    // In apply mode we wire up the full file manager with secret providers.
+    // Dry-run mode needs no secret providers wired up — just plan files for display.
+    // Apply mode wires up the full file manager with secret providers.
     let (pkg_actions, file_actions, dry_run_fm, actual_packages) = if module_only {
         (
             Vec::new(),

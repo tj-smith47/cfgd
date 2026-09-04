@@ -11,6 +11,7 @@ pub(crate) fn collect_module_file_targets(
     scope: cfgd_core::Scope,
 ) -> Vec<PathBuf> {
     // Try local module first
+    // module-dir-ok: config_dir's own declared modules/ directory, not the module cache
     let module_dir = config_dir.join("modules").join(module_name);
     if let Ok(loaded) = modules::load_module(&module_dir) {
         return loaded

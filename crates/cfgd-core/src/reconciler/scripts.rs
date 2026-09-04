@@ -894,7 +894,7 @@ fn execute_script_inner(
     st.open_window();
 
     // Channel for live display + Arc buffers for final capture.
-    // Reader threads feed both so we get live scrolling output AND full capture.
+    // Reader threads feed both, for live scrolling output AND full capture.
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let last_output = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
     let stdout_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -978,7 +978,7 @@ fn execute_script_inner(
                     }
                 }
                 // Cooperative abort: abort flag was set while the script was running.
-                // Kill immediately (no grace period — we're already in an interrupt path).
+                // Kill immediately (no grace period — already in an interrupt path).
                 if kill_reason.is_none()
                     && let Some(a) = abort
                     && a.aborted().is_some()
@@ -1005,7 +1005,7 @@ fn execute_script_inner(
                         Some(elapsed),
                     );
                     kill_script_child(&mut child, true);
-                    // Join reader threads so we capture partial output
+                    // Join reader threads to capture partial output
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();
                     let stdout_str = std::sync::Arc::try_unwrap(stdout_buf)
@@ -1072,7 +1072,7 @@ fn ensure_working_dir(run_str: &str, working_dir: &std::path::Path) -> Result<()
 ///
 /// A `fork` in any other thread duplicates every open write descriptor, so a
 /// script this process just finished writing can still be held open by an
-/// unrelated child when we `exec` it — the kernel answers `ETXTBSY`. The window
+/// unrelated child at the moment it `exec`s — the kernel answers `ETXTBSY`. The window
 /// closes the instant the racing child execs (its descriptors are `CLOEXEC`),
 /// so a short bounded retry converges where a single attempt fails at random.
 /// Every other spawn error is returned untouched on the first attempt.

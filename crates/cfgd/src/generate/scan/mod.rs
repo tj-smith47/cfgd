@@ -234,7 +234,7 @@ pub fn scan_dotfiles(home: &Path) -> Result<Vec<DotfileEntry>, CfgdError> {
     if config_dir.is_dir() {
         let config_iter = match std::fs::read_dir(&config_dir) {
             Ok(it) => it,
-            Err(_) => return Ok(entries), // .config not readable; return what we have
+            Err(_) => return Ok(entries), // .config not readable; return what is found so far
         };
 
         for result in config_iter {

@@ -30207,16 +30207,34 @@ fn every_live_minted_drift_id_comes_from_its_composer() {
             }
             *counts.entry(name.clone()).or_default() += 1;
             // The id may be composed just above (a `let rid =` shared by a
-            // checked-key push and the finding built from it, separated by a
-            // multi-line call rustfmt wraps across several rows) or well
-            // below (`manager_action_drift` takes the id as a closure
-            // parameter and composes it at the bottom of the function).
-            let lo = i.saturating_sub(14);
+            // checked-key push and the finding built from it) or well below
+            // (`manager_action_drift` takes the id as a closure parameter and
+            // composes it at the bottom of the function): the proximity
+            // window catches both. A `let rid = ...` bound far enough above
+            // that a multi-line call rustfmt wraps pushes it out of the
+            // window is caught instead by matching the anchor's own
+            // `resource_id: <ident>` binding by NAME against a `let <ident> =`
+            // composer call anywhere in the function above it.
+            let lo = i.saturating_sub(10);
             let hi = (i + 16).min(lines.len());
-            if !lines[lo..hi]
+            let composed_nearby = lines[lo..hi]
                 .iter()
-                .any(|l| composers.iter().any(|c| l.contains(c)))
-            {
+                .any(|l| composers.iter().any(|c| l.contains(c)));
+            let composed_by_binding = lines[i..hi]
+                .iter()
+                .find_map(|l| {
+                    l.trim()
+                        .strip_prefix("resource_id: ")
+                        .and_then(|v| v.strip_suffix(','))
+                })
+                .filter(|s| s.chars().all(|c| c.is_alphanumeric() || c == '_'))
+                .is_some_and(|id| {
+                    lines[..i].iter().rev().take(60).any(|l| {
+                        l.contains(&format!("let {id} ="))
+                            && composers.iter().any(|c| l.contains(c))
+                    })
+                });
+            if !composed_nearby && !composed_by_binding {
                 offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
             }
         }
@@ -30621,14 +30639,33 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
                     continue;
                 }
                 *counts.entry(name.clone()).or_default() += 1;
-                // Widened to 14: a `let rid = ...` composed above the anchor
-                // can sit past a multi-line call rustfmt wraps across rows.
-                let lo = i.saturating_sub(14);
+                // The id may be composed just above (a `let rid =` shared by a
+                // checked-key push and the finding built from it) or well
+                // below. A `let rid = ...` bound far enough above that a
+                // multi-line call rustfmt wraps pushes it out of the window
+                // is caught instead by matching the anchor's own
+                // `resource_id: <ident>` binding by NAME against a
+                // `let <ident> =` composer call anywhere in the function above it.
+                let lo = i.saturating_sub(10);
                 let hi = (i + 16).min(lines.len());
-                if !lines[lo..hi]
+                let composed_nearby = lines[lo..hi]
                     .iter()
-                    .any(|l| COMPOSERS.iter().any(|c| l.contains(c)))
-                {
+                    .any(|l| COMPOSERS.iter().any(|c| l.contains(c)));
+                let composed_by_binding = lines[i..hi]
+                    .iter()
+                    .find_map(|l| {
+                        l.trim()
+                            .strip_prefix("resource_id: ")
+                            .and_then(|v| v.strip_suffix(','))
+                    })
+                    .filter(|s| s.chars().all(|c| c.is_alphanumeric() || c == '_'))
+                    .is_some_and(|id| {
+                        lines[..i].iter().rev().take(60).any(|l| {
+                            l.contains(&format!("let {id} ="))
+                                && COMPOSERS.iter().any(|c| l.contains(c))
+                        })
+                    });
+                if !composed_nearby && !composed_by_binding {
                     offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
                 }
             }
@@ -33781,9 +33818,8 @@ fn no_journal_line_folds_the_home_directory() {
 /// The arrow glyph is `Theme::arrow()` / `Printer::arrow()`, overridable via
 /// `icon_arrow` in `spec.output.theme`. A production slot that hardcodes the
 /// literal instead renders `→` under an ASCII preset that asked for `->`. Two
-/// files are exempt: `output/theme.rs`, which OWNS the default and the
-/// `pub(crate)` fallback constant test/scheduling code threads where no arrow
-/// value could ever actually render, and `generate/schema.rs`, whose embedded
+/// files are exempt: `output/theme.rs`, which OWNS the default and the `pub`
+/// wire constant a serialized field renders, and `generate/schema.rs`, whose embedded
 /// YAML reference documents `iconArrow`'s own default the same way it
 /// documents `iconOk`/`iconWarn`/`iconFail` — a schema field's default is
 /// never itself a rendered relationship.
@@ -33791,9 +33827,9 @@ fn no_journal_line_folds_the_home_directory() {
 fn no_production_slot_hardcodes_the_arrow_glyph() {
     // The floors are what a walk over the WRONG root cannot fake: a root that
     // resolves nowhere sees no files. Both counts are far under today's real
-    // counts, so a deletion does not trip them and a re-rooting does — the
-    // brief's floor of 1 would let a regression in `walk_rust_files` or the
-    // skip filter blind 99% of the tree and still pass.
+    // counts, so a deletion does not trip them and a re-rooting does — a
+    // floor of 1 would let a regression in `walk_rust_files` or the skip
+    // filter blind 99% of the tree and still pass.
     const FLOOR_FILES: [usize; 2] = [80, 90];
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -33879,6 +33915,7 @@ fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
                 .to_string();
             if name == "tests.rs"
                 || name == "test_helpers.rs"
+                || path.components().any(|c| c.as_os_str() == "tests")
                 || path.ends_with("util/hashing.rs")
                 || path.ends_with("output/owner_label.rs")
             {
@@ -33941,6 +33978,247 @@ fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
          is split through `output::split_owner_token`, never a second hand-rolled copy \
          (or carries `// v-strip-ok: <why>` / `// owner-split-ok: <why>`):\n{}",
         offenders.join("\n")
+    );
+}
+
+/// A module cache root is `module_cache_root` (`util/paths.rs`) plus, for the
+/// daemon's fallback, `daemon::tick_module_cache`. A fourth expression joining
+/// `"modules"` onto a resolved cache dir, or a second spelling of
+/// `".module-cache"`, is how a `--cache-dir` run read its own deployed symlinks
+/// as strangers' files. A config dir's, a repo's, or a source checkout's own
+/// declared `modules/` subdirectory is a different concept and hatches with
+/// `// module-dir-ok:`; a registry repo's own `modules/`
+/// (`modules/registry.rs`) is exempt by path instead, since it stays untouched.
+#[test]
+fn no_production_site_joins_the_module_cache_segment_by_hand() {
+    const HATCH: &str = "module-dir-ok:";
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    let mut offenders = Vec::new();
+    for (r, root) in roots.iter().enumerate() {
+        let mut files = walk_rust_files(root);
+        files.sort();
+        let mut seen = 0usize;
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs"
+                || name == "test_helpers.rs"
+                || path.components().any(|c| c.as_os_str() == "tests")
+                || path.ends_with("util/paths.rs")
+                || path.ends_with("daemon/mod.rs")
+                || path.ends_with("modules/registry.rs")
+            {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            seen += 1;
+            let production = cfgd_core::test_helpers::production_slice(&body);
+            let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+            let in_git_rs = path.ends_with("modules/git.rs");
+            for (i, (n, line)) in lines.iter().enumerate() {
+                let code = line.split("//").next().unwrap_or(line);
+                let is_offender = code.contains("join(\"modules\")")
+                    || code.contains(".module-cache")
+                    || (!in_git_rs && code.contains("join(crate::MODULE_CACHE_SEGMENT)"));
+                if !is_offender {
+                    continue;
+                }
+                if lines[i.saturating_sub(1)..=i]
+                    .iter()
+                    .any(|(_, l)| l.contains(HATCH))
+                {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is \
+             looking at the wrong root",
+            root.display()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a module cache root is composed once through `module_cache_root` / \
+         `daemon::tick_module_cache`, never a second hand-joined `\"modules\"` segment or \
+         `.module-cache` fallback (or carries `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A `-o json` field is the same bytes under every theme, so nothing a
+/// serialized payload carries is built from `Printer::arrow()` / `Theme::arrow()`
+/// / `SystemContext::arrow()`. `ICON_ARROW` is the wire glyph; a themed reader
+/// never reaches a serialized field. The exact half B1 proved as the bug
+/// shape: no `build_*_output` function in `cli/` declares a parameter named
+/// `arrow` at all.
+#[test]
+fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
+    const HATCH: &str = "themed-arrow-ok:";
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+    // `json!(` alone is excluded: a bare `json!({..})` is as often an
+    // error-path `cli_error(.., json!({..}))` argument as a structured
+    // success payload, and the paren-scoped check below already reads
+    // inside `with_data(...)`'s own argument list — including a
+    // `with_data(serde_json::json!(...))` payload built inline.
+    const DATA_TELLS: [&str; 2] = ["with_data(", "serde_json::to_"];
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    let mut offenders = Vec::new();
+    for (r, root) in roots.iter().enumerate() {
+        let mut files = walk_rust_files(root);
+        files.sort();
+        let mut seen = 0usize;
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs"
+                || name == "test_helpers.rs"
+                || path.components().any(|c| c.as_os_str() == "tests")
+            {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            seen += 1;
+            let production = cfgd_core::test_helpers::production_slice(&body);
+            let lines: Vec<&str> = production.lines().collect();
+
+            // A themed reader's value reaching a serialized field is a LOCAL
+            // coupling: `.arrow()` sitting inside the SAME call's own
+            // argument list as the tell, balanced across its parens — not
+            // merely a fact about the enclosing statement or function. A
+            // `Doc` builder chain routinely carries both a human `.status()`
+            // argument built from `.arrow()` and an unrelated
+            // `.with_data(...)` payload in the very same statement (even the
+            // same chain), and that pairing is not the bug; only `.arrow()`
+            // text that falls WITHIN the tell's own parens is.
+            for tell in DATA_TELLS {
+                for (byte_pos, _) in production.match_indices(tell) {
+                    let after_tell = byte_pos + tell.len();
+                    let open_offset = if tell.ends_with('(') {
+                        0
+                    } else {
+                        let Some(p) = production[after_tell..].find('(') else {
+                            continue;
+                        };
+                        p + 1
+                    };
+                    let args_start = after_tell + open_offset;
+                    let mut depth = 1i32;
+                    let mut end = production.len();
+                    for (off, ch) in production[args_start..].char_indices() {
+                        match ch {
+                            '(' => depth += 1,
+                            ')' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    end = args_start + off;
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !production[args_start..end].contains(".arrow()") {
+                        continue;
+                    }
+                    let line_no = production[..byte_pos].matches('\n').count();
+                    let hatched = lines.get(line_no).is_some_and(|l| l.contains(HATCH))
+                        || (line_no > 0
+                            && lines.get(line_no - 1).is_some_and(|l| l.contains(HATCH)));
+                    if hatched {
+                        continue;
+                    }
+                    offenders.push(format!(
+                        "{}:{}: {}",
+                        path.display(),
+                        line_no + 1,
+                        lines.get(line_no).map(|s| s.trim()).unwrap_or_default()
+                    ));
+                }
+            }
+        }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is \
+             looking at the wrong root",
+            root.display()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a themed `.arrow()` never sits near a serialized-field build ({}) \
+         (or carries `// {HATCH} <why>`):\n{}",
+        DATA_TELLS.join(" / "),
+        offenders.join("\n")
+    );
+
+    // The exact half: today's one `build_*_output` builder, and every future
+    // one, never takes an `arrow` parameter — the seam B1 proved is the bug
+    // shape.
+    let cli_dir = manifest.join("src/cli");
+    let mut cli_files = walk_rust_files(&cli_dir);
+    cli_files.sort();
+    let mut builder_seen = 0usize;
+    let mut builder_offenders = Vec::new();
+    for path in cli_files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if name == "tests.rs" {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if !(trimmed.contains("fn build_") && trimmed.contains("_output")) {
+                continue;
+            }
+            builder_seen += 1;
+            let mut sig = String::new();
+            for l in &lines[i..(i + 20).min(lines.len())] {
+                sig.push_str(l);
+                sig.push('\n');
+                if l.contains(") ->") || l.trim_end().ends_with(") {") {
+                    break;
+                }
+            }
+            if sig.contains("arrow:") {
+                builder_offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        builder_seen > 0,
+        "the walk found no `build_*_output` function — check the name pattern"
+    );
+    assert!(
+        builder_offenders.is_empty(),
+        "a `-o json` payload builder in `cli/` never carries a themed `arrow` parameter — \
+         `ICON_ARROW` is the wire glyph:\n{}",
+        builder_offenders.join("\n")
     );
 }
 
@@ -34464,7 +34742,10 @@ fn every_plan_running_verb_settles_its_link_deployed_hashes() {
             let path = entry.unwrap().path();
             if path.is_dir() {
                 pending.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs") {
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && path.file_name().is_none_or(|n| n != "tests.rs")
+                && !path.components().any(|c| c.as_os_str() == "tests")
+            {
                 sources.push(path);
             }
         }
@@ -34487,17 +34768,9 @@ fn every_plan_running_verb_settles_its_link_deployed_hashes() {
             }
             // The title is on this line's context: a `RunTitle::Plan` run or
             // a `.preview_only()` run executes nothing and records nothing.
-            // The `ctx` a call passes may be built as its own variable a few
-            // lines above the `ApplyRun::new(ctx, ..)` call, so the backward
-            // window catches a `title: RunTitle::Plan` field set there too.
             let statement: String = lines[n..(n + 12).min(lines.len())].join("\n");
             let statement = statement.split(';').next().unwrap_or("");
-            let preceding: String = lines[n.saturating_sub(12)..=n].join("\n");
-            if statement.contains("RunTitle::Plan")
-                || statement.contains(".preview_only()")
-                || preceding.contains("RunTitle::Plan")
-                || preceding.contains(".preview_only()")
-            {
+            if statement.contains("RunTitle::Plan") || statement.contains(".preview_only()") {
                 continue;
             }
             let hatched = lines[n.saturating_sub(1)..=n]
@@ -34514,9 +34787,9 @@ fn every_plan_running_verb_settles_its_link_deployed_hashes() {
         }
     }
     assert!(
-        seen >= 4,
-        "the walk no longer reaches the apply paths (apply, init --apply, module create \
-         --apply, the daemon tick) — it found {seen}"
+        seen == 4,
+        "the walk no longer reaches exactly the apply paths (apply, init --apply, module \
+         create --apply, the daemon tick) — it found {seen}"
     );
     assert!(
         unsettled.is_empty(),

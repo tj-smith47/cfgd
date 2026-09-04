@@ -10872,10 +10872,12 @@ fn apply_system_set_value_calls_configurator() {
 }
 
 /// `icon_arrow` is themeable, so `apply_system_action`'s settled-row
-/// parenthetical renders the theme's own glyph — the THIRD WARN 14 render pin
-/// (the header's chain is the first, `format_plan_item`'s `set` arm the
-/// second): nothing else proves `printer.arrow()` under a non-default preset
-/// reaches this description.
+/// parenthetical renders the theme's own glyph: nothing else proves
+/// `printer.arrow()` under a non-default preset reaches this description.
+/// Siblings: the header's chain is pinned by
+/// `a_preset_overriding_the_arrow_renders_the_inherits_chain_in_its_own_glyph`,
+/// `format_plan_item`'s `set` arm by
+/// `a_preset_overriding_the_arrow_reaches_format_plan_items_set_arm`.
 #[test]
 fn a_preset_overriding_the_arrow_reaches_the_settled_system_rows_parenthetical() {
     let state = test_state();

@@ -867,8 +867,9 @@ pub fn normalize_path_entry(entry: &str, home: &std::path::Path) -> String {
 
 /// Fold a normalized `PATH` entry to the case two spellings of the same
 /// directory compare equal in: identity on every host but Windows, where
-/// `fold_path_case_windows` runs (a plain code span, not a link — the
-/// function is compiled out under a normal, non-Windows doc build).
+/// `fold_path_case_windows` runs.
+// A plain code span, not a link — the function is compiled out under a
+// normal, non-Windows doc build.
 fn fold_path_case(s: String) -> String {
     #[cfg(windows)]
     {
@@ -1533,7 +1534,7 @@ pub fn posixify_os_error_text(s: &str) -> std::borrow::Cow<'_, str> {
         }
         // Walk back from `idx` to the last "<sep>: " — that's the boundary
         // between the error prefix (e.g. "io error on <PATH>: ") and the
-        // OS-native prose we collapse.
+        // OS-native prose being collapsed.
         let prefix = &rest[..idx];
         let cut = prefix.rfind(": ").map(|p| p + 2).unwrap_or(idx);
         out.push_str(&prefix[..cut]);

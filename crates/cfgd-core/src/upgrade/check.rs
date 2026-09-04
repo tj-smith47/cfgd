@@ -202,7 +202,7 @@ pub struct UpdateCheckEffects<'a> {
 ///    `Prompt`), or skip.
 ///
 /// A fetch error is non-fatal: `checked` stays `true` (the attempt was made and
-/// the timestamp recorded so we don't hammer the API), with no surface or apply.
+/// the timestamp recorded to avoid hammering the API), with no surface or apply.
 pub fn run_update_check(
     config: &UpdateConfig,
     now: u64,

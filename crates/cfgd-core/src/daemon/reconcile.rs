@@ -67,7 +67,7 @@ pub(crate) fn setup_file_watcher(
                 tracing::warn!(path = %path.posix(), error = %e, "watch: cannot watch path");
             }
         } else if let Some(parent) = path.parent() {
-            // Watch parent directory so we detect file creation
+            // Watch parent directory to detect file creation
             if parent.exists()
                 && let Err(e) = watcher.watch(parent, RecursiveMode::NonRecursive)
             {
@@ -479,7 +479,7 @@ fn reconcile_tick(
         }
     };
 
-    // The policy review is profile-wide; skip it when we're scoped to a single
+    // The policy review is profile-wide; skip it when scoped to a single
     // module so a per-module tick doesn't accidentally accept/reject items from
     // sources unrelated to the patched module. The classification itself is the
     // shared one `cfgd plan` and `cfgd apply` read, so a `Reject`-tier item the

@@ -23,9 +23,9 @@ use crate::metrics::Metrics;
 /// In-memory store of active web-UI session IDs (hashed).
 ///
 /// Session IDs are random 256-bit tokens set as the `cfgd_session` cookie
-/// after successful `?token=` auth. We store only the SHA-256 hash + expiry,
+/// after successful `?token=` auth. Only the SHA-256 hash + expiry is stored,
 /// so a disk snapshot or memory-scrape of this struct doesn't yield usable
-/// cookies, and we never write the raw admin key (`CFGD_API_KEY`) into a
+/// cookies, and the raw admin key (`CFGD_API_KEY`) is never written into a
 /// client cookie.
 #[derive(Clone, Default)]
 pub struct WebSessions {
@@ -520,7 +520,7 @@ async fn admin_auth_middleware(
         }
     } else {
         // Server misconfig — log at error so the operator notices, but present
-        // as 401 to the client so we don't leak the env-var name.
+        // as 401 to the client to avoid leaking the env-var name.
         tracing::error!(
             env = "CFGD_API_KEY",
             "admin endpoint hit but CFGD_API_KEY is not set — refusing access"
@@ -560,7 +560,7 @@ async fn admin_reset(State(state): State<SharedState>) -> Result<impl IntoRespon
 
 // --- Submodule declarations + glob re-exports ---
 //
-// Handlers and helpers live in focused submodules; we glob-import them so
+// Handlers and helpers live in focused submodules, glob-imported so
 // `router()` references unqualified handler names exactly as they appeared
 // before the carve. This also flattens them into `super::*` for `tests.rs`.
 mod device;

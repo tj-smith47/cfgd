@@ -86,7 +86,7 @@ pub(super) struct EnvHostProbe {
     /// Whether a managed fish env file should be written (fish in use *and* its
     /// `conf.d` directory exists).
     pub fish_present: bool,
-    /// Whether `~/.bash_profile` already exists (we never create it — doing so
+    /// Whether `~/.bash_profile` already exists (never created here — doing so
     /// would shadow a user's `~/.profile` in bash's first-match login chain).
     pub bash_profile_exists: bool,
     /// Whether `~/.bash_login` already exists.

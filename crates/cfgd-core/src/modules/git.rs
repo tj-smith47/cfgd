@@ -108,7 +108,7 @@ pub fn parse_git_source(source: &str) -> Result<GitSource> {
     } else {
         // No subdir — check for @tag on the URL itself
         // For SSH URLs like git@github.com:user/repo.git@v2.1.0,
-        // we need to find the @tag *after* the .git suffix
+        // the @tag must be found *after* the .git suffix
         if let Some(git_suffix_pos) = url.find(".git") {
             let after_git = &url[git_suffix_pos + 4..];
             if let Some(at_pos) = after_git.find('@') {

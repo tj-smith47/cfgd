@@ -669,8 +669,11 @@ mod tests {
     }
 
     /// `icon_arrow` is themeable, so the header's inherits chain renders the
-    /// theme's own glyph, not the default — proving item 3's contract (WARN 14)
-    /// actually reaches a rendered row, not just `ConfigHeader`'s data.
+    /// theme's own glyph, not the default — actually reaching a rendered row,
+    /// not just `ConfigHeader`'s data. Siblings: `format_plan_item`'s `set`
+    /// arm is pinned by `a_preset_overriding_the_arrow_reaches_format_plan_items_set_arm`,
+    /// the settled system row by
+    /// `a_preset_overriding_the_arrow_reaches_the_settled_system_rows_parenthetical`.
     #[test]
     fn a_preset_overriding_the_arrow_renders_the_inherits_chain_in_its_own_glyph() {
         let theme = crate::output::Theme::preset("minimal").expect("minimal is a preset");

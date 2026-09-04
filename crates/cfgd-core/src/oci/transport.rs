@@ -133,7 +133,7 @@ pub(super) fn authenticated_request(
     let basic_authz = auth.map(|cred| cred.basic_auth_header());
 
     // First attempt — may get 401. `run_request` disables status-as-error so a
-    // 401 is returned as `Ok(resp)` and we can read its Www-Authenticate header.
+    // 401 is returned as `Ok(resp)` and its Www-Authenticate header can be read.
     let resp = run_request(
         agent,
         method,
@@ -195,7 +195,7 @@ pub(super) fn authenticated_request(
 /// Resolve the authoritative digest of a just-PUT manifest/index.
 ///
 /// Prefers the registry's `Docker-Content-Digest` response header, falling back
-/// to hashing the exact bytes we sent. A conformant registry echoes the digest
+/// to hashing the exact bytes sent. A conformant registry echoes the digest
 /// of those bytes — but one that re-canonicalizes the manifest stores (and
 /// addresses) a different digest, so the value a caller pins (e.g. a Kubernetes
 /// `volume.image` reference) must come from the registry whenever it provides one.
@@ -264,7 +264,7 @@ pub(super) fn upload_blob(
     let sep = if location.contains('?') { "&" } else { "?" };
     let put_url = format!("{location}{sep}digest={digest}");
 
-    // For the PUT, we need to handle the case where location is a relative URL
+    // For the PUT, handle the case where location is a relative URL
     let put_url = if put_url.starts_with("http://") || put_url.starts_with("https://") {
         put_url
     } else {

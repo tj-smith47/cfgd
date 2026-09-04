@@ -80,7 +80,7 @@ pub(super) async fn reconcile_machine_config(
     // Check if any DriftAlerts exist for this MachineConfig
     let has_drift = has_active_drift_alerts(&ctx.stores, &namespace, &name).await?;
 
-    // Skip if we've already observed this generation, no drift, and condition already reflects that
+    // Skip if this generation is already observed, no drift, and condition already reflects that
     let generation_unchanged =
         current_generation.is_some() && current_generation == observed_generation;
     let had_drift = existing_conditions
