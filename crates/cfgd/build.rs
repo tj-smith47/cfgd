@@ -39,7 +39,7 @@ fn main() {
         _ => {
             // Unknown Windows target env — skip silently; the linker default
             // will apply. Worst case the clap overflow recurs and CI catches
-            // it, but we don't want to pass an incompatible flag here.
+            // it, which beats passing a flag this linker may reject outright.
         }
     }
 }
