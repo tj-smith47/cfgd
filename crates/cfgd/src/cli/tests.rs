@@ -3588,37 +3588,68 @@ fn parse_file_spec_empty_target_errors() {
 #[test]
 fn is_unmanaged_file_nonexistent() {
     let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("config");
+    let module_cache = dir.path().join("cache");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&module_cache).unwrap();
     let state = StateStore::open_in_memory().unwrap();
     let target = dir.path().join("does-not-exist");
-    assert!(!is_unmanaged_file(&target, dir.path(), dir.path(), &state));
+    assert!(!is_unmanaged_file(
+        &target,
+        &config_dir,
+        &module_cache,
+        &state
+    ));
 }
 
 #[test]
 fn is_unmanaged_file_regular_file() {
     let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("config");
+    let module_cache = dir.path().join("cache");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&module_cache).unwrap();
     let state = StateStore::open_in_memory().unwrap();
     let target = dir.path().join("existing-file");
     std::fs::write(&target, "content").unwrap();
-    assert!(is_unmanaged_file(&target, dir.path(), dir.path(), &state));
+    assert!(is_unmanaged_file(
+        &target,
+        &config_dir,
+        &module_cache,
+        &state
+    ));
 }
 
 #[test]
 #[cfg(unix)]
 fn is_unmanaged_file_cfgd_symlink() {
     let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("config");
+    let module_cache = dir.path().join("cache");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&module_cache).unwrap();
     let state = StateStore::open_in_memory().unwrap();
-    let source = dir.path().join("source-file");
+    let source = config_dir.join("source-file");
     std::fs::write(&source, "content").unwrap();
     let target = dir.path().join("subdir").join("symlink");
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&source, &target).unwrap();
     // Symlink points into config_dir, so it's managed
-    assert!(!is_unmanaged_file(&target, dir.path(), dir.path(), &state));
+    assert!(!is_unmanaged_file(
+        &target,
+        &config_dir,
+        &module_cache,
+        &state
+    ));
 }
 
 #[test]
 fn is_unmanaged_file_tracked_in_state() {
     let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("config");
+    let module_cache = dir.path().join("cache");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&module_cache).unwrap();
     let state = StateStore::open_in_memory().unwrap();
     let target = dir.path().join("tracked-file");
     std::fs::write(&target, "content").unwrap();
@@ -3628,7 +3659,12 @@ fn is_unmanaged_file_tracked_in_state() {
     state
         .upsert_managed_resource("file", &target_str, "local", None, None)
         .unwrap();
-    assert!(!is_unmanaged_file(&target, dir.path(), dir.path(), &state));
+    assert!(!is_unmanaged_file(
+        &target,
+        &config_dir,
+        &module_cache,
+        &state
+    ));
 }
 
 // --- config get/set/unset helpers ---
@@ -10928,7 +10964,7 @@ fn build_plan_output_empty_plan() {
         phases: vec![],
         warnings: vec![],
     };
-    let output = super::build_plan_output(&plan, "apply", None, &[], &Default::default(), &[], "→");
+    let output = super::build_plan_output(&plan, "apply", None, &[], &Default::default(), &[]);
     assert_eq!(output.context, "apply");
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
@@ -10948,8 +10984,7 @@ fn build_plan_output_with_actions() {
         )],
         warnings: vec!["something".into()],
     };
-    let output =
-        super::build_plan_output(&plan, "reconcile", None, &[], &Default::default(), &[], "→");
+    let output = super::build_plan_output(&plan, "reconcile", None, &[], &Default::default(), &[]);
     assert_eq!(output.context, "reconcile");
     assert_eq!(output.total_actions, 1);
     assert_eq!(output.phases.len(), 1);
@@ -10992,7 +11027,6 @@ fn build_plan_output_with_phase_filter() {
         &[],
         &Default::default(),
         &[],
-        "→",
     );
     assert_eq!(output.total_actions, 1);
     assert_eq!(output.phases.len(), 1);
@@ -30173,10 +30207,11 @@ fn every_live_minted_drift_id_comes_from_its_composer() {
             }
             *counts.entry(name.clone()).or_default() += 1;
             // The id may be composed just above (a `let rid =` shared by a
-            // checked-key push and the finding built from it) or well below
-            // (`manager_action_drift` takes the id as a closure parameter
-            // and composes it at the bottom of the function).
-            let lo = i.saturating_sub(10);
+            // checked-key push and the finding built from it, separated by a
+            // multi-line call rustfmt wraps across several rows) or well
+            // below (`manager_action_drift` takes the id as a closure
+            // parameter and composes it at the bottom of the function).
+            let lo = i.saturating_sub(14);
             let hi = (i + 16).min(lines.len());
             if !lines[lo..hi]
                 .iter()
@@ -30586,7 +30621,9 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
                     continue;
                 }
                 *counts.entry(name.clone()).or_default() += 1;
-                let lo = i.saturating_sub(10);
+                // Widened to 14: a `let rid = ...` composed above the anchor
+                // can sit past a multi-line call rustfmt wraps across rows.
+                let lo = i.saturating_sub(14);
                 let hi = (i + 16).min(lines.len());
                 if !lines[lo..hi]
                     .iter()
@@ -33752,47 +33789,157 @@ fn no_journal_line_folds_the_home_directory() {
 /// never itself a rendered relationship.
 #[test]
 fn no_production_slot_hardcodes_the_arrow_glyph() {
+    // The floors are what a walk over the WRONG root cannot fake: a root that
+    // resolves nowhere sees no files. Both counts are far under today's real
+    // counts, so a deletion does not trip them and a re-rooting does — the
+    // brief's floor of 1 would let a regression in `walk_rust_files` or the
+    // skip filter blind 99% of the tree and still pass.
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut files = walk_rust_files(&root.join("src"));
-    files.extend(walk_rust_files(&root.join("../cfgd-core/src")));
-    files.sort();
-    let mut scanned_cfgd = 0usize;
-    let mut scanned_core = 0usize;
+    let roots = [root.join("src"), root.join("../cfgd-core/src")];
     let mut offenders = Vec::new();
-    for path in files {
-        if path.file_name().is_none_or(|n| n == "tests.rs")
-            || path.components().any(|c| c.as_os_str() == "tests")
-            || path.ends_with("output/theme.rs")
-            || path.ends_with("generate/schema.rs")
-        {
-            continue;
-        }
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if path.components().any(|c| c.as_os_str() == "cfgd-core") {
-            scanned_core += 1;
-        } else {
-            scanned_cfgd += 1;
-        }
-        let body = cfgd_core::test_helpers::production_slice(&raw);
-        for (n, line) in body.lines().enumerate() {
-            let code = line.trim_start();
-            if code.starts_with("//") || !line.contains('→') {
+    for (r, walk_root) in roots.iter().enumerate() {
+        let mut files = walk_rust_files(walk_root);
+        files.sort();
+        let mut seen = 0usize;
+        for path in files {
+            if path.file_name().is_none_or(|n| n == "tests.rs")
+                || path.components().any(|c| c.as_os_str() == "tests")
+                || path.ends_with("output/theme.rs")
+                || path.ends_with("generate/schema.rs")
+            {
                 continue;
             }
-            offenders.push(format!("{}:{}: {}", path.display(), n + 1, code.trim()));
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            seen += 1;
+            let body = cfgd_core::test_helpers::production_slice(&raw);
+            for (n, line) in body.lines().enumerate() {
+                let code = line.trim_start();
+                // A trailing `// old → new` on a code line is still a
+                // comment: only the part before the FIRST `//` is code.
+                let code_only = code.split("//").next().unwrap_or(code);
+                if !code_only.contains('→') {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, code.trim()));
+            }
         }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is \
+             looking at the wrong root",
+            walk_root.display()
+        );
     }
-    assert!(
-        scanned_cfgd >= 1 && scanned_core >= 1,
-        "the walk no longer reaches both crates' src/ — it found {scanned_cfgd} cfgd files, \
-         {scanned_core} cfgd-core files"
-    );
     assert!(
         offenders.is_empty(),
         "the arrow glyph is `Theme::arrow()` / `Printer::arrow()`, never a literal `→`, so a \
          preset's `icon_arrow` override reaches every rendered relationship:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A leading `v` is stripped in ONE place (`declared_floor_version`) and an
+/// owner token is split in ONE place (`output::split_owner_token`); a second
+/// hand-rolled copy of either is how a floor stopped clearing the version that
+/// names it, or a second owner-parse silently disagreed about where the
+/// `kind`/`name` boundary falls. `util/hashing.rs` (which OWNS the v-strip)
+/// and `output/owner_label.rs` (which OWNS the split) are exempt by path; any
+/// other hand-rolled copy carries `// v-strip-ok: <why>` or
+/// `// owner-split-ok: <why>`.
+#[test]
+fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
+    const V_STRIP_HATCH: &str = "v-strip-ok:";
+    const OWNER_SPLIT_HATCH: &str = "owner-split-ok:";
+    // The floors are what a walk over the WRONG root cannot fake: a root that
+    // resolves nowhere sees no files. Both counts are far under today's real
+    // counts, so a deletion does not trip them and a re-rooting does.
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+    // A manager/owner-token identifier a `split_once(':')` reads, on the
+    // SPLIT line itself or on the enclosing `fn` line — `split_owner_token`
+    // and `owner_token` both name the concept on the signature, not the
+    // `word.split_once(':')` body line, so the tell has to see both.
+    const OWNER_SUBJECTS: [&str; 2] = ["token", "owner"];
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    let mut offenders = Vec::new();
+    for (r, root) in roots.iter().enumerate() {
+        let mut files = walk_rust_files(root);
+        files.sort();
+        let mut seen = 0usize;
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs"
+                || name == "test_helpers.rs"
+                || path.ends_with("util/hashing.rs")
+                || path.ends_with("output/owner_label.rs")
+            {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            seen += 1;
+            let production = cfgd_core::test_helpers::production_slice(&body);
+            let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+            let mut enclosing_fn = String::new();
+            for (i, (n, line)) in lines.iter().enumerate() {
+                let code = line.trim_start();
+                if let Some(rest) = code.strip_prefix("fn ").or_else(|| {
+                    code.strip_prefix("pub fn ").or_else(|| {
+                        code.strip_prefix("pub(crate) fn ")
+                            .or_else(|| code.strip_prefix("pub(super) fn "))
+                    })
+                }) {
+                    enclosing_fn = rest.split(['(', '<']).next().unwrap_or("").to_string();
+                }
+                if code.starts_with("//") {
+                    continue;
+                }
+                let is_v_strip = code.contains("strip_prefix(['v'")
+                    || code.contains("strip_prefix(\"v\"")
+                    || code.contains("trim_start_matches('v'");
+                let is_owner_split = code.contains("split_once(':')")
+                    && OWNER_SUBJECTS
+                        .iter()
+                        .any(|s| code.contains(s) || enclosing_fn.contains(s));
+                if !is_v_strip && !is_owner_split {
+                    continue;
+                }
+                let hatch = if is_v_strip {
+                    V_STRIP_HATCH
+                } else {
+                    OWNER_SPLIT_HATCH
+                };
+                if lines[i.saturating_sub(1)..=i]
+                    .iter()
+                    .any(|(_, l)| l.contains(hatch))
+                {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is \
+             looking at the wrong root",
+            root.display()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a leading v/V is stripped through `declared_floor_version`, and an owner token \
+         is split through `output::split_owner_token`, never a second hand-rolled copy \
+         (or carries `// v-strip-ok: <why>` / `// owner-split-ok: <why>`):\n{}",
         offenders.join("\n")
     );
 }
@@ -34340,9 +34487,17 @@ fn every_plan_running_verb_settles_its_link_deployed_hashes() {
             }
             // The title is on this line's context: a `RunTitle::Plan` run or
             // a `.preview_only()` run executes nothing and records nothing.
+            // The `ctx` a call passes may be built as its own variable a few
+            // lines above the `ApplyRun::new(ctx, ..)` call, so the backward
+            // window catches a `title: RunTitle::Plan` field set there too.
             let statement: String = lines[n..(n + 12).min(lines.len())].join("\n");
             let statement = statement.split(';').next().unwrap_or("");
-            if statement.contains("RunTitle::Plan") || statement.contains(".preview_only()") {
+            let preceding: String = lines[n.saturating_sub(12)..=n].join("\n");
+            if statement.contains("RunTitle::Plan")
+                || statement.contains(".preview_only()")
+                || preceding.contains("RunTitle::Plan")
+                || preceding.contains(".preview_only()")
+            {
                 continue;
             }
             let hatched = lines[n.saturating_sub(1)..=n]

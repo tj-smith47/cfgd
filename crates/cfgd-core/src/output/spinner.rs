@@ -147,6 +147,12 @@ fn split_owner_token(body: &str) -> Option<(&str, super::OwnerLabel, &str)> {
 }
 
 fn owner_token(word: &str) -> Option<super::OwnerLabel> {
+    // This reads an already-RENDERED word for a shape-only tinting heuristic
+    // (see the fn's own doc above), never a stored `kind:name` owner
+    // identity — `output::split_owner_token` is that reader, and folding
+    // this into it would make an arbitrary colon-bearing word (an OCI ref, a
+    // URL) a false owner match instead of plain text.
+    // owner-split-ok: shape-only heuristic parse of rendered text, not a read of a stored owner token
     let (kind, name) = word.split_once(':')?;
     let plain_kind = !kind.is_empty() && kind.chars().all(|c| c.is_ascii_lowercase());
     let plain_name = !name.is_empty() && !name.contains([':', '/', '\\']);

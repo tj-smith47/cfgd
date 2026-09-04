@@ -1244,13 +1244,36 @@ pub(super) fn parse_package_description(desc: &str) -> Option<(String, String, V
 mod tests {
     use super::super::types::{
         Action, DeclaredProvision, EnvAction, ManagerAction, ModuleAction, ModuleActionKind,
+        SystemAction,
     };
     use crate::providers::PackageAction;
 
     use super::{
         action_display_subject, action_display_subject_within, format_manager_action_item,
-        parse_package_description, pre_skip_doubling_error,
+        format_plan_item, parse_package_description, pre_skip_doubling_error,
     };
+
+    /// `icon_arrow` is themeable, so `format_plan_item`'s `set` arm renders the
+    /// theme's own glyph — the SECOND WARN 14 render pin (the header's chain
+    /// is the first, `system.rs`'s parenthetical the third): nothing proves
+    /// `printer.arrow()` under a non-default preset actually reaches a plan
+    /// item's description without this.
+    #[test]
+    fn a_preset_overriding_the_arrow_reaches_format_plan_items_set_arm() {
+        let theme = crate::output::Theme::preset("minimal").expect("minimal is a preset");
+        let (printer, _buf) =
+            crate::output::Printer::for_test_with_theme(theme, crate::output::Verbosity::Quiet);
+        let action = Action::System(SystemAction::SetValue {
+            configurator: "sysctl".to_string(),
+            key: "net.ipv4.ip_forward".to_string(),
+            desired: "1".to_string(),
+            current: "0".to_string(),
+            origin: "test".to_string(),
+        });
+        let desc = format_plan_item(&action, printer.arrow());
+        assert!(desc.contains(" > "), "{desc}");
+        assert!(!desc.contains('→'), "{desc}");
+    }
 
     /// No withheld row states one noun twice.
     ///

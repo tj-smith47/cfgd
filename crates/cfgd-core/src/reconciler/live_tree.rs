@@ -231,8 +231,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
     /// somewhere else is the jump this whole module exists to prevent.
     pub(super) fn dispatched(&mut self, owner: &'p Owner, action: &'p Action) -> LaneHandle<'p> {
         let subject =
-            action_display_subject_within(action, self.subject_budget(), self.printer.arrow())
-                .to_string();
+            action_display_subject_within(action, self.subject_budget(), self.arrow()).to_string();
         if !self.live {
             return self.printer.lane_at(self.depth, subject);
         }

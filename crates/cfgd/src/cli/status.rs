@@ -1677,7 +1677,9 @@ fn finding_owner(
             )
         }
         "package" => {
-            let Some((manager, _)) = event.resource_id.split_once(':') else {
+            let Some((manager, _)) =
+                cfgd_core::reconciler::split_package_drift_resource_id(&event.resource_id)
+            else {
                 return (
                     profile_owner.cloned(),
                     Some("package"),

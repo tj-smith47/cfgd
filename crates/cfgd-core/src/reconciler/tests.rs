@@ -10871,6 +10871,68 @@ fn apply_system_set_value_calls_configurator() {
     );
 }
 
+/// `icon_arrow` is themeable, so `apply_system_action`'s settled-row
+/// parenthetical renders the theme's own glyph — the THIRD WARN 14 render pin
+/// (the header's chain is the first, `format_plan_item`'s `set` arm the
+/// second): nothing else proves `printer.arrow()` under a non-default preset
+/// reaches this description.
+#[test]
+fn a_preset_overriding_the_arrow_reaches_the_settled_system_rows_parenthetical() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+        vec![crate::providers::SystemDrift {
+            key: "test.key".to_string(),
+            expected: "desired-val".to_string(),
+            actual: "current-val".to_string(),
+        }],
+    )));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let mut resolved = make_empty_resolved();
+    resolved.merged.system.insert(
+        "sysctl".to_string(),
+        serde_yaml::from_str("{net.ipv4.ip_forward: 1}").unwrap(),
+    );
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::System,
+            &Owner::profile("test"),
+            vec![Action::System(SystemAction::SetValue {
+                configurator: "sysctl".to_string(),
+                key: "net.ipv4.ip_forward".to_string(),
+                desired: "1".to_string(),
+                current: "0".to_string(),
+                origin: "local".to_string(),
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let theme = crate::output::Theme::preset("minimal").expect("minimal is a preset");
+    let (printer, _buf) =
+        crate::output::Printer::for_test_with_theme(theme, crate::output::Verbosity::Quiet);
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            Some(&PhaseFilter::Phase(PhaseName::System)),
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    let desc = &result.action_results[0].description;
+    assert!(desc.contains(" > "), "{desc}");
+    assert!(!desc.contains('→'), "{desc}");
+}
+
 /// An apply that sets a system value resolves the drift row a DAEMON tick
 /// recorded for the same setting.
 ///

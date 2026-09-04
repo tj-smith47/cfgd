@@ -359,6 +359,12 @@ Modules declare `depends: [node, python]`. cfgd builds a dependency graph and in
 
 Processing order: leaf dependencies first (node, python), then dependents (nvim).
 
+Every command reporting on a resolved profile carries the same annotation convention on its
+`Modules` header row: `Modules git, nvim (depends: plugins)` when a `depends` entry pulled in a
+module that neither the profile nor the invocation named directly, no annotation at all when
+resolution added nothing beyond the declared list. See [Profiles → Inheritance](profiles.md#inheritance)
+for the `Profile` row's identical rule.
+
 ## Script Lifecycle
 
 Modules support lifecycle hooks that run at different points during apply and reconciliation. Scripts can be inline commands or file paths (relative to the module directory).

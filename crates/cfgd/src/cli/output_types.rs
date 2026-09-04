@@ -463,7 +463,7 @@ impl PlanGroupOutput {
     }
 }
 
-/// The `cfgd:managers` group's per-action structured payload — spec §7's
+/// The `cfgd:managers` group's per-action structured payload — the
 /// `{manager, state, via, requires}` shape, populated only for
 /// `Action::Manager` rows (`PlanActionOutput.manager`).
 ///
@@ -477,10 +477,9 @@ impl PlanGroupOutput {
 #[serde(rename_all = "camelCase")]
 pub struct ManagerActionOutput {
     pub manager: String,
-    /// `present` (refresh) | `provisioned` | `prerequisite` | `refused`.
-    /// `refused` is not in spec §7's literal enum — the spec's variant list
-    /// names `Refuse` as a node this task must give a payload, and a state
-    /// enum a refusal cannot express in is a payload that silently drops it.
+    /// The `state` enum is `present`|`provisioned`|`prerequisite`|`refused`.
+    /// `Action::Manager` names `Refuse` as a node that must give a payload,
+    /// and a state enum a refusal cannot express in would silently drop it.
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,

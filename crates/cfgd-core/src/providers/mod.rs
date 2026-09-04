@@ -1065,11 +1065,11 @@ pub struct SystemDrift {
 /// rendered by one mechanism, so there is exactly one place that decides how a
 /// note attaches to the action that produced it.
 ///
-/// Both fields are PRIVATE, and that is the whole enforcement of this task's
-/// invariant: the reconciler settles one `system:<name>.<key>` line per call, so
-/// a configurator reaching a `Printer` could put a second settled line beside it
-/// and step outside the phase tree. The two things a configurator legitimately
-/// needs from a printer — narrating ([`report`](Self::report)) and opening a
+/// Both fields are PRIVATE, and that is the whole enforcement of the
+/// invariant: the reconciler settles one `system:<name>.<key>` line per call,
+/// so a configurator reaching a `Printer` could put a second settled line
+/// beside it and step outside the phase tree. The two things a configurator
+/// legitimately needs from a printer — narrating ([`report`](Self::report)) and opening a
 /// command window that does NOT settle ([`run_silent`](Self::run_silent)) — are
 /// exposed as named methods, so the bypass is not expressible rather than merely
 /// discouraged. Never add a `printer()` accessor: it re-opens the hole for every

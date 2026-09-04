@@ -12,12 +12,16 @@ const ICON_RUNNING: &str = "◐";
 // once. U+2205 over the circled `⊘`/`⊗` shapes because it is present in
 // FiraCode Nerd Font Mono, which the recorded demos render in.
 const ICON_SKIPPED: &str = "∅";
-/// The default arrow glyph, before any preset or `spec.output.theme` override.
-/// `pub(crate)` for the handful of call sites whose `arrow` argument is
-/// provably never rendered (a Skip variant's subject, an operand-list swap
-/// that never reaches a Secret/System action) but still needs a valid `&str`
-/// — never reach for it where the theme's own choice might actually paint.
-pub(crate) const ICON_ARROW: &str = "→";
+/// The ONE wire-safe arrow glyph: what a `-o json` payload field renders
+/// unconditionally, independent of `--theme` / `spec.output.theme.iconArrow` /
+/// `CFGD_THEME`. A themed reader (`Printer::arrow()` / `Theme::arrow()`) never
+/// reaches a serialized field — a wire builder that instead threaded a themed
+/// glyph through is the bug this constant exists to make unrepresentable.
+/// Also the right choice for the handful of DISPLAY call sites whose `arrow`
+/// argument is provably never rendered (a Skip variant's subject, an
+/// operand-list swap that never reaches a Secret/System action) but still
+/// needs a valid `&str`.
+pub const ICON_ARROW: &str = "→";
 // U+25C9, verified present in FiraCode Nerd Font Mono (the recorded demos'
 // font), JetBrains Mono and DejaVu Sans Mono via `fc-list ":charset=25C9"`.
 // It stays in the ○/◐ family the rest of the set draws from without being the

@@ -950,3 +950,14 @@ fn a_fourpart_version_clears_a_shorter_declared_floor() {
 fn a_fifth_version_component_is_not_comparable() {
     assert!(!fourpart_comparable("1.2.3.4.5"));
 }
+
+/// `fourpart_components` strips a leading `v` through the shared
+/// `declared_floor_version`, the ONE place a version's `v` prefix is
+/// stripped — not its own `trim_start_matches('v')`, which answered
+/// `floor_comparable("V1.2.3.4") == false` where every semver family answers
+/// `true`, and accepted a REPEATED `v` (`vv1.2`) the shared strip refuses.
+#[test]
+fn fourpart_comparable_strips_a_leading_v_through_the_shared_strip() {
+    assert!(fourpart_comparable("V1.2.3.4"));
+    assert!(!fourpart_comparable("vv1.2"));
+}
