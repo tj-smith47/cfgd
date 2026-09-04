@@ -170,6 +170,41 @@ fn diff_no_drift_human() {
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "diff/no_drift.txt", &stripped);
 }
 
+/// The `Standing` section, over both operand shapes a recorded row comes in.
+///
+/// A `script` row is a type no pass of the full scan can re-find, so both rows
+/// survive the walk and reach the section. The golden is what keeps the
+/// operand-less one honest: it has no two sides to name, so it words itself as
+/// the bare cause — never `want: missing, have: ...`, which the absence fold
+/// invents out of a silence the store never recorded.
+#[test]
+fn diff_standing_rows_human() {
+    let (config_dir, state_dir, target) = no_drift_setup();
+    {
+        let store = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
+        store
+            .record_drift("script", "echo hook", None, Some("drift detected"), "local")
+            .unwrap();
+        store
+            .record_drift("script", "echo silent", None, None, "local")
+            .unwrap();
+    }
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_diff(&cli, &printer, None, false).unwrap();
+    drop(printer);
+
+    let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "diff/standing_rows.txt",
+        &stripped
+    );
+}
+
 /// JSON payload roundtrip — DiffOutput shape via build_diff_doc + cap.json().
 #[test]
 fn diff_no_drift_json() {

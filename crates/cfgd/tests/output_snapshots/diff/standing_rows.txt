@@ -1,0 +1,11 @@
+Diff
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  tiny
+
+Standing
+  ⚠ script echo hook   — drift detected
+  ⚠ script echo silent — drift detected
+
+⚠ Drift detected — 2 rows standing (files, packages, shell, system clean)
+
+→ Run `cfgd apply` to reconcile

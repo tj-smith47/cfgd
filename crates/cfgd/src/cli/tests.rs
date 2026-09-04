@@ -30357,10 +30357,23 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
 /// scan came to resolve a row it never checked. Both crates ask
 /// `reconciler::format`'s own readers instead; a production line splitting a
 /// `resource_id` at `/` anywhere else is the shape that regressed.
+///
+/// The walk carries the NON-split tell beside it, because failing to split is
+/// the same defect: handing a whole `resource_id` to `Owner::module` made
+/// `nvim:script` an owner NAME, and the fleet table grew a phantom
+/// `module:nvim:script` row beside the real module's.
 #[test]
 fn no_production_site_outside_format_rs_splits_a_module_id() {
     const HATCH: &str = "module-id-ok:";
     const TELLS: [&str; 3] = ["contains('/')", "split_once('/')", "find(['/'"];
+    // The NON-split tell. Failing to split is the same defect read from the
+    // other side: `Owner::module(&event.resource_id)` makes the whole id an
+    // owner NAME, and the owner-token split downstream then cuts it back at
+    // its first colon into a second, phantom owner row.
+    const OWNER_TELL: &str = "Owner::module(";
+    // The readers that answer the question correctly; either one in the tell's
+    // own window means the id was read, not swallowed.
+    const OWNER_READERS: [&str; 2] = ["module_row_owner(", "split_module_file_resource_id("];
     // The floors are what a walk over the WRONG root cannot fake: a root that
     // resolves nowhere sees no files, and one holding no drift code sees no
     // `resource_id` at all. Both counts are far under today's, so a deletion
@@ -30396,6 +30409,20 @@ fn no_production_site_outside_format_rs_splits_a_module_id() {
             for (i, (n, line)) in lines.iter().enumerate() {
                 if line.contains("resource_id") {
                     anchors += 1;
+                }
+                if line.contains(OWNER_TELL) {
+                    // The id may reach the constructor on the call line or on
+                    // the rows under it, so the argument is looked for ahead.
+                    let ahead = &lines[i..(i + 4).min(lines.len())];
+                    let behind = &lines[i.saturating_sub(3)..=i];
+                    if ahead.iter().any(|(_, l)| l.contains("resource_id"))
+                        && !ahead
+                            .iter()
+                            .any(|(_, l)| OWNER_READERS.iter().any(|r| l.contains(r)))
+                        && !behind.iter().any(|(_, l)| l.contains(HATCH))
+                    {
+                        offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                    }
                 }
                 if !TELLS.iter().any(|t| line.contains(t)) {
                     continue;
@@ -30437,12 +30464,25 @@ fn no_production_site_outside_format_rs_splits_a_module_id() {
 /// words two unstated sides as a resource the machine does not hold.
 /// `output::drift_cause` is the one chooser, and it holds the empty pair back
 /// from the verbose branch.
+///
+/// Two anchors, because the defect has two shapes. The first is a hand-written
+/// `is_shell_drift_kind` branch. The second tests the kind not at all: it
+/// folds a recorded row's `Option` operands with `unwrap_or_default()` and
+/// hands the pair straight to the verbose form, which is how three standing
+/// slots came to render `want: missing, have: drift detected` over a row whose
+/// producer stated neither side.
 #[test]
 fn no_cli_slot_pairs_the_shell_kind_test_with_the_verbose_detail() {
     // The verbose form has three spellings — the free function and the two
     // row builders' slots — and a hand chooser reaching any of them is the
     // same defect.
     const VERBOSE: [&str; 2] = ["drift_detail(", ".drift("];
+    // The second anchor: a slot that never tests the kind at all, but feeds
+    // the verbose form operands folded out of `Option`s. `unwrap_or_default()`
+    // is what turns "the producer stated nothing" into an empty string, which
+    // the absence fold then words as a resource the machine does not hold —
+    // exactly the branch `drift_cause` exists to hold back.
+    const OPTIONAL_OPERANDS: &str = "unwrap_or_default()";
     const FLOOR_FILES: usize = 30;
     const FLOOR_ANCHORS: usize = 1;
 
@@ -30462,6 +30502,18 @@ fn no_cli_slot_pairs_the_shell_kind_test_with_the_verbose_detail() {
         let production = cfgd_core::test_helpers::production_slice(&body);
         let lines = cfgd_core::test_helpers::logical_source_lines(&production);
         for (i, (n, line)) in lines.iter().enumerate() {
+            if line.contains("drift_operands(") {
+                anchors += 1;
+                let hi = (i + 10).min(lines.len());
+                let window = &lines[i..hi];
+                if window.iter().any(|(_, l)| l.contains(OPTIONAL_OPERANDS))
+                    && window
+                        .iter()
+                        .any(|(_, l)| VERBOSE.iter().any(|v| l.contains(v)))
+                {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
             if !line.contains("is_shell_drift_kind(") {
                 continue;
             }
@@ -30484,7 +30536,8 @@ fn no_cli_slot_pairs_the_shell_kind_test_with_the_verbose_detail() {
     assert!(
         offenders.is_empty(),
         "a drift row's cause is chosen by `output::drift_cause`, never by a \
-         hand-written shell-kind branch:\n{}",
+         hand-written shell-kind branch nor by feeding the verbose form \
+         operands an `Option` was unwrapped into:\n{}",
         offenders.join("\n")
     );
 }
@@ -30605,6 +30658,19 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
         ("live_drift.rs", 1),
         ("types.rs", 1),
     ];
+    // Every spelling that TYPES a row `module`: the owned conversions a
+    // producer reaches for interchangeably, and the struct field. A walk
+    // anchored on one of them is a walk a rewrite of the same mint slips past.
+    const TYPE_TELLS: [&str; 4] = [
+        "\"module\".to_string()",
+        "\"module\".into()",
+        "String::from(\"module\")",
+        "resource_type: \"module\"",
+    ];
+    // The floors are what a walk over the WRONG root cannot fake: a root that
+    // resolves nowhere sees no files. Both counts are far under today's, so a
+    // deletion does not trip them and a re-rooting does.
+    const FLOOR_FILES: [usize; 2] = [70, 90];
 
     let roots = [
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli"),
@@ -30612,9 +30678,10 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
     ];
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders = Vec::new();
-    for root in &roots {
+    for (r, root) in roots.iter().enumerate() {
         let mut files = walk_rust_files(root);
         files.sort();
+        let mut seen = 0usize;
         for path in files {
             let name = path
                 .file_name()
@@ -30627,15 +30694,16 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
             let Ok(body) = std::fs::read_to_string(&path) else {
                 continue;
             };
+            seen += 1;
             let production = cfgd_core::test_helpers::production_slice(&body);
-            let lines: Vec<&str> = production.lines().collect();
-            for (i, line) in lines.iter().enumerate() {
-                if !line.contains("\"module\".to_string()")
-                    && !line.contains("resource_type: \"module\"")
-                {
+            // Folded, so a mint rustfmt broke across a `\`-continued literal
+            // still presents its tell and its composer on one logical line.
+            let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+            for (i, (n, line)) in lines.iter().enumerate() {
+                if !TYPE_TELLS.iter().any(|t| line.contains(t)) {
                     continue;
                 }
-                if line.contains(HATCH) || (i > 0 && lines[i - 1].contains(HATCH)) {
+                if line.contains(HATCH) || (i > 0 && lines[i - 1].1.contains(HATCH)) {
                     continue;
                 }
                 *counts.entry(name.clone()).or_default() += 1;
@@ -30650,26 +30718,32 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
                 let hi = (i + 16).min(lines.len());
                 let composed_nearby = lines[lo..hi]
                     .iter()
-                    .any(|l| COMPOSERS.iter().any(|c| l.contains(c)));
+                    .any(|(_, l)| COMPOSERS.iter().any(|c| l.contains(c)));
                 let composed_by_binding = lines[i..hi]
                     .iter()
-                    .find_map(|l| {
+                    .find_map(|(_, l)| {
                         l.trim()
                             .strip_prefix("resource_id: ")
                             .and_then(|v| v.strip_suffix(','))
                     })
                     .filter(|s| s.chars().all(|c| c.is_alphanumeric() || c == '_'))
                     .is_some_and(|id| {
-                        lines[..i].iter().rev().take(60).any(|l| {
+                        lines[..i].iter().rev().take(60).any(|(_, l)| {
                             l.contains(&format!("let {id} ="))
                                 && COMPOSERS.iter().any(|c| l.contains(c))
                         })
                     });
                 if !composed_nearby && !composed_by_binding {
-                    offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
                 }
             }
         }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is \
+             looking at the wrong root",
+            root.display()
+        );
     }
     assert!(
         offenders.is_empty(),
@@ -34113,8 +34187,9 @@ fn identifier_tokens(text: &str) -> Vec<String> {
 /// serialized payload carries is built from `Printer::arrow()` / `Theme::arrow()`
 /// / `SystemContext::arrow()`. `ICON_ARROW` is the wire glyph; a themed reader
 /// never reaches a serialized field. The exact half B1 proved as the bug
-/// shape: no `build_*_output` function in `cli/` declares a parameter named
-/// `arrow` at all.
+/// shape: no function in `cli/` that RETURNS a serialized payload — by its
+/// `build_*_output` name or by returning a `…Output` / `…Payload` /
+/// `serde_json::Value` — declares a parameter named `arrow` at all.
 #[test]
 fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
     const HATCH: &str = "themed-arrow-ok:";
@@ -34294,9 +34369,11 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
         offenders.join("\n")
     );
 
-    // The exact half: today's one `build_*_output` builder, and every future
-    // one, never takes an `arrow` parameter — the seam B1 proved is the bug
-    // shape.
+    // The exact half: no function that RETURNS a serialized payload takes an
+    // `arrow` parameter — the seam B1 proved is the bug shape. Judged on what
+    // the signature returns (`…Output`, `…Payload`, `serde_json::Value`) as
+    // well as on the `build_*_output` NAME, because a builder named otherwise
+    // is the same bug with a different spelling.
     let cli_dir = manifest.join("src/cli");
     let mut cli_files = walk_rust_files(&cli_dir);
     cli_files.sort();
@@ -34318,10 +34395,10 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
         let lines: Vec<&str> = production.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             let trimmed = line.trim_start();
-            if !(trimmed.contains("fn build_") && trimmed.contains("_output")) {
+            if !trimmed.contains("fn ") {
                 continue;
             }
-            builder_seen += 1;
+            let named_builder = trimmed.contains("fn build_") && trimmed.contains("_output");
             let mut sig = String::new();
             for l in &lines[i..(i + 20).min(lines.len())] {
                 sig.push_str(l);
@@ -34330,6 +34407,18 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
                     break;
                 }
             }
+            // What the signature RETURNS, less its own body brace.
+            let returns = sig
+                .split_once(") ->")
+                .map(|(_, r)| r.split('{').next().unwrap_or(r).trim().to_string())
+                .unwrap_or_default();
+            let returns_payload = returns.ends_with("Output")
+                || returns.ends_with("Payload")
+                || returns.contains("serde_json::Value");
+            if !named_builder && !returns_payload {
+                continue;
+            }
+            builder_seen += 1;
             if sig.contains("arrow:") {
                 builder_offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
             }
@@ -34337,12 +34426,13 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
     }
     assert!(
         builder_seen > 0,
-        "the walk found no `build_*_output` function — check the name pattern"
+        "the walk found no payload-returning function — check the name and \
+         return-type tells"
     );
     assert!(
         builder_offenders.is_empty(),
-        "a `-o json` payload builder in `cli/` never carries a themed `arrow` parameter — \
-         `ICON_ARROW` is the wire glyph:\n{}",
+        "a function in `cli/` returning a serialized payload never carries a themed \
+         `arrow` parameter — `ICON_ARROW` is the wire glyph:\n{}",
         builder_offenders.join("\n")
     );
 }
@@ -35431,20 +35521,39 @@ fn every_exit_code_surface_reports_an_erroring_check() {
     // `verify --module` deliberately evaluates no env half (a scoped run's
     // composition is module-only config — `cli/verify.rs`), so it has no
     // erroring-check cell to hold.
+    //
+    // The spellings are DERIVED from the walked population rather than listed
+    // beside it, so a new surface cannot be added to the clap tree and to the
+    // assertion above while the matrix files stay as they were.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let matrix = std::fs::read_to_string(root.join("tests/drift_exit_code.rs")).unwrap();
-    for spelling in [
-        r#"&["status", "--scan", "--exit-code"]"#,
-        r#"&["diff", "--exit-code"]"#,
-        r#"&["verify", "--exit-code"]"#,
-        r#"&["status", "--module", "envmod", "--scan", "--exit-code"]"#,
-        r#"&["diff", "--module", "envmod", "--exit-code"]"#,
-    ] {
+    // `status` reads the store by default, so its live cell arms `--scan`.
+    let scan = |name: &str| {
+        if name == "status" {
+            r#", "--scan""#
+        } else {
+            ""
+        }
+    };
+    let mut spellings = Vec::new();
+    for (name, scoped) in &surfaces {
+        spellings.push(format!(r#"&["{name}"{}, "--exit-code"]"#, scan(name)));
+        if *scoped {
+            spellings.push(format!(
+                r#"&["{name}", "--module", "envmod"{}, "--exit-code"]"#,
+                scan(name)
+            ));
+        }
+    }
+    // `verify --module` deliberately evaluates no env half, so it holds no
+    // erroring-check cell; the STANDING-row cell it does hold is the same
+    // spelling, which is why the derived list still names it.
+    for spelling in &spellings {
         assert!(
-            matrix.contains(spelling),
+            matrix.contains(spelling.as_str()),
             "tests/drift_exit_code.rs no longer holds the `{spelling}` cell — \
              every --exit-code surface, flag-scoped variants included, keeps \
-             its erroring-check matrix row"
+             its erroring-check and standing-row matrix rows"
         );
     }
 }
@@ -35809,83 +35918,144 @@ fn no_doctor_section_or_verdict_borrows_the_managed_resource_vocabulary() {
 /// at one site — `ModuleStatus::drift_verdict` for the module report (its
 /// `Status` word and exit gate both call it), the exit gate of `cmd_status`
 /// for the fleet (whose only machine-wide reader it is; the per-owner
-/// Component Health verdicts are a different fact). This walk counts each
-/// verb's composition tell over its production body, whitespace folded so a
-/// rustfmt line break cannot hide a second chain.
+/// Component Health verdicts are a different fact).
+///
+/// The walk is a CLASS walk, not a count of three spellings: any boolean
+/// chain in those three files naming two or more drift facts is located, its
+/// enclosing `fn` found by brace depth, and a chain outside one of the named
+/// composers is a hit. A count pinned the chains that exist today — a second
+/// predicate spelled differently passed it, and renaming a field failed it
+/// for nothing.
 #[test]
 fn every_verb_composes_its_drift_predicate_once() {
-    fn folded(body: &str) -> String {
-        body.split_whitespace().collect::<Vec<_>>().join(" ")
+    // The facts a "does this run stand on any drift" question is built out
+    // of; two of them in one boolean chain IS the composition.
+    const FACTS: [&str; 7] = [
+        "has_file_drift",
+        "fail_count",
+        "standing",
+        "check_errors",
+        "drift.is_empty",
+        "system_errors",
+        "drifted",
+    ];
+    // Where such a chain is allowed to live: each verb's own composer, and
+    // the shared ranking both status surfaces hand their pair to.
+    const COMPOSERS: [&str; 4] = ["any_drift", "check_failed", "drift_verdict", "from_checks"];
+    const HATCH: &str = "drift-chain-ok:";
+    const FLOOR_CHAINS: usize = 3;
+
+    /// Every `fn` in a production body as `(name, first line, last line)`,
+    /// innermost last, by brace depth from its own declaration line.
+    fn fn_spans(lines: &[&str]) -> Vec<(String, usize, usize)> {
+        let mut spans = Vec::new();
+        let mut open: Vec<(String, usize, i32, bool)> = Vec::new();
+        let mut depth: i32 = 0;
+        for (i, line) in lines.iter().enumerate() {
+            let code = line.split("//").next().unwrap_or(line);
+            if let Some(at) = code.find("fn ") {
+                let rest = &code[at + 3..];
+                let end = rest
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .unwrap_or(rest.len());
+                if end > 0 && rest[end..].starts_with(['(', '<']) {
+                    open.push((rest[..end].to_string(), i, depth, false));
+                }
+            }
+            depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
+            if let Some(last) = open.last_mut()
+                && !last.3
+                && depth > last.2
+            {
+                last.3 = true;
+            }
+            while let Some((_, _, d, entered)) = open.last() {
+                if *entered && depth <= *d {
+                    let (name, from, _, _) = open.pop().unwrap_or_else(|| unreachable!());
+                    spans.push((name, from, i));
+                } else {
+                    break;
+                }
+            }
+        }
+        spans
     }
-    fn count(hay: &str, tell: &str) -> usize {
-        hay.matches(tell).count()
-    }
+
     let sources: std::collections::BTreeMap<String, String> = cli_production_sources()
         .into_iter()
         .filter_map(|(path, body)| Some((path.file_name()?.to_str()?.to_string(), body)))
         .collect();
-    let source = |name: &str| {
-        folded(
-            sources
-                .get(name)
-                .unwrap_or_else(|| panic!("{name} is not among the CLI's production sources")),
-        )
-    };
 
-    let diff = source("diff.rs");
-    assert_eq!(
-        count(&diff, "has_file_drift ||"),
-        1,
-        "diff.rs composes the five-flag drift chain exactly once, in \
-         `DiffSummary::any_drift`; the verdict and `diff_exit_code` both call it"
+    let mut offenders = Vec::new();
+    let mut chains = 0usize;
+    for name in ["diff.rs", "verify.rs", "status.rs"] {
+        let body = sources
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} is not among the CLI's production sources"));
+        let lines: Vec<&str> = body.lines().collect();
+        let spans = fn_spans(&lines);
+        let mut last_hit: Option<usize> = None;
+        let code = |l: &str| l.split("//").next().unwrap_or(l).to_string();
+        for i in 0..lines.len() {
+            // The chain's own first line, so a hatch above it is the hatch of
+            // the thing it names; comments are cut, or a rustdoc paragraph
+            // naming two facts reads as a chain.
+            if !FACTS.iter().any(|f| code(lines[i]).contains(f)) {
+                continue;
+            }
+            // Three physical lines, because rustfmt breaks a chain across
+            // them and each half alone names one fact.
+            let window = lines[i..(i + 3).min(lines.len())]
+                .iter()
+                .map(|l| code(l))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !window.contains("||") && !window.contains("&&") {
+                continue;
+            }
+            let named = FACTS.iter().filter(|f| window.contains(**f)).count();
+            if named < 2 {
+                continue;
+            }
+            // One chain, not one per line of it.
+            if last_hit.is_some_and(|prev| i <= prev + 2) {
+                continue;
+            }
+            last_hit = Some(i);
+            chains += 1;
+            if lines[i.saturating_sub(3)..=i]
+                .iter()
+                .any(|l| l.contains(HATCH))
+            {
+                continue;
+            }
+            let owner = spans
+                .iter()
+                .filter(|(_, from, to)| (*from..=*to).contains(&i))
+                .min_by_key(|(_, from, to)| to - from)
+                .map(|(n, _, _)| n.as_str())
+                .unwrap_or("<file scope>");
+            if !COMPOSERS.contains(&owner) {
+                offenders.push(format!(
+                    "{name}:{}: inside `{owner}`: {}",
+                    i + 1,
+                    lines[i].trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        chains >= FLOOR_CHAINS,
+        "the walk found {chains} drift chains across the three verbs — under \
+         the floor, so it stopped matching rather than the verbs stopping \
+         composing"
     );
-    let verify = source("verify.rs");
-    assert_eq!(
-        count(&verify, "fail_count > 0"),
-        1,
-        "verify.rs composes its drift fold exactly once, in \
-         `VerifyOutput::any_drift`; the verdict, its hint and the exit gate all call it"
-    );
-
-    let status = source("status.rs");
-    let pair_sites: Vec<usize> = status
-        .match_indices("drift.is_empty(), !")
-        .map(|(at, _)| at)
-        .filter(|&at| {
-            let rest = &status[at..];
-            rest.contains("self.system_errors.is_empty()")
-                || rest.contains("output.system_errors.is_empty()")
-        })
-        .collect();
-    assert_eq!(
-        pair_sites.len(),
-        2,
-        "status.rs passes its machine-wide (drift, system_errors) pair to \
-         `DriftVerdict::from_checks` at exactly two sites — one per surface — \
-         found {}",
-        pair_sites.len()
-    );
-    // A body is cut at its rustfmt closing brace — column 0 for a free
-    // function, column 4 for a method — on the UNFOLDED source, then folded.
-    let raw_status = sources["status.rs"].as_str();
-    let body_of = |head: &str, close: &str| {
-        let at = raw_status
-            .find(head)
-            .unwrap_or_else(|| panic!("status.rs no longer carries `{head}`; re-anchor this walk"));
-        let rest = &raw_status[at..];
-        folded(&rest[..rest.find(close).map_or(rest.len(), |i| i + close.len())])
-    };
-    assert_eq!(
-        count(
-            &body_of("fn drift_verdict(&self)", "\n    }\n"),
-            "drift.is_empty(), !"
-        ),
-        1,
-        "the module surface composes its pair once, in `ModuleStatus::drift_verdict`"
-    );
-    assert_eq!(
-        count(&body_of("fn cmd_status(", "\n}\n"), "drift.is_empty(), !"),
-        1,
-        "the fleet surface composes its pair once, at `cmd_status`'s exit gate"
+    assert!(
+        offenders.is_empty(),
+        "a chain over two or more drift facts belongs in the verb's own \
+         composer ({}), never beside the reader that asks it (or carries \
+         `// {HATCH} <why>`):\n{}",
+        COMPOSERS.join(" / "),
+        offenders.join("\n")
     );
 }

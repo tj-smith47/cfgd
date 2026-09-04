@@ -45,6 +45,28 @@ const SCOPED_EXIT_CODE_SURFACES: [&[&str]; 2] = [
 /// fell back to the clean verdict".
 const STANDING_ROW_MARKER: &str = "standing-row-marker-7f2c";
 
+/// The one rendered physical line naming `needle`.
+///
+/// A claim about how ONE row words itself has to read that row, not the whole
+/// report: `want:` is absent from a two-row report only by accident when the
+/// other row is operand-less too.
+fn rendered_row<'a>(text: &'a str, needle: &str) -> &'a str {
+    text.lines()
+        .find(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("no rendered row names `{needle}`, got: {text}"))
+}
+
+/// Every `standing[*].resourceId` a payload carries, for an assertion that
+/// does not depend on the order the store hands rows back in.
+fn standing_ids(payload: &serde_json::Value) -> Vec<String> {
+    payload["standing"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a standing array, got: {payload}"))
+        .iter()
+        .filter_map(|r| r["resourceId"].as_str().map(str::to_string))
+        .collect()
+}
+
 /// A gpg stand-in that always fails, so the gpgKeys configurator's own
 /// keyring probe errors (gpg exit codes other than 0/2 are probe errors).
 fn failing_gpg(dir: &Path) -> std::path::PathBuf {
@@ -837,6 +859,13 @@ fn every_full_exit_code_surface_renders_and_prices_a_standing_row() {
             state
                 .record_drift("script", "echo hook", None, Some("drift detected"), "local")
                 .unwrap();
+            // The operand-less twin — what an older daemon recorded, and what
+            // a module script row carries. It has no two sides to name, so it
+            // must read as the bare cause and never as an absence the store
+            // never recorded.
+            state
+                .record_drift("script", "echo silent", None, None, "local")
+                .unwrap();
         }
 
         // The render half: the same argv minus its trailing `--exit-code`.
@@ -856,6 +885,17 @@ fn every_full_exit_code_surface_renders_and_prices_a_standing_row() {
         assert!(
             text.contains("echo hook"),
             "cfgd {render_args:?}: renders the row it left standing, got: {text}"
+        );
+        let silent = rendered_row(&text, "echo silent");
+        assert!(
+            silent.contains("drift detected"),
+            "cfgd {render_args:?}: an operand-less standing row reads as the \
+             bare cause, got: {silent}"
+        );
+        assert!(
+            !silent.contains("want:"),
+            "cfgd {render_args:?}: an operand-less standing row states no \
+             operands — the absence fold would invent them, got: {silent}"
         );
         // The human verdict and `--exit-code`'s `5` below must read one
         // set: a run with nothing but a standing row still says so, never
@@ -882,15 +922,16 @@ fn every_full_exit_code_surface_renders_and_prices_a_standing_row() {
                 String::from_utf8_lossy(&out.stdout)
             )
         });
-        assert_eq!(
-            payload["standing"][0]["resourceId"],
-            serde_json::json!("echo hook"),
-            "cfgd {json_args:?}: standing[0].resourceId, got: {payload}"
+        let ids = standing_ids(&payload);
+        assert!(
+            ids.iter().any(|i| i == "echo hook") && ids.iter().any(|i| i == "echo silent"),
+            "cfgd {json_args:?}: both standing rows reach the payload, got: {payload}"
         );
-        assert_eq!(
-            payload["standing"][0]["resourceType"],
-            serde_json::json!("script"),
-            "cfgd {json_args:?}: standing[0].resourceType, got: {payload}"
+        assert!(
+            payload["standing"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().all(|r| r["resourceType"] == "script")),
+            "cfgd {json_args:?}: standing[*].resourceType, got: {payload}"
         );
 
         let out = run(
@@ -916,7 +957,10 @@ fn every_full_exit_code_surface_renders_and_prices_a_standing_row() {
                 .into_iter()
                 .map(|e| (e.resource_type, e.resource_id))
                 .collect::<Vec<_>>(),
-            vec![("script".to_string(), "echo hook".to_string())],
+            vec![
+                ("script".to_string(), "echo hook".to_string()),
+                ("script".to_string(), "echo silent".to_string()),
+            ],
             "cfgd {surface:?}: the standing row is never healed by the scan that renders it",
         );
     }
@@ -934,6 +978,10 @@ fn every_full_exit_code_surface_renders_and_prices_a_standing_row() {
 fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
     use cfgd_core::state::StateStore;
 
+    // Welded to the clap-walked population by
+    // `every_exit_code_surface_reports_an_erroring_check`, which derives one
+    // `--module` spelling per scoped surface and asserts this file holds it:
+    // a new scoped `--exit-code` surface fails there until it is listed here.
     const SURFACES: [&[&str]; 3] = [
         &["diff", "--module", "envmod", "--exit-code"],
         &["verify", "--module", "envmod", "--exit-code"],
@@ -949,6 +997,12 @@ fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
             let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
             state
                 .record_drift("module", "envmod", None, Some(STANDING_ROW_MARKER), "local")
+                .unwrap();
+            // The operand-less twin, under the same module's chain: it has no
+            // two sides to name, so it must read as the bare cause rather
+            // than as an absence the store never recorded.
+            state
+                .record_drift("module", "envmod:script", None, None, "local")
                 .unwrap();
         }
 
@@ -985,6 +1039,17 @@ fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
             text.contains(&subject),
             "cfgd {render_args:?}: the standing row names its id `{subject}`, got: {text}"
         );
+        let silent = rendered_row(&text, "envmod:script");
+        assert!(
+            silent.contains("drift detected"),
+            "cfgd {render_args:?}: an operand-less standing row reads as the \
+             bare cause, got: {silent}"
+        );
+        assert!(
+            !silent.contains("want:"),
+            "cfgd {render_args:?}: an operand-less standing row states no \
+             operands — the absence fold would invent them, got: {silent}"
+        );
         assert!(
             !text.contains("No drift detected"),
             "cfgd {render_args:?}: verdict must agree with the standing row above, got: {text}"
@@ -1007,15 +1072,16 @@ fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
                 String::from_utf8_lossy(&out.stdout)
             )
         });
-        assert_eq!(
-            payload["standing"][0]["resourceId"],
-            serde_json::json!("envmod"),
-            "cfgd {json_args:?}: standing[0].resourceId, got: {payload}"
+        let ids = standing_ids(&payload);
+        assert!(
+            ids.iter().any(|i| i == "envmod") && ids.iter().any(|i| i == "envmod:script"),
+            "cfgd {json_args:?}: both standing rows reach the payload, got: {payload}"
         );
-        assert_eq!(
-            payload["standing"][0]["resourceType"],
-            serde_json::json!("module"),
-            "cfgd {json_args:?}: standing[0].resourceType, got: {payload}"
+        assert!(
+            payload["standing"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().all(|r| r["resourceType"] == "module")),
+            "cfgd {json_args:?}: standing[*].resourceType, got: {payload}"
         );
 
         let out = run(
@@ -1041,7 +1107,10 @@ fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
                 .into_iter()
                 .map(|e| (e.resource_type, e.resource_id))
                 .collect::<Vec<_>>(),
-            vec![("module".to_string(), "envmod".to_string())],
+            vec![
+                ("module".to_string(), "envmod".to_string()),
+                ("module".to_string(), "envmod:script".to_string()),
+            ],
             "cfgd {surface:?}: the standing row is never healed by the scan that renders it",
         );
     }

@@ -1003,7 +1003,9 @@ mod tests {
             ),
             (
                 "module",
-                "`resolve_module_file_drift`, per DECLARED file of the deployed module",
+                "`resolve_module_file_drift`, per DECLARED file of the deployed \
+                 module; a module skipped whole mints none and heals none, \
+                 having probed nothing",
             ),
             (
                 "package",
