@@ -8,8 +8,9 @@ use cfgd_core::errors::Result;
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    bootstrap_via_shell_script, install_batch_then_per_package, resolve_tool_with_fallbacks,
-    run_pkg_cmd, run_pkg_cmd_live, run_pkg_query, strip_version_suffix, tool_cmd_with_resolver,
+    bootstrap_via_shell_script, install_batch_then_per_package, partition_already_installed,
+    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, run_pkg_query,
+    strip_version_suffix, tool_cmd_with_resolver, upgrade_each,
 };
 
 pub struct NixManager;
@@ -109,6 +110,33 @@ impl PackageManager for NixManager {
         )))
     }
 
+    /// `nix profile list --json` carries no explicit version field — the
+    /// version is the trailing segment of each element's store path
+    /// (`/nix/store/<hash>-ripgrep-14.1.0`). The legacy `nix-env` profile
+    /// (older installs with no `nix profile` subcommand) states no version
+    /// at all, so it falls to the trait default.
+    fn installed_packages_with_versions(
+        &self,
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        if nix_available() {
+            let output = run_pkg_query("nix", nix_cmd().args(["profile", "list", "--json"]))?;
+            if output.status.success() {
+                return Ok(parse_nix_profile_list_versions(&String::from_utf8_lossy(
+                    &output.stdout,
+                )));
+            }
+        }
+        Ok(self
+            .installed_packages(cx)?
+            .into_iter()
+            .map(|name| cfgd_core::providers::PackageInfo {
+                name,
+                version: cfgd_core::providers::UNKNOWN_PACKAGE_VERSION.into(),
+            })
+            .collect())
+    }
+
     fn install(
         &self,
         packages: &[String],
@@ -118,19 +146,34 @@ impl PackageManager for NixManager {
         // install [option...] installables...`; `nix-env -iA args...`), and the
         // nix-vs-nix-env choice is a property of the host, not of a package —
         // so it is decided once, outside the batch closure.
+        let (held, fresh) = partition_already_installed(self, packages, cx);
         if nix_available() {
-            install_batch_then_per_package(cx, "nix", packages, |pkgs| {
+            install_batch_then_per_package(cx, "nix", &fresh, |pkgs| {
                 let mut cmd = nix_cmd();
                 cmd.args(["profile", "install"]);
                 cmd.args(pkgs.iter().map(|p| format!("nixpkgs#{}", p)));
                 cmd
             })?;
+            // `nix profile install` no-ops on an element already held; raising
+            // it takes `nix profile upgrade`.
+            upgrade_each(cx, "nix", &held, "nix profile upgrade", |pkg| {
+                let mut cmd = nix_cmd();
+                cmd.args(["profile", "upgrade", &format!("nixpkgs#{}", pkg)]);
+                Some(cmd)
+            })?;
         } else {
-            install_batch_then_per_package(cx, "nix", packages, |pkgs| {
+            install_batch_then_per_package(cx, "nix", &fresh, |pkgs| {
                 let mut cmd = nix_env_cmd();
                 cmd.arg("-iA");
                 cmd.args(pkgs.iter().map(|p| format!("nixpkgs.{}", p)));
                 cmd
+            })?;
+            // The legacy `nix-env -iA` no-ops on a package already held;
+            // raising it takes `nix-env -u`.
+            upgrade_each(cx, "nix", &held, "nix-env -u", |pkg| {
+                let mut cmd = nix_env_cmd();
+                cmd.args(["-u", pkg]);
+                Some(cmd)
             })?;
         }
         Ok(())
@@ -215,6 +258,57 @@ pub(super) fn parse_nix_profile_list_json(stdout: &str) -> HashSet<String> {
     HashSet::new()
 }
 
+/// Parse `nix profile list --json` stdout into `(name, version)` pairs,
+/// reading the version off the FIRST store path's trailing `-<version>`
+/// segment (after stripping the store's leading `<hash>-`, then the
+/// element's own name if the store path repeats it). An element naming no
+/// readable store path lists as [`UNKNOWN_PACKAGE_VERSION`](cfgd_core::providers::UNKNOWN_PACKAGE_VERSION).
+pub(super) fn parse_nix_profile_list_versions(
+    stdout: &str,
+) -> Vec<cfgd_core::providers::PackageInfo> {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(stdout) else {
+        return Vec::new();
+    };
+    let Some(elements) = parsed.get("elements").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+
+    elements
+        .iter()
+        .map(|(name, entry)| {
+            let version = entry
+                .get("storePaths")
+                .and_then(|v| v.as_array())
+                .and_then(|paths| paths.first())
+                .and_then(|v| v.as_str())
+                .and_then(|path| nix_store_path_version(path, name))
+                .unwrap_or_else(|| cfgd_core::providers::UNKNOWN_PACKAGE_VERSION.to_string());
+            cfgd_core::providers::PackageInfo {
+                name: name.clone(),
+                version,
+            }
+        })
+        .collect()
+}
+
+/// Extract the version segment from a nix store path basename
+/// (`/nix/store/<32-char-hash>-<name>-<version>` → `<version>`): strip the
+/// store hash prefix up to its first `-` (the hash itself never contains
+/// one), then strip a leading `<name>-` if the remainder still carries it.
+fn nix_store_path_version(store_path: &str, name: &str) -> Option<String> {
+    let basename = store_path.rsplit('/').next()?;
+    let after_hash = basename.split_once('-')?.1;
+    let version = after_hash
+        .strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .unwrap_or(after_hash);
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
+}
+
 /// Derive a profile element name from a legacy (array-shape) `elements` entry.
 /// Prefers the final `.`-segment of `attrPath` (e.g.
 /// `legacyPackages.x86_64-linux.hello` → `hello`); falls back to the flake
@@ -275,6 +369,64 @@ mod tests {
     fn nix_manager_name_and_traits() {
         let mgr = NixManager;
         assert_eq!(mgr.name(), "nix");
+    }
+
+    #[test]
+    fn parse_nix_profile_list_versions_real_world() {
+        let stdout = r#"{
+            "elements": {
+                "ripgrep": {
+                    "active": true,
+                    "attrPath": "legacyPackages.x86_64-linux.ripgrep",
+                    "storePaths": ["/nix/store/9r9z5r5r5r5r5r5r5r5r5r5r5r5r5r5r-ripgrep-14.1.0"]
+                }
+            },
+            "version": 3
+        }"#;
+        let versions = parse_nix_profile_list_versions(stdout);
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].name, "ripgrep");
+        assert_eq!(versions[0].version, "14.1.0");
+    }
+
+    #[test]
+    fn parse_nix_profile_list_versions_missing_store_paths_is_unknown() {
+        let stdout = r#"{"elements": {"hello": {"active": true}}, "version": 3}"#;
+        let versions = parse_nix_profile_list_versions(stdout);
+        assert_eq!(versions.len(), 1);
+        assert_eq!(
+            versions[0].version,
+            cfgd_core::providers::UNKNOWN_PACKAGE_VERSION
+        );
+    }
+
+    #[test]
+    fn parse_nix_profile_list_versions_invalid_json_is_empty() {
+        assert!(parse_nix_profile_list_versions("not json").is_empty());
+    }
+
+    #[test]
+    fn nix_store_path_version_strips_hash_and_name() {
+        assert_eq!(
+            nix_store_path_version(
+                "/nix/store/9r9z5r5r5r5r5r5r5r5r5r5r5r5r5r5r-ripgrep-14.1.0",
+                "ripgrep"
+            ),
+            Some("14.1.0".to_string())
+        );
+    }
+
+    #[test]
+    fn nix_store_path_version_name_with_internal_hyphens() {
+        // A package name carrying its own hyphens (`python3.11-numpy`) still
+        // strips cleanly because the known element name is stripped whole.
+        assert_eq!(
+            nix_store_path_version(
+                "/nix/store/9r9z5r5r5r5r5r5r5r5r5r5r5r5r5r5r-python3.11-numpy-1.26.4",
+                "python3.11-numpy"
+            ),
+            Some("1.26.4".to_string())
+        );
     }
 
     #[test]
@@ -697,6 +849,55 @@ mod tests {
                 .available_version("anything")
                 .expect("non-zero → Ok(None)");
             assert_eq!(v, None);
+        }
+
+        #[test]
+        #[serial]
+        fn nix_install_raises_a_held_element_via_nix_profile_upgrade_not_install() {
+            // `nix profile list --json` already carries `ripgrep`, so
+            // `install` partitions it into `held` and raises it through
+            // `nix profile upgrade nixpkgs#ripgrep` instead of re-running
+            // `nix profile install`, which would no-op; `fd` is unheld and
+            // still installs.
+            let json = r#"{"elements":{"ripgrep":{"storePaths":["/nix/store/a-ripgrep-14.1.0"]}},"version":3}"#;
+            let s = ToolShim::install(SHIM_ENV, 0, json, "");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            NixManager
+                .install(&["ripgrep".into(), "fd".into()], &cx)
+                .expect("Ok");
+            let argv = s.argv_log();
+            assert!(
+                argv.contains("profile upgrade nixpkgs#ripgrep"),
+                "held element must be raised via `nix profile upgrade`: {argv}"
+            );
+            assert!(
+                argv.contains("nixpkgs#fd"),
+                "unheld element must still install: {argv}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn nix_install_raises_a_held_package_via_nix_env_dash_u_not_ia() {
+            // The legacy `nix-env -q` listing already carries `ripgrep`, so
+            // `install` raises it through `nix-env -u ripgrep` instead of
+            // re-running `nix-env -iA`, which would no-op.
+            let s = ToolShim::install(SHIM_ENV_NIX_ENV, 0, "ripgrep\n", "");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            NixManager.install(&["ripgrep".into()], &cx).expect("Ok");
+            let argv = s.argv_log();
+            assert!(
+                argv.contains("-u ripgrep"),
+                "held package must be raised via `nix-env -u`: {argv}"
+            );
+            assert!(
+                !argv.contains("-iA"),
+                "held package must not be re-run through `nix-env -iA`: {argv}"
+            );
         }
 
         #[test]

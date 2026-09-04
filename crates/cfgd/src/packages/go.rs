@@ -141,6 +141,36 @@ impl PackageManager for GoInstallManager {
         Ok(scan_go_bin_dir(&go_bin_dir()))
     }
 
+    /// `go install` leaves no listing of its own — the binary directory is
+    /// scanned again, and each binary's module version is read via
+    /// `go version -m`, the only place the version it was built at is
+    /// recorded.
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        let bin_dir = go_bin_dir();
+        let Ok(entries) = std::fs::read_dir(&bin_dir) else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            let path = entry.path().to_string_lossy().into_owned();
+            let version = run_pkg_query("go", go_cmd().args(["version", "-m", &path]))
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| {
+                    parse_go_version_m_module_version(&String::from_utf8_lossy(&output.stdout))
+                })
+                .unwrap_or_else(|| cfgd_core::providers::UNKNOWN_PACKAGE_VERSION.to_string());
+            out.push(cfgd_core::providers::PackageInfo { name, version });
+        }
+        Ok(out)
+    }
+
     fn install(
         &self,
         packages: &[String],
@@ -262,12 +292,48 @@ pub(super) fn parse_go_module_version(output: &str) -> Option<String> {
     Some(version.to_string())
 }
 
+/// Parse the module version off `go version -m <binary>` output. The `mod`
+/// line's second field is the module's version at build time (the `v`
+/// prefix stripped for consistency with every other version slot); `None`
+/// when the binary carries no `mod` line (a `go build` output with no
+/// embedded module info, or an unreadable binary).
+pub(super) fn parse_go_version_m_module_version(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let mut fields = line.split_whitespace();
+        if fields.next() == Some("mod") {
+            let _module_path = fields.next()?;
+            let version = fields.next()?;
+            return Some(version.strip_prefix('v').unwrap_or(version).to_string());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use cfgd_core::providers::PackageManager;
     use cfgd_core::providers::PackageManagerExt;
 
     use super::*;
+
+    #[test]
+    fn parse_go_version_m_module_version_real_world() {
+        let output = "/home/user/go/bin/gopls: go1.21.5\n\
+                       \tpath\tgolang.org/x/tools/gopls\n\
+                       \tmod\tgolang.org/x/tools/gopls\tv0.15.3\th1:abcdef=\n\
+                       \tdep\tgolang.org/x/mod\tv0.14.0\th1:xyz=\n\
+                       \tbuild\t-compiler=gc\n";
+        assert_eq!(
+            parse_go_version_m_module_version(output),
+            Some("0.15.3".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_go_version_m_module_version_no_mod_line() {
+        let output = "/home/user/go/bin/tool: go1.21.5\n\tbuild\t-compiler=gc\n";
+        assert_eq!(parse_go_version_m_module_version(output), None);
+    }
 
     #[test]
     fn go_install_manager_name_and_traits() {

@@ -272,7 +272,7 @@ impl PackageManager for BrewCaskManager {
         upgrade_each(cx, "brew-cask", &held, "brew upgrade --cask", |pkg| {
             let mut cmd = brew_cmd();
             cmd.arg("upgrade").arg("--cask").arg(pkg);
-            cmd
+            Some(cmd)
         })?;
         Ok(())
     }
@@ -480,7 +480,7 @@ impl PackageManager for BrewManager {
         upgrade_each(cx, "brew", &held, "brew upgrade", |pkg| {
             let mut cmd = brew_cmd();
             cmd.arg("upgrade").arg(pkg);
-            cmd
+            Some(cmd)
         })?;
         Ok(())
     }

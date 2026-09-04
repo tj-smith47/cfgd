@@ -6,7 +6,10 @@ use std::process::Command;
 use cfgd_core::errors::Result;
 use cfgd_core::providers::{BootstrapPlan, PackageInfo, PackageManager};
 
-use super::shared::{canonical_ci_pkg_name, run_pkg_cmd, run_pkg_cmd_live, run_pkg_query};
+use super::shared::{
+    canonical_ci_pkg_name, partition_already_installed, run_pkg_cmd, run_pkg_cmd_live,
+    run_pkg_query, upgrade_each,
+};
 
 pub struct ChocolateyManager;
 
@@ -156,16 +159,26 @@ impl PackageManager for ChocolateyManager {
         packages: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
-        let mut args = vec!["install", "-y"];
-        let pkg_refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
-        args.extend(pkg_refs);
-        run_pkg_cmd_live(
-            cx,
-            "chocolatey",
-            Command::new("choco").args(&args),
-            "Installing chocolatey packages",
-            "install",
-        )?;
+        let (held, fresh) = partition_already_installed(self, packages, cx);
+        if !fresh.is_empty() {
+            let mut args = vec!["install", "-y"];
+            let pkg_refs: Vec<&str> = fresh.iter().map(|s| s.as_str()).collect();
+            args.extend(pkg_refs);
+            run_pkg_cmd_live(
+                cx,
+                "chocolatey",
+                Command::new("choco").args(&args),
+                "Installing chocolatey packages",
+                "install",
+            )?;
+        }
+        // `choco install` no-ops on a package already held; raising it takes
+        // `choco upgrade`.
+        upgrade_each(cx, "chocolatey", &held, "choco upgrade -y", |pkg| {
+            let mut cmd = Command::new("choco");
+            cmd.args(["upgrade", "-y", pkg]);
+            Some(cmd)
+        })?;
         Ok(())
     }
 
@@ -194,6 +207,20 @@ impl PackageManager for ChocolateyManager {
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(parse_choco_info_version(&stdout))
+    }
+
+    /// Chocolatey-listed versions carry a fourth build component
+    /// (`4.7.1.2019`) semver has no field for and refuses outright.
+    fn version_comparable(&self, version: &str) -> bool {
+        super::versions::fourpart_comparable(version)
+    }
+
+    fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
+        super::versions::fourpart_version_meets_minimum(available, min_version)
+    }
+
+    fn floor_comparable(&self, floor: &str) -> bool {
+        super::versions::fourpart_comparable(floor)
     }
 }
 
@@ -612,6 +639,40 @@ Tags: git vcs dvcs
             ChocolateyManager
                 .install(&["git".into(), "nodejs".into()], &cx)
                 .expect("install Ok");
+        }
+
+        #[test]
+        #[serial]
+        fn install_raises_a_held_package_via_choco_upgrade_not_install() {
+            // The listing already carries `git`, so `install` partitions it
+            // into `held` and raises it through `choco upgrade -y git`
+            // instead of re-running `choco install -y git`, which would
+            // no-op; `nodejs` is unheld and still installs.
+            let (_bin, _path, log) = cfgd_core::test_helpers::install_named_path_shim_logged(
+                "choco",
+                0,
+                "git 2.44.0\n",
+                "",
+            );
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            ChocolateyManager
+                .install(&["git".into(), "nodejs".into()], &cx)
+                .expect("install Ok");
+            let argv = log.argv_log();
+            assert!(
+                argv.contains("upgrade -y git"),
+                "held package must be raised via `choco upgrade -y`: {argv}"
+            );
+            assert!(
+                argv.contains("install -y nodejs"),
+                "unheld package must still install: {argv}"
+            );
+            assert!(
+                !argv.contains("install -y git"),
+                "held package must not be re-run through `choco install`: {argv}"
+            );
         }
 
         #[test]

@@ -10,8 +10,9 @@ use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 #[cfg(target_os = "linux")]
 use super::shared::detect_system_method;
 use super::shared::{
-    MediatedArms, bootstrap_via_system_manager, parse_version_field, resolve_tool_with_fallbacks,
-    run_pkg_cmd, run_pkg_cmd_live, run_pkg_query, system_manager_arms, tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_system_manager, parse_version_field, partition_already_installed,
+    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, run_pkg_query, system_manager_arms,
+    tool_cmd_with_resolver, upgrade_each,
 };
 
 pub struct FlatpakManager;
@@ -79,8 +80,23 @@ impl PackageManager for FlatpakManager {
         )))
     }
 
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &PackageContext<'_>,
+    ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        let output = run_pkg_cmd(
+            "flatpak",
+            flatpak_cmd().args(["list", "--app", "--columns=application,version"]),
+            "list",
+        )?;
+        Ok(parse_flatpak_app_list_versions(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
+
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
-        for pkg in packages {
+        let (held, fresh) = partition_already_installed(self, packages, cx);
+        for pkg in &fresh {
             let label = format!("flatpak install -y {}", pkg);
             run_pkg_cmd_live(
                 cx,
@@ -90,6 +106,13 @@ impl PackageManager for FlatpakManager {
                 "install",
             )?;
         }
+        // `flatpak install` no-ops on a ref already held; raising it takes
+        // `flatpak update`.
+        upgrade_each(cx, "flatpak", &held, "flatpak update -y", |pkg| {
+            let mut cmd = flatpak_cmd();
+            cmd.args(["update", "-y", pkg]);
+            Some(cmd)
+        })?;
         Ok(())
     }
 
@@ -146,6 +169,36 @@ pub(super) fn parse_flatpak_app_list(stdout: &str) -> HashSet<String> {
         .lines()
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Parse `flatpak list --app --columns=application,version` stdout into
+/// `(application-id, version)` pairs. Columns are tab-separated; a runtime
+/// with no version reported (an empty second column, which `flatpak list`
+/// prints for some system runtimes) falls to
+/// [`UNKNOWN_PACKAGE_VERSION`](cfgd_core::providers::UNKNOWN_PACKAGE_VERSION).
+pub(super) fn parse_flatpak_app_list_versions(
+    stdout: &str,
+) -> Vec<cfgd_core::providers::PackageInfo> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let mut cols = line.splitn(2, '\t');
+            let name = cols.next()?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let version = cols
+                .next()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .unwrap_or(cfgd_core::providers::UNKNOWN_PACKAGE_VERSION)
+                .to_string();
+            Some(cfgd_core::providers::PackageInfo {
+                name: name.to_string(),
+                version,
+            })
+        })
         .collect()
 }
 
@@ -272,6 +325,35 @@ mod tests {
         assert!(parse_flatpak_app_list("").is_empty());
     }
 
+    // --- parse_flatpak_app_list_versions ---
+
+    #[test]
+    fn parse_flatpak_app_list_versions_real_world() {
+        let stdout = "org.mozilla.firefox\t124.0.1\norg.signal.Signal\t7.15.0\n";
+        let pkgs = parse_flatpak_app_list_versions(stdout);
+        assert_eq!(pkgs.len(), 2);
+        assert_eq!(pkgs[0].name, "org.mozilla.firefox");
+        assert_eq!(pkgs[0].version, "124.0.1");
+        assert_eq!(pkgs[1].name, "org.signal.Signal");
+        assert_eq!(pkgs[1].version, "7.15.0");
+    }
+
+    #[test]
+    fn parse_flatpak_app_list_versions_empty_version_column_is_unknown() {
+        let stdout = "org.freedesktop.Platform\t\n";
+        let pkgs = parse_flatpak_app_list_versions(stdout);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(
+            pkgs[0].version,
+            cfgd_core::providers::UNKNOWN_PACKAGE_VERSION
+        );
+    }
+
+    #[test]
+    fn parse_flatpak_app_list_versions_empty_input_yields_empty_set() {
+        assert!(parse_flatpak_app_list_versions("").is_empty());
+    }
+
     // ---------------------------------------------------------------------
     // PackageManager-impl tests via CFGD_FLATPAK_BIN ToolShim.
     // ---------------------------------------------------------------------
@@ -298,10 +380,44 @@ mod tests {
                     &cx,
                 )
                 .expect("Ok");
-            assert_eq!(s.invocation_count(), 2);
+            // 1 `list` (partitioning held vs fresh) + 2 `install`.
+            assert_eq!(s.invocation_count(), 3);
             let argv = s.argv_log();
             assert!(argv.contains("install -y org.mozilla.firefox"));
             assert!(argv.contains("install -y org.signal.Signal"));
+        }
+
+        #[test]
+        #[serial]
+        fn flatpak_install_raises_a_held_ref_via_flatpak_update_not_install() {
+            // The listing already carries `org.mozilla.firefox`, so `install`
+            // partitions it into `held` and raises it through
+            // `flatpak update -y org.mozilla.firefox` instead of re-running
+            // `flatpak install -y org.mozilla.firefox`, which would no-op;
+            // the unheld ref still installs.
+            let s = ToolShim::install(SHIM_ENV, 0, "org.mozilla.firefox\n", "");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            FlatpakManager
+                .install(
+                    &["org.mozilla.firefox".into(), "org.signal.Signal".into()],
+                    &cx,
+                )
+                .expect("Ok");
+            let argv = s.argv_log();
+            assert!(
+                argv.contains("update -y org.mozilla.firefox"),
+                "held ref must be raised via `flatpak update -y`: {argv}"
+            );
+            assert!(
+                argv.contains("install -y org.signal.Signal"),
+                "unheld ref must still install: {argv}"
+            );
+            assert!(
+                !argv.contains("install -y org.mozilla.firefox"),
+                "held ref must not be re-run through `flatpak install`: {argv}"
+            );
         }
 
         #[test]

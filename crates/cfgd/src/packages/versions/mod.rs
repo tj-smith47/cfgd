@@ -214,24 +214,44 @@ pub(super) fn pkg_version_meets_minimum(available: &str, min_version: &str) -> R
 /// Deliberately NOT a change to `parse_loose_version`, which is shared with the
 /// self-upgrade and release-tag paths where `-rc1` ordering is load-bearing.
 pub(super) fn distro_upstream_version(raw: &str) -> &str {
-    let after_epoch = match raw.split_once(':') {
+    distro_epoch_and_upstream(raw).1
+}
+
+/// Split a distro version into its epoch (default `0`, the same default
+/// `dpkg`'s own comparator uses) and upstream part,
+/// dropping the trailing `-<revision>` the same way [`distro_upstream_version`]
+/// always has. One split so the epoch and the upstream part can never read
+/// two different revisions of the same string.
+fn distro_epoch_and_upstream(raw: &str) -> (u64, &str) {
+    let (epoch, after_epoch) = match raw.split_once(':') {
         Some((epoch, rest)) if !epoch.is_empty() && epoch.bytes().all(|b| b.is_ascii_digit()) => {
-            rest
+            (epoch.parse().unwrap_or(0), rest)
         }
-        _ => raw,
+        _ => (0, raw),
     };
-    after_epoch
+    let upstream = after_epoch
         .rsplit_once('-')
-        .map_or(after_epoch, |(upstream, _)| upstream)
+        .map_or(after_epoch, |(upstream, _)| upstream);
+    (epoch, upstream)
 }
 
 /// Whether a distro-family manager's `available` version clears a `min_version`
-/// floor, comparing [`distro_upstream_version`] of each.
+/// floor.
+///
+/// The epoch compares FIRST, exactly as `dpkg`/`rpm` order it: a higher epoch
+/// always outranks a lower one, whatever the upstream numbers say, because the
+/// epoch exists precisely to let a packager declare "this release supersedes
+/// every prior numbering scheme". Comparing [`distro_upstream_version`] alone
+/// (the pre-fix behavior) judged `1:9.0` as clearing a `2:1.0` floor — 9.0 >=
+/// 1.0 — when the floor's epoch of 2 means nothing below it clears, whatever
+/// the upstream part reads.
 pub(super) fn distro_version_meets_minimum(available: &str, min_version: &str) -> bool {
-    cfgd_core::version_meets_floor(
-        distro_upstream_version(available),
-        distro_upstream_version(min_version),
-    )
+    let (available_epoch, available_upstream) = distro_epoch_and_upstream(available);
+    let (floor_epoch, floor_upstream) = distro_epoch_and_upstream(min_version);
+    if available_epoch != floor_epoch {
+        return available_epoch > floor_epoch;
+    }
+    cfgd_core::version_meets_floor(available_upstream, floor_upstream)
 }
 
 /// Whether a distro-family version can be compared at all: a listing carrying
@@ -285,6 +305,44 @@ pub(super) fn brew_version_meets_minimum(available: &str, min_version: &str) -> 
 /// check that could not run rather than a floor that was missed.
 pub(super) fn brew_comparable(raw: &str) -> bool {
     cfgd_core::parse_loose_version(brew_upstream_version(raw)).is_some()
+}
+
+/// Parse a Windows-style four-part version (`133.0.6943.98`) into up to four
+/// numeric components, padding missing trailing components with 0. `None` for
+/// anything a component fails to parse as a plain integer — a range
+/// expression (`>=1.2`) included.
+///
+/// winget and chocolatey package identifiers carry a fourth build component
+/// (`<major>.<minor>.<build>.<revision>`) that semver has no field for and
+/// refuses outright, so a `minVersion` against one such listing was a
+/// permanent check error under the shared semver comparator.
+fn fourpart_components(raw: &str) -> Option<[u64; 4]> {
+    let parts: Vec<&str> = raw.trim().trim_start_matches('v').split('.').collect();
+    if parts.is_empty() || parts.len() > 4 {
+        return None;
+    }
+    let mut out = [0u64; 4];
+    for (slot, part) in out.iter_mut().zip(parts.iter()) {
+        *slot = part.parse().ok()?;
+    }
+    Some(out)
+}
+
+/// Whether `raw` parses as a four-part (or shorter) numeric version.
+pub(super) fn fourpart_comparable(raw: &str) -> bool {
+    fourpart_components(raw).is_some()
+}
+
+/// Whether `available` clears a `min_version` floor under the four-part
+/// numeric ordering winget and chocolatey package versions use.
+pub(super) fn fourpart_version_meets_minimum(available: &str, min_version: &str) -> bool {
+    match (
+        fourpart_components(available),
+        fourpart_components(min_version),
+    ) {
+        (Some(a), Some(b)) => a >= b,
+        _ => false,
+    }
 }
 
 /// Parse `dpkg-query -W -f='${Package}\t${Version}\n'` output into PackageInfo.

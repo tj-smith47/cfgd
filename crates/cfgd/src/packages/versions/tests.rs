@@ -900,6 +900,27 @@ fn a_distro_version_compares_on_its_upstream_part() {
     );
 }
 
+/// The epoch is the dominant term: a lower epoch never clears a higher-epoch
+/// floor, whatever the upstream numbers read as. Comparing only the upstream
+/// part (the pre-fix behavior) said `1:9.0` clears a `2:1.0` floor because
+/// 9.0 >= 1.0 — wrong, because the floor's epoch of 2 outranks the
+/// available package's epoch of 1 outright.
+#[test]
+fn a_distro_versions_epoch_outranks_its_upstream_part() {
+    assert!(
+        !distro_version_meets_minimum("1:9.0", "2:1.0"),
+        "epoch 1 never clears an epoch-2 floor, even with a larger upstream number"
+    );
+    assert!(
+        distro_version_meets_minimum("2:1.0", "1:9.0"),
+        "epoch 2 clears an epoch-1 floor even with a smaller upstream number"
+    );
+    assert!(
+        distro_version_meets_minimum("1:2.0", "1:1.0"),
+        "equal epochs still fall through to the upstream comparison"
+    );
+}
+
 /// The must-not-regress half: the shared loose-semver comparator keeps
 /// PRERELEASE semantics, because a semver-native manager's `-rc1` really is
 /// below its release. Only the distro families read the suffix as packaging.
@@ -909,4 +930,15 @@ fn a_prerelease_still_loses_to_its_release_under_the_shared_comparator() {
         !cfgd_core::version_satisfies("1.2.3-rc1", ">=1.2.3"),
         "a prerelease is below its own release under semver"
     );
+}
+
+/// A winget-listed four-part version clears a shorter declared floor: the
+/// pre-fix semver comparator refused every four-part version outright,
+/// turning every winget `minVersion` into a permanent check error.
+#[test]
+fn a_fourpart_version_clears_a_shorter_declared_floor() {
+    assert!(fourpart_comparable("133.0.6943.98"));
+    assert!(fourpart_version_meets_minimum("133.0.6943.98", "133"));
+    assert!(!fourpart_version_meets_minimum("132.9.9999.99", "133"));
+    assert!(!fourpart_comparable(">=1.2"));
 }

@@ -644,7 +644,10 @@ pub(super) fn partition_already_installed(
 /// Raise packages the manager already holds to the version it currently offers,
 /// one invocation per package so a failure for one does not withhold the rest.
 /// `verb_label` is the command as the reader sees it (`brew upgrade --cask`),
-/// and `build_cmd` supplies the matching argv.
+/// and `build_cmd` supplies the matching argv — `None` for a package this
+/// manager's family has no distinct upgrade verb for, which fails loudly via
+/// [`no_upgrade_verb_error`] rather than silently leaving it unraised while a
+/// plan reports the run converged.
 pub(super) fn upgrade_each<F>(
     cx: &PackageContext<'_>,
     manager: &str,
@@ -653,13 +656,27 @@ pub(super) fn upgrade_each<F>(
     build_cmd: F,
 ) -> std::result::Result<(), PackageError>
 where
-    F: Fn(&str) -> Command,
+    F: Fn(&str) -> Option<Command>,
 {
     for pkg in packages {
+        let Some(mut cmd) = build_cmd(pkg) else {
+            return Err(no_upgrade_verb_error(manager, pkg));
+        };
         let label = format!("{verb_label} {pkg}");
-        run_pkg_cmd_live(cx, manager, &mut build_cmd(pkg), &label, "upgrade")?;
+        run_pkg_cmd_live(cx, manager, &mut cmd, &label, "upgrade")?;
     }
     Ok(())
+}
+
+/// The error a manager returns when asked to raise an already-held package
+/// but its family exposes no distinct upgrade verb for it — a re-install
+/// that no-ops on a held copy must fail loudly, not report the run converged
+/// while the package sits below its declared floor.
+pub(super) fn no_upgrade_verb_error(manager: &str, pkg: &str) -> PackageError {
+    PackageError::BootstrapFailed {
+        manager: manager.to_string(),
+        message: format!("cannot raise {pkg}: {manager} has no upgrade verb"),
+    }
 }
 
 /// Install `packages` as a single batch; if the batch fails, retry each package

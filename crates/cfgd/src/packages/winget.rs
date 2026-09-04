@@ -182,6 +182,20 @@ impl PackageManager for WingetManager {
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(parse_version_field(&stdout))
     }
+
+    /// winget-listed versions carry a fourth build component
+    /// (`133.0.6943.98`) semver has no field for and refuses outright.
+    fn version_comparable(&self, version: &str) -> bool {
+        super::versions::fourpart_comparable(version)
+    }
+
+    fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
+        super::versions::fourpart_version_meets_minimum(available, min_version)
+    }
+
+    fn floor_comparable(&self, floor: &str) -> bool {
+        super::versions::fourpart_comparable(floor)
+    }
 }
 
 #[cfg(test)]

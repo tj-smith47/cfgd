@@ -3198,6 +3198,10 @@ pub struct MockPackageManager {
     /// test noticing: the `Prerequisites` phase provisions `npm` with `apt
     /// install npm`, and the `Packages` phase then asked apt for `npm` again.
     landed: std::sync::Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Whether `version_meets_minimum_checked` fails instead of answering —
+    /// the FreeBSD `pkg version -t` shape, whose comparator genuinely shells
+    /// out and can fail to spawn.
+    comparisons_fail: bool,
 }
 
 impl MockPackageManager {
@@ -3228,7 +3232,16 @@ impl MockPackageManager {
             folds_case: false,
             registers_sources: false,
             versions: std::collections::BTreeMap::new(),
+            comparisons_fail: false,
         }
+    }
+
+    /// The `pkg version -t` shape: the version comparator fails to spawn
+    /// rather than answering, so a caller judging a floor gets a check error
+    /// instead of a `bool`.
+    pub fn failing_version_comparisons(mut self) -> Self {
+        self.comparisons_fail = true;
+        self
     }
 
     /// The `brew-tap` shape: entries are package SOURCES for the family, so
@@ -3565,6 +3578,17 @@ impl crate::providers::PackageManager for MockPackageManager {
 
     fn available_version(&self, _package: &str) -> crate::errors::Result<Option<String>> {
         Ok(None)
+    }
+
+    fn version_meets_minimum_checked(
+        &self,
+        available: &str,
+        min_version: &str,
+    ) -> std::result::Result<bool, String> {
+        if self.comparisons_fail {
+            return Err("mock comparator failed to spawn".to_string());
+        }
+        Ok(self.version_meets_minimum(available, min_version))
     }
 }
 
