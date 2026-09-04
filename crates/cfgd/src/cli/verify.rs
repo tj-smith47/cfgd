@@ -308,6 +308,8 @@ impl VerifyOutput {
 pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
     let mut doc = Doc::new().heading("Verify");
 
+    // drift-chain-ok: whether the report has anything at all to RENDER, not
+    // whether the run stands on drift — `any_drift` is that question.
     if output.results.is_empty() && output.system_errors.is_empty() && output.standing.is_empty() {
         doc = doc.status(Role::Info, "No managed resources to verify");
         return doc.with_data(output.clone());
@@ -340,12 +342,15 @@ pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
         // above used, never a second wording.
         output.standing.iter().fold(s, |s, e| {
             let subject = cfgd_core::output::drift_item_subject(&e.resource_type, &e.resource_id);
-            let (expected, actual) = cfgd_core::output::drift_operands(
+            // Through the chooser, not the operand pair: a row recorded with
+            // no operands has nothing to state, and rendering the absence
+            // words for it reads as a divergence the store never recorded.
+            let cause = cfgd_core::output::drift_cause(
                 &e.resource_type,
                 e.expected.as_deref().unwrap_or_default(),
                 e.actual.as_deref().unwrap_or_default(),
             );
-            s.status_with(Role::Fail, subject, |sf| sf.drift(&expected, &actual))
+            s.status_with(Role::Fail, subject, |sf| sf.detail(cause))
         })
     });
 

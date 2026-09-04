@@ -583,6 +583,9 @@ fn drift_section<T>(
     row: impl Fn(SectionBuilder, &T) -> SectionBuilder,
 ) -> Doc {
     doc.section("Drift", |s| {
+        // drift-chain-ok: this section's own empty-ROLE question, which
+        // `drift_section` is the one place to answer; the surface's verdict
+        // comes from `DriftVerdict::from_checks`.
         if drift.is_empty() && check_errors.is_empty() {
             let role = if verified { Role::Ok } else { Role::Info };
             // Only the live scan may claim a detection. The recorded dashboard
@@ -1612,6 +1615,19 @@ fn check_error_owner(
     profile_owner.cloned()
 }
 
+/// The shortfall noun a non-file `module` row counts under, from its facet.
+///
+/// Only `script` is a noun the owner's own inventory prices, so only it earns
+/// a counts clause; a `skip` names no countable resource, and a row wearing a
+/// facet nothing here knows renders its owner's bare verdict rather than
+/// inventing a unit for it.
+fn module_facet_noun(facet: &str) -> Option<&'static str> {
+    match facet {
+        "script" => Some("script"),
+        _ => None,
+    }
+}
+
 /// Which Component Health owner one unresolved recorded finding belongs to,
 /// the drifted-noun its shortfall counts under — `None` noun for a
 /// whole-module verdict, which flips the row without a countable unit — and
@@ -1619,8 +1635,11 @@ fn check_error_owner(
 ///
 /// One arm per producer id grammar, the same derivations every producer
 /// minted the id through: a `module` row splits on
-/// [`super::live_drift::split_module_file_resource_id`] (a bare id is the
-/// daemon's whole-module spelling); a shell row belongs to cfgd's env
+/// [`super::live_drift::split_module_file_resource_id`], and everything that
+/// does not split is attributed through
+/// [`cfgd_core::reconciler::module_row_owner`] — the ONE reading of a recorded
+/// module row, so a `<module>:script` id names the module rather than becoming
+/// an owner of its own; a shell row belongs to cfgd's env
 /// surface (`owner_of`'s vocabulary — the session refresh row to
 /// `cfgd:session`); a `provision:`/`refuse:` package row to `cfgd:managers`;
 /// any other package row to the module whose current resolution declares
@@ -1648,9 +1667,18 @@ fn finding_owner(
                 // nested subject is the bare folded target.
                 FindingSlot::Child(Some(cfgd_core::fold_home_in_text(&target))),
             ),
+            // Not a per-file id: a `<module>:script` / `<module>:skip` row, or
+            // the bare whole-module id a tick recorded before either producer
+            // agreed on a spelling. The OWNER is the module the row belongs to
+            // — taking the whole id instead minted a second Component Health
+            // row named `nvim:script` beside the real `nvim`, which then read
+            // clean while its phantom carried the finding.
             None => (
-                Some(Owner::module(&event.resource_id)),
-                None,
+                Some(Owner::module(cfgd_core::reconciler::module_row_owner(
+                    &event.resource_id,
+                ))),
+                cfgd_core::reconciler::module_row_facet(&event.resource_id)
+                    .and_then(module_facet_noun),
                 FindingSlot::OwnerVerdict,
             ),
         },
@@ -4876,6 +4904,68 @@ mod tests {
         assert!(
             !out.contains(&super::heal_drift_hint(None)),
             "a recorded finding is not healed on the strength of an old scan: {out}"
+        );
+    }
+
+    /// A recorded `module` row that names no file is attributed to its MODULE,
+    /// not to an owner named after the whole id.
+    ///
+    /// The defect: `nvim:script` fell to `Owner::module(&resource_id)`, and the
+    /// owner-token split downstream cut it back at its first colon, so the
+    /// fleet table grew a second `module:nvim:script` row carrying the finding
+    /// while the real `module:nvim` read Synced — a machine reporting itself as
+    /// both drifted and clean in one screen.
+    #[test]
+    fn a_script_shaped_module_row_lands_on_its_module_and_mints_no_second_owner() {
+        let mut output = empty_output();
+        output.modules = vec![ModuleStatusEntry {
+            name: "nvim".to_string(),
+            packages: 0,
+            files: 0,
+            scripts: 1,
+            status: "installed".to_string(),
+            platform_skip_reason: None,
+            declared: ModuleDeclared {
+                script_summary: Some("postApply (1 script)".to_string()),
+                scripts: 1,
+                ..ModuleDeclared::default()
+            },
+        }];
+        output.drift = vec![cfgd_core::state::DriftEvent {
+            id: 1,
+            timestamp: "2026-05-14T10:02:00Z".to_string(),
+            resource_type: "module".to_string(),
+            resource_id: "nvim:script".to_string(),
+            expected: None,
+            actual: None,
+            resolved_by: None,
+            source: LOCAL_LAYER.to_string(),
+            want: None,
+            have: None,
+        }];
+
+        let out = dashboard(&output);
+        let owners: Vec<&str> = out
+            .lines()
+            .filter(|l| l.contains("module:"))
+            .map(str::trim)
+            .collect();
+        assert_eq!(
+            owners.iter().filter(|l| l.contains("module:nvim")).count(),
+            1,
+            "one owner row for one module: {out}"
+        );
+        assert!(
+            !out.contains("module:nvim:script"),
+            "no owner token whose NAME carries a colon: {out}"
+        );
+        let nvim = owners
+            .iter()
+            .find(|l| l.contains("module:nvim"))
+            .unwrap_or_else(|| panic!("module:nvim has a health row: {out}"));
+        assert!(
+            nvim.contains("Drifted"),
+            "the finding lands on the module that owns it: {nvim}"
         );
     }
 

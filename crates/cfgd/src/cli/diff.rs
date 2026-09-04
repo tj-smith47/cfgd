@@ -417,16 +417,19 @@ pub fn cmd_diff(
         let sec = printer.section_or_collapse("Standing");
         let _inherit = printer.depth_inheritance();
         for e in &report.standing {
-            let (expected, actual) = cfgd_core::output::drift_operands(
-                &e.resource_type,
-                e.expected.as_deref().unwrap_or_default(),
-                e.actual.as_deref().unwrap_or_default(),
-            );
+            // Through the chooser, not the operand pair: a row recorded with
+            // no operands (an older daemon's, a module script row) has nothing
+            // to state, and rendering the absence words for it reads as a
+            // divergence the store never recorded.
             sec.status(
                 Role::Warn,
                 cfgd_core::output::drift_item_subject(&e.resource_type, &e.resource_id),
             )
-            .drift(&expected, &actual);
+            .detail(cfgd_core::output::drift_cause(
+                &e.resource_type,
+                e.expected.as_deref().unwrap_or_default(),
+                e.actual.as_deref().unwrap_or_default(),
+            ));
         }
         !report.standing.is_empty()
     };
@@ -885,16 +888,18 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         let sec = printer.section_or_collapse("Standing");
         let _inherit = printer.depth_inheritance();
         for e in &standing {
-            let (expected, actual) = cfgd_core::output::drift_operands(
-                &e.resource_type,
-                e.expected.as_deref().unwrap_or_default(),
-                e.actual.as_deref().unwrap_or_default(),
-            );
+            // Through the chooser, as the whole-machine section above: a row
+            // recorded with no operands has nothing to state, and the absence
+            // fold would word the silence as a resource the machine lacks.
             sec.status(
                 Role::Warn,
                 cfgd_core::output::drift_item_subject(&e.resource_type, &e.resource_id),
             )
-            .drift(&expected, &actual);
+            .detail(cfgd_core::output::drift_cause(
+                &e.resource_type,
+                e.expected.as_deref().unwrap_or_default(),
+                e.actual.as_deref().unwrap_or_default(),
+            ));
         }
         !standing.is_empty()
     };
