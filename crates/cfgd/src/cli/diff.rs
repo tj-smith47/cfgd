@@ -459,15 +459,19 @@ pub(super) fn env_drift_ordered(
 /// needs an apply, while a check that could not run means the answer is
 /// unknown, which is an error rather than a verdict.
 fn diff_exit_code(summary: &DiffSummary) -> Option<cfgd_core::exit::ExitCode> {
-    if summary.system_check_failed || summary.env_check_failed {
-        return Some(cfgd_core::exit::ExitCode::Error);
-    }
-    (summary.has_file_drift
+    let any_drift = summary.has_file_drift
         || summary.has_pkg_drift
         || summary.has_system_drift
         || summary.has_env_drift
-        || summary.has_standing_drift)
-        .then_some(cfgd_core::exit::ExitCode::DriftDetected)
+        || summary.has_standing_drift;
+    let check_failed = summary.system_check_failed || summary.env_check_failed;
+    if !cfgd_core::reconciler::has_any_drift(any_drift, check_failed) {
+        return None;
+    }
+    if check_failed {
+        return Some(cfgd_core::exit::ExitCode::Error);
+    }
+    Some(cfgd_core::exit::ExitCode::DriftDetected)
 }
 
 /// The scoped run's header, the same rows `apply --module` opens on: a title
@@ -1206,7 +1210,7 @@ pub fn build_diff_doc(output: &DiffOutput, scope: DiffScope<'_>) -> Doc {
     // it never renders one — whether or not the checks that DID run found
     // drift.
     let check_failed = output.summary.system_check_failed || output.summary.env_check_failed;
-    let role = if any_drift || check_failed {
+    let role = if cfgd_core::reconciler::has_any_drift(any_drift, check_failed) {
         Role::Warn
     } else {
         Role::Ok

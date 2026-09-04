@@ -261,7 +261,6 @@ pub fn cmd_verify(
     }
     let pass_count = results.iter().filter(|r| r.matches).count();
     let fail_count = results.iter().filter(|r| !r.matches).count();
-    let has_drift = fail_count > 0 || !standing.is_empty();
 
     let output = VerifyOutput {
         results,
@@ -279,7 +278,10 @@ pub fn cmd_verify(
         if !output.system_errors.is_empty() {
             cfgd_core::exit::ExitCode::Error.exit();
         }
-        if has_drift {
+        if cfgd_core::reconciler::has_any_drift(
+            output.fail_count > 0 || !output.standing.is_empty(),
+            !output.system_errors.is_empty(),
+        ) {
             cfgd_core::exit::ExitCode::DriftDetected.exit();
         }
     }
@@ -335,8 +337,11 @@ pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
         })
     });
 
-    doc = if output.fail_count == 0 && output.system_errors.is_empty() && output.standing.is_empty()
-    {
+    let has_drift = cfgd_core::reconciler::has_any_drift(
+        output.fail_count > 0 || !output.standing.is_empty(),
+        !output.system_errors.is_empty(),
+    );
+    doc = if !has_drift {
         doc.status(
             // verdict-row-ok: a match verdict, not an act cfgd performed
             Role::Ok,

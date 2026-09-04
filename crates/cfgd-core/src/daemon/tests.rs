@@ -12509,12 +12509,12 @@ spec:
         ];
         for (rtype, rid, with_plan, without_plan) in cases {
             assert_eq!(
-                tick_cannot_refind(rtype, rid, &planned),
+                tick_cannot_refind(rtype, rid, &planned, false),
                 *with_plan,
                 "wrong verdict for {rtype}/{rid} against the plan"
             );
             assert_eq!(
-                tick_cannot_refind(rtype, rid, &none),
+                tick_cannot_refind(rtype, rid, &none, false),
                 *without_plan,
                 "wrong verdict for {rtype}/{rid} against a clean tick"
             );
@@ -12526,16 +12526,59 @@ spec:
         // deploy re-finds is settled on the MINT side, where one composer
         // writes the recorded id and the current-set id alike.
         assert!(
-            tick_cannot_refind("module", r"gated/etc/od\d.conf", &planned),
+            tick_cannot_refind("module", r"gated/etc/od\d.conf", &planned, false),
             "a backslash-bearing file id under the Skip module is kept"
         );
         assert!(
-            tick_cannot_refind("module", "gated/etc/od/d.conf", &planned),
+            tick_cannot_refind("module", "gated/etc/od/d.conf", &planned, false),
             "and so is its folded spelling"
         );
         assert_eq!(module_row_owner(r"gated/etc/od\d.conf"), "gated");
         assert_eq!(module_row_owner("dev:script"), "dev");
         assert_eq!(module_row_owner("solo"), "solo");
+    }
+
+    /// `narrow_to_module` drops the env group unconditionally — it is
+    /// machine-wide, owned by no module — so a SCOPED tick's `planned` never
+    /// carries a `WriteEnvFile` action whether or not the real file needs
+    /// one. Reading that absence as "converged" (the unscoped rule above)
+    /// would heal every `env-var`/`alias` row a module's chain owns on every
+    /// scoped tick, blind: `scoped` must force `true` regardless of what
+    /// `planned` carries, env action included, since a narrowed plan carrying
+    /// one is a fixture artifact this predicate cannot tell apart from a
+    /// coincidence.
+    #[test]
+    fn tick_cannot_refind_keeps_env_rows_standing_for_a_scoped_tick_whatever_planned_carries() {
+        use super::reconcile::tick_cannot_refind;
+        use crate::reconciler::{Action, EnvAction};
+
+        let env = Action::Env(EnvAction::WriteEnvFile {
+            path: std::path::PathBuf::from("/home/u/.cfgd.env"),
+            content: String::new(),
+            vars: 1,
+            aliases: 0,
+        });
+        let with_env: Vec<&Action> = vec![&env];
+        let none: Vec<&Action> = vec![];
+
+        for rtype in ["env-var", "alias"] {
+            assert!(
+                tick_cannot_refind(rtype, "EDITOR", &none, true),
+                "a scoped tick's narrowed plan never carries an env action \
+                 at all, so it must keep a {rtype} row standing rather than \
+                 reading the absence as convergence"
+            );
+            assert!(
+                tick_cannot_refind(rtype, "EDITOR", &with_env, true),
+                "scoped must keep a {rtype} row standing even if `planned` \
+                 happens to carry an env action"
+            );
+        }
+
+        // The unscoped rule is unchanged: no action present still reads as
+        // converged (healed) when the tick was never narrowed.
+        assert!(!tick_cannot_refind("env-var", "EDITOR", &none, false));
+        assert!(tick_cannot_refind("env-var", "EDITOR", &with_env, false));
     }
 
     /// A clean profile-wide tick is ground truth only for what it PROBED: the
