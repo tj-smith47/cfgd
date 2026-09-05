@@ -111,6 +111,13 @@ spec: {}
 /// Only the `:` half is reachable from a directory listing — a `/` cannot
 /// occur in one path component — but the refusal names both, because both are
 /// separators the row grammar reads.
+///
+/// The listing is a POSIX-only arm: Windows refuses a `:` in a path component
+/// outright, so no such directory can exist for the scan to meet. The refusal
+/// itself is not Unix-only, and every path that reaches a name from somewhere
+/// other than a directory listing — a source manifest's offer, a body's own
+/// `metadata.name` — proves the same `a:b` refusal on every host.
+#[cfg(not(windows))]
 #[test]
 fn a_module_name_carrying_a_drift_id_separator_is_refused() {
     let name = "a:b";
@@ -148,16 +155,12 @@ fn a_source_delivered_module_name_carrying_a_separator_is_refused() {
     for name in ["a:b", "acme/tool"] {
         let dir = tempfile::tempdir().unwrap();
         let modules_dir = dir.path().join("modules");
-        let body = modules_dir.join(name);
-        std::fs::create_dir_all(&body).unwrap();
-        // The body names itself plainly: what the source manifest OFFERED is
-        // the only thing carrying the separator, and it is the map key rows
-        // are attributed by whether or not the body agrees with it.
-        std::fs::write(
-            body.join("module.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: tool\nspec: {}\n",
-        )
-        .unwrap();
+        std::fs::create_dir_all(&modules_dir).unwrap();
+        // No body for either offered name: the refusal precedes the join that
+        // would look for one, so nothing has to be spelled on a filesystem —
+        // and Windows would refuse to create the `a:b` component anyway. If the
+        // refusal ever moved behind the join, the offer would find nothing and
+        // be skipped silently, which is the panic below rather than a pass.
         let root = crate::modules::SourceModuleRoot {
             source_name: "acme".to_string(),
             priority: 10,
@@ -187,25 +190,33 @@ fn a_source_delivered_module_name_carrying_a_separator_is_refused() {
 /// name with no directory to compare against — so a body whose own metadata
 /// carries a separator is refused here, whatever the directory it arrived in
 /// was called.
+///
+/// Both separators, from a directory named plainly: the name under test is
+/// inside the body, so this is where the `:` refusal is proven on a host whose
+/// filesystem would not let a directory carry one.
 #[test]
 fn a_module_body_naming_itself_with_a_separator_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    let body = dir.path().join("plain-directory");
-    std::fs::create_dir_all(&body).unwrap();
-    std::fs::write(
-        body.join("module.yaml"),
-        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: acme/tool\nspec: {}\n",
-    )
-    .unwrap();
+    for name in ["a:b", "acme/tool"] {
+        let dir = tempfile::tempdir().unwrap();
+        let body = dir.path().join("plain-directory");
+        std::fs::create_dir_all(&body).unwrap();
+        std::fs::write(
+            body.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec: {{}}\n"
+            ),
+        )
+        .unwrap();
 
-    let err = crate::modules::load_module(&body)
-        .err()
-        .unwrap_or_else(|| panic!("a body naming itself `acme/tool` must be refused"))
-        .to_string();
-    assert!(
-        err.contains("module name"),
-        "the refusal names the rule: {err}"
-    );
+        let err = crate::modules::load_module(&body)
+            .err()
+            .unwrap_or_else(|| panic!("a body naming itself {name:?} must be refused"))
+            .to_string();
+        assert!(
+            err.contains("module name"),
+            "the refusal names the rule: {err}"
+        );
+    }
 }
 
 #[test]

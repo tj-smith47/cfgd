@@ -612,6 +612,7 @@ fn module_update_remove_existing_items() {
     );
     write_module(config_dir.path(), "rm-mod", module_yaml);
 
+    let _home = cfgd_core::with_test_home_guard(config_dir.path());
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 

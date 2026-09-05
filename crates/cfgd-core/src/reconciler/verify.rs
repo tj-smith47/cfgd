@@ -710,8 +710,8 @@ pub struct MergedEnvItems {
     aliases: Vec<crate::config::ShellAlias>,
     origins: EnvOrigins,
     path: Option<super::env_engine::FoldedPath>,
-    // Read back only by `managed_env_files`, which exists for the tests that
-    // re-render a managed env file; a shipped build stores nothing it cannot
+    // Read back only by `env_targets_for`, which exists for the tests that
+    // re-render a managed env surface; a shipped build stores nothing it cannot
     // read.
     #[cfg(any(test, feature = "test-helpers"))]
     path_dirs: Vec<ManagerPathDir>,
@@ -777,6 +777,52 @@ impl MergedEnvItems {
         home: &std::path::Path,
         scope: crate::config::EnvScope,
     ) -> Vec<(std::path::PathBuf, String)> {
+        self.env_targets_for(home, scope)
+            .into_iter()
+            .filter_map(|t| match t {
+                super::env_engine::EnvTarget::ManagedFile { path, content, .. } => {
+                    Some((path, content))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every rc SOURCE LINE this host's engine appends for `scope`, as
+    /// `(rc path, line)` — the other half of the same target list
+    /// [`Self::managed_env_files`] returns the files of.
+    ///
+    /// Same gate and the same reason: which rc files are planned is the running
+    /// host's (`$SHELL` picks `~/.bashrc` or `~/.zshrc`, the scope decides
+    /// whether `~/.profile` joins them, Windows takes two PowerShell profiles
+    /// instead) and the line's text is the dialect's. A fixture planting a
+    /// converged env surface must plant BOTH halves: an unplanted rc target is
+    /// an `env-rc` drift row, and unlike the whole-file freshness row nothing
+    /// downstream drops it as redundant.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn managed_env_source_lines(
+        &self,
+        home: &std::path::Path,
+        scope: crate::config::EnvScope,
+    ) -> Vec<(std::path::PathBuf, String)> {
+        self.env_targets_for(home, scope)
+            .into_iter()
+            .filter_map(|t| match t {
+                super::env_engine::EnvTarget::SourceLine { rc_path, line } => Some((rc_path, line)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The one target list both accessors above read, so a fixture planting
+    /// the files and a fixture planting the rc lines cannot be shown two
+    /// different host answers.
+    #[cfg(any(test, feature = "test-helpers"))]
+    fn env_targets_for(
+        &self,
+        home: &std::path::Path,
+        scope: crate::config::EnvScope,
+    ) -> Vec<super::env_engine::EnvTarget> {
         super::env_engine::env_targets(
             super::env_engine::EnvContent::new(
                 &self.env,
@@ -789,14 +835,6 @@ impl MergedEnvItems {
             &super::env_engine::EnvHostProbe::detect(home),
             EnvPlatform::current(),
         )
-        .into_iter()
-        .filter_map(|t| match t {
-            super::env_engine::EnvTarget::ManagedFile { path, content, .. } => {
-                Some((path, content))
-            }
-            _ => None,
-        })
-        .collect()
     }
 
     /// The line a declared env var or alias renders as, for a DISPLAY surface

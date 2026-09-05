@@ -26,6 +26,18 @@ named `cfgd-unguarded-test-home-<pid>-<n>` under the system temp dir. That
 directory is named, not created: anything appearing there is a test that writes
 env surfaces and should install a guard.
 
+That fallback is the RECONCILER's alone. The env CHECK
+(`env_verify_results`, and the `~/`-fold every report path passes through)
+resolves `~` with `expand_tilde`, which has no unguarded-test arm and reads the
+real `$HOME`: an in-process test that declares `spec.env`/`spec.aliases` and
+runs a `cmd_*` reports the invoking user's own env surface. That passes on a
+development box, which dogfoods cfgd and already holds every planned target,
+and fails on a CI runner whose `$HOME` holds none — so such a test installs
+`with_test_home_guard` and plants its surface through
+`MergedEnvItems::managed_env_files` / `managed_env_source_lines`.
+`every_in_process_test_declaring_shell_items_holds_a_test_home` walks every
+crate's `tests/`.
+
 Blocking dispatch loses the thread-local, so any closure that may resolve `~`
 goes through `cfgd_core::spawn_blocking_with_test_home`. `audit.sh` rejects a
 raw `tokio::task::spawn_blocking` anywhere in workspace production code unless

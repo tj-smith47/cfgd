@@ -2518,3 +2518,108 @@ fn an_uncalled_entry_hatch_is_read_only_inside_the_roster() {
         "the hatch on the roster's own line was not read"
     );
 }
+
+/// An integration test that declares shell items and drives a `cmd_*` in this
+/// process holds a test HOME.
+///
+/// The env check resolves `~` for everything it does — the managed env files,
+/// their rc source lines, and the `~/` fold every path it prints passes
+/// through. The reconciler's own unguarded-home fallback does not cover it:
+/// `expand_tilde` has no test arm, so a test that declares `spec.env` or
+/// `spec.aliases` and then calls a verb in-process reports the INVOKING USER'S
+/// env surface. That is the worst split a fixture can have — a development box
+/// dogfoods cfgd and already holds every planned target, so the report is the
+/// declaration's and the golden passes; a CI runner's `$HOME` holds none of
+/// them, so five absence rows render under a home the fold does not even
+/// recognize. The local run is the one that decides whether the change ships.
+///
+/// Judged per test function, on its own body: the declaration is a YAML
+/// env/alias list written into a fixture, the verb an in-process `cmd_*` call,
+/// the guard `with_test_home_guard` or a `HOME` handed to a spawned child.
+/// Its ceiling is the same body — a declaration a same-file helper writes is
+/// out of reach, and is not the shape that shipped: the test that broke every
+/// runner appended `aliases:` to its own profile and called the verb three
+/// lines below.
+///
+/// The verb is ANY `cmd_*`, which over-approximates on purpose: the guard is
+/// one line and costs a test that resolves no path nothing, while a roster of
+/// the verbs that can reach `~` is exactly the list that goes stale — a verb
+/// gaining an env surface would leave every fixture below it unwatched, which
+/// is the failure this walk exists to prevent.
+#[test]
+fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
+    let root = workspace_root();
+    let mut tests_seen = 0usize;
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+
+    for path in workspace_rust_files() {
+        // A crate's integration tests: `src/` holds the unit tests, which reach
+        // the check through the same `~` but are the library's own and are
+        // covered by their crate's fixtures.
+        let posix = path.to_string_lossy().replace('\\', "/");
+        if !posix.contains("/tests/") || posix.contains("/src/") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<&str> = body.lines().collect();
+        let relative = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        for (open, slice) in source_functions(&body) {
+            let Some(name) = declared_fn_name(&slice) else {
+                continue;
+            };
+            let start = attribute_block_start(&lines, open - 1);
+            if !lines[start..open - 1].iter().any(|l| {
+                let t = l.trim_start();
+                t.starts_with("#[test]") || t.starts_with("#[tokio::test")
+            }) {
+                continue;
+            }
+            tests_seen += 1;
+            let folded = crate::test_helpers::logical_source_lines(&slice);
+            // A declared entry is a YAML list item under the `env:` or
+            // `aliases:` key — the two keys alone would read every `env: vec![]`
+            // struct field in the directory as a declaration.
+            let declares = folded.iter().any(|(_, l)| {
+                l.contains("- name:") && (l.contains("aliases:") || l.contains("env:"))
+            });
+            let in_process = folded.iter().any(|(_, l)| l.contains("cmd_"));
+            if !(declares && in_process) {
+                continue;
+            }
+            judged += 1;
+            if !folded
+                .iter()
+                .any(|(_, l)| l.contains("with_test_home") || l.contains(".env(\"HOME\""))
+            {
+                offenders.push(format!("{relative}:{open}: {name}"));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a test declaring env vars or aliases and running a verb in this \
+         process reads the invoking user's own `~` — install \
+         `cfgd_core::with_test_home_guard(tmp)` before the verb and plant the \
+         surface through `MergedEnvItems::managed_env_files` / \
+         `managed_env_source_lines`:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        tests_seen > 300,
+        "the walk read {tests_seen} integration tests; it has stopped seeing them"
+    );
+    assert!(
+        judged >= 2,
+        "the walk classified {judged} tests as declaring shell items and \
+         running a verb; its needles have drifted from the fixtures"
+    );
+}

@@ -57,6 +57,49 @@ fn no_drift_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     (config_dir, state_dir, target)
 }
 
+/// Plant the whole env surface this host's engine would write for `aliases`
+/// under `home`, less the alias definitions themselves.
+///
+/// What is left is a machine that has been applied and has since lost exactly
+/// those aliases, which is the one shell row the golden is about: the primary
+/// file's freshness row is redundant beside it and dropped, and every rc source
+/// line is in place so no `env-rc` row joins them.
+///
+/// Every path and every byte comes from the engine's own target list — a
+/// fixture spelling `.cfgd.env` or a `source` line by hand writes where nothing
+/// reads, and the surfaces that break assert an absence, so it would pass
+/// blind rather than fail.
+#[cfg(unix)]
+fn plant_env_surface_without_aliases(home: &Path, aliases: &[cfgd_core::config::ShellAlias]) {
+    let mut owners = cfgd_core::config::EntryOwners::default();
+    owners.claim(
+        &cfgd_core::reconciler::Owner::profile("tiny").token(),
+        &[],
+        aliases,
+    );
+    let merged = cfgd_core::reconciler::MergedEnvItems::new(&[], aliases, &owners, &[], &[]);
+    let scope = cfgd_core::config::EnvScope::default();
+    let withheld: Vec<String> = aliases
+        .iter()
+        .filter_map(|a| merged.declared_line("alias", &a.name))
+        .collect();
+    let write = |path: &Path, body: String| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    };
+    for (path, content) in merged.managed_env_files(home, scope) {
+        let body: String = content
+            .lines()
+            .filter(|l| !withheld.iter().any(|w| w == l))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        write(&path, body);
+    }
+    for (rc_path, line) in merged.managed_env_source_lines(home, scope) {
+        write(&rc_path, format!("{line}\n"));
+    }
+}
+
 /// Profile where the target does NOT exist on disk; `fm.diff` reports drift.
 /// Same shape as `common::tiny_profile_setup`, inlined here because a
 /// custom-manager profile entry is added in other fixtures for consistency.
@@ -180,9 +223,33 @@ fn diff_no_drift_human() {
 /// machine does not deliver renders in the same report, so the golden holds
 /// both wordings at once: a row with two sides states them, a row with none
 /// does not.
+///
+/// The alias row's `want` is the line the PRIMARY managed env file would hold,
+/// which is bash's on POSIX and PowerShell's on Windows — one golden cannot
+/// carry both, so this one is Unix-only on `plan_composed_source_human`'s
+/// precedent. The `Standing` section itself is platform-blind and stays
+/// covered on Windows by `drift_exit_code`, which spawns the binary under its
+/// own `HOME`.
+#[cfg(unix)]
 #[test]
 fn diff_standing_rows_human() {
     let (config_dir, state_dir, target) = no_drift_setup();
+    // The shell check resolves `~`, so without a test home this reads the
+    // invoking user's own env surface: this box dogfoods cfgd and has every
+    // planned target already, while a CI runner has none of them and renders
+    // five absence rows for a home the report also folds with the wrong `~`.
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let _probe = cfgd_core::reconciler::with_env_host_probe_override_guard(
+        cfgd_core::reconciler::EnvHostProbeOverride {
+            shell: "/bin/bash".to_string(),
+            fish_present: false,
+            bash_profile_exists: false,
+            bash_login_exists: false,
+            git_bash_present: false,
+            zsh_present: false,
+        },
+    );
     // A declared alias no env file delivers: a SHELL row, and the one kind
     // whose cause states both operands. It renders beside the standing rows so
     // the golden holds both wordings at once, and the first standing row is
@@ -191,11 +258,17 @@ fn diff_standing_rows_human() {
     // its kind is not a shell one.
     let profile_path = config_dir.path().join("profiles/tiny.yaml");
     let profile = std::fs::read_to_string(&profile_path).unwrap();
+    let alias_only = [cfgd_core::config::ShellAlias {
+        name: "gs".to_string(),
+        command: "git status".to_string(),
+        platforms: Vec::new(),
+    }];
     std::fs::write(
         &profile_path,
         format!("{profile}  aliases:\n    - name: gs\n      command: git status\n"),
     )
     .unwrap();
+    plant_env_surface_without_aliases(home.path(), &alias_only);
     {
         let store = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
         store
