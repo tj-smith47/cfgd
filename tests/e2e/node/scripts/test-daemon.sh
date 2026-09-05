@@ -525,7 +525,7 @@ else
 
     if echo "$DAEMON_LOG" | grep -q "policy is notify-only, nothing applied" && [ "$FINAL_VAL" = "65530" ]; then
         pass_test "DAEMON-12"
-    elif echo "$DAEMON_LOG" | grep -q "drifted, none applied" && [ "$FINAL_VAL" = "65530" ]; then
+    elif echo "$DAEMON_LOG" | grep -q "drifted" && echo "$DAEMON_LOG" | grep -q "none applied" && [ "$FINAL_VAL" = "65530" ]; then
         pass_test "DAEMON-12"  # drift detected, not auto-applied
     else
         fail_test "DAEMON-12" "Expected drift logged + value unchanged (final: $FINAL_VAL)"

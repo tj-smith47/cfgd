@@ -9719,6 +9719,114 @@ async fn handle_reconcile_runs_on_drift_scripts() {
     );
 }
 
+/// A NotifyOnly tick's closing sentence counts every row its own tree printed.
+///
+/// The tree renders every phase but `Modules`, pre-skipped rows included, while
+/// the drift count deliberately excludes both a module skipped whole and a row
+/// the host already declined. A sentence stating only the drifted number names
+/// fewer rows than the reader just saw. The fixture carries one of each: a
+/// platform-gated module (annotated in the header, drawn nowhere) and a session
+/// publish no manager can perform (drawn, and not drift). Both counts are
+/// asserted against the tree's actual row count, never against literals.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_notify_only_tick_counts_every_row_its_tree_printed() {
+    let _seam =
+        crate::test_helpers::EnvVarGuard::set(crate::SYSTEMCTL_BIN_ENV, "/no/such/systemctl");
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: nvim\n  modules:\n    - gated\n    - nvim\n",
+    )
+    .unwrap();
+
+    // Gated wherever the suite runs, so the skip is a fact of the fixture.
+    let elsewhere = if cfg!(target_os = "macos") {
+        "linux"
+    } else {
+        "macos"
+    };
+    let gated_dir = tmp.path().join("modules").join("gated");
+    std::fs::create_dir_all(&gated_dir).unwrap();
+    std::fs::write(
+        gated_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: gated\nspec:\n  platforms: [{elsewhere}]\n  packages:\n    - name: rectangle\n"
+        ),
+    )
+    .unwrap();
+    let mod_dir = tmp.path().join("modules").join("nvim");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  scripts:\n    postReconcile:\n      - \"exit 0\"\n",
+    )
+    .unwrap();
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    crate::spawn_blocking_with_test_home(move || {
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &EmptyPlanHooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let out = harness::captured_text(&buf);
+    // An action row is what sits two levels in, under an owner group: a phase
+    // row is at the margin and an owner group one level in.
+    let rows = out
+        .lines()
+        .filter(|l| l.starts_with("    ") && !l.starts_with("     ") && !l.trim().is_empty())
+        .count();
+    assert!(
+        rows >= 2,
+        "the fixture draws a declined row beside real work:\n{out}"
+    );
+    let verdict = out
+        .lines()
+        .find(|l| l.contains("Drift detected"))
+        .unwrap_or_else(|| panic!("a notify-only tick closes on a verdict:\n{out}"));
+    let counted: usize = verdict
+        .split_whitespace()
+        .filter_map(|w| w.parse::<usize>().ok())
+        .sum();
+    assert!(
+        verdict.contains("skipped"),
+        "a tree holding a declined row names it in its sentence: {verdict:?}\n{out}"
+    );
+    let tree = &out[out.find("Phase:").unwrap_or(0)..];
+    assert!(
+        !tree.contains("gated"),
+        "a module skipped whole is drawn nowhere in the tree that sentence counts:\n{out}"
+    );
+    assert_eq!(
+        counted, rows,
+        "every row the tree printed is counted by some clause: {verdict:?}\n{out}"
+    );
+}
+
 // Every hook body here is a no-op valid in BOTH shells `ScriptShell::Auto`
 // dispatches to — `sh -c` on Unix and `cmd.exe /C` on Windows — so the test
 // runs everywhere the daemon does. What it asserts (heading order, owner
@@ -9834,7 +9942,7 @@ async fn notify_only_tick_renders_both_on_drift_owners_above_the_reconcile_heade
         "a notify-only tick still shows WHAT drifted:\n{out}"
     );
     assert!(
-        out.contains("Drift detected — 1 action; policy is notify-only, nothing applied"),
+        out.contains("Drift detected — 1 action drifted; policy is notify-only, nothing applied"),
         "a non-applying tick closes on a verdict:\n{out}"
     );
     assert!(
