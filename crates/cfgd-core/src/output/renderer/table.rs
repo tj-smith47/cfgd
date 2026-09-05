@@ -467,14 +467,17 @@ mod tests {
             // The pad is whatever the column's widest cell earns, measured
             // from this fixture's own rows: widening a neighbour then moves
             // the expectation with it instead of falsifying a literal that
-            // reads as a puzzle. The two spaces are `render_table`'s own
-            // inter-column gap, and only a row with a column after it has one.
-            let owner_width = headers[1]
-                .chars()
-                .count()
-                .max(rows.iter().map(|r| r[1].chars().count()).max().unwrap_or(0));
+            // reads as a puzzle. Measured with the renderer's own width
+            // function, so a cell widened with a wide or combining character
+            // moves the expectation the way the grid moves rather than
+            // reddening the pin for a measurement the renderer never made.
+            // The two spaces are `render_table`'s own inter-column gap, and
+            // only a row with a column after it has one.
+            let cell_width = |c: &str| UnicodeWidthStr::width(c);
+            let owner_width = cell_width(headers[1])
+                .max(rows.iter().map(|r| cell_width(r[1])).max().unwrap_or(0));
             let tail = if headers.len() > 2 {
-                let pad = " ".repeat(owner_width - "module:git".chars().count());
+                let pad = " ".repeat(owner_width - cell_width("module:git"));
                 format!("module:git{pad}  b")
             } else {
                 "module:git".to_string()

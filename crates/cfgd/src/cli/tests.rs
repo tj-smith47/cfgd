@@ -14762,53 +14762,6 @@ fn no_kv_row_sits_between_two_result_lines() {
     );
 }
 
-/// Every snapshot golden in the workspace with one of `exts`, sorted:
-/// `crates/cfgd/tests/output_snapshots/**` plus every `snapshots/` directory
-/// under `cfgd-core/src`. The two golden walks below read the same population
-/// through this, so a new golden tree is picked up by both or by neither.
-fn snapshot_goldens(exts: &[&str]) -> Vec<std::path::PathBuf> {
-    let cfgd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut roots = vec![cfgd.join("tests/output_snapshots")];
-    let mut stack = vec![cfgd.join("../cfgd-core/src")];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                if p.file_name().is_some_and(|n| n == "snapshots") {
-                    roots.push(p);
-                } else {
-                    stack.push(p);
-                }
-            }
-        }
-    }
-
-    let mut goldens = Vec::new();
-    let mut stack = roots;
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else if p
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| exts.contains(&e))
-            {
-                goldens.push(p);
-            }
-        }
-    }
-    goldens.sort();
-    goldens
-}
-
 /// Every golden is a rendered surface, and every one of them keeps the one
 /// spacing: no blank line opens or closes a command's output, no two blank
 /// lines touch, a heading is never followed by a blank line before its own
@@ -14818,8 +14771,10 @@ fn snapshot_goldens(exts: &[&str]) -> Vec<std::path::PathBuf> {
 /// binds its rows), so a golden that breaks any of these names a composer
 /// that leaked, never a call site to patch.
 ///
-/// Walked over `crates/cfgd/tests/output_snapshots/**` and every
-/// `snapshots/` directory under `cfgd-core/src`. An empty golden is a
+/// Walked over every snapshot root in the workspace
+/// (`cfgd_core::test_helpers::snapshot_goldens`, the ONE derivation both
+/// crates read — deriving the roots here instead left the eleven goldens
+/// under `crates/cfgd/src/**` unwalked). An empty golden is a
 /// surface that rendered nothing and is skipped. "Heading" is read off the
 /// ANSI-free structure: a column-0 line that carries no row glyph and whose
 /// next non-blank line is indented. "Two blocks touch" is an indented line
@@ -14831,7 +14786,7 @@ fn every_golden_separates_sibling_blocks_with_one_blank_line() {
     const GLYPHS: &[char] = &[
         '✓', '✗', '⚠', '◉', '→', '◐', '—', '•', '-', '·', '⊙', '│', '├', '└',
     ];
-    let goldens = snapshot_goldens(&["txt"]);
+    let goldens = cfgd_core::test_helpers::snapshot_goldens(&["txt"]);
 
     let is_row = |l: &str| l.trim_start().starts_with(GLYPHS);
     let mut offenders = Vec::new();
@@ -14933,7 +14888,7 @@ fn no_kv_block_renders_at_column_zero_under_a_heading() {
     };
     let mut offenders = Vec::new();
     let mut judged = 0usize;
-    for path in snapshot_goldens(&["txt"]) {
+    for path in cfgd_core::test_helpers::snapshot_goldens(&["txt"]) {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let text = text.replace("\r\n", "\n");
         let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
@@ -15086,10 +15041,11 @@ fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
 /// builds, not the file names.
 #[test]
 fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
-    /// (golden, the test source that produced it, that test's name).
+    /// (golden, the test source that produced it, that test's name); both
+    /// paths workspace-relative, the grammar the walk's own population is in.
     const DECLARED: &[(&str, &str, &str)] = &[(
-        "tests/output_snapshots/plan/composed_source.txt",
-        "tests/plan_snapshots.rs",
+        "crates/cfgd/tests/output_snapshots/plan/composed_source.txt",
+        "crates/cfgd/tests/plan_snapshots.rs",
         "plan_composed_source_human",
     )];
     /// The env-target action subjects, as `action_display_subject` renders
@@ -15104,9 +15060,9 @@ fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
         "com.cfgd.user-environment.plist",
     ];
 
-    let cfgd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = cfgd_core::test_helpers::workspace_root();
     let mut found: Vec<String> = Vec::new();
-    for path in snapshot_goldens(&["txt", "json"]) {
+    for path in cfgd_core::test_helpers::snapshot_goldens(&["txt", "json"]) {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let carries = text.lines().any(|line| {
             ROW_MARKERS.iter().any(|m| match *m {
@@ -15117,7 +15073,7 @@ fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
             })
         });
         if carries {
-            let rel = path.strip_prefix(cfgd).unwrap_or(&path);
+            let rel = path.strip_prefix(&root).unwrap_or(&path);
             found.push(cfgd_core::to_posix_string(rel));
         }
     }
@@ -15133,7 +15089,7 @@ fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
     );
 
     for (golden, source, test_name) in DECLARED {
-        let body = std::fs::read_to_string(cfgd.join(source))
+        let body = std::fs::read_to_string(root.join(source))
             .unwrap_or_else(|e| panic!("read {source}: {e}"));
         assert!(
             body.contains(&format!("fn {test_name}(")),

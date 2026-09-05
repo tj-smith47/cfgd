@@ -3,12 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// Workspace root. `CARGO_MANIFEST_DIR` = `<root>/crates/cfgd-core`.
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-}
+use crate::test_helpers::{
+    KNOWN_GOLDEN_ROOTS, snapshot_golden_roots, snapshot_goldens, snapshot_root_files,
+    workspace_root,
+};
 
 /// Every `.rs` file under every crate's `src/`.
 fn workspace_rust_files() -> Vec<PathBuf> {
@@ -3003,12 +3001,6 @@ fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
     );
 }
 
-/// The snapshot roots this walk must keep reaching, whatever else it derives.
-const KNOWN_GOLDEN_ROOTS: &[&str] = &[
-    "crates/cfgd/tests/output_snapshots",
-    "crates/cfgd-core/src/output/tests/snapshots",
-];
-
 /// Loose on purpose: the golden population grows with every new render test,
 /// so this floor says only that the derived roots still hold goldens at all.
 const GOLDEN_FLOOR: usize = 300;
@@ -3027,13 +3019,19 @@ const DOCS_HEADER_FLOOR: usize = 1;
 /// neither list is either a render captured under a new extension — which the
 /// walk would skip in silence, its floor none the wiser — or a shape nobody
 /// classified. Naming it is what forces the classification before it ships.
+///
+/// The ceiling of that: this roster CLASSIFIES, it cannot VERIFY. A rendered
+/// capture saved under a listed extension passes unjudged, and widening the
+/// roster silences the walk exactly as well as classifying honestly does.
+/// What the roster buys is that the widening is a visible edit reviewed
+/// against this sentence, not a file appearing under a root unnoticed.
 const NON_GOLDEN_SNAPSHOT_EXTENSIONS: &[&str] = &["json", "md", "mdc", "toml"];
 
-/// Every directory and every file under `dir`, in one walk. `target/` is
-/// skipped: a build tree mirrors captured renders the walk has already read,
-/// under paths no reader ever ships.
-fn tree_under(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let (mut dirs, mut files) = (Vec::new(), Vec::new());
+/// Every file under `dir`. `target/` is skipped: a build tree mirrors
+/// captured renders the walk has already read, under paths no reader ever
+/// ships.
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -3045,14 +3043,45 @@ fn tree_under(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
                 if path.file_name().is_some_and(|n| n == "target") {
                     continue;
                 }
-                stack.push(path.clone());
-                dirs.push(path);
+                stack.push(path);
             } else {
                 files.push(path);
             }
         }
     }
-    (dirs, files)
+    files
+}
+
+/// Every snapshot root the workspace holds is named in
+/// [`KNOWN_GOLDEN_ROOTS`], and every named one exists.
+///
+/// [`crate::test_helpers::snapshot_golden_roots`] already fails on a root that
+/// was renamed away; this is the other direction. A root created and left
+/// unnamed is walked — the derivation is what the walks read — but nothing
+/// then says which population the floors are floors OVER, so a later rename of
+/// it shrinks the walk by however many goldens it held while every floor still
+/// passes. The equality is what makes each root's disappearance loud on its
+/// own name rather than only in aggregate.
+#[test]
+fn every_golden_root_is_named() {
+    let root = workspace_root();
+    let mut derived: Vec<String> = snapshot_golden_roots()
+        .iter()
+        .map(|r| crate::to_posix_string(r.strip_prefix(&root).unwrap_or(r)))
+        .collect();
+    derived.sort();
+    let mut named: Vec<String> = KNOWN_GOLDEN_ROOTS
+        .iter()
+        .map(|r| (*r).to_string())
+        .collect();
+    named.sort();
+    assert_eq!(
+        derived, named,
+        "a snapshot root the workspace holds is not named in \
+         `KNOWN_GOLDEN_ROOTS`, or a named one no longer exists; name the new \
+         root there so its goldens are guarded by name and not only by the \
+         population's floor"
+    );
 }
 
 /// How many whitespace-terminated lines of `path` are table HEADERS, and the
@@ -3065,10 +3094,13 @@ fn trailing_space_lines(path: &Path) -> (usize, Vec<String>) {
     let Ok(text) = std::fs::read_to_string(path) else {
         return (0, Vec::new());
     };
-    // `str::lines` drops a line's trailing `\r`, so a CRLF checkout does not
-    // read every line as whitespace-terminated, and it borrows rather than
-    // minting a second copy of every file. Collected because a header is read
-    // off the line AFTER the padded one.
+    // `str::lines` drops a trailing `\r` only where the line ended in `\n`, so
+    // a CRLF checkout does not read every line as whitespace-terminated, and it
+    // borrows rather than minting a second copy of every file. A file whose
+    // last line ends on a lone `\r` therefore reads as whitespace-terminated by
+    // design — no golden carries a `\r` byte, and `.gitattributes` pins
+    // `eol=lf` on every checkout. Collected because a header is read off the
+    // line AFTER the padded one.
     let lines: Vec<&str> = text.lines().collect();
     let (mut headers, mut offenders) = (0usize, Vec::new());
     for (i, line) in lines.iter().enumerate() {
@@ -3107,43 +3139,23 @@ fn trailing_space_lines(path: &Path) -> (usize, Vec<String>) {
 /// eye.
 ///
 /// The roots are DERIVED — every directory under `crates/` named `snapshots`
-/// or `output_snapshots` — so a third render-golden root joins the population
-/// the day it is created; the two that exist today are asserted by name, so a
-/// rename is loud rather than silently shrinking the walk. The goldens are the
-/// `.txt` files under those roots, and the walk states the COMPLEMENT too:
-/// every other file under one carries an extension
-/// [`NON_GOLDEN_SNAPSHOT_EXTENSIONS`] names, so a render captured under a new
-/// one is classified rather than silently skipped.
+/// or `output_snapshots` — so a render-golden root joins the population the
+/// day it is created, and every one of them is asserted by name
+/// ([`every_golden_root_is_named`]), so a rename is loud rather than silently
+/// shrinking the walk. The derivation is
+/// [`crate::test_helpers::snapshot_golden_roots`], which the `cfgd` crate's
+/// own golden walks read too: the crates compile separately, and a second
+/// derivation one crate over is what left eleven goldens guarded by this walk
+/// and by neither of those. The goldens are the `.txt` files under those
+/// roots, and the walk states the COMPLEMENT too: every other file under one
+/// carries an extension [`NON_GOLDEN_SNAPSHOT_EXTENSIONS`] names, so a render
+/// captured under a new one is classified rather than silently skipped.
 #[test]
 fn every_trailing_space_in_a_golden_belongs_to_a_table_header() {
     let root = workspace_root();
-    let (dirs, files) = tree_under(&root.join("crates"));
-    let roots: Vec<&PathBuf> = dirs
+    let goldens = snapshot_goldens(&["txt"]);
+    let unclassified: Vec<String> = snapshot_root_files()
         .iter()
-        .filter(|d| {
-            d.file_name()
-                .is_some_and(|n| n == "snapshots" || n == "output_snapshots")
-        })
-        .collect();
-    for known in KNOWN_GOLDEN_ROOTS {
-        assert!(
-            roots.iter().any(|r| *r == &root.join(known)),
-            "the walk no longer derives {known}; it has been renamed or moved, \
-             and the goldens under it are unguarded"
-        );
-    }
-    // The roots the walk derived ARE the population's definition; a second
-    // derivation by path component is a second answer to one question.
-    let under_a_root = |f: &&PathBuf| roots.iter().any(|r| f.starts_with(r));
-    let mut goldens: Vec<&PathBuf> = files
-        .iter()
-        .filter(under_a_root)
-        .filter(|f| f.extension().is_some_and(|e| e == "txt"))
-        .collect();
-    goldens.sort();
-    let mut unclassified: Vec<String> = files
-        .iter()
-        .filter(under_a_root)
         .filter(|f| {
             !f.extension().is_some_and(|e| {
                 e == "txt"
@@ -3154,7 +3166,6 @@ fn every_trailing_space_in_a_golden_belongs_to_a_table_header() {
         })
         .map(|f| f.display().to_string().replace('\\', "/"))
         .collect();
-    unclassified.sort();
     assert!(
         unclassified.is_empty(),
         "a snapshot root holds a file under an extension this walk classifies \
@@ -3163,8 +3174,7 @@ fn every_trailing_space_in_a_golden_belongs_to_a_table_header() {
          extension in `NON_GOLDEN_SNAPSHOT_EXTENSIONS`:\n{}",
         unclassified.join("\n")
     );
-    let mut docs: Vec<PathBuf> = tree_under(&root.join("docs"))
-        .1
+    let mut docs: Vec<PathBuf> = files_under(&root.join("docs"))
         .into_iter()
         .filter(|f| f.extension().is_some_and(|e| e == "md"))
         .collect();

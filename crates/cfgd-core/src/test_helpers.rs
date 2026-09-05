@@ -3947,6 +3947,118 @@ pub fn production_slice(src: &str) -> String {
     out
 }
 
+/// The workspace root: the directory holding `crates/`.
+///
+/// `CARGO_MANIFEST_DIR` is resolved while THIS crate compiles, so it names
+/// `<root>/crates/cfgd-core` whichever crate's test binary is running and a
+/// consumer crate's walk reaches the same root as cfgd-core's own.
+pub fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+}
+
+/// Every snapshot-golden root in the workspace, workspace-relative.
+///
+/// Named rather than only derived: a derivation alone shrinks in silence when
+/// a root is renamed or moved, and every floor over the population still
+/// passes because the surviving roots hold goldens. [`snapshot_golden_roots`]
+/// fails by name instead, and the fences walk holds the other direction — a
+/// root that exists and is not named here.
+pub const KNOWN_GOLDEN_ROOTS: &[&str] = &[
+    "crates/cfgd-core/src/oci/snapshots",
+    "crates/cfgd-core/src/output/tests/snapshots",
+    "crates/cfgd-core/src/reconciler/snapshots",
+    "crates/cfgd-core/src/server_client/snapshots",
+    "crates/cfgd-core/tests/snapshots",
+    "crates/cfgd/src/packages/brew/snapshots",
+    "crates/cfgd/src/system/node/snapshots",
+    "crates/cfgd/src/system/snapshots",
+    "crates/cfgd/src/system/ssh_keys/snapshots",
+    "crates/cfgd/tests/output_snapshots",
+];
+
+/// Every directory under `crates/` named `snapshots` or `output_snapshots`,
+/// sorted, with every root [`KNOWN_GOLDEN_ROOTS`] names asserted present.
+///
+/// The ONE derivation of the golden population for the whole workspace. The
+/// crates compile separately, so a walk that re-derived the roots in its own
+/// crate read a NARROWER population than its sibling did and the two
+/// disagreed about which goldens are guarded at all — which is what a walk
+/// over "every golden" exists to rule out. `target/` is skipped: a build tree
+/// mirrors captured renders under paths nobody ships. A root is not descended
+/// into, so a nested one is never listed twice.
+pub fn snapshot_golden_roots() -> Vec<PathBuf> {
+    let root = workspace_root();
+    let mut roots = Vec::new();
+    let mut stack = vec![root.join("crates")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            match path.file_name().and_then(|n| n.to_str()) {
+                Some("target") => {}
+                Some("snapshots" | "output_snapshots") => roots.push(path),
+                _ => stack.push(path),
+            }
+        }
+    }
+    for known in KNOWN_GOLDEN_ROOTS {
+        assert!(
+            roots.contains(&root.join(known)),
+            "the walk no longer derives {known}; it has been renamed or moved, \
+             and the goldens under it are unguarded"
+        );
+    }
+    roots.sort();
+    roots
+}
+
+/// Every file under every [`snapshot_golden_roots`] root, sorted.
+///
+/// The goldens are the `.txt` half of this; the rest is what a walk states
+/// the COMPLEMENT of, so a render captured under a new extension is
+/// classified rather than skipped in silence.
+pub fn snapshot_root_files() -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = snapshot_golden_roots();
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Every snapshot golden in the workspace carrying one of `exts`, sorted.
+///
+/// The `-o json` payloads sit beside the rendered `.txt` captures under the
+/// same roots, so a walk names the extensions its own claim is about.
+pub fn snapshot_goldens(exts: &[&str]) -> Vec<PathBuf> {
+    snapshot_root_files()
+        .into_iter()
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| exts.contains(&e))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
