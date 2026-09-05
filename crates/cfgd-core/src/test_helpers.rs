@@ -4256,6 +4256,7 @@ mod tests {
     /// timeout, so this test only ever passes or never returns.
     #[cfg(unix)]
     #[test]
+    #[serial_test::serial]
     fn spawn_env_guards_compose_without_deadlocking() {
         let dir = tempfile::tempdir().expect("tempdir");
         let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
