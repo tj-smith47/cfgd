@@ -126,6 +126,10 @@ A title that owns no rows of its own (`Doctor`, `Verify`) is a DOCUMENT title; a
 
 A daemon under systemd/launchd is read through its journal, so the loop's own account of itself goes to `tracing` and NOTHING to the `Printer` — a printed duplicate is a second copy on the stream the live region repaints. `daemon/service/` is the exception at any depth: install/uninstall are one-shot commands watched from a terminal. `every_daemon_info_event_names_its_subsystem` (`output/tests/fences.rs`) walks the loop's files.
 
+## The colour decision gates every escape, not merely the colour ones
+
+`ThemedStyle::apply_to`'s `Display` (`output/theme.rs`) is the ONE place a styled span becomes bytes, and it reads the decision `ColorChoice::resolve` took at the printer's construction: resolved `false`, the slot emits bare text — bold, dim, italic, underline and the OSC 8 hyperlink withheld along with the foreground. **No painter decides a second time, and nothing under `output/` writes an SGR or OSC sequence of its own** without `// style-gate-ok: <why>`; `every_styled_span_reaches_bytes_through_the_one_gate` walks for one.
+
 ## Sanitizing text cfgd did not author
 
 `cursor_safe` (`output/mod.rs`) is the ONE renderer FOLD, and it covers every slot above that carries caller text. **A call site echoing a gateway field, a remote source's description or a tool's captured stderr through one of those slots does NOT sanitize it by hand.**

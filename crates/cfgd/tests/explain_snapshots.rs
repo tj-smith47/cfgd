@@ -1,5 +1,9 @@
 //! Snapshot tests for `cfgd explain`.
 //!
+//! Plus the one case the buffered captures above cannot state: the SHIPPED
+//! binary under `--color never`, which is where an attribute-only theme slot
+//! reached a pipe as bare SGR.
+//!
 //! Three cases mapping to the three command shapes:
 //!   - `explain/index.{txt,json}`  — bare `cfgd explain` (schema table + hints)
 //!   - `explain/module.{txt,json}` — `cfgd explain module` (overview + fields)
@@ -13,6 +17,8 @@
 //!
 //! Goldens live under `tests/output_snapshots/explain/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test explain_snapshots
+
+#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
 
 use std::path::Path;
 
@@ -210,5 +216,43 @@ fn write_snapshot(path: &Path, contents: &str) {
         contents,
         "snapshot drift at {} (set INSTA_UPDATE=always to refresh)",
         path.display()
+    );
+}
+
+/// `--color never` withholds every escape from the shipped surface that
+/// reproduced the leak. `explain profile` is that surface: the default theme
+/// paints each field's type span with `type_hint`, whose only differentiator
+/// off a truecolor terminal is `.italic()` — so the row used to arrive as
+/// `\x1b[3m<[]ShellAlias>\x1b[0m` in a pipe, against what
+/// `docs/cli-reference.md` promises. Read raw, since stripping is the very
+/// thing this claim says is unnecessary.
+#[test]
+fn explain_profile_under_color_never_writes_no_escape() {
+    let run = |color: &str| {
+        let out = assert_cmd::Command::cargo_bin("cfgd")
+            .expect("cfgd binary builds")
+            .args(["--color", color, "explain", "profile"])
+            .output()
+            .expect("cfgd runs");
+        let mut both = String::from_utf8_lossy(&out.stdout).into_owned();
+        both.push_str(&String::from_utf8_lossy(&out.stderr));
+        both
+    };
+
+    let never = run("never");
+    assert!(
+        never.contains("aliases"),
+        "the run rendered no field rows, so the claim below is vacuous: {never:?}"
+    );
+    assert_eq!(
+        never.matches('\u{1b}').count(),
+        0,
+        "`--color never` wrote an escape: {never:?}"
+    );
+    // Not vacuous: the same command really does paint when colour is asked for.
+    let always = run("always");
+    assert!(
+        always.contains('\u{1b}'),
+        "`--color always` painted nothing, so the claim above proves nothing: {always:?}"
     );
 }

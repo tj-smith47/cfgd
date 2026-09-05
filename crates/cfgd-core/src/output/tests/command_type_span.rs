@@ -2,8 +2,8 @@
 //! is the RENDERER's coat, not the caller's: the key is folded through
 //! `cursor_safe` first and painted after, so a schema type reads as its own
 //! column while the row's TEXT stays byte-identical to a plain one. With
-//! colour off the type slot still emits its own attributes, which is the
-//! product-wide NO_COLOR policy rather than a leak.
+//! colour off the coat is withheld whole — the slot's `.italic()` is an
+//! escape like the colour beside it.
 use crate::output::{CommandPair, Doc, Printer, Theme, Verbosity};
 
 fn dracula() -> Theme {
@@ -75,13 +75,13 @@ fn stripped_a_typed_row_is_byte_identical_to_a_plain_one() {
     assert_eq!(render(typed_doc()), render(plain_doc()));
 }
 
-/// Colour OFF is not the same claim as stripped. `theme.type_hint` carries
-/// `.italic()` under the default theme, and an attribute-carrying slot still
-/// emits its attrs-only SGR with colour off — NO_COLOR governs colour alone.
-/// So the raw colours-off row differs from the plain one by exactly that:
-/// an italic run around the type span, and no colour sequence anywhere.
+/// Colour OFF is not the same claim as stripped: stripping happens after the
+/// bytes exist, and this asserts they were never written. `theme.type_hint`
+/// carries `.italic()` under the default theme, which is the shape that used
+/// to reach a `--color never` stream as SGR — so the raw colours-off typed row
+/// is byte-identical to the plain one, escapes and all.
 #[test]
-fn without_colour_a_typed_row_adds_only_an_attrs_only_run_around_the_span() {
+fn without_colour_a_typed_row_is_byte_identical_to_a_plain_one() {
     let render = |doc: Doc| {
         // Not `for_test()`: it captures at Quiet, where a command list renders
         // nothing at all and every comparison between two rows holds vacuously.
@@ -91,22 +91,18 @@ fn without_colour_a_typed_row_adds_only_an_attrs_only_run_around_the_span() {
         raw(&buf)
     };
     let typed = render(typed_doc());
-    let plain = render(plain_doc());
     assert!(
-        typed.contains("\x1b[3m<[]ModuleFileEntry>\x1b[0m"),
-        "the type slot's italic run is missing: {typed:?}"
+        !typed.contains('\x1b'),
+        "an attribute-only type slot must emit no escape with colour off: {typed:?}"
     );
-    // Every escape in the row is one of the two an attrs-only run is made of;
-    // a colour would arrive as a `38;5`/`38;2` parameter run inside one of them.
-    for seq in typed.split('\x1b').skip(1) {
-        assert!(
-            seq.starts_with("[3m") || seq.starts_with("[0m"),
-            "a colour sequence survived NO_COLOR: {typed:?}"
-        );
-    }
+    assert_eq!(typed, render(plain_doc()));
+    // Not vacuous: the same span really is painted when colour is on.
+    let (p, buf) = Printer::for_test_with_theme_colored(dracula(), Verbosity::Normal);
+    p.emit(typed_doc());
+    p.flush();
     assert!(
-        !plain.contains('\x1b'),
-        "the plain row emits no escapes at all: {plain:?}"
+        raw(&buf).contains('\x1b'),
+        "the typed row paints nothing even with colour on, so the claim above is vacuous"
     );
 }
 

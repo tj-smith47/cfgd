@@ -258,16 +258,14 @@ impl ThemedStyle {
     }
 
     /// Wrap `text` for `Display` rendering. Resolved at format-time against the
-    /// colour decision this style carries:
+    /// colour decision this style carries — the ONE gate every styled span
+    /// passes through on its way to bytes:
     ///
-    /// - `colors` is false (NO_COLOR / TERM=dumb / structured output / not a
-    ///   tty) AND no attrs → emit `text` with no escapes.
-    /// - `colors` is false AND attrs are set → emit
-    ///   `\x1b[<attrs>m{text}\x1b[0m`. NO_COLOR (per no-color.org) governs
-    ///   color only — bold/dim/italic/underline are independent SGR signals
-    ///   load-bearing for the `default` (italic accent) and `minimal`
-    ///   (italic accent, underlined secondary) presets that intentionally
-    ///   carry the accent/secondary distinction in non-color attrs.
+    /// - `colors` is false (`--color never` / NO_COLOR / TERM=dumb /
+    ///   structured output / not a tty) → emit `text` with no escapes at all,
+    ///   attrs included. An attribute IS styling: a stream the printer decided
+    ///   against carries no SGR, so `--color never` output is byte-identical
+    ///   whatever `--theme` names.
     /// - `supports_truecolor()` is true AND an RGB triple is present → emit
     ///   `\x1b[<attrs>;38;2;R;G;Bm{text}\x1b[0m`.
     /// - Otherwise → delegate to `console::Style::apply_to`, which yields
@@ -289,16 +287,14 @@ impl<D: Display> Display for StyledText<'_, D> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let attrs = &self.style.attrs;
 
+        // Colour off for the printer this style belongs to. Bold, dim, italic
+        // and underline are escapes too, so they are withheld with the colour:
+        // `docs/cli-reference.md` promises `--color never`, `NO_COLOR` and a
+        // non-terminal stdout all withhold the escape along with every other
+        // one, and a consumer piping cfgd into a parser gets bytes, not an SGR
+        // an attribute-only preset slot slipped past the decision.
         if !self.style.colors {
-            // Colour off for the printer this style belongs to: emit attrs-only SGR (bold,
-            // dim, italic, underlined are independent of color per
-            // no-color.org) so the `default` italic accent and the
-            // `minimal` italic accent / underlined secondary keep their
-            // non-color differentiator. No allocation when no attrs set.
-            if !attrs.has_attrs() {
-                return write!(f, "{}", self.text);
-            }
-            return write!(f, "\x1b[{attrs}m{}\x1b[0m", self.text);
+            return write!(f, "{}", self.text);
         }
 
         if let Some((r, g, b)) = self.style.rgb
@@ -349,11 +345,13 @@ pub struct Theme {
     pub diff_remove: ThemedStyle,
     pub diff_context: ThemedStyle,
     /// "Attention without alarm" — orange-family in Dracula/Solarized, italic
-    /// non-color signal in `default` and `minimal`. Drives `Role::Accent`.
+    /// where the preset spends no colour on it (`default`, `minimal`). Drives
+    /// `Role::Accent`. The italic is a distinction among STYLED renders only:
+    /// a printer that decided against colour emits no attribute either.
     pub accent: ThemedStyle,
     /// "Structural pivot / label / identifier" — pink/magenta family in
-    /// Dracula/Solarized, underlined non-color signal in `minimal`. Drives
-    /// `Role::Secondary`.
+    /// Dracula/Solarized, underlined in `minimal`, which spends no colour on
+    /// it. Drives `Role::Secondary`.
     pub secondary: ThemedStyle,
     /// "This is a schema TYPE" — the `<[]ModuleFileEntry>` span inside a
     /// `cfgd explain` field row and inside its drill-down heading. Its own
@@ -395,9 +393,10 @@ impl Default for Theme {
             diff_add: ThemedStyle::plain().green(),
             diff_remove: ThemedStyle::plain().red(),
             diff_context: ThemedStyle::plain().dim(),
-            // Italic keeps an honest non-color signal under NO_COLOR; the hex
-            // gives truecolor terminals an orange-leaning accent that does not
-            // collide with the yellow `warning` slot.
+            // The hex gives truecolor terminals an orange-leaning accent that
+            // does not collide with the yellow `warning` slot; italic
+            // distinguishes it again on a 256-colour terminal that quantizes
+            // the two toward each other.
             accent: hex("#d78700").italic(),
             secondary: hex("#af5fd7"),
             // The value `accent` carried when types shared its slot, so the
@@ -903,7 +902,8 @@ impl Theme {
             diff_context: ThemedStyle::plain().dim(),
             // Italic vs underlined keeps the two accent axes distinguishable
             // without any color budget — orthogonal to bold/dim already used by
-            // header/error/muted.
+            // header/error/muted. A `--color never` run of this preset renders
+            // plain, like every other: an attribute is styling too.
             accent: ThemedStyle::plain().italic(),
             secondary: ThemedStyle::plain().underlined(),
             // No colour to spend on a type either, and italic beside the
@@ -1272,18 +1272,18 @@ mod tests {
 
     #[test]
     #[serial]
-    fn no_color_strips_color_keeps_attrs() {
+    fn no_color_strips_color_and_attrs() {
         let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
         // The two halves of the NO_COLOR contract, joined: the printer's own
         // decision function answers "no colour", and the style stamped with
-        // that answer still emits its attrs — bold is independent of colour
-        // per no-color.org.
+        // that answer emits nothing — the bold is an escape too, so it is
+        // withheld with the foreground rather than surviving it.
         let colors = !crate::output::printer::colors_must_be_disabled(&OutputFormat::Table);
         assert!(!colors, "NO_COLOR must rule colour out");
         let style = colored_then_bolded("#bd93f9").with_colors(colors);
         let out = style.apply_to("hi").to_string();
-        assert_eq!(out, "\x1b[1mhi\x1b[0m", "got: {out:?}");
+        assert_eq!(out, "hi", "got: {out:?}");
     }
 
     /// The colour-off decision, taken the way a printer takes it, so the env
@@ -1299,15 +1299,17 @@ mod tests {
 
     #[test]
     #[serial]
-    fn no_color_keeps_italic_for_default_accent() {
+    fn no_color_drops_italic_for_default_accent() {
         let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        // Matches the `default` preset's accent slot: hex("#d78700").italic()
+        // Matches the `default` preset's accent slot: hex("#d78700").italic().
+        // The attribute-only slot is the shape that reached a `--color never`
+        // stream as SGR, so it is the shape pinned plain.
         let style = ThemedStyle::from_hex("#d78700")
             .italic()
             .with_colors(no_color_decision());
         let out = style.apply_to("x").to_string();
-        assert_eq!(out, "\x1b[3mx\x1b[0m", "got: {out:?}");
+        assert_eq!(out, "x", "got: {out:?}");
     }
 
     #[test]
@@ -1344,55 +1346,45 @@ mod tests {
             .collect()
     }
 
-    /// Attributes are independent of the colour decision — `NO_COLOR` governs
-    /// colour only, per no-color.org. Asserted against BOTH stamps rather than
-    /// against an env var, because a plain style carries no colour to strip and
-    /// so cannot tell the two decisions apart on its own.
+    /// An attribute answers to the same decision colour does: a style stamped
+    /// colour-off spends no SGR at all, and the same style stamped colour-on
+    /// spends exactly the attributes it carries. Asserted against BOTH stamps
+    /// rather than against an env var, because a plain style carries no colour
+    /// to strip and so cannot tell the two decisions apart on its own.
     #[test]
-    fn attrs_survive_either_colour_decision() {
-        for colors in [false, true] {
-            let bold = ThemedStyle::plain()
-                .bold()
-                .with_colors(colors)
-                .apply_to("x")
-                .to_string();
-            assert_eq!(sgr_params(&bold), [1], "colors={colors}, got: {bold:?}");
-            assert_eq!(crate::output::strip_ansi(&bold), "x");
-
+    fn attrs_answer_to_the_colour_decision() {
+        for attrs in [
+            ThemedStyle::plain().bold(),
             // Matches the `minimal` preset's secondary slot.
-            let underlined = ThemedStyle::plain()
-                .underlined()
-                .with_colors(colors)
-                .apply_to("x")
-                .to_string();
-            assert_eq!(
-                sgr_params(&underlined),
-                [4],
-                "colors={colors}, got: {underlined:?}"
-            );
-
-            let joined = ThemedStyle::plain()
-                .bold()
-                .italic()
-                .with_colors(colors)
-                .apply_to("x")
-                .to_string();
-            assert_eq!(
-                sgr_params(&joined),
-                [1, 3],
-                "colors={colors}, got: {joined:?}"
-            );
+            ThemedStyle::plain().underlined(),
+            ThemedStyle::plain().bold().italic(),
+        ] {
+            let off = attrs.clone().with_colors(false).apply_to("x").to_string();
+            assert_eq!(off, "x", "colour off must spend no SGR; got: {off:?}");
         }
 
-        // The colour-off path is the one this module owns, so its exact wire
-        // form is pinned: multiple attrs join into a single sequence.
-        let joined_off = ThemedStyle::plain()
+        let bold = ThemedStyle::plain()
             .bold()
-            .italic()
-            .with_colors(false)
+            .with_colors(true)
             .apply_to("x")
             .to_string();
-        assert_eq!(joined_off, "\x1b[1;3mx\x1b[0m", "got: {joined_off:?}");
+        assert_eq!(sgr_params(&bold), [1], "got: {bold:?}");
+        assert_eq!(crate::output::strip_ansi(&bold), "x");
+
+        let underlined = ThemedStyle::plain()
+            .underlined()
+            .with_colors(true)
+            .apply_to("x")
+            .to_string();
+        assert_eq!(sgr_params(&underlined), [4], "got: {underlined:?}");
+
+        let joined = ThemedStyle::plain()
+            .bold()
+            .italic()
+            .with_colors(true)
+            .apply_to("x")
+            .to_string();
+        assert_eq!(sgr_params(&joined), [1, 3], "got: {joined:?}");
     }
 
     #[test]

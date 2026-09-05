@@ -114,7 +114,11 @@ pub enum ColorChoice {
 
 impl ColorChoice {
     /// Resolve to the concrete decision this printer will hold for its lifetime.
-    fn resolve(self, output_format: &OutputFormat) -> bool {
+    ///
+    /// `pub(crate)` so a pin asserting what a `--color never` run puts on the
+    /// stream can take the decision from the production function rather than
+    /// restating `false` and proving nothing about it.
+    pub(crate) fn resolve(self, output_format: &OutputFormat) -> bool {
         match self {
             // The colour question is asked of STDERR, because stderr is where
             // every human emission goes: stdout carries structured data only,

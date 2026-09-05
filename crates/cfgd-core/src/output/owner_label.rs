@@ -152,12 +152,11 @@ impl OwnerLabel {
     /// The three-slot styled form: the kind word `Role::Secondary`, the colon
     /// `Role::Warn`, the name `Role::Ok`.
     ///
-    /// Each slot goes through `ThemedStyle`, which is what decides what a
-    /// colour-disabled stream gets: bare text for a colour-only slot, and
-    /// attrs-only SGR for a slot whose differentiator is an attribute
-    /// (`minimal`'s underlined secondary). Short-circuiting to
-    /// [`Self::plain`] here would strip that attribute from the owner token
-    /// alone, while every other themed element on the same screen kept it.
+    /// Each slot goes through `ThemedStyle`, the ONE gate deciding what a
+    /// colour-disabled stream gets — bare text, colour-only slots and
+    /// attribute-only ones (`minimal`'s underlined secondary) alike.
+    /// Short-circuiting to [`Self::plain`] here would answer the same question
+    /// a second time, in a second place, for this one token.
     pub(crate) fn styled(&self, theme: &Theme) -> String {
         // A `kind` and a `name` can both come from a module document a remote
         // source shipped, so each slot's text is folded before its own coat
@@ -286,19 +285,25 @@ mod tests {
     }
 
     /// `minimal` carries the secondary distinction in an attribute rather
-    /// than a colour, and NO_COLOR governs colour only. The owner token keeps
-    /// that attribute exactly as every other themed element does.
+    /// than a colour, which is the slot shape that could still have reached a
+    /// colourless stream as SGR. It does not: an attribute answers to the
+    /// same decision colour does.
     #[test]
-    fn colour_disabled_keeps_attribute_only_slots() {
+    fn colour_disabled_drops_attribute_only_slots() {
         let theme = Theme::from_preset("minimal").with_colors(false);
         let styled = OwnerLabel::new("module", "nvim").styled(&theme);
-        assert_eq!(strip_ansi(&styled), "module:nvim");
         // Spelled out rather than re-derived from the same theme: comparing
         // against `theme.secondary.apply_to(…)` asserts only that the token
         // used the slot it was built from, which holds however the slot renders.
         assert_eq!(
-            styled, "\u{1b}[4mmodule\u{1b}[0m:nvim",
-            "the underlined secondary must survive colour being off"
+            styled, "module:nvim",
+            "the underlined secondary must be withheld with the colour"
+        );
+        let on = OwnerLabel::new("module", "nvim").styled(&theme.clone().with_colors(true));
+        assert!(
+            on.contains("\u{1b}[4m"),
+            "minimal's secondary slot spends no attribute even with colour on, \
+             so the assertion above proves nothing: {on:?}"
         );
     }
 

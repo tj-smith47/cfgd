@@ -9,6 +9,8 @@
 #[cfg(feature = "test-helpers")]
 mod baseline;
 #[cfg(feature = "test-helpers")]
+mod color_gate;
+#[cfg(feature = "test-helpers")]
 mod command_type_span;
 #[cfg(feature = "test-helpers")]
 mod corners;
