@@ -348,8 +348,15 @@ it is what clears it.
 
 A module skipped whole (a platform gate, an encryption backend this host cannot
 read) records no row at all, because nothing under it was probed: the skip says
-something about the host, not about a resource that diverged. The plan and the
-apply still list it as a planned, skipped action.
+something about the host, not about a resource that diverged. Neither tree draws
+a block for it: the header's `Modules` row names it and the reason
+(`Modules  git, nvim (mac skipped: platform not matched (requires: macos))`),
+so a daemon tick's closing count names only rows you can see.
+
+The same holds for an action this host declined outright — the live-session
+publish on a box with no session manager. It is drawn in the plan and apply
+trees with its reason, but it put nothing on the machine, so it leaves no
+`Managed Resources` row and `cfgd status` lists no `cfgd:session` owner there.
 
 ## Provenance Tracking
 
