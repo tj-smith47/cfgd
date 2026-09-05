@@ -318,7 +318,7 @@ pub fn widest_produced_detail(action: &Action) -> Option<String> {
 /// An unknown system key keeps `Role::Warn` — it is almost always a typo, and
 /// `format_plan_items` branches on the same flag, so the warning-versus-neutral
 /// distinction the deleted bespoke lines carried survives as the action's role.
-fn declared_noop_role(action: &Action) -> Option<Role> {
+pub(super) fn declared_noop_role(action: &Action) -> Option<Role> {
     match action {
         Action::System(SystemAction::Skip { unknown: true, .. }) => Some(Role::Warn),
         Action::System(SystemAction::Skip { .. })

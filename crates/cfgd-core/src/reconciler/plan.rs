@@ -769,15 +769,15 @@ impl<'a> super::Reconciler<'a> {
                             match crate::is_file_encrypted(&file.source, &enc.backend) {
                                 Ok(true) => {}
                                 Ok(false) => {
+                                    let source = file.source.posix();
+                                    let backend = &enc.backend;
+                                    let reason = format!(
+                                        "file {source} requires encryption \
+                                         (backend: {backend}) but is not encrypted"
+                                    );
                                     body.push(routed(
                                         module,
-                                        ModuleActionKind::FilesRefused {
-                                            reason: format!(
-                                                "file {} requires encryption (backend: {}) but is not encrypted",
-                                                file.source.posix(),
-                                                enc.backend
-                                            ),
-                                    },
+                                        ModuleActionKind::FilesRefused { reason },
                                     ));
                                     encryption_ok = false;
                                     break;

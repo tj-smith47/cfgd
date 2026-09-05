@@ -1779,6 +1779,27 @@ pub fn module_skipped_whole(action: &Action) -> bool {
     )
 }
 
+/// Whether this module's FILES were not probed — [`ModuleActionKind::Skip`]
+/// (the host declined the module whole, so nothing under it was looked at) and
+/// [`ModuleActionKind::FilesRefused`] (cfgd refused the deploy before reading a
+/// single target).
+///
+/// The one question a reader of a recorded `module` row has to answer before
+/// healing it: a per-file row under a module neither kind probed says nothing
+/// about the machine this run, so it is kept standing rather than resolved by a
+/// run that declined to look. Deliberately wider than [`module_skipped_whole`],
+/// which prices counts and heals and must stay the host-decline alone.
+#[must_use]
+pub fn module_files_unprobed(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Module(ModuleAction {
+            kind: ModuleActionKind::Skip { .. } | ModuleActionKind::FilesRefused { .. },
+            ..
+        })
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

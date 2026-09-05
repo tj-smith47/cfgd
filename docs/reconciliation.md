@@ -368,8 +368,8 @@ and settled by the apply as a warning-roled skip the rollup counts.
 
 ```
 Phase: Files
-  profile: work
-    ⚠ cannot deploy files — file secrets/id_rsa requires encryption (backend: sops) but is not encrypted
+  module:ssh
+    ⚠ cannot deploy files — file ~/.config/cfgd/modules/ssh/id_rsa requires encryption (backend: sops) but is not encrypted
 ```
 
 It still records nothing: cfgd refused to write the files rather than finding

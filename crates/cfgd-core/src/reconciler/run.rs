@@ -18,9 +18,7 @@ use crate::state::{ApplyStatus, StateStore};
 
 use super::apply::action_matches_phase_filter;
 use super::format::action_display_subject_within;
-use super::types::{
-    Action, ApplyResult, Owner, OwnerGroup, Phase, PhaseFilter, PhaseName, Plan, SystemAction,
-};
+use super::types::{Action, ApplyResult, Owner, OwnerGroup, Phase, PhaseFilter, PhaseName, Plan};
 
 /// Heading for a hook group that runs around a reconcile but is not part of
 /// the plan. Rendered through the same section primitive as a phase so the
@@ -1002,13 +1000,14 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
                 // apply tree settles through, so the two trees paint the same
                 // action identically one beat apart.
                 //
-                // An unknown system key is almost always a typo, so it keeps
-                // its warning role instead of reading as ordinary planned work.
-                if matches!(
-                    action,
-                    Action::System(SystemAction::Skip { unknown: true, .. })
-                ) {
-                    drop(owner_section.action_status(Role::Warn, subject.to_string()));
+                // The role of an action that is a no-op by construction comes
+                // from the ONE source the apply settles it through, never from
+                // a second decision here: an unknown system key and a refused
+                // file deploy are findings the reader must act on, and a plan
+                // that drew either as ordinary work contradicted the apply that
+                // followed it.
+                if let Some(role) = super::apply::declared_noop_role(action) {
+                    drop(owner_section.action_status(role, subject.to_string()));
                 } else if let Some(reason) = action.pre_skip_reason() {
                     // Settled here rather than previewed: the host has already
                     // answered, so the plan states the same outcome, with the
