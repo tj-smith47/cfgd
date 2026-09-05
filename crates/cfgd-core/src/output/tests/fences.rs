@@ -1511,3 +1511,288 @@ fn a_producer_tell_matches_only_a_whole_identifier() {
         );
     }
 }
+
+/// How cfgd test code mutates the PROCESS-GLOBAL environment.
+///
+/// Every entry either writes an environment variable outright or installs a
+/// guard that does. Deliberately absent: `Command::env(…)`, which hands a
+/// value to ONE child and is precisely how a test avoids the race — keying on
+/// the variable's name instead of on the mutation would flag those and train
+/// authors to hatch the safe shape.
+const ENV_MUTATORS: &[&str] = &[
+    "EnvVarGuard::set",
+    "EnvVarGuard::unset",
+    "with_test_env_var",
+    "ToolShim::install",
+    "CosignTestShim::install",
+    "CosignTestShim::builder",
+    "env::set_var",
+    "env::remove_var",
+];
+
+const SERIAL_HATCH: &str = "serial-ok:";
+
+/// One function's source, from its `fn` line to its own closing brace.
+///
+/// Bounded by brace depth over the rest of the file rather than by the next
+/// `fn` line: a helper declared INSIDE a test body would otherwise cut the
+/// test's slice short and hide everything the test does after it. Braces are
+/// counted on [`code_half`], so one inside a literal or a trailing comment
+/// does not move the depth, and the scan is capped so an unbalanced brace in a
+/// multi-line raw literal cannot swallow the rest of the file.
+fn function_source(lines: &[&str], open: usize) -> String {
+    const MAX_LINES: usize = 400;
+    let mut depth = 0i32;
+    let mut opened = false;
+    let end = (open + MAX_LINES).min(lines.len());
+    for (offset, line) in lines[open..end].iter().enumerate() {
+        let code = code_half(line);
+        depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
+        opened |= code.contains('{');
+        if opened && depth <= 0 {
+            return lines[open..=open + offset].join("\n");
+        }
+    }
+    lines[open..end].join("\n")
+}
+
+/// The name a `fn` line declares.
+fn declared_fn_name(slice: &str) -> Option<&str> {
+    let first = slice.lines().next()?;
+    let rest = &first[first.find("fn ")? + 3..];
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    (end > 0).then(|| &rest[..end])
+}
+
+/// Whether a declaration takes a receiver, i.e. is a method rather than a free
+/// function. A method is never reached by the bare-name call below, so
+/// following one would let ubiquitous names (`set`, `install`, `drop`) mark
+/// every caller of anything as an env mutator.
+fn takes_a_receiver(slice: &str) -> bool {
+    let head: Vec<&str> = slice.lines().take(2).collect();
+    let head = head.join(" ");
+    let Some(at) = head.find('(') else {
+        return false;
+    };
+    let args = head[at + 1..].trim_start();
+    let args = args.strip_prefix('&').unwrap_or(args).trim_start();
+    let args = args.strip_prefix("mut ").unwrap_or(args).trim_start();
+    args.starts_with("self")
+}
+
+/// Whether `body` calls `name` as a bare function, not as `x.name(…)` or
+/// `Type::name(…)`.
+fn calls_by_bare_name(body: &str, name: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    body.match_indices(name).any(|(at, _)| {
+        let prefix = &body[..at];
+        let trimmed = prefix.trim_end();
+        !prefix.chars().next_back().is_some_and(is_word)
+            && !trimmed.ends_with('.')
+            && !trimmed.ends_with(':')
+            && body[at + name.len()..].trim_start().starts_with('(')
+    })
+}
+
+/// Whether a function's own source reaches an [`ENV_MUTATORS`] entry.
+///
+/// Read through `logical_source_lines` so a `\`-continued call cannot hide its
+/// needle across a line break, and through [`code_half`] so a needle spelled
+/// inside a string literal or a comment is not source.
+fn mutates_process_env(body: &str) -> bool {
+    crate::test_helpers::logical_source_lines(body)
+        .iter()
+        .any(|(_, line)| {
+            let code = code_half(line);
+            ENV_MUTATORS.iter().any(|needle| code.contains(needle))
+        })
+}
+
+/// The index of the first line of the contiguous attribute/comment block above
+/// `open`.
+fn attribute_block_start(lines: &[&str], open: usize) -> usize {
+    let mut at = open;
+    while at > 0 {
+        let trimmed = lines[at - 1].trim_start();
+        let is_attr = trimmed.starts_with("#[")
+            || trimmed.starts_with("#!")
+            || trimmed.starts_with("//")
+            || trimmed.starts_with(")]")
+            || trimmed.starts_with(']');
+        if !is_attr {
+            break;
+        }
+        at -= 1;
+    }
+    at
+}
+
+/// Serialized reachers each calibration file must still yield, so a walk
+/// blinded in one file fails instead of passing on the rest of the workspace.
+const SERIAL_FLOORS: &[(&str, usize)] = &[
+    ("crates/cfgd/src/cli/tests.rs", 60),
+    ("crates/cfgd-core/src/sources/tests.rs", 30),
+    ("crates/cfgd-core/src/upgrade/tests.rs", 30),
+    ("crates/cfgd/src/packages/brew/tests.rs", 30),
+    ("crates/cfgd-core/src/daemon/tests.rs", 30),
+    ("crates/cfgd-core/src/util/paths/tests.rs", 25),
+];
+
+/// A test that mutates the process-global environment runs under the serial
+/// lock.
+///
+/// The workspace is edition 2024, where `std::env::set_var` is `unsafe`
+/// because the C environment is not thread-safe: a write racing another
+/// thread's read is undefined behaviour, not a flake, and `cargo test` runs
+/// every test in one process on a thread pool. `serial_test`'s unnamed lock is
+/// the workspace's answer, and a test reaching a mutation without joining it
+/// is unsound however green it runs.
+///
+/// A test REACHES a mutation through its own body or through a same-file free
+/// function it calls by bare name, transitively — a setup helper is where the
+/// mutation usually lives. Methods are not followed: `set`, `install` and
+/// `drop` name env-mutating associated items AND ordinary ones, and following
+/// them would mark most of the suite.
+///
+/// `// serial-ok: <why>` on the declaration or in its attribute block exempts
+/// a test whose mutation genuinely cannot race.
+#[test]
+fn every_test_mutating_the_process_environment_serializes_itself() {
+    let root = workspace_root();
+    let mut files_read = 0usize;
+    let mut tests_seen = 0usize;
+    let mut reaching = 0usize;
+    let mut serialized = 0usize;
+    let mut per_file: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut offenders = Vec::new();
+
+    for path in workspace_rust_files() {
+        // This file spells every needle in order to hunt for it.
+        if path.ends_with(Path::new("output/tests/fences.rs")) {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !body.contains("#[test]") && !body.contains("#[tokio::test") {
+            continue;
+        }
+        files_read += 1;
+        let lines: Vec<&str> = body.lines().collect();
+
+        // Every declaration in the file, by name: its sources (a name can be
+        // declared more than once, in sibling modules or impl blocks), whether
+        // any of them mutates, and whether it is reachable by a bare call.
+        let mut sources: std::collections::BTreeMap<String, Vec<(usize, String)>> =
+            std::collections::BTreeMap::new();
+        let mut free: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
+        for (open, slice) in source_functions(&body) {
+            let Some(name) = declared_fn_name(&slice) else {
+                continue;
+            };
+            let name = name.to_string();
+            let source = function_source(&lines, open - 1);
+            free.entry(name.clone())
+                .and_modify(|f| *f &= !takes_a_receiver(&slice))
+                .or_insert(!takes_a_receiver(&slice));
+            sources.entry(name).or_default().push((open, source));
+        }
+        let mut reaches: std::collections::BTreeMap<String, bool> = sources
+            .iter()
+            .map(|(name, decls)| {
+                (
+                    name.clone(),
+                    decls.iter().any(|(_, src)| mutates_process_env(src)),
+                )
+            })
+            .collect();
+        // Transitive closure over bare calls to same-file free functions.
+        loop {
+            let mut grew = false;
+            let seeds: Vec<String> = reaches
+                .iter()
+                .filter(|(name, hit)| **hit && free.get(*name).copied().unwrap_or(false))
+                .map(|(name, _)| name.clone())
+                .collect();
+            for (name, decls) in &sources {
+                if reaches.get(name).copied().unwrap_or(false) {
+                    continue;
+                }
+                let hit = seeds.iter().any(|seed| {
+                    seed != name && decls.iter().any(|(_, src)| calls_by_bare_name(src, seed))
+                });
+                if hit {
+                    reaches.insert(name.clone(), true);
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+
+        let relative = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        for (name, decls) in &sources {
+            for (open, _) in decls {
+                let start = attribute_block_start(&lines, open - 1);
+                let attrs = &lines[start..open - 1];
+                let is_test = attrs.iter().any(|l| {
+                    let t = l.trim_start();
+                    t.starts_with("#[test]") || t.starts_with("#[tokio::test")
+                });
+                if !is_test {
+                    continue;
+                }
+                tests_seen += 1;
+                if !reaches.get(name).copied().unwrap_or(false) {
+                    continue;
+                }
+                reaching += 1;
+                if attrs
+                    .iter()
+                    .any(|l| l.trim_start().starts_with("#[") && l.contains("serial"))
+                {
+                    serialized += 1;
+                    *per_file.entry(relative.clone()).or_default() += 1;
+                    continue;
+                }
+                if (start..*open).any(|at| hatched(&lines, at, SERIAL_HATCH)) {
+                    continue;
+                }
+                offenders.push(format!("{relative}:{open}: {name}"));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a test mutating the process-global environment must carry \
+         `#[serial_test::serial…]`, or `// serial-ok: <why>` saying why its \
+         mutation cannot race:\n{}",
+        offenders.join("\n")
+    );
+    // Floors, so a walk that stopped matching anything cannot pass silently.
+    assert!(
+        files_read > 100 && tests_seen > 5_000,
+        "the walk read {files_read} files and {tests_seen} tests; it has stopped seeing the suite"
+    );
+    assert!(
+        reaching > 500 && serialized > 500,
+        "the walk found {reaching} tests reaching a mutation, {serialized} of them serialized; \
+         it has stopped seeing the mutations"
+    );
+    for (file, floor) in SERIAL_FLOORS {
+        let found = per_file.get(*file).copied().unwrap_or(0);
+        assert!(
+            found >= *floor,
+            "{file} yielded {found} serialized reachers, under its floor of {floor} — \
+             the walk has gone blind in that file"
+        );
+    }
+}

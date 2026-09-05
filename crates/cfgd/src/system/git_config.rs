@@ -272,17 +272,17 @@ mod tests {
     // Test isolation
     //
     // All tests that touch git config point `GIT_CONFIG_GLOBAL` at a temp file.
-    // Tests run in parallel and env var mutation is unsafe, so a
-    // std::sync::Mutex serialises the tests that need to mutate the env var.
+    // That is a process-global mutation, so every one of them joins the
+    // workspace's unnamed `serial_test` group — a private mutex would exclude
+    // only this file's own tests, while every other test in the binary that
+    // reads the environment keeps running on another thread.
     // ---------------------------------------------------------------------------
 
-    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Run `f` with `GIT_CONFIG_GLOBAL` pointing at a fresh temp file.
-    /// Serialised via `ENV_MUTEX` to prevent races between parallel tests.
+    ///
+    /// Every caller carries `#[serial_test::serial]`; the guard restores
+    /// whatever the developer's own environment held.
     fn with_temp_global_config<F: FnOnce(&std::path::Path)>(f: F) {
-        let _guard = ENV_MUTEX.lock().unwrap();
-
         let dir = tempfile::tempdir().unwrap();
         let config_file = dir.path().join(".gitconfig");
         // Create an empty file so git treats it as a valid config.
@@ -290,16 +290,11 @@ mod tests {
 
         // An env value handed to git is a cross-OS string boundary, so the
         // path is folded like every other one cfgd hands over.
-        // SAFETY: serialised by ENV_MUTEX; no other thread accesses this var.
-        unsafe {
-            std::env::set_var(
-                "GIT_CONFIG_GLOBAL",
-                cfgd_core::to_posix_string(&config_file),
-            )
-        };
+        let _guard = cfgd_core::test_helpers::EnvVarGuard::set(
+            "GIT_CONFIG_GLOBAL",
+            &cfgd_core::to_posix_string(&config_file),
+        );
         f(&config_file);
-        // SAFETY: same rationale.
-        unsafe { std::env::remove_var("GIT_CONFIG_GLOBAL") };
     }
 
     /// Set a key directly in a git config file (used for test setup).
@@ -387,7 +382,6 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn git_diff_lists_the_config_once_however_many_keys_it_declares() {
-        let _guard = ENV_MUTEX.lock().unwrap();
         // The shim answers nothing, so every declared key drifts against the
         // same empty string a missing key produced before — what the test is
         // about is how many times git ran.
@@ -416,7 +410,6 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn git_diff_of_an_empty_mapping_lists_nothing() {
-        let _guard = ENV_MUTEX.lock().unwrap();
         let (_bin, _path, log) =
             cfgd_core::test_helpers::install_named_path_shim_logged("git", 0, "", "");
         let yaml: serde_yaml::Value = serde_yaml::from_str("push: {}\n").unwrap();
@@ -462,10 +455,11 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Integration tests — isolated via GIT_CONFIG_GLOBAL + ENV_MUTEX
+    // Integration tests — isolated via GIT_CONFIG_GLOBAL, serialised process-wide
     // ---------------------------------------------------------------------------
 
     #[test]
+    #[serial_test::serial]
     fn test_diff_detects_missing_key() {
         with_temp_global_config(|_config_file| {
             let desired: serde_yaml::Value = serde_yaml::from_str("user.name: Jane Doe").unwrap();
@@ -478,6 +472,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_diff_detects_wrong_value() {
         with_temp_global_config(|config_file| {
             git_config_set_file(config_file, "user.name", "Wrong Name");
@@ -492,6 +487,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_diff_empty_when_value_matches() {
         with_temp_global_config(|config_file| {
             git_config_set_file(config_file, "user.name", "Jane Doe");
@@ -503,6 +499,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_apply_sets_key() {
         with_temp_global_config(|config_file| {
             let desired: serde_yaml::Value =
@@ -521,6 +518,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_apply_handles_bool_value() {
         with_temp_global_config(|config_file| {
             let desired: serde_yaml::Value = serde_yaml::from_str("commit.gpgSign: true").unwrap();
@@ -563,6 +561,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_nested_form_diffs_identically_to_flat() {
         with_temp_global_config(|_config_file| {
             let nested: serde_yaml::Value =
@@ -589,6 +588,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_nested_form_applies_identically_to_flat() {
         with_temp_global_config(|config_file| {
             let nested: serde_yaml::Value =
@@ -611,6 +611,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_mixed_flat_and_nested_combine() {
         with_temp_global_config(|config_file| {
             let desired: serde_yaml::Value =
@@ -636,6 +637,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_deeply_nested_flattens_to_dotted() {
         with_temp_global_config(|config_file| {
             let desired: serde_yaml::Value = serde_yaml::from_str("a:\n  b:\n    c: x\n").unwrap();
@@ -655,6 +657,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_sequence_leaf_is_skipped_with_warning_not_debug_encoded() {
         with_temp_global_config(|config_file| {
             // A sequence-valued leaf is not git-storable; apply must skip it with
@@ -685,6 +688,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_sequence_leaf_skipped_in_diff() {
         with_temp_global_config(|_config_file| {
             let desired: serde_yaml::Value =
@@ -699,6 +703,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_empty_nested_map_is_a_silent_noop() {
         with_temp_global_config(|config_file| {
             // An empty nested map yields no leaves: it must produce zero drift,

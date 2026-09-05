@@ -2423,6 +2423,7 @@ fn render_template_for_display_with_custom_functions() {
 }
 
 #[test]
+#[serial_test::serial]
 fn render_template_for_display_env_function_reads_real_env() {
     let dir = tempfile::tempdir().unwrap();
     let config_dir = dir.path();
@@ -2432,16 +2433,16 @@ fn render_template_for_display_env_function_reads_real_env() {
     let tpl = files_dir.join("envfn.txt.tera");
     fs::write(&tpl, "val={{ env(name=\"CFGD_TEST_RENDER_VAR\") }}").unwrap();
 
-    // SAFETY: test environment
-    unsafe { std::env::set_var("CFGD_TEST_RENDER_VAR", "render_test_value") };
+    // The guard restores the prior value on unwind too, so a failing assertion
+    // below cannot leave the variable set for the next test in this binary.
+    let _var =
+        cfgd_core::test_helpers::EnvVarGuard::set("CFGD_TEST_RENDER_VAR", "render_test_value");
 
     let resolved = make_resolved_profile(vec![], FilesSpec::default());
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
 
     let rendered = fm.render_template_for_display(&tpl).unwrap();
     assert_eq!(rendered, "val=render_test_value");
-
-    unsafe { std::env::remove_var("CFGD_TEST_RENDER_VAR") };
 }
 
 #[test]

@@ -374,7 +374,12 @@ Phase: Files
 
 It still records nothing: cfgd refused to write the files rather than finding
 them diverged, so there is no `Managed Resources` row and no drift row under it.
-`-o json` spells it as its own action kind (`refuse`).
+`-o json` spells it as its own action kind (`refuse`). The module counts as
+drifted for as long as the refusal stands, so a daemon tick fires its `onDrift`
+hook every interval until the source is encrypted (or its strategy stops
+demanding encryption): the declared files are not on the machine and no tick
+will put them there, which is the standing divergence the hook exists to
+announce.
 
 The same holds for an action this host declined outright — the live-session
 publish on a box with no session manager. It is drawn in the plan and apply
