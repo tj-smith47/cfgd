@@ -400,34 +400,82 @@ mod tests {
     /// The column is held by header NAME, so it survives
     /// `without_unfillable_columns` dropping a column to its left without any
     /// index to remap.
+    ///
+    /// Both placements are walked, because the pad slot only exists in one of
+    /// them. A NON-TERMINAL owner column carries a real pad — the shipped
+    /// shape, `cli/log.rs`'s `Scope` sitting between `Age` and `Status` and
+    /// `cli/status.rs`'s `Owner` — and a TERMINAL one carries none, its row
+    /// ending on the token's last glyph like every other data row. The claim
+    /// is measured against the SAME table rendered with no owner column
+    /// declared: painting may change the bytes, never the plain layout, so an
+    /// escape counted into the width or a dropped pad moves the columns and
+    /// the comparison fails.
     #[test]
     #[serial_test::serial]
     fn a_declared_owner_column_paints_its_tokens_and_pads_on_the_plain_width() {
         let theme = Theme::from_preset("dracula").with_colors(true);
         let token = crate::output::OwnerLabel::new("module", "nvim").styled(&theme);
-        let buf = Arc::new(Mutex::new(String::new()));
-        let sink = StringSink(buf.clone());
-        let r = Renderer::new(theme, Verbosity::Normal);
-        let t = Table::new(["ID", "Scope"])
-            .owner_column("Scope")
-            .row(["1", "module:nvim"])
-            .row(["2", "work"]);
-        r.render_table(&sink, 0, &t);
-        // The styled token IS the subject here.
-        // raw-capture-ok: captured_text strips the escapes this test exists to see
-        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        assert!(raw.contains(&token), "owner token unpainted: {raw:?}");
-        assert!(
-            raw.contains("work"),
-            "a non-token cell renders as written: {raw:?}"
-        );
-        let plain = crate::output::strip_ansi(&raw);
-        let widths: Vec<usize> = plain
-            .lines()
-            .filter(|l| l.contains("module:nvim") || l.contains("work"))
-            .map(str::len)
-            .collect();
-        assert_eq!(widths.len(), 2, "both data rows render once: {plain:?}");
+        // `module:git` is narrower than the token its neighbour sets the
+        // column width from, so its cell is the one carrying a pad to measure.
+        let rows = [
+            ["1", "module:nvim", "a"],
+            ["2", "module:git", "b"],
+            ["3", "work", "c"],
+        ];
+        let render = |t: &Table| {
+            let buf = Arc::new(Mutex::new(String::new()));
+            let sink = StringSink(buf.clone());
+            Renderer::new(theme.clone(), Verbosity::Normal).render_table(&sink, 0, t);
+            // raw-capture-ok: the painted token IS the subject; captured_text strips the escapes this test exists to see
+            buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        };
+        for (label, headers) in [
+            ("a column sits after it", &["ID", "Scope", "Note"][..]),
+            ("it is the tail column", &["ID", "Scope"][..]),
+        ] {
+            let build = |declared: bool| {
+                let mut t = Table::new(headers.iter().copied());
+                if declared {
+                    t = t.owner_column("Scope");
+                }
+                for row in &rows {
+                    t = t.row(row.iter().take(headers.len()).copied());
+                }
+                t
+            };
+            let painted = render(&build(true));
+            let bare = crate::output::strip_ansi(&render(&build(false)));
+            assert!(
+                painted.contains(&token),
+                "{label}: owner token unpainted: {painted:?}"
+            );
+            assert!(
+                bare.contains("work"),
+                "{label}: a non-token cell renders as written: {bare:?}"
+            );
+            assert_eq!(
+                crate::output::strip_ansi(&painted),
+                bare,
+                "{label}: an owner column pads on the plain width, so its \
+                 painted grid must land byte for byte where an undeclared \
+                 column puts it"
+            );
+            let padded = bare
+                .lines()
+                .find(|l| l.contains("module:git"))
+                .unwrap_or_else(|| panic!("{label}: no owner row rendered: {bare:?}"));
+            // One pad column plus the two-space inter-column gap where a
+            // column follows; nothing at all where the row ends here.
+            let tail = if headers.len() > 2 {
+                "module:git   b"
+            } else {
+                "module:git"
+            };
+            assert!(
+                padded.ends_with(tail),
+                "{label}: expected the row to end {tail:?}: {padded:?}"
+            );
+        }
     }
 
     /// The drop is judged over the whole column and carried through the
@@ -605,7 +653,13 @@ mod tests {
             let r = Renderer::new(Theme::default(), Verbosity::Normal);
             r.render_table(&sink, 0, &t);
             let out = crate::test_helpers::captured_text(&buf);
-            let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+            // Unfiltered: a whitespace-only line is exactly the regression the
+            // all-empty case exists to catch, so dropping one before the count
+            // would let a renderer that emits `" "` read as one that emitted
+            // nothing. The frame contributes no line of its own here — a fresh
+            // renderer is `leading`, which swallows the group's pending blank,
+            // and `emit_block` writes only the lines the table built.
+            let lines: Vec<&str> = out.lines().collect();
             let header = lines
                 .first()
                 .unwrap_or_else(|| panic!("{label}: no header line rendered:\n{out}"));
@@ -634,6 +688,11 @@ mod tests {
                 assert!(
                     UnicodeWidthStr::width(*row) <= grid,
                     "{label}: a data row stays inside the grid the rule spans:\n{out}"
+                );
+                assert!(
+                    !row.is_empty(),
+                    "{label}: a physical line with no glyph in any column is \
+                     emitted as nothing, never as an empty line:\n{out}"
                 );
                 assert!(
                     !row.ends_with(char::is_whitespace),
