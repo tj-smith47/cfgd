@@ -61,11 +61,19 @@ indicatif's own template resolution does not leak colour past `--no-color`, and
 them. Never hand-roll a second save/restore struct; pair the guard with
 `serial_test::serial`.
 
+Colour off means NO escapes — attributes included. `ThemedStyle::apply_to` is the ONE
+gate a styled span becomes bytes through, and a printer whose `ColorChoice` resolved
+`false` gets bare text: bold, dim, italic, underline and OSC 8 are withheld with the
+foreground, because an attribute is styling too and `docs/cli-reference.md` promises
+`--color never` / `NO_COLOR` / a non-terminal stdout withhold every escape. Pinned by
+`no_escape_reaches_a_stream_the_printer_decided_against` and the walk beside it,
+`every_styled_span_reaches_bytes_through_the_one_gate`.
+
 Strip anyway when the assertion is about TEXT: `captured_text` is still the ONE read of
-a capture buffer, because `for_test_with_theme_colored` really does emit escapes and an
-attribute-carrying slot emits SGR even with colour off (NO_COLOR governs colour only).
-Read the buffer raw only when the assertion is ABOUT the escapes; to assert the colour
-DECISION call `colors_must_be_disabled(&format)` and render nothing.
+a capture buffer, because `for_test_with_theme_colored` deliberately forces styling ON
+and really does emit escapes. Read the buffer raw only when the assertion is ABOUT the
+escapes; to assert the colour DECISION call `colors_must_be_disabled(&format)` and
+render nothing.
 
 Goldens are captured through a path where all three are pinned — `assert_human_snapshot*`
 strips for its caller, while the raw `assert_snapshot_at` does not, so a caller reaching

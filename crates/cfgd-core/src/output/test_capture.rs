@@ -120,6 +120,8 @@ impl Writer for TermSink {
     /// brackets. The model consumes it as a mode change, so `contents()` is
     /// unaffected — exactly the relationship a tty has to it.
     fn set_cursor_visible(&self, visible: bool) {
+        // style-gate-ok: a fixture emulating a terminal's own mode change, not
+        // a painter — cursor visibility carries no styling.
         let seq = if visible { "\x1b[?25h" } else { "\x1b[?25l" };
         let _ = indicatif::TermLike::write_str(&self.0, seq);
     }

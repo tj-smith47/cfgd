@@ -24,6 +24,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// constant would be dead code — a `-D warnings` build error rather than a
 /// warning.
 #[cfg(unix)]
+// style-gate-ok: cursor visibility, not styling — the live region owns it and
+// a colourless run still has to get its cursor back.
 const SHOW_CURSOR: &[u8] = b"\x1b[?25h";
 
 /// Whether the real terminal's cursor is hidden right now. Read from the

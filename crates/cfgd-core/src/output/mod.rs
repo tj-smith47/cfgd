@@ -157,6 +157,8 @@ pub fn terminal_supports_hyperlinks() -> bool {
 /// the terminal's visible bytes. The ONE spelling of the escape, read by the
 /// kv renderer's linked slot.
 pub(crate) fn osc8_hyperlink(url: &str, text: &str) -> String {
+    // style-gate-ok: reached only through `Theme::hyperlinks`, which
+    // `with_hyperlinks` welds to the same colour decision the span gate holds.
     format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\")
 }
 pub use printer::{ColorChoice, DocCapture, Printer, PromptAnswer};

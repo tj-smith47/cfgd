@@ -93,12 +93,13 @@ fn secondary_emits_truecolor_sgr_per_preset() {
 
 #[test]
 #[serial]
-fn minimal_accent_emits_italic_attr_no_color() {
+fn minimal_accent_spends_an_italic_where_it_spends_no_colour() {
     let _no_color = EnvVarGuard::unset("NO_COLOR");
     let _term = EnvVarGuard::set("COLORTERM", "truecolor");
     let doc = Doc::new().status(Role::Accent, "marker");
     let raw = render_with_theme("minimal", doc);
-    // minimal accent = plain.italic, no hex. Expect \x1b[3m (italic only).
+    // minimal accent = plain.italic, no hex: the preset spends no COLOUR on
+    // the slot, and the printer here has colour ON. Expect \x1b[3m alone.
     assert!(
         raw.contains("\x1b[3m"),
         "minimal accent must emit italic SGR; raw={raw:?}"
@@ -112,12 +113,13 @@ fn minimal_accent_emits_italic_attr_no_color() {
 
 #[test]
 #[serial]
-fn minimal_secondary_emits_underline_attr_no_color() {
+fn minimal_secondary_spends_an_underline_where_it_spends_no_colour() {
     let _no_color = EnvVarGuard::unset("NO_COLOR");
     let _term = EnvVarGuard::set("COLORTERM", "truecolor");
     let doc = Doc::new().status(Role::Secondary, "marker");
     let raw = render_with_theme("minimal", doc);
-    // minimal secondary = plain.underlined, no hex. Expect \x1b[4m.
+    // minimal secondary = plain.underlined, no hex; colour is ON here, and the
+    // slot has none of its own to spend. Expect \x1b[4m.
     assert!(
         raw.contains("\x1b[4m"),
         "minimal secondary must emit underline SGR; raw={raw:?}"
