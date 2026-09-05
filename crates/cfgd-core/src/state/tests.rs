@@ -3270,6 +3270,61 @@ fn legacy_colon_spelled_system_rows_meet_the_composer_grammar_on_open() {
     );
 }
 
+#[test]
+fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_dropped() {
+    // The pre-fix tick recorded `('module', '<name>:skip')` on every pass over
+    // a module it skipped whole, plus a matching tracking row. Nothing mints,
+    // heals or re-finds that shape now, so without the migration it stands
+    // forever. A `<name>:script` row is a real finding of the same type and
+    // must come through untouched.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        for rid in ["gated:skip", "nvim:script"] {
+            store
+                .record_drift("module", rid, None, None, "local")
+                .unwrap();
+            store
+                .upsert_managed_resource("module", rid, "local", None, None)
+                .unwrap();
+        }
+        // Another type carrying the same tail: the sweep is scoped to `module`.
+        store
+            .record_drift("package", "brew:skip", None, None, "local")
+            .unwrap();
+        rewind_schema_version(&store, MIGRATIONS.len() - 1);
+    }
+
+    let store = StateStore::open(&path).unwrap();
+    let mut standing: Vec<(String, String)> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    standing.sort_unstable();
+    assert_eq!(
+        standing,
+        vec![
+            ("module".to_string(), "nvim:script".to_string()),
+            ("package".to_string(), "brew:skip".to_string()),
+        ],
+        "only the whole-module skip row resolves"
+    );
+    let tracked: Vec<String> = store
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .map(|r| r.resource_id)
+        .collect();
+    assert_eq!(
+        tracked,
+        vec!["nvim:script".to_string()],
+        "the skip row's tracking row is dropped and its sibling kept"
+    );
+}
+
 // --- concurrent in-memory stores ---
 
 #[test]
