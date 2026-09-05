@@ -464,15 +464,23 @@ mod tests {
                 .lines()
                 .find(|l| l.contains("module:git"))
                 .unwrap_or_else(|| panic!("{label}: no owner row rendered: {bare:?}"));
-            // One pad column plus the two-space inter-column gap where a
-            // column follows; nothing at all where the row ends here.
+            // The pad is whatever the column's widest cell earns, measured
+            // from this fixture's own rows: widening a neighbour then moves
+            // the expectation with it instead of falsifying a literal that
+            // reads as a puzzle. The two spaces are `render_table`'s own
+            // inter-column gap, and only a row with a column after it has one.
+            let owner_width = headers[1]
+                .chars()
+                .count()
+                .max(rows.iter().map(|r| r[1].chars().count()).max().unwrap_or(0));
             let tail = if headers.len() > 2 {
-                "module:git   b"
+                let pad = " ".repeat(owner_width - "module:git".chars().count());
+                format!("module:git{pad}  b")
             } else {
-                "module:git"
+                "module:git".to_string()
             };
             assert!(
-                padded.ends_with(tail),
+                padded.ends_with(&tail),
                 "{label}: expected the row to end {tail:?}: {padded:?}"
             );
         }

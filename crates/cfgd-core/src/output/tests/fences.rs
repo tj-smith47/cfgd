@@ -2799,6 +2799,14 @@ const GOLDEN_HEADER_FLOOR: usize = 10;
 /// the floor says the docs half of the walk still reads a captured render.
 const DOCS_HEADER_FLOOR: usize = 1;
 
+/// The shapes a snapshot root holds that are NOT a rendered capture: `-o json`
+/// payloads, and the `cfgd skill` installer's own artifacts (`.md`, `.mdc`,
+/// `.toml`). The goldens themselves are `.txt`, so an extension named by
+/// neither list is either a render captured under a new extension — which the
+/// walk would skip in silence, its floor none the wiser — or a shape nobody
+/// classified. Naming it is what forces the classification before it ships.
+const NON_GOLDEN_SNAPSHOT_EXTENSIONS: &[&str] = &["json", "md", "mdc", "toml"];
+
 /// Every directory and every file under `dir`, in one walk. `target/` is
 /// skipped: a build tree mirrors captured renders the walk has already read,
 /// under paths no reader ever ships.
@@ -2835,9 +2843,11 @@ fn trailing_space_lines(path: &Path) -> (usize, Vec<String>) {
     let Ok(text) = std::fs::read_to_string(path) else {
         return (0, Vec::new());
     };
-    // A CRLF checkout would otherwise read every line as whitespace-terminated.
-    let text = text.replace("\r\n", "\n");
-    let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+    // `str::lines` drops a line's trailing `\r`, so a CRLF checkout does not
+    // read every line as whitespace-terminated, and it borrows rather than
+    // minting a second copy of every file. Collected because a header is read
+    // off the line AFTER the padded one.
+    let lines: Vec<&str> = text.lines().collect();
     let (mut headers, mut offenders) = (0usize, Vec::new());
     for (i, line) in lines.iter().enumerate() {
         if line.is_empty() || !line.ends_with(char::is_whitespace) {
@@ -2877,7 +2887,11 @@ fn trailing_space_lines(path: &Path) -> (usize, Vec<String>) {
 /// The roots are DERIVED — every directory under `crates/` named `snapshots`
 /// or `output_snapshots` — so a third render-golden root joins the population
 /// the day it is created; the two that exist today are asserted by name, so a
-/// rename is loud rather than silently shrinking the walk.
+/// rename is loud rather than silently shrinking the walk. The goldens are the
+/// `.txt` files under those roots, and the walk states the COMPLEMENT too:
+/// every other file under one carries an extension
+/// [`NON_GOLDEN_SNAPSHOT_EXTENSIONS`] names, so a render captured under a new
+/// one is classified rather than silently skipped.
 #[test]
 fn every_trailing_space_in_a_golden_belongs_to_a_table_header() {
     let root = workspace_root();
@@ -2896,15 +2910,37 @@ fn every_trailing_space_in_a_golden_belongs_to_a_table_header() {
              and the goldens under it are unguarded"
         );
     }
+    // The roots the walk derived ARE the population's definition; a second
+    // derivation by path component is a second answer to one question.
+    let under_a_root = |f: &&PathBuf| roots.iter().any(|r| f.starts_with(r));
     let mut goldens: Vec<&PathBuf> = files
         .iter()
-        .filter(|f| {
-            f.extension().is_some_and(|e| e == "txt")
-                && f.components()
-                    .any(|c| c.as_os_str() == "snapshots" || c.as_os_str() == "output_snapshots")
-        })
+        .filter(under_a_root)
+        .filter(|f| f.extension().is_some_and(|e| e == "txt"))
         .collect();
     goldens.sort();
+    let mut unclassified: Vec<String> = files
+        .iter()
+        .filter(under_a_root)
+        .filter(|f| {
+            !f.extension().is_some_and(|e| {
+                e == "txt"
+                    || NON_GOLDEN_SNAPSHOT_EXTENSIONS
+                        .iter()
+                        .any(|known| e == *known)
+            })
+        })
+        .map(|f| f.display().to_string().replace('\\', "/"))
+        .collect();
+    unclassified.sort();
+    assert!(
+        unclassified.is_empty(),
+        "a snapshot root holds a file under an extension this walk classifies \
+         as neither a golden nor a known non-rendered shape; if it is a \
+         rendered capture the walk is skipping it, and if it is not, name its \
+         extension in `NON_GOLDEN_SNAPSHOT_EXTENSIONS`:\n{}",
+        unclassified.join("\n")
+    );
     let mut docs: Vec<PathBuf> = tree_under(&root.join("docs"))
         .1
         .into_iter()
