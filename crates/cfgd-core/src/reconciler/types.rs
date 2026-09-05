@@ -1114,19 +1114,29 @@ impl Plan {
     /// [`action_drift_rows`] mints no row for it and a drift count that
     /// included it would report divergence no verb can settle.
     pub fn drift_action_count(&self) -> usize {
+        attempted_count(
+            self.phases
+                .iter()
+                .flat_map(|p| p.actions())
+                .filter(|a| !is_module_skip(a)),
+        )
+    }
+
+    /// Every action the plan's tree prints a ROW for: every phase but
+    /// [`PhaseName::Modules`], pre-skipped actions included.
+    ///
+    /// The coverage is [`super::PhaseCoverage::Rendered`]'s — a module skipped
+    /// whole is annotated by the header's `Modules` row rather than drawn as a
+    /// block, so counting it here would name a row no reader can see. Neither
+    /// [`total_actions`](Self::total_actions) nor
+    /// [`drift_action_count`](Self::drift_action_count) answers this either:
+    /// both drop what the host already declined, and the tree prints it. A
+    /// sentence closing a run whose BODY is that tree counts against this.
+    pub fn listed_action_count(&self) -> usize {
         self.phases
             .iter()
+            .filter(|p| p.name != PhaseName::Modules)
             .flat_map(|p| p.actions())
-            .filter(|a| {
-                a.pre_skip_reason().is_none()
-                    && !matches!(
-                        a,
-                        Action::Module(ModuleAction {
-                            kind: ModuleActionKind::Skip { .. },
-                            ..
-                        })
-                    )
-            })
             .count()
     }
 
@@ -1558,11 +1568,13 @@ pub fn action_drift_rows(
     action: &Action,
     registry: &crate::providers::ProviderRegistry,
 ) -> Vec<DriftRow> {
-    if action.pre_skip_reason().is_some() {
+    if action.pre_skip_reason().is_some() || is_module_skip(action) {
         return Vec::new();
     }
     match action {
         Action::Module(ma) => match &ma.kind {
+            // Settled by the guard above; the arm is what keeps the match
+            // exhaustive over `ModuleActionKind`.
             ModuleActionKind::Skip { .. } => Vec::new(),
             ModuleActionKind::DeployFiles { files, .. } => files
                 .iter()
@@ -1720,10 +1732,21 @@ pub fn apply_heals_action_rows(action: &Action) -> bool {
             | Action::System(SystemAction::Skip { .. })
             | Action::Secret(SecretAction::Skip { .. })
             | Action::File(FileAction::Skip { .. })
-            | Action::Module(ModuleAction {
-                kind: ModuleActionKind::Skip { .. },
-                ..
-            })
+    ) && !is_module_skip(action)
+}
+
+/// Whether this action is a module skipped WHOLE.
+///
+/// The one spelling every reader of that fact shares: the count that prices a
+/// tick's drift, the heal predicate, and `action_drift_rows`' own arm.
+#[must_use]
+pub fn is_module_skip(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Module(ModuleAction {
+            kind: ModuleActionKind::Skip { .. },
+            ..
+        })
     )
 }
 

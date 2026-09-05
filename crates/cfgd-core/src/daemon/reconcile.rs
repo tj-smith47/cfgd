@@ -1228,12 +1228,22 @@ fn reconcile_tick(
                 let run = crate::reconciler::ApplyRun::new(run_ctx(), &plan).preview_only();
                 run.header(printer);
                 run.preview(printer);
+                // Every row the tree above printed is counted by some clause:
+                // the drifted ones, and the rest as skipped. A sentence naming
+                // fewer than the reader just saw is the drift.
+                let skipped = plan.listed_action_count().saturating_sub(effective_total);
+                let counted = if skipped == 0 {
+                    format!("{} drifted", crate::pluralize(effective_total, "action"))
+                } else {
+                    format!(
+                        "{} drifted, {} skipped",
+                        crate::pluralize(effective_total, "action"),
+                        skipped
+                    )
+                };
                 printer
                     .status(crate::output::Role::Warn, "Drift detected")
-                    .detail(format!(
-                        "{}; policy is notify-only, nothing applied",
-                        crate::pluralize(effective_total, "action")
-                    ));
+                    .detail(format!("{counted}; policy is notify-only, nothing applied"));
                 if notify_on_drift {
                     notifier.notify(
                         "cfgd: drift detected",
@@ -1243,10 +1253,7 @@ fn reconcile_tick(
                         ),
                     );
                 }
-                Some(format!(
-                    "{} drifted, none applied",
-                    crate::pluralize(effective_total, "action")
-                ))
+                Some(format!("{counted}, none applied"))
             }
         }
     };
