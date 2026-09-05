@@ -1230,6 +1230,12 @@ fn source_functions(body: &str) -> Vec<(usize, String)> {
         // it. Candidates are read off the literal-blanked remainder, which is
         // byte-length preserving, so a `;` inside a literal of the tail's own
         // (`let s = "a;b";`) is never one.
+        //
+        // `;` is the only terminator the scan names, which is its ceiling: a
+        // declaration the tail reaches through a `}` (`"#; } fn f() {}`) opens
+        // no slice. Every other boundary is a brace whose meaning depends on
+        // the nesting above this line, and reading it would take a parser,
+        // where a statement boundary states itself.
         let code = code_half(rest);
         let opened = if began_masked && code.contains(';') {
             code.match_indices(';')
@@ -2446,6 +2452,23 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
         opens,
         vec![1, 3, 4],
         "a `;` inside the tail's own literal ended it: {opens:?}"
+    );
+
+    // Both tells sit inside the tail's literal, so a scan that reads the raw
+    // remainder finds a terminator and a declaration and opens on a `fn` that
+    // is a string.
+    let inside = concat!(
+        "fn holder() {\n",
+        "    let banner = r#\"\n",
+        "\"#; let s = \"; fn ghost() {\"; }\n",
+        "fn after() {}\n"
+    );
+    let cut = source_functions(inside);
+    let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
+    assert_eq!(
+        opens,
+        vec![1, 4],
+        "a declaration spelled inside the tail's literal opened a slice: {opens:?}"
     );
 }
 
