@@ -319,23 +319,28 @@ pub fn widest_produced_detail(action: &Action) -> Option<String> {
 /// `format_plan_items` branches on the same flag, so the warning-versus-neutral
 /// distinction the deleted bespoke lines carried survives as the action's role.
 pub(super) fn declared_noop_role(action: &Action) -> Option<Role> {
+    // A module kind is classified in its own total match, with no wildcard: the
+    // outer arm below has to keep one for the action kinds that carry no
+    // no-op shape at all, and a new `ModuleActionKind` reaching it would be
+    // painted as ordinary work without anything failing to compile.
+    if let Action::Module(ModuleAction { kind, .. }) = action {
+        return match kind {
+            ModuleActionKind::Skip { .. } => Some(Role::Skipped),
+            // A refused file deploy is a finding the reader must act on — an
+            // encryption demand nothing on this host can honour — so it warns
+            // rather than reading as ordinary withheld work.
+            ModuleActionKind::FilesRefused { .. } => Some(Role::Warn),
+            ModuleActionKind::InstallPackages { .. }
+            | ModuleActionKind::DeployFiles { .. }
+            | ModuleActionKind::RunScript { .. } => None,
+        };
+    }
     match action {
         Action::System(SystemAction::Skip { unknown: true, .. }) => Some(Role::Warn),
         Action::System(SystemAction::Skip { .. })
         | Action::File(FileAction::Skip { .. })
         | Action::Package(PackageAction::Skip { .. })
-        | Action::Secret(SecretAction::Skip { .. })
-        | Action::Module(ModuleAction {
-            kind: ModuleActionKind::Skip { .. },
-            ..
-        }) => Some(Role::Skipped),
-        // A refused file deploy is a finding the reader must act on — an
-        // encryption demand nothing on this host can honour — so it warns
-        // rather than reading as ordinary withheld work.
-        Action::Module(ModuleAction {
-            kind: ModuleActionKind::FilesRefused { .. },
-            ..
-        }) => Some(Role::Warn),
+        | Action::Secret(SecretAction::Skip { .. }) => Some(Role::Skipped),
         _ => None,
     }
 }

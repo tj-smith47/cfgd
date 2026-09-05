@@ -26195,6 +26195,53 @@ fn a_refused_file_deploy_is_a_row_on_every_surface() {
     );
 }
 
+/// A planned no-op draws as a SKIP, with the reason its subject carries.
+///
+/// `Package::Skip` and its siblings (`File::Skip`, `Secret::Skip`, a
+/// `System::Skip` whose key is known) are no-ops by construction, and the plan
+/// tree settles all four through `apply::declared_noop_role` — the same seam
+/// the apply reads one beat later. Drawn as a bare `- ` bullet they wore no
+/// glyph at all, so a preview promised ordinary work the apply then reported
+/// as skipped.
+#[test]
+fn a_planned_package_skip_is_drawn_as_a_skip_with_its_reason() {
+    let reason = "not available on this host";
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("work"),
+            vec![Action::Package(PackageAction::Skip {
+                manager: "apt".to_string(),
+                reason: reason.to_string(),
+                origin: "local".to_string(),
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let theme = crate::output::Theme::default();
+    let (glyph, _) = crate::output::renderer::role_glyph(&theme, crate::output::Role::Skipped);
+    let glyph = glyph.expect("the Skipped role carries a glyph");
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    crate::reconciler::render_plan_tree(&plan, None, &printer);
+    drop(printer);
+    let tree = crate::output::strip_ansi(&cap.human());
+    let row = tree
+        .lines()
+        .find(|l| l.contains("apt"))
+        .unwrap_or_else(|| panic!("no package row in:\n{tree}"))
+        .to_string();
+    assert!(
+        row.trim_start().starts_with(glyph),
+        "the plan row wears the Skipped glyph {glyph:?}: {row:?}"
+    );
+    assert!(
+        row.contains(reason),
+        "and states the reason its subject carries: {row:?}"
+    );
+}
+
 /// A plan resolves session-manager availability from the machine and renders
 /// the publish it is CERTAIN to skip as skipped — with the detail the apply
 /// would give — while leaving it out of `N actions planned`.

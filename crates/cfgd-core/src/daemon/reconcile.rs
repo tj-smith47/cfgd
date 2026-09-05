@@ -1381,14 +1381,10 @@ pub(super) fn narrow_to_module(plan: &mut crate::reconciler::Plan, module: &str)
 /// fires no `onDrift` hook — deliberate: the hook exists to react to work the
 /// daemon is about to do, and an undecided resource is work it will not do.
 pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str) -> bool {
-    use crate::reconciler::{Action, ModuleActionKind};
+    use crate::reconciler::Action;
     plan.phases.iter().flat_map(|p| p.actions()).any(|a| {
-        matches!(
-            a,
-            Action::Module(ma)
-                if ma.module_name == module_name
-                    && !matches!(ma.kind, ModuleActionKind::Skip { .. })
-        )
+        matches!(a, Action::Module(ma) if ma.module_name == module_name)
+            && !crate::reconciler::module_skipped_whole(a)
     })
 }
 
@@ -1482,6 +1478,14 @@ pub(super) fn tick_cannot_refind(
         }
         // A module whose files this tick never probed — the host declined it
         // whole, or it refused the deploy outright.
+        //
+        // The keep is deliberately wider than the file rows it exists for: a
+        // refused module's `<mod>:script` row is kept too, once `hooks_now`
+        // (`reconciler/plan.rs`) elides the hooks because the module's package
+        // work converged while the refusal still stands. Nothing in that window
+        // vouches for the script's convergence, so healing it would be exactly
+        // the blind heal this predicate prevents — over-report, never
+        // under-report.
         "module" => {
             let owner = crate::reconciler::module_row_owner(resource_id);
             planned.iter().any(|a| {

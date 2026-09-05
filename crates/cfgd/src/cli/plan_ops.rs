@@ -290,7 +290,12 @@ pub(in crate::cli) fn action_targets(action: &reconciler::Action) -> Vec<String>
             reconciler::ModuleActionKind::DeployFiles { files, .. } => {
                 files.iter().map(|f| show(&f.target)).collect()
             }
-            _ => vec![],
+            // Spelled out rather than wildcarded: a module kind that starts
+            // naming paths must be classified here before this compiles.
+            reconciler::ModuleActionKind::InstallPackages { .. }
+            | reconciler::ModuleActionKind::RunScript { .. }
+            | reconciler::ModuleActionKind::Skip { .. }
+            | reconciler::ModuleActionKind::FilesRefused { .. } => vec![],
         },
         reconciler::Action::Package(_)
         | reconciler::Action::System(_)

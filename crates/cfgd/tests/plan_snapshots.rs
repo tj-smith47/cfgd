@@ -475,6 +475,7 @@ fn strip_ansi(s: &str) -> String {
 /// the golden cannot cover it and the test is Unix-only.
 #[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn plan_composed_source_human() {
     let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
     // The delivered profile writes env, whose targets hang off `$HOME`; an

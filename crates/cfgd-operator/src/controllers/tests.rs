@@ -3380,7 +3380,11 @@ mod tests_run {
         );
     }
 
+    // Serial: `POD_NAME` is process-global, and this harness runs on a
+    // multi-threaded runtime where a sibling reading the environment would be
+    // doing so mid-mutation.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
     async fn run_with_pod_name_env_uses_it_for_reporter_instance() {
         let _g = cfgd_core::test_helpers::EnvVarGuard::set("POD_NAME", "operator-pod-77");
         let (ctx, _registry, harness) = MockKubeHarness::new(vec![]);
