@@ -1210,10 +1210,22 @@ impl LineMask {
 /// its physical line with the CLOSE of a literal or comment still opens a
 /// slice: the mask hands back the line's remainder, so the reverse mistake —
 /// a real declaration the walk never sees — is not traded for the first.
+///
+/// A slice ends at its declaration's OWN closing brace, found by
+/// [`function_source`]'s brace scan — the same scanner, reached with a whole
+/// body rather than one open. Cut at the next `fn` instead, every file-scope
+/// item between two declarations lands in the first one's slice: the `const`
+/// holding a YAML fixture read as the body of the test above it, which made
+/// that test a member of populations it never joined and judged it on text it
+/// does not contain.
 fn source_functions(body: &str) -> Vec<(usize, String)> {
     let lines: Vec<&str> = body.lines().collect();
     let mut mask = LineMask::default();
-    let mut opens: Vec<usize> = Vec::new();
+    // Each open carries the SPAN the declaration starts at, not just its line:
+    // on a literal's closing line the span begins past the close, and a brace
+    // scan handed the whole line would read that literal's own closing quote as
+    // a fresh string opener and desync over the rest of the body.
+    let mut opens: Vec<(usize, &str)> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         let began_masked = mask.masked();
         let rest = mask.source_remainder(line);
@@ -1237,20 +1249,20 @@ fn source_functions(body: &str) -> Vec<(usize, String)> {
         // the nesting above this line, and reading it would take a parser,
         // where a statement boundary states itself.
         let code = code_half(rest);
-        let opened = if began_masked && code.contains(';') {
+        let head = if began_masked && code.contains(';') {
             code.match_indices(';')
-                .any(|(at, _)| opens_function(rest.get(at + 1..).unwrap_or("")))
+                .map(|(at, _)| rest.get(at + 1..).unwrap_or(""))
+                .find(|tail| opens_function(tail))
         } else {
-            opens_function(rest)
+            opens_function(rest).then_some(rest)
         };
-        if opened {
-            opens.push(i);
+        if let Some(head) = head {
+            opens.push((i, head));
         }
     }
     opens
-        .iter()
-        .zip(opens.iter().skip(1).chain(std::iter::once(&lines.len())))
-        .map(|(a, b)| (a + 1, lines[*a..*b].join("\n")))
+        .into_iter()
+        .map(|(at, head)| (at + 1, function_source(&lines, at, head)))
         .collect()
 }
 
@@ -1616,21 +1628,25 @@ const UNCALLED_HATCH: &str = "env-mutator-uncalled-ok:";
 /// counted on [`code_half`], so one inside a literal or a trailing comment
 /// does not move the depth.
 ///
+/// `head` is the declaration's own SPAN of `lines[open]`, which is the whole
+/// line for an ordinary declaration and the remainder past the delimiter for
+/// one sharing its line with a literal's close. A fresh mask handed that whole
+/// line would read the literal's closing quote as a new string opener and stay
+/// masked for the rest of the body, so the caller — which already holds the
+/// mask state that found the declaration — hands the span it starts at.
+///
 /// The scan runs to the real close with no line ceiling. A ceiling returns a
 /// slice that merely LOOKS like a function, and every tell below the cut is
 /// then invisible to a walk that believes it read the whole body — the silent
 /// direction. A scan that instead runs off the end of the file has desynced
 /// (a brace inside a multi-line raw literal is the shape that does it), so it
 /// panics naming the declaration it could not close.
-fn function_source(lines: &[&str], open: usize) -> String {
+fn function_source(lines: &[&str], open: usize, head: &str) -> String {
     let mut mask = LineMask::default();
     let mut depth = 0i32;
     let mut opened = false;
-    for (offset, line) in lines[open..].iter().enumerate() {
-        // The declaration's own line is never inside a literal or comment —
-        // `source_functions` masks before it opens a slice — so a mask started
-        // here reads the rest of the body correctly, and a brace inside a
-        // multi-line raw literal moves no depth.
+    let below = lines[open + 1..].iter().copied();
+    for (offset, line) in std::iter::once(head).chain(below).enumerate() {
         let code = mask.source_code(line);
         if !opened && !code.contains('{') && code.contains(';') {
             // A declaration with no body at all (a trait method's signature)
@@ -1912,11 +1928,11 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
                 continue;
             };
             let name = name.to_string();
-            let source = function_source(&lines, open - 1);
+            let free_here = !takes_a_receiver(&slice);
             free.entry(name.clone())
-                .and_modify(|f| *f &= !takes_a_receiver(&slice))
-                .or_insert(!takes_a_receiver(&slice));
-            sources.entry(name).or_default().push((open, source));
+                .and_modify(|f| *f &= free_here)
+                .or_insert(free_here);
+            sources.entry(name).or_default().push((open, slice));
         }
         // A roster entry earns its place by COUNTING the source lines that CALL
         // it — inside the declarations this walk cut, never the file's own
@@ -2244,17 +2260,17 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
         let mut sources: Vec<String> = Vec::new();
         let mut exported: Vec<bool> = Vec::new();
         for (open, slice) in source_functions(&body) {
-            let Some(name) = declared_fn_name(&slice) else {
+            let Some(name) = declared_fn_name(&slice).map(str::to_string) else {
                 continue;
             };
             let owner = owners[open - 1].clone();
             qualified.push(match &owner {
                 Some(ty) => format!("{ty}::{name}"),
-                None => name.to_string(),
+                None => name.clone(),
             });
-            names.push(name.to_string());
+            names.push(name);
             exported.push(lines[open - 1].trim_start().starts_with("pub"));
-            sources.push(function_source(&lines, open - 1));
+            sources.push(slice);
             opens.push(open);
         }
 
@@ -2360,7 +2376,7 @@ fn a_brace_after_a_literals_close_still_ends_the_function() {
         "fn sibling() {}\n"
     );
     let lines: Vec<&str> = body.lines().collect();
-    let source = function_source(&lines, 0);
+    let source = function_source(&lines, 0, lines[0]);
     assert!(
         source.ends_with("\"#; }"),
         "the slice ends at the brace after the literal's close: {source:?}"
@@ -2426,10 +2442,13 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
          its close did not: {opens:?}"
     );
 
+    // Each holder closes on the same line its literal does: a slice ends at its
+    // own brace, so a fixture leaving one open is a body with no end, which the
+    // scan reports as the desync it is rather than cutting somewhere it can.
     let closing = concat!(
         "fn holder() {\n",
         "    let banner = r#\"\n",
-        "\"#; fn sibling() { let x = 1; }\n",
+        "\"#; fn sibling() { let x = 1; } }\n",
         "fn after() {}\n"
     );
     let cut = source_functions(closing);
@@ -2443,7 +2462,7 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
     let quoted = concat!(
         "fn holder() {\n",
         "    let banner = r#\"\n",
-        "\"#; let s = \"a;b\"; fn sibling() {}\n",
+        "\"#; let s = \"a;b\"; fn sibling() {} }\n",
         "fn after() {}\n"
     );
     let cut = source_functions(quoted);
@@ -2489,6 +2508,35 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
     );
 }
 
+/// A slice ends at its declaration's own close, not at the next `fn`.
+///
+/// Everything between two declarations is file scope, and cut at the next `fn`
+/// it lands in the first one's slice: a `const` holding a YAML fixture then
+/// reads as the body of the test above it, which is how a test that declares
+/// nothing became a member of the shell-items population — judged, and floored,
+/// on text it does not contain.
+#[test]
+fn a_slice_ends_at_its_declarations_own_close_not_at_the_next_fn() {
+    let body = concat!(
+        "fn subject() {\n",
+        "    let x = 1;\n",
+        "}\n",
+        "\n",
+        "const FIXTURE: &str = \"aliases: - name: a\";\n",
+        "\n",
+        "fn sibling() {}\n"
+    );
+    let cut = source_functions(body);
+    let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
+    assert_eq!(opens, vec![1, 7], "{opens:?}");
+    assert!(
+        !cut[0].1.contains("FIXTURE"),
+        "the file-scope const between the two declarations landed in the \
+         slice: {:?}",
+        cut[0].1
+    );
+}
+
 /// The uncalled-entry hatch is read off the roster's own line.
 ///
 /// A needle this file spells in more than one table would otherwise be
@@ -2530,7 +2578,13 @@ fn an_uncalled_entry_hatch_is_read_only_inside_the_roster() {
 /// absorbs it silently, which is the blindness the walk exists to prevent.
 /// Adding a member raises this; a count that FELL is never re-calibrated
 /// downward to make a red walk green.
-const TEST_HOME_JUDGED_FLOOR: usize = 4;
+///
+/// It stood at 4 while [`source_functions`] cut a slice at the next `fn`: the
+/// file-scope consts under `module_upgrade_happy_human_json` carry a YAML
+/// fixture, so its slice held a declaration the test itself does not make and
+/// it counted as a member. What moved is the SLICE, not the population — the
+/// three below are the tests that ever declared shell items and drove a verb.
+const TEST_HOME_JUDGED_FLOOR: usize = 3;
 
 /// The slice's logical lines, with every line that BEGAN inside a literal or a
 /// block comment joined onto the line that opened it.
@@ -2545,18 +2599,68 @@ const TEST_HOME_JUDGED_FLOOR: usize = 4;
 /// pair a needle with a hatch comment that is not its own. [`LineMask`] already
 /// carries the state this walk needs, so the fold is local to the walk that
 /// wants it.
+///
+/// The number each line comes back with is the PHYSICAL one within `slice`,
+/// counted off the line the fold opened on. Counted off the folded text
+/// instead, it drifts one further from the file with every line folded away —
+/// and a caller reporting an offender by that number sends its reader to a
+/// line holding something else, which is the whole use a line number has.
 fn literal_folded_lines(slice: &str) -> Vec<(usize, String)> {
     let mut mask = LineMask::default();
     let mut folded = String::with_capacity(slice.len());
+    let mut physical: Vec<usize> = Vec::new();
     for (n, line) in slice.lines().enumerate() {
         let continues = mask.masked();
         mask.advance(line);
         if n > 0 {
             folded.push(if continues { ' ' } else { '\n' });
         }
+        if !continues || n == 0 {
+            physical.push(n + 1);
+        }
         folded.push_str(line);
     }
     crate::test_helpers::logical_source_lines(&folded)
+        .into_iter()
+        .map(|(at, line)| (physical.get(at - 1).copied().unwrap_or(at), line))
+        .collect()
+}
+
+/// A folded line is reported at the physical line it opened on.
+///
+/// The fixture is the shape the walk exists for: a raw literal spanning three
+/// physical lines, whose tells fold onto the line that opened it, followed by a
+/// declaration the folded text has moved up by two. A number counted off the
+/// folded text names that declaration's line as 3, which in the file holds the
+/// middle of the fixture.
+#[test]
+fn the_literal_fold_reports_the_physical_line_a_logical_line_opens_on() {
+    let slice = concat!(
+        "fn holder() {\n",
+        "    let fixture = r#\"\n",
+        "aliases:\n",
+        "  - name: a\n",
+        "\"#;\n",
+        "    let after = 1;\n",
+        "}\n"
+    );
+    let folded = literal_folded_lines(slice);
+    let at = |needle: &str| {
+        folded
+            .iter()
+            .find(|(_, line)| line.contains(needle))
+            .map(|(n, _)| *n)
+    };
+    assert_eq!(
+        at("aliases:"),
+        Some(2),
+        "the line the literal opened on: {folded:?}"
+    );
+    assert_eq!(
+        at("let after"),
+        Some(6),
+        "the physical line, not the folded one: {folded:?}"
+    );
 }
 
 /// An integration test that declares shell items and drives a `cmd_*` in this

@@ -1444,6 +1444,13 @@ fn duration_span(window: &[char]) -> Option<(usize, bool)> {
 /// `<BARE>/inner` and `<BARE_ROOT>` both match, longest wins). Each path is
 /// posixified before substitution so the captured text and the substitution
 /// keys share the same separator convention.
+///
+/// A pair's left side is any text span both folds render identically — a path
+/// is the common case, not the contract — so the posixify and the `~/` fold
+/// run over it unconditionally rather than being gated on it looking like a
+/// path: a caller substituting a rendered line already holding `/` gets the
+/// same bytes back, and a gate would only decide, per input, which of two
+/// spellings the key had to be written in.
 pub fn normalize_for_snapshot(captured: &str, paths: &[(&std::path::Path, &str)]) -> String {
     let lf = normalize_line_endings(captured);
     let posix = posixify_text(&lf);

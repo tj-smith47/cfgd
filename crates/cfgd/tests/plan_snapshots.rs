@@ -471,8 +471,18 @@ fn strip_ansi(s: &str) -> String {
 /// rows whose presence is a property of the *platform* — and the host probe
 /// is pinned to a bash-only host with no fish, which is the row set's other
 /// free variable. What is left is byte-identical on Linux, macOS and
-/// FreeBSD. Windows renders a PowerShell surface instead of a POSIX one, so
-/// the golden cannot cover it and the test is Unix-only.
+/// FreeBSD.
+///
+/// Windows plans a different SET of rows, which is why the gate is on the
+/// whole test rather than on a substituted span: the POSIX plan writes
+/// `~/.cfgd.env` and injects a source line into `~/.bashrc`, two actions;
+/// Windows writes a PowerShell profile and injects nothing into an rc file
+/// no shell there reads, so the rows the golden holds in order, and the
+/// `2 actions planned` counting them, are not the rows that render. A
+/// difference of one DIALECT inside an otherwise identical render takes the
+/// other shape instead — `diff_standing_rows_human` keeps its render on every
+/// OS by holding a placeholder in the golden and pinning the dialect beside it
+/// with an equality.
 #[cfg(unix)]
 #[test]
 #[serial_test::serial]

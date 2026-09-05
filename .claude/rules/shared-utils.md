@@ -403,7 +403,7 @@ The **30-second memo convention** and the exclusion a TTL guard needs are in `ut
 
 Plain `cfgd_core::*` exports from `util/paths.rs` that make a captured render host-stable. Snapshot tests reach them through `normalize_for_snapshot`; call one directly only for a single fold.
 
-- `normalize_for_snapshot(captured, &[(path, label)])` — the composed entry point: `\`→`/`, CRLF→LF, and each path substituted with its label.
+- `normalize_for_snapshot(captured, &[(path, label)])` — the composed entry point: `\`→`/`, CRLF→LF, and each path substituted with its label. A pair's left side is any text span both folds render identically, a path being the common case.
 - `normalize_cfgd_version(s, version)` — substitute the EXACT running version, so a wrong version still fails to match.
 - `normalize_snapshot_durations(raw)` — replace every ` (N.Ns)` elapsed suffix with ` (XXs)`; never re-implement the scan.
 
