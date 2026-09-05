@@ -127,6 +127,9 @@ impl StateStore {
              DELETE FROM drift_key_set;",
         )?;
 
+        // Every full chunk's SQL is byte-identical, so the statement is
+        // prepared once and reused; only the trailing partial chunk builds its
+        // own.
         for chunk in keys.chunks(DRIFT_KEY_CHUNK) {
             let placeholders = std::iter::repeat_n("(?, ?)", chunk.len())
                 .collect::<Vec<_>>()
@@ -140,7 +143,7 @@ impl StateStore {
                 refs.push(rtype);
                 refs.push(rid);
             }
-            self.conn.execute(&sql, refs.as_slice())?;
+            self.conn.prepare_cached(&sql)?.execute(refs.as_slice())?;
         }
 
         let sql = format!(

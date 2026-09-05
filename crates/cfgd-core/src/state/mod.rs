@@ -595,6 +595,24 @@ const MIGRATIONS: &[&str] = &[
          AND instr(resource_id, ':') > 1
          AND instr(substr(resource_id, 1, instr(resource_id, ':') - 1), '.') = 0
          AND resolved_by IS NULL AND resolved_at IS NULL;",
+    // Migration 24: the `module` rows a pre-fix daemon tick recorded for a
+    // module it skipped WHOLE (a platform gate, an encryption backend this
+    // host cannot read). Nothing under such a module was ever probed, so the
+    // row stood for no finding; it is minted by no producer now, healed by no
+    // apply, and re-found by no CLI check — `<name>:skip` names no file — so
+    // on an upgraded host it would stand forever and hold every `--exit-code`
+    // surface at 5 with no command able to clear it. Resolving it is safe by
+    // migration 23's reasoning, and deleting its tracking row by migration
+    // 9's: a module row is bookkeeping the next apply re-derives, carrying no
+    // `uninstall_cmd` for anything to act on.
+    "UPDATE drift_events
+         SET resolved_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+       WHERE resource_type = 'module'
+         AND resource_id GLOB '*:skip'
+         AND resolved_by IS NULL AND resolved_at IS NULL;
+
+     DELETE FROM managed_resources
+       WHERE resource_type = 'module' AND resource_id GLOB '*:skip';",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable
