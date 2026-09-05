@@ -1088,6 +1088,12 @@ impl LineMask {
     /// `}` is the shape — and a lost close is a slice that ends somewhere
     /// other than where the code does, in the direction nothing reports.
     fn source_code(&mut self, line: &str) -> String {
+        code_half(self.source_remainder(line))
+    }
+
+    /// The same span before its literal bodies and trailing comment are
+    /// dropped, for a caller reading the line's SHAPE rather than its braces.
+    fn source_remainder<'a>(&mut self, line: &'a str) -> &'a str {
         let began_masked = self.masked();
         self.advance(line);
         let from = if began_masked {
@@ -1095,7 +1101,7 @@ impl LineMask {
         } else {
             0
         };
-        code_half(line.get(from..).unwrap_or(""))
+        line.get(from..).unwrap_or("")
     }
 
     /// Whether the NEXT line begins inside a literal or comment.
@@ -1200,18 +1206,27 @@ impl LineMask {
 /// `\`-continued, or a plain `"…"` spanning lines — would otherwise split the
 /// enclosing function around it, and a split severs a folded tell from its
 /// opening line or a tell from the producer token that exempts it, the
-/// silent direction. [`LineMask`] holds that state; what remains unmasked is
-/// only a declaration sharing its physical line with the CLOSE of a literal
-/// or comment, a shape rustfmt does not emit — the same formatting assumption
-/// `production_slice` documents.
+/// silent direction. [`LineMask`] holds that state, and a declaration sharing
+/// its physical line with the CLOSE of a literal or comment still opens a
+/// slice: the mask hands back the line's remainder, so the reverse mistake —
+/// a real declaration the walk never sees — is not traded for the first.
 fn source_functions(body: &str) -> Vec<(usize, String)> {
     let lines: Vec<&str> = body.lines().collect();
     let mut mask = LineMask::default();
     let mut opens: Vec<usize> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        let masked = mask.masked();
-        mask.advance(line);
-        if !masked && opens_function(line) {
+        let began_masked = mask.masked();
+        let rest = mask.source_remainder(line);
+        // On the line that CLOSES a literal, what precedes the declaration is
+        // the tail of the statement the literal belonged to (`"#;`), so the
+        // declaration does not start the span. Only that case looks past a
+        // terminator: doing it on an ordinary line would let the `;` inside a
+        // one-line body hide the body's own declaration.
+        let decl = match rest.rfind(';') {
+            Some(at) if began_masked => rest.get(at + 1..).unwrap_or(""),
+            _ => rest,
+        };
+        if opens_function(decl) {
             opens.push(i);
         }
     }
@@ -1889,18 +1904,17 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
         // A roster entry earns its place by COUNTING: a call site in the suite,
         // not the declaration it names. `test_helpers.rs` is where the helpers
         // live, so its own mentions prove nothing.
+        //
+        // The fold is the expensive half and does not depend on the entry, so
+        // it happens once for the file rather than once per entry per
+        // declaration.
         if !path.ends_with(Path::new("test_helpers.rs")) {
-            for decls in sources.values() {
-                for (_, src) in decls {
-                    for (entry, hits) in &mut entry_hits {
-                        if crate::test_helpers::logical_source_lines(src)
-                            .iter()
-                            .any(|(_, line)| code_half(line).contains(*entry))
-                        {
-                            *hits += 1;
-                        }
-                    }
-                }
+            let code: Vec<String> = crate::test_helpers::logical_source_lines(&body)
+                .iter()
+                .map(|(_, line)| code_half(line))
+                .collect();
+            for (entry, hits) in &mut entry_hits {
+                *hits += code.iter().filter(|line| line.contains(*entry)).count();
             }
         }
         let mut reaches: std::collections::BTreeMap<String, bool> = sources
@@ -1999,14 +2013,7 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
     let own_lines: Vec<&str> = own.lines().collect();
     let uncounted: Vec<&str> = entry_hits
         .iter()
-        .filter(|(entry, hits)| {
-            **hits == 0 && {
-                let quoted = format!("\"{entry}\",");
-                !own_lines.iter().enumerate().any(|(at, line)| {
-                    line.contains(&quoted) && hatched(&own_lines, at, UNCALLED_HATCH)
-                })
-            }
-        })
+        .filter(|(entry, hits)| **hits == 0 && !roster_entry_hatched(&own_lines, entry))
         .map(|(entry, _)| *entry)
         .collect();
     assert!(
@@ -2023,6 +2030,49 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
              the walk has gone blind in that file"
         );
     }
+    // A floor only guards a file it names, so the table has to be the whole
+    // non-zero set: a file with no row is a file whose count may fall to zero
+    // unwatched, and a row whose file no longer yields anything is a floor
+    // guarding nothing.
+    let floored: std::collections::BTreeSet<&str> =
+        SERIAL_FLOORS.iter().map(|(file, _)| *file).collect();
+    let missing: Vec<String> = per_file
+        .iter()
+        .filter(|(file, found)| **found > 0 && !floored.contains(file.as_str()))
+        .map(|(file, found)| format!("    (\"{file}\", {found}),"))
+        .collect();
+    let stale: Vec<&str> = floored
+        .iter()
+        .filter(|file| per_file.get(**file).copied().unwrap_or(0) == 0)
+        .copied()
+        .collect();
+    assert!(
+        missing.is_empty() && stale.is_empty(),
+        "`SERIAL_FLOORS` must name every file the walk finds non-zero and no other.\n\
+         Rows to add:\n{}\nRows naming a file that now yields nothing: {stale:?}",
+        missing.join("\n")
+    );
+}
+
+/// Whether the roster's own line for `entry` carries an
+/// [`UNCALLED_HATCH`] reason.
+///
+/// The hatch has to sit on the ROSTER's line, inside the `ENV_MUTATORS` slice
+/// itself. A needle this file also spells in a neighbouring table would
+/// otherwise be exempted by a hatch on THAT line, which is a hatch no reader
+/// of the roster would ever see.
+fn roster_entry_hatched(lines: &[&str], entry: &str) -> bool {
+    let Some(open) = lines
+        .iter()
+        .position(|line| line.starts_with("const ENV_MUTATORS"))
+    else {
+        panic!("no `const ENV_MUTATORS` declaration");
+    };
+    let Some(len) = lines[open..].iter().position(|line| line.starts_with("];")) else {
+        panic!("`ENV_MUTATORS` is never closed");
+    };
+    let quoted = format!("\"{entry}\",");
+    (open..open + len).any(|at| lines[at].contains(&quoted) && hatched(lines, at, UNCALLED_HATCH))
 }
 
 /// The primitive writes a helper's own body can carry, from which reaching is
@@ -2195,16 +2245,15 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
             })
             .collect();
         loop {
-            let followable: Vec<&str> = names
+            // The REACHING declarations, each carrying its own index: what a
+            // follow must not count is the declaration it is scanning, not
+            // every declaration sharing that name — a helper whose overload
+            // in another impl writes the environment reaches through it.
+            let followable: Vec<(usize, &str)> = names
                 .iter()
                 .enumerate()
-                .filter(|(_, name)| {
-                    names
-                        .iter()
-                        .enumerate()
-                        .any(|(other, sibling)| sibling == *name && reaches[other])
-                })
-                .map(|(_, name)| name.as_str())
+                .filter(|(at, _)| reaches[*at])
+                .map(|(at, name)| (at, name.as_str()))
                 .collect();
             let mut grew = false;
             for at in 0..sources.len() {
@@ -2213,7 +2262,7 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
                 }
                 if followable
                     .iter()
-                    .any(|name| *name != names[at] && calls_named(&sources[at], name))
+                    .any(|(from, name)| *from != at && calls_named(&sources[at], name))
                 {
                     reaches[at] = true;
                     grew = true;
@@ -2326,5 +2375,75 @@ fn an_unbalanced_literal_inside_an_impl_does_not_close_its_owner() {
     assert_eq!(
         owners[8], None,
         "the block's real close drops it: {owners:?}"
+    );
+}
+
+/// A declaration sharing its line with a literal's close opens a slice.
+///
+/// The reverse of the brace mistake: a function the walk never cuts out is a
+/// function whose tells are read as the previous one's, so a needle in it is
+/// exempted by whatever the neighbour above happened to carry.
+#[test]
+fn a_declaration_after_a_literals_close_opens_a_slice() {
+    let body = concat!(
+        "fn holder() {\n",
+        "    let banner = r#\"\n",
+        "fn hidden() {\n",
+        "\"#; }\n",
+        "fn after() {}\n"
+    );
+    let cut = source_functions(body);
+    let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
+    assert_eq!(
+        opens,
+        vec![1, 5],
+        "a declaration inside the literal opened a slice, or the one after \
+         its close did not: {opens:?}"
+    );
+
+    let closing = concat!(
+        "fn holder() {\n",
+        "    let banner = r#\"\n",
+        "\"#; fn sibling() {}\n",
+        "fn after() {}\n"
+    );
+    let opens: Vec<usize> = source_functions(closing)
+        .iter()
+        .map(|(open, _)| *open)
+        .collect();
+    assert_eq!(
+        opens,
+        vec![1, 3, 4],
+        "the declaration on the literal's closing line opened no slice: {opens:?}"
+    );
+}
+
+/// The uncalled-entry hatch is read off the roster's own line.
+///
+/// A needle this file spells in more than one table would otherwise be
+/// exempted by a hatch beside any of them, and a reader checking why an entry
+/// counts nothing would find the roster line bare.
+#[test]
+fn an_uncalled_entry_hatch_is_read_only_inside_the_roster() {
+    let source = concat!(
+        "// env-mutator-uncalled-ok: not on the roster's own line.\n",
+        "const ENV_MUTATION_SEEDS: &[&str] = &[\n",
+        "    \"env::set_var\",\n",
+        "];\n",
+        "\n",
+        "const ENV_MUTATORS: &[&str] = &[\n",
+        "    \"env::set_var\",\n",
+        "    // env-mutator-uncalled-ok: the reason a reader of the roster sees.\n",
+        "    \"EnvVarGuard::set\",\n",
+        "];\n"
+    );
+    let lines: Vec<&str> = source.lines().collect();
+    assert!(
+        !roster_entry_hatched(&lines, "env::set_var"),
+        "a hatch on another table's line exempted the roster entry"
+    );
+    assert!(
+        roster_entry_hatched(&lines, "EnvVarGuard::set"),
+        "the hatch on the roster's own line was not read"
     );
 }

@@ -2967,7 +2967,12 @@ struct CosignEnvSnapshot {
 impl CosignTestShim {
     /// Builder entry point. Chain `with_*` methods then call [`CosignTestShimBuilder::install`].
     pub fn builder() -> CosignTestShimBuilder {
-        CosignTestShimBuilder::default()
+        CosignTestShimBuilder {
+            argv_logging: true,
+            keygen: false,
+            exit_code: 0,
+            stderr: String::new(),
+        }
     }
 
     /// Install with defaults: argv logging on, keygen off, exit 0, empty
@@ -3030,17 +3035,6 @@ pub struct CosignTestShimBuilder {
     stderr: String,
 }
 
-impl Default for CosignTestShimBuilder {
-    fn default() -> Self {
-        Self {
-            argv_logging: true,
-            keygen: false,
-            exit_code: 0,
-            stderr: String::new(),
-        }
-    }
-}
-
 impl CosignTestShimBuilder {
     /// Enable or disable argv logging. When enabled, every invocation
     /// appends one space-joined-argv line to the log file, readable via
@@ -3075,7 +3069,7 @@ impl CosignTestShimBuilder {
     /// per-invocation behavior env vars (`CFGD_FAKE_COSIGN_{LOG,KEYGEN,STDERR,
     /// EXIT}`). Prior values of every mutated var are captured for restoration
     /// on drop. A tempdir holds the argv log; it is removed with the guard.
-    // env-mutator-ok: reached only through `CosignTestShim::builder`, which the roster counts.
+    // env-mutator-ok: a builder exists only through `CosignTestShim::builder`, which the roster counts.
     pub fn install(self) -> CosignTestShim {
         let bin_path = fake_cosign_bin_path();
         let tmp = tempfile::TempDir::new().expect("tempdir");
