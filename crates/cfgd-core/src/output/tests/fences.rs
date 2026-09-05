@@ -1225,6 +1225,10 @@ impl LineMask {
     }
 }
 
+/// The `source` label a scan over a literal fixture names, where a file walk
+/// names the path it read.
+const FIXTURE_SOURCE: &str = "<fixture>";
+
 /// The functions a source's `fn` lines cut it into, each paired with its
 /// opening line number.
 ///
@@ -1247,13 +1251,17 @@ impl LineMask {
 /// does not contain.
 ///
 /// PARTIAL, not total: a declaration whose braces never balance before the
-/// input ends panics out of [`function_source`], which names the line the
-/// declaration opened on and that line's text. Every caller here reads whole
-/// files it does not author, and the alternative — a slice cut at the end of
-/// the input — is a body the walk believes it read and did not, so a desynced
-/// scan stops the test rather than answering from a slice it invented.
+/// input ends panics out of [`function_source`], which names `source`, the
+/// line the declaration opened on and that line's text. Every caller here
+/// reads whole files it does not author, and the alternative — a slice cut at
+/// the end of the input — is a body the walk believes it read and did not, so
+/// a desynced scan stops the test rather than answering from a slice it
+/// invented. `source` is what makes that answer actionable: a walk over the
+/// workspace reads hundreds of files, and a line number alone names none of
+/// them. Every file walk passes the path it already holds; a literal fixture
+/// passes [`FIXTURE_SOURCE`].
 /// `an_unbalanced_declaration_stops_the_walk` holds the contract.
-fn source_functions(body: &str) -> Vec<(usize, String)> {
+fn source_functions(source: &str, body: &str) -> Vec<(usize, String)> {
     let lines: Vec<&str> = body.lines().collect();
     let mut mask = LineMask::default();
     // Each open carries the SPAN the declaration starts at, not just its line:
@@ -1297,7 +1305,7 @@ fn source_functions(body: &str) -> Vec<(usize, String)> {
     }
     opens
         .into_iter()
-        .map(|(at, head)| (at + 1, function_source(&lines, at, head)))
+        .map(|(at, head)| (at + 1, function_source(source, &lines, at, head)))
         .collect()
 }
 
@@ -1327,9 +1335,9 @@ fn opens_const_item(code: &str) -> bool {
 /// and only once the bracket depth the declaration opened has come back down —
 /// a `[u8; 4]` in the type would otherwise end the item on its own first line
 /// and hide the initializer this exists to read.
-fn const_items_outside_functions(body: &str) -> Vec<(usize, String)> {
+fn const_items_outside_functions(source: &str, body: &str) -> Vec<(usize, String)> {
     let lines: Vec<&str> = body.lines().collect();
-    let in_a_function: Vec<std::ops::RangeInclusive<usize>> = source_functions(body)
+    let in_a_function: Vec<std::ops::RangeInclusive<usize>> = source_functions(source, body)
         .iter()
         // Both ends are 0-based indices of `lines`, off a 1-based opening line
         // and a slice that always holds at least the declaration itself; the
@@ -1376,24 +1384,22 @@ fn const_items_outside_functions(body: &str) -> Vec<(usize, String)> {
 /// fixture hardcoding either wrote its file where nothing reads, or a line the
 /// check can never match, and the ones asserting an ABSENCE passed anyway.
 ///
-/// FUNCTION-scoped, because cfgd-core holds two whole populations for which a
-/// literal is correct and no per-site hatch should be needed: a fixture
-/// exercising the generator NAMES it (an explicit `EnvPlatform`, a
+/// Exempt where a literal is correct and no per-site hatch should be needed:
+/// a fixture exercising the generator NAMES it (an explicit `EnvPlatform`, a
 /// `generate_*` call, `env_targets`), and one naming a path production writes
 /// VERBATIM names that too (`WriteEnvFile`, `plan_env_with_home`,
-/// `ScriptShell` — where the shell, not the host, picks the dialect). A
-/// function that spells a tell and names none of them is hand-spelling.
+/// `ScriptShell` — where the shell, not the host, picks the dialect). A unit
+/// that spells a tell and names none of them is hand-spelling.
 ///
-/// FUNCTION-scoped is also the CEILING, and it names the whole population:
-/// [`source_functions`] hands back one slice per declaration, so a `const`
-/// holding a fixture BETWEEN two declarations is read here not at all. The
-/// alternative was worse rather than wider — such an item used to fall inside
-/// the slice of the function above it, judged under exemptions it never named
-/// and reported at that function's line — and a tell in a file-scope item is
-/// left to the reader. Where the population can be held EMPTY instead of
-/// attributed, it is:
-/// [`no_item_outside_a_function_body_mutates_the_process_environment`] walks
-/// the same items for the mutation tells.
+/// The population is BOTH halves of every file: the [`source_functions`]
+/// slices, and the [`const_items_outside_functions`] items between them, under
+/// one judgement so a fixture cannot escape it by being written at file scope.
+/// A `const` holding a hand-spelled env-file body is the same regression as a
+/// function holding one — the generator still never ran, and the ps1/POSIX
+/// split still decides which host reads the file. The items half is empty
+/// today and floored at the count it reads, the way
+/// [`no_item_outside_a_function_body_mutates_the_process_environment`] floors
+/// the same scan for the mutation tells.
 #[test]
 fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     let joins = [
@@ -1449,6 +1455,7 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     let core_src = workspace_root().join("crates/cfgd-core/src");
     let mut offenders = Vec::new();
     let mut checked = 0usize;
+    let mut items = 0usize;
     for path in workspace_rust_files() {
         // This file spells every tell in order to hunt for it.
         if !path.starts_with(&core_src) || path.ends_with(Path::new("output/tests/fences.rs")) {
@@ -1462,15 +1469,24 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
         // pins the raw assignment syntax through helpers with no `generate_*`
         // name of their own to match on.
         let is_env_engine_owner = path.ends_with(Path::new("reconciler/env_engine.rs"));
-        for (open, func) in source_functions(&body) {
-            checked += 1;
-            let names_producer = names_a_producer.iter().any(|n| names_identifier(&func, n));
+        let shown = path.display().to_string();
+        // A file's two halves, judged by ONE block: an exemption or a tell
+        // means the same thing whether the text was written inside a
+        // declaration or between two of them, and a second judgement is how
+        // the halves start disagreeing.
+        let functions = source_functions(&shown, &body);
+        let file_scope = const_items_outside_functions(&shown, &body);
+        checked += functions.len();
+        items += file_scope.len();
+        for (open, func) in functions.iter().chain(file_scope.iter()) {
+            let (open, func) = (*open, func.as_str());
+            let names_producer = names_a_producer.iter().any(|n| names_identifier(func, n));
             let calls_generator =
-                is_env_engine_owner || generator_calls.iter().any(|n| names_identifier(&func, n));
+                is_env_engine_owner || generator_calls.iter().any(|n| names_identifier(func, n));
             if names_producer && calls_generator {
                 continue;
             }
-            let folded = crate::test_helpers::logical_source_lines(&func);
+            let folded = crate::test_helpers::logical_source_lines(func);
             let spells_a_name = !names_producer
                 && folded
                     .iter()
@@ -1503,6 +1519,14 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     assert!(
         checked > 2000,
         "the walk no longer reaches cfgd-core's functions — it read {checked}"
+    );
+    // The items half is floored AT the population rather than under it: it
+    // holds no offender, and an empty offender list reads the same whether the
+    // scan saw every file-scope item or none of them.
+    assert!(
+        items >= 316,
+        "the walk read {items} items outside a function body in cfgd-core; it \
+         has stopped seeing the crate's file-scope declarations"
     );
     assert!(
         offenders.is_empty(),
@@ -1576,7 +1600,7 @@ fn a_fn_spelled_inside_a_string_literal_does_not_open_a_slice() {
         "}\n",
         "fn second() {}\n"
     );
-    let funcs = source_functions(body);
+    let funcs = source_functions(FIXTURE_SOURCE, body);
     assert_eq!(funcs.len(), 2, "{funcs:?}");
     assert_eq!(funcs[0].0, 1);
     assert!(
@@ -1601,7 +1625,7 @@ fn an_offender_spelling_an_fn_line_inside_a_plain_literal_stays_one_scan_unit() 
         "fn offender() {{\n    let banner = \"\nfn looks_like_an_fn() {{\n\";\n    \
          let p = home.{tell};\n}}\nfn sibling() {{}}\n"
     );
-    let funcs = source_functions(&body);
+    let funcs = source_functions(FIXTURE_SOURCE, &body);
     assert_eq!(funcs.len(), 2, "{funcs:?}");
     assert_eq!(funcs[0].0, 1, "the offender opens at its own line");
     assert!(
@@ -1636,7 +1660,7 @@ fn the_masking_arms_read_comments_and_char_literals_as_not_source() {
         "}\n",
         "fn after() {}\n"
     );
-    let funcs = source_functions(body);
+    let funcs = source_functions(FIXTURE_SOURCE, body);
     assert_eq!(funcs.len(), 2, "{funcs:?}");
     assert_eq!(funcs[0].0, 1);
     assert!(
@@ -1664,7 +1688,7 @@ fn a_brace_inside_a_one_line_block_comment_does_not_move_the_close() {
         "}\n",
         "fn after() {}\n"
     );
-    let funcs = source_functions(body);
+    let funcs = source_functions(FIXTURE_SOURCE, body);
     assert_eq!(funcs.len(), 2, "{funcs:?}");
     assert_eq!(funcs[0].0, 1);
     assert_eq!(
@@ -1683,10 +1707,19 @@ fn a_brace_inside_a_one_line_block_comment_does_not_move_the_close() {
 /// inside — and the alternative is a slice that merely LOOKS like a function,
 /// judged as if it were whole. A caller reads whole files it does not author,
 /// so the loud answer is the only one that cannot be believed by mistake.
+///
+/// The `expected` substring opens on the SOURCE the scan was handed, because
+/// a walk reading the whole workspace panics from one file and a message
+/// naming only a line number sends its reader to none of them.
 #[test]
-#[should_panic(expected = "without closing the declaration opened at line 2")]
+#[should_panic(
+    expected = "<fixture>:2: the brace scan reached the end of the file without closing the declaration opened here"
+)]
 fn an_unbalanced_declaration_stops_the_walk() {
-    source_functions("// a header line\nfn f() {\n    let x = 1;\n");
+    source_functions(
+        FIXTURE_SOURCE,
+        "// a header line\nfn f() {\n    let x = 1;\n",
+    );
 }
 
 /// The producer-tell matcher reads whole identifiers: an identifier that
@@ -1799,8 +1832,10 @@ const UNCALLED_HATCH: &str = "env-mutator-uncalled-ok:";
 /// then invisible to a walk that believes it read the whole body — the silent
 /// direction. A scan that instead runs off the end of the file has desynced
 /// (a brace inside a multi-line raw literal is the shape that does it), so it
-/// panics naming the declaration it could not close.
-fn function_source(lines: &[&str], open: usize, head: &str) -> String {
+/// panics naming `source`, the declaration it could not close and that
+/// declaration's own text — the three facts a reader needs to open the file
+/// and see the desync.
+fn function_source(source: &str, lines: &[&str], open: usize, head: &str) -> String {
     let mut mask = LineMask::default();
     let mut depth = 0i32;
     let mut opened = false;
@@ -1819,8 +1854,8 @@ fn function_source(lines: &[&str], open: usize, head: &str) -> String {
         }
     }
     panic!(
-        "the brace scan reached the end of the file without closing the \
-         declaration opened at line {}: {}",
+        "{source}:{}: the brace scan reached the end of the file without \
+         closing the declaration opened here: {}",
         open + 1,
         lines[open].trim()
     );
@@ -2082,7 +2117,7 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
         let mut sources: std::collections::BTreeMap<String, Vec<(usize, String)>> =
             std::collections::BTreeMap::new();
         let mut free: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
-        for (open, slice) in source_functions(&body) {
+        for (open, slice) in source_functions(&path.display().to_string(), &body) {
             let Some(name) = declared_fn_name(&slice) else {
                 continue;
             };
@@ -2282,7 +2317,7 @@ fn no_item_outside_a_function_body_mutates_the_process_environment() {
             continue;
         };
         let lines: Vec<&str> = body.lines().collect();
-        for (open, item) in const_items_outside_functions(&body) {
+        for (open, item) in const_items_outside_functions(&path.display().to_string(), &body) {
             items += 1;
             if !mutates_process_env(&item) || hatched(&lines, open - 1, MUTATOR_HATCH) {
                 continue;
@@ -2309,7 +2344,7 @@ fn no_item_outside_a_function_body_mutates_the_process_environment() {
     // `SERIAL_FLOORS` is: a margin is exactly the room a slice change needs to
     // stop seeing a few files in silence.
     assert!(
-        items >= 667,
+        items >= 668,
         "the walk read {items} items outside a function body; it has stopped \
          seeing the workspace's declarations"
     );
@@ -2479,7 +2514,7 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
         let mut opens: Vec<usize> = Vec::new();
         let mut sources: Vec<String> = Vec::new();
         let mut exported: Vec<bool> = Vec::new();
-        for (open, slice) in source_functions(&body) {
+        for (open, slice) in source_functions(&path.display().to_string(), &body) {
             let Some(name) = declared_fn_name(&slice).map(str::to_string) else {
                 continue;
             };
@@ -2596,7 +2631,7 @@ fn a_brace_after_a_literals_close_still_ends_the_function() {
         "fn sibling() {}\n"
     );
     let lines: Vec<&str> = body.lines().collect();
-    let source = function_source(&lines, 0, lines[0]);
+    let source = function_source(FIXTURE_SOURCE, &lines, 0, lines[0]);
     assert!(
         source.ends_with("\"#; }"),
         "the slice ends at the brace after the literal's close: {source:?}"
@@ -2653,7 +2688,7 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
         "\"#; }\n",
         "fn after() {}\n"
     );
-    let cut = source_functions(body);
+    let cut = source_functions(FIXTURE_SOURCE, body);
     let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
     assert_eq!(
         opens,
@@ -2671,7 +2706,7 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
         "\"#; fn sibling() { let x = 1; } }\n",
         "fn after() {}\n"
     );
-    let cut = source_functions(closing);
+    let cut = source_functions(FIXTURE_SOURCE, closing);
     let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
     assert_eq!(
         opens,
@@ -2685,7 +2720,7 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
         "\"#; let s = \"a;b\"; fn sibling() {} }\n",
         "fn after() {}\n"
     );
-    let cut = source_functions(quoted);
+    let cut = source_functions(FIXTURE_SOURCE, quoted);
     let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
     assert_eq!(
         opens,
@@ -2702,7 +2737,7 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
         "\"#; let s = \"; fn ghost() {\"; }\n",
         "fn after() {}\n"
     );
-    let cut = source_functions(inside);
+    let cut = source_functions(FIXTURE_SOURCE, inside);
     let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
     assert_eq!(
         opens,
@@ -2719,7 +2754,7 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
         "\"#; } // ; fn f() {}\n",
         "fn after() {}\n"
     );
-    let cut = source_functions(commented);
+    let cut = source_functions(FIXTURE_SOURCE, commented);
     let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
     assert_eq!(
         opens,
@@ -2746,7 +2781,7 @@ fn a_slice_ends_at_its_declarations_own_close_not_at_the_next_fn() {
         "\n",
         "fn sibling() {}\n"
     );
-    let cut = source_functions(body);
+    let cut = source_functions(FIXTURE_SOURCE, body);
     let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
     assert_eq!(opens, vec![1, 7], "{opens:?}");
     assert!(
@@ -2945,7 +2980,7 @@ fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
             .to_string_lossy()
             .replace('\\', "/");
 
-        for (open, slice) in source_functions(&body) {
+        for (open, slice) in source_functions(&relative, &body) {
             let Some(name) = declared_fn_name(&slice) else {
                 continue;
             };

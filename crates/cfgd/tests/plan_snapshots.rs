@@ -485,11 +485,11 @@ fn strip_ansi(s: &str) -> String {
 /// no target with them, so neither the rows the golden holds in order nor the
 /// `2 actions planned` counting them survive the platform. The probe's
 /// `git_bash_present: false` is what keeps it at three: Git Bash present, that
-/// same host plans the POSIX pair on top. A
-/// difference of one DIALECT inside an otherwise identical render takes the
-/// other shape instead — `diff_standing_rows_human` keeps its render on every
-/// OS by holding a placeholder in the golden and pinning the dialect beside it
-/// with an equality.
+/// same host plans the POSIX pair on top. A difference of one DIALECT inside
+/// an otherwise identical render takes the other shape instead —
+/// `diff_standing_rows_human` keeps its render on every OS by holding a
+/// placeholder in the golden and pinning the dialect beside it with an
+/// equality.
 #[cfg(unix)]
 #[test]
 #[serial_test::serial]
