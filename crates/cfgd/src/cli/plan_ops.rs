@@ -183,6 +183,7 @@ pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static s
             reconciler::ModuleActionKind::DeployFiles { .. } => "deploy",
             reconciler::ModuleActionKind::RunScript { .. } => "run",
             reconciler::ModuleActionKind::Skip { .. } => "skip",
+            reconciler::ModuleActionKind::FilesRefused { .. } => "refuse",
         },
         reconciler::Action::Env(ea) => match ea {
             reconciler::EnvAction::WriteEnvFile { .. } => cfgd_core::reconciler::ENV_VERB_WRITE,

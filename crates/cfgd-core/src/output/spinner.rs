@@ -479,6 +479,9 @@ pub(super) fn spinner_style(renderer: &Renderer, body: &str) -> ProgressStyle {
         .collect();
     let mut tick_refs: Vec<&str> = styled.iter().map(|s| s.as_str()).collect();
     tick_refs.push(" ");
+    // style-gate-ok: the template carries no style field — the frames are
+    // painted through the theme above, which already holds the decision, and
+    // every `body` a caller passes is a field-only literal.
     ProgressStyle::with_template(&indented_template(body))
         .unwrap_or_else(|_| ProgressStyle::default_spinner())
         .tick_strings(&tick_refs)
@@ -487,6 +490,8 @@ pub(super) fn spinner_style(renderer: &Renderer, body: &str) -> ProgressStyle {
 /// The unanimated counterpart of [`spinner_style`], on the same indent
 /// contract: a settled row, and any bar whose line is a static one.
 pub(super) fn plain_style(body: &str) -> ProgressStyle {
+    // style-gate-ok: an unanimated template with no style field and nothing
+    // painted into it — every `body` a caller passes is a field-only literal.
     ProgressStyle::with_template(&indented_template(body))
         .unwrap_or_else(|_| ProgressStyle::default_spinner())
 }
@@ -536,26 +541,28 @@ pub(crate) fn build_progress_bar(
 ) -> (IndProgressBar, LiveBarGuard) {
     let pb = multi.add(IndProgressBar::new(total));
     let live = LiveBarGuard::acquire(renderer);
-    // indicatif resolves a `.cyan` template field against `console`'s own colour
-    // flags, which no longer track the printer's decision — nothing writes them.
-    // The template therefore has to carry that decision itself, or `--no-color`
-    // renders unstyled text beside a still-green bar. The spinner frames above
-    // need no such branch: they are styled through the theme, which already
-    // holds it.
+    // indicatif resolves a template's style fields against `console`'s own
+    // colour flags, which no longer track the printer's decision — nothing
+    // writes them. The template therefore has to carry that decision itself, or
+    // `--color never` renders unstyled text beside a still-green bar. A style
+    // token is an escape whatever it names, `dim` included, so the colourless
+    // template carries none at all: filled and empty are told apart by
+    // `progress_chars`, which both templates share, so the two bars draw the
+    // same glyphs and only the coloured one spends escapes on them. The spinner
+    // frames above need no such branch — they are styled through the theme,
+    // which already holds the decision.
     let template = if renderer.theme.colors() {
         "{spinner:.cyan} [{bar:30.cyan/dim}] {pos}/{len} {msg}"
     } else {
-        // The empty half keeps `dim` — that is an ATTRIBUTE, not a colour, and
-        // `NO_COLOR` governs colour only, so dropping it made a colourless bar
-        // lose the contrast between filled and unfilled that is the only thing
-        // left telling them apart. Empty fill colour before the `/` is what
-        // spends no colour on the filled half.
-        "{spinner} [{bar:30./dim}] {pos}/{len} {msg}"
+        "{spinner} [{bar:30}] {pos}/{len} {msg}"
     };
     pb.set_style(
+        // style-gate-ok: the only styled template cfgd builds, and the branch
+        // above is the colour decision — the colourless arm carries no style
+        // field, so indicatif resolves none.
         ProgressStyle::with_template(&indented_template(template))
             .unwrap_or_else(|_| ProgressStyle::default_bar())
-            .progress_chars("━╸─"),
+            .progress_chars("█▓░"),
     );
     set_bar_depth(&pb, depth);
     pb.set_message(message.to_string());
@@ -1042,20 +1049,20 @@ mod tests {
         pb.finish();
     }
 
-    /// A `--no-color` run must not draw a green bar beside unstyled text.
-    /// indicatif resolves a `.cyan` template field against `console`'s colour
-    /// flags, which no printer writes any more, so the only thing that can keep
-    /// the bar honest is the template carrying the printer's own decision.
+    /// A `--color never` run must not draw a green bar beside unstyled text,
+    /// and must not draw a dim one either. indicatif resolves a template's
+    /// style fields against `console`'s colour flags, which no printer writes
+    /// any more, so the only thing that can keep the bar honest is the template
+    /// carrying the printer's own decision — and carrying it whole, because
+    /// `dim` reaches the terminal as `\x1b[2m` exactly like a colour does.
     ///
     /// Both draws happen with `console`'s flags ON, because that IS the
-    /// reported condition: `--no-color` on a colour terminal. indicatif
+    /// reported condition: `--color never` on a colour terminal. indicatif
     /// resolves the template field against those flags, so with them off the
     /// negative assertion would hold for the wrong reason and prove nothing.
     ///
-    /// The colourless bar is checked for COLOUR escapes, not for escapes: it
-    /// keeps `dim` on its unfilled half, which is an attribute, and `NO_COLOR`
-    /// governs colour only. Dropping the attribute too would leave a
-    /// colourless bar with nothing at all separating filled from unfilled.
+    /// Filled and empty stay distinguishable through `progress_chars`, which
+    /// both templates share, so the contrast survives with no escape spent.
     #[cfg(feature = "test-helpers")]
     #[test]
     #[serial_test::serial]
@@ -1107,15 +1114,14 @@ mod tests {
         }
 
         let off = draw(false);
-        assert!(
-            !has_color_sgr(&off),
-            "a colourless printer drew colour: {off:?}"
-        );
         assert!(off.contains("2/4"), "bar did not draw at all: {off:?}");
         assert!(
-            off.contains("\u{1b}[2m"),
-            "the colourless bar dropped `dim`, so its unfilled half is \
-             indistinguishable from its filled half: {off:?}"
+            !off.contains('\u{1b}'),
+            "a colourless printer wrote an escape: {off:?}"
+        );
+        assert!(
+            off.contains('█') && off.contains('░'),
+            "the colourless bar lost the glyph contrast that replaces `dim`: {off:?}"
         );
 
         let on = draw(true);

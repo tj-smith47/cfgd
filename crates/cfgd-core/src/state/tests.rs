@@ -3276,12 +3276,20 @@ fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_drop
     // a module it skipped whole, plus a matching tracking row. Nothing mints,
     // heals or re-finds that shape now, so without the migration it stands
     // forever. A `<name>:script` row is a real finding of the same type and
-    // must come through untouched.
+    // must come through untouched, and so must a row whose own grammar merely
+    // ENDS in those five characters: the migration's predicate is
+    // `module_row_facet`'s, which judges the FIRST separator, so
+    // `mod:extra:skip` and `mod/path:skip` are not skip rows.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     {
         let store = StateStore::open(&path).unwrap();
-        for rid in ["gated:skip", "nvim:script"] {
+        for rid in [
+            "gated:skip",
+            "nvim:script",
+            "mod:extra:skip",
+            "mod/path:skip",
+        ] {
             store
                 .record_drift("module", rid, None, None, "local")
                 .unwrap();
@@ -3307,6 +3315,8 @@ fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_drop
     assert_eq!(
         standing,
         vec![
+            ("module".to_string(), "mod/path:skip".to_string()),
+            ("module".to_string(), "mod:extra:skip".to_string()),
             ("module".to_string(), "nvim:script".to_string()),
             ("package".to_string(), "brew:skip".to_string()),
         ],
@@ -3318,10 +3328,16 @@ fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_drop
         .into_iter()
         .map(|r| r.resource_id)
         .collect();
+    let mut tracked = tracked;
+    tracked.sort_unstable();
     assert_eq!(
         tracked,
-        vec!["nvim:script".to_string()],
-        "the skip row's tracking row is dropped and its sibling kept"
+        vec![
+            "mod/path:skip".to_string(),
+            "mod:extra:skip".to_string(),
+            "nvim:script".to_string()
+        ],
+        "the skip row's tracking row is dropped and every sibling kept"
     );
 }
 

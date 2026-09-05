@@ -238,6 +238,8 @@ pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
+        // style-gate-ok: the stripper READS an escape to remove it, and never
+        // writes one — the gate's mirror image.
         if c != '\u{1b}' {
             out.push(c);
             continue;
@@ -255,6 +257,8 @@ pub fn strip_ansi(s: &str) -> String {
                     if inner == '\u{07}' {
                         break;
                     }
+                    // style-gate-ok: still reading — this is the OSC string
+                    // terminator the stripper consumes.
                     if inner == '\u{1b}' && chars.peek() == Some(&'\\') {
                         chars.next();
                         break;

@@ -681,9 +681,11 @@ fn reconcile_tick(
     } else {
         reconciler
     };
-    // The DRIFT count, not the plan's promise: a module skipped whole probed
-    // nothing, so counting it would report divergence no apply can settle and
-    // wake the policy branch every interval for the life of the daemon.
+    // The plan's own promise, which already excludes a module the host
+    // declined whole: that module probed nothing, so counting it would report
+    // divergence no apply can settle and wake the policy branch every interval
+    // for the life of the daemon. A refused file deploy IS counted here, as it
+    // is everywhere else — it is a finding the reader must act on.
     let effective_total = plan.total_actions();
 
     let timestamp = crate::utc_now_iso8601();

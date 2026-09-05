@@ -162,6 +162,14 @@ declarations fold together rather than replace one another); on Linux only the f
 
 File entries also accept `strategy` (`Symlink`/`Copy`/`Template`/`Hardlink`/`Patch`), `permissions`, `private`, `encryption`, and `patch`, with the same semantics as profile managed files. See [spec.files[]](spec/module.md#specfiles) for the full table.
 
+`encryption` is enforced before anything is written. If an entry demands
+`mode: Always` under a `Symlink` or `Hardlink` strategy, or its source is not
+encrypted with the declared backend, cfgd refuses that module's file work and
+says so on its own row — `cannot deploy files — <reason>`, counted in the plan
+and warned about in the apply. The module's packages, scripts and env still
+apply; only the deploy is withheld. See [Reconciliation](reconciliation.md) for
+how the row is counted and reported.
+
 ### Env Vars
 
 Modules can declare env vars in their spec. These are merged with the profile's env vars during reconciliation. On a name conflict, the module's value wins over the profile's value.

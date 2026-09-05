@@ -558,6 +558,19 @@ impl<'a> super::Reconciler<'a> {
                     false,
                 ))
             }
+            ModuleActionKind::FilesRefused { reason: _ } => {
+                // The deploy was refused, so nothing was written and no
+                // onChange hook may fire — but the row itself is the finding,
+                // and the apply settles and counts it.
+                Ok(super::apply::ActionRun::new(
+                    format!(
+                        "module:{}:{}",
+                        action.module_name,
+                        super::MODULE_FACET_FILES_REFUSED
+                    ),
+                    false,
+                ))
+            }
         }
     }
 }

@@ -736,9 +736,11 @@ mod tests {
 
         let _globals = crate::output::printer::ColorGlobalOn::set();
 
-        // `Role::Ok` against slots that spend colour and nothing else: an
-        // attribute-carrying slot would legitimately emit SGR with colour off
-        // (NO_COLOR governs colour only), and could not tell the two apart.
+        // `Role::Ok` against slots that spend colour and nothing else. Every
+        // slot is colourless once the printer decides against colour, so the
+        // claim would still hold for an attribute-carrying one — these keep the
+        // reported condition (a colour global flipped on) as the ONLY thing
+        // that could have styled the capture.
         let flat: Vec<(&str, Arc<Mutex<String>>)> = vec![
             ("for_test_at", {
                 let (p, buf) = Printer::for_test_at(Verbosity::Normal);
