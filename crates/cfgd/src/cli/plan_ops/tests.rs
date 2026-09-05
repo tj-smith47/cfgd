@@ -3936,7 +3936,10 @@ fn platform_skip_survives_in_the_plan_payload() {
     ]);
     let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
-    assert_eq!(output.total_actions, 2, "the skip is a counted action");
+    assert_eq!(
+        output.total_actions, 1,
+        "the skip is stated by the header's Modules clause and counted nowhere"
+    );
     let modules = output
         .phases
         .iter()

@@ -21,7 +21,7 @@ use super::sidecar::SidecarOutcome;
 use super::types::{
     Action, ActionResult, ApplyResult, ENV_RESOURCE_TYPE, MANAGER_RESOURCE_TYPE, ManagerAction,
     ModuleAction, ModuleActionKind, Owner, OwnerKind, PhaseFilter, PhaseName, Plan,
-    ReconcileContext, ScriptAction, ScriptPhase, SystemAction,
+    ReconcileContext, ScriptAction, ScriptPhase, SystemAction, is_module_skip,
 };
 use crate::providers::{
     ActionNote, FileAction, NoteSink, PackageAction, ProviderRegistry, SecretAction,
@@ -1142,18 +1142,21 @@ impl<'a> super::Reconciler<'a> {
         // Filter-aware count of the actions this run intends to execute, using
         // the SAME predicate as the loop below — so an aborted run reports
         // "{applied} of {planned_total}" against only the in-scope actions, not
-        // the whole plan.
+        // the whole plan. The attemptability half is asked through
+        // `attempted_count`, never respelled here: a second copy is how the
+        // header once promised a row the tree did not draw.
         let planned_total: usize = plan
             .phases
             .iter()
             .map(|phase| match phase_filter {
-                Some(filter) => phase
-                    .owned_actions()
-                    .filter(|(owner, a)| {
-                        a.pre_skip_reason().is_none()
-                            && action_matches_phase_filter(&phase.name, owner, a, filter)
-                    })
-                    .count(),
+                Some(filter) => super::attempted_count(
+                    phase
+                        .owned_actions()
+                        .filter(|(owner, a)| {
+                            action_matches_phase_filter(&phase.name, owner, a, filter)
+                        })
+                        .map(|(_, a)| a),
+                ),
                 None => phase.action_count(),
             })
             .sum();
@@ -1222,6 +1225,13 @@ impl<'a> super::Reconciler<'a> {
                 if let Some(filter) = phase_filter
                     && !action_matches_phase_filter(&phase.name, owner, action, filter)
                 {
+                    continue;
+                }
+                // A module skipped whole is the header's `Modules`-row clause,
+                // not work: the tree draws no row for it and the plan promised
+                // none, so dispatching it would settle an outcome and a
+                // `skipped` tally against a row nobody saw.
+                if is_module_skip(action) {
                     continue;
                 }
                 let next = plan_positions.len();

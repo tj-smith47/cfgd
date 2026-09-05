@@ -684,7 +684,7 @@ fn reconcile_tick(
     // The DRIFT count, not the plan's promise: a module skipped whole probed
     // nothing, so counting it would report divergence no apply can settle and
     // wake the policy branch every interval for the life of the daemon.
-    let effective_total = plan.drift_action_count();
+    let effective_total = plan.total_actions();
 
     let timestamp = crate::utc_now_iso8601();
 

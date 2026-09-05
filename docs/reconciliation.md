@@ -351,7 +351,11 @@ read) records no row at all, because nothing under it was probed: the skip says
 something about the host, not about a resource that diverged. Neither tree draws
 a block for it: the header's `Modules` row names it and the reason
 (`Modules  git, nvim (mac skipped: platform not matched (requires: macos))`),
-so a daemon tick's closing count names only rows you can see.
+so a daemon tick's closing count names only rows you can see. It is counted
+nowhere either: the header's `Actions N planned`, the apply's rollup clauses and
+that closing count all price the actions this run will attempt, and a module
+skipped whole is not one. `-o json` still lists the skip under its phase, with
+its kind and reason.
 
 The same holds for an action this host declined outright — the live-session
 publish on a box with no session manager. It is drawn in the plan and apply
