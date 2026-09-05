@@ -58,7 +58,13 @@ fn no_drift_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
 }
 
 /// Plant the whole env surface this host's engine would write for `aliases`
-/// under `home`, less the alias definitions themselves.
+/// under `home`, less the alias definitions themselves, and hand back the
+/// lines that were withheld.
+///
+/// Those lines are what the shell check will report as missing, so a caller
+/// pinning the row's `want` takes them from here rather than composing a
+/// second one — a fixture and an assertion that render the declaration
+/// separately can agree on a dialect neither host writes.
 ///
 /// What is left is a machine that has been applied and has since lost exactly
 /// those aliases, which is the one shell row the golden is about: the primary
@@ -69,8 +75,10 @@ fn no_drift_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
 /// fixture spelling `.cfgd.env` or a `source` line by hand writes where nothing
 /// reads, and the surfaces that break assert an absence, so it would pass
 /// blind rather than fail.
-#[cfg(unix)]
-fn plant_env_surface_without_aliases(home: &Path, aliases: &[cfgd_core::config::ShellAlias]) {
+fn plant_env_surface_without_aliases(
+    home: &Path,
+    aliases: &[cfgd_core::config::ShellAlias],
+) -> Vec<String> {
     let mut owners = cfgd_core::config::EntryOwners::default();
     owners.claim(
         &cfgd_core::reconciler::Owner::profile("tiny").token(),
@@ -98,6 +106,7 @@ fn plant_env_surface_without_aliases(home: &Path, aliases: &[cfgd_core::config::
     for (rc_path, line) in merged.managed_env_source_lines(home, scope) {
         write(&rc_path, format!("{line}\n"));
     }
+    withheld
 }
 
 /// Profile where the target does NOT exist on disk; `fm.diff` reports drift.
@@ -225,12 +234,14 @@ fn diff_no_drift_human() {
 /// does not.
 ///
 /// The alias row's `want` is the line the PRIMARY managed env file would hold,
-/// which is bash's on POSIX and PowerShell's on Windows — one golden cannot
-/// carry both, so this one is Unix-only on `plan_composed_source_human`'s
-/// precedent. The `Standing` section itself is platform-blind and stays
-/// covered on Windows by `drift_exit_code`, which spawns the binary under its
-/// own `HOME`.
-#[cfg(unix)]
+/// which is bash's on POSIX and PowerShell's on Windows — so the golden holds
+/// `<ALIAS_LINE>` there and the DIALECT is pinned beside it, against the same
+/// `declared_line` the fixture plants with. Two claims, each where it can be
+/// made on every OS: the golden says which rows render, in what order, with
+/// which cause wordings; the equality says the row's `want` is the very line
+/// this host's primary env file must hold. Gating the whole test on `unix`
+/// instead would have left the section's shape — the one place both cause
+/// wordings meet — unwatched on the OS whose dialect it was gated for.
 #[test]
 fn diff_standing_rows_human() {
     let (config_dir, state_dir, target) = no_drift_setup();
@@ -268,7 +279,10 @@ fn diff_standing_rows_human() {
         format!("{profile}  aliases:\n    - name: gs\n      command: git status\n"),
     )
     .unwrap();
-    plant_env_surface_without_aliases(home.path(), &alias_only);
+    let withheld = plant_env_surface_without_aliases(home.path(), &alias_only);
+    let [alias_line] = withheld.as_slice() else {
+        panic!("one declared alias renders one line: {withheld:?}");
+    };
     {
         let store = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
         store
@@ -291,7 +305,31 @@ fn diff_standing_rows_human() {
     cmd_diff(&cli, &printer, None, false).unwrap();
     drop(printer);
 
-    let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
+    let human = cap.human();
+    // The dialect claim, made on the raw capture before the placeholder goes
+    // in: the row's `want` is the very line this host's primary env file must
+    // hold, which is bash's here and PowerShell's on Windows.
+    let want = strip_ansi(&human)
+        .lines()
+        .find_map(|l| l.split_once("want: ").map(|(_, rest)| rest.to_string()))
+        .and_then(|rest| {
+            rest.split_once(", have: ")
+                .map(|(want, _)| want.to_string())
+        })
+        .expect("the alias row states both operands");
+    assert_eq!(
+        &want, alias_line,
+        "the alias row's `want` is not the line the primary env file must hold"
+    );
+
+    let normalized = normalize(
+        &human,
+        config_dir.path(),
+        &[
+            (&target, "<TARGET>"),
+            (Path::new(alias_line), "<ALIAS_LINE>"),
+        ],
+    );
     let stripped = strip_ansi(&normalized);
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),

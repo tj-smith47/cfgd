@@ -4,7 +4,7 @@ Diff
 
 Shell
   profile:tiny
-    ⚠ alias: gs — want: alias gs="git status" # profile:tiny, have: missing
+    ⚠ alias: gs — want: <ALIAS_LINE>, have: missing
 
 Standing
   ⚠ script echo hook   — exit 1

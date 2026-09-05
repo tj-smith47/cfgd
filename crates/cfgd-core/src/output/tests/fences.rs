@@ -2519,6 +2519,46 @@ fn an_uncalled_entry_hatch_is_read_only_inside_the_roster() {
     );
 }
 
+/// The tests
+/// [`every_in_process_test_declaring_shell_items_holds_a_test_home`]
+/// classifies as declaring shell items AND running a verb in this process:
+/// the population it finds today.
+///
+/// The floor sits AT that population rather than under it, the way
+/// [`SERIAL_FLOORS`] does. A member that falls out of needle reach — a fixture
+/// respelled, a verb renamed — is the finding, and a floor below the count
+/// absorbs it silently, which is the blindness the walk exists to prevent.
+/// Adding a member raises this; a count that FELL is never re-calibrated
+/// downward to make a red walk green.
+const TEST_HOME_JUDGED_FLOOR: usize = 4;
+
+/// The slice's logical lines, with every line that BEGAN inside a literal or a
+/// block comment joined onto the line that opened it.
+///
+/// A YAML fixture is a raw literal spanning many physical lines, so a
+/// declaration's two tells — the `env:`/`aliases:` key and its `- name:` item
+/// — land on two of them, and a needle reading one line at a time cannot see
+/// the shape half the fixtures in the directory are written in.
+/// [`crate::test_helpers::logical_source_lines`] folds a `\`-continued literal
+/// for that same reason and deliberately leaves a raw one alone, because its
+/// other callers walk PRODUCTION sources where joining a literal's lines would
+/// pair a needle with a hatch comment that is not its own. [`LineMask`] already
+/// carries the state this walk needs, so the fold is local to the walk that
+/// wants it.
+fn literal_folded_lines(slice: &str) -> Vec<(usize, String)> {
+    let mut mask = LineMask::default();
+    let mut folded = String::with_capacity(slice.len());
+    for (n, line) in slice.lines().enumerate() {
+        let continues = mask.masked();
+        mask.advance(line);
+        if n > 0 {
+            folded.push(if continues { ' ' } else { '\n' });
+        }
+        folded.push_str(line);
+    }
+    crate::test_helpers::logical_source_lines(&folded)
+}
+
 /// An integration test that declares shell items and drives a `cmd_*` in this
 /// process holds a test HOME.
 ///
@@ -2541,6 +2581,16 @@ fn an_uncalled_entry_hatch_is_read_only_inside_the_roster() {
 /// runner appended `aliases:` to its own profile and called the verb three
 /// lines below.
 ///
+/// The `HOME` credit is per-body for the same reason, and that direction is
+/// the deliberately strict one: a spawning fixture sets `.env("HOME", …)` in a
+/// shared helper, so a test that calls such a helper AND drives an in-process
+/// verb over its own declaration is flagged despite the spawn — correctly,
+/// because the child's `HOME` is not what the in-process check reads, and the
+/// guard belongs in the body that runs the verb.
+///
+/// Lines are read through [`literal_folded_lines`], not raw: a fixture written
+/// as `r#"…"#` carries the declaration's two tells on two physical lines.
+///
 /// The verb is ANY `cmd_*`, which over-approximates on purpose: the guard is
 /// one line and costs a test that resolves no path nothing, while a roster of
 /// the verbs that can reach `~` is exactly the list that goes stale — a verb
@@ -2550,7 +2600,7 @@ fn an_uncalled_entry_hatch_is_read_only_inside_the_roster() {
 fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
     let root = workspace_root();
     let mut tests_seen = 0usize;
-    let mut judged = 0usize;
+    let mut judged = Vec::new();
     let mut offenders = Vec::new();
 
     for path in workspace_rust_files() {
@@ -2583,7 +2633,7 @@ fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
                 continue;
             }
             tests_seen += 1;
-            let folded = crate::test_helpers::logical_source_lines(&slice);
+            let folded = literal_folded_lines(&slice);
             // A declared entry is a YAML list item under the `env:` or
             // `aliases:` key — the two keys alone would read every `env: vec![]`
             // struct field in the directory as a declaration.
@@ -2594,7 +2644,7 @@ fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
             if !(declares && in_process) {
                 continue;
             }
-            judged += 1;
+            judged.push(format!("{relative}:{open}: {name}"));
             if !folded
                 .iter()
                 .any(|(_, l)| l.contains("with_test_home") || l.contains(".env(\"HOME\""))
@@ -2618,9 +2668,12 @@ fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
         "the walk read {tests_seen} integration tests; it has stopped seeing them"
     );
     assert!(
-        judged >= 2,
-        "the walk classified {judged} tests as declaring shell items and \
-         running a verb; its needles have drifted from the fixtures"
+        judged.len() >= TEST_HOME_JUDGED_FLOOR,
+        "the walk classified {} tests as declaring shell items and running a \
+         verb, under its floor of {TEST_HOME_JUDGED_FLOOR} — a member has \
+         fallen out of needle reach:\n{}",
+        judged.len(),
+        judged.join("\n")
     );
 }
 
