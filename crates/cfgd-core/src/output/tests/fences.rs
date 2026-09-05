@@ -1515,17 +1515,30 @@ fn a_producer_tell_matches_only_a_whole_identifier() {
 /// How cfgd test code mutates the PROCESS-GLOBAL environment.
 ///
 /// Every entry either writes an environment variable outright or installs a
-/// guard that does. Deliberately absent: `Command::env(…)`, which hands a
-/// value to ONE child and is precisely how a test avoids the race — keying on
-/// the variable's name instead of on the mutation would flag those and train
-/// authors to hatch the safe shape.
+/// guard that does. Matched as a substring of a call site's code half, so a
+/// name covers the family spelled on top of it
+/// (`install_named_path_shim_logged`, `ToolShim::install_failing_on`).
+/// Deliberately absent: `Command::env(…)`, which hands a value to ONE child
+/// and is precisely how a test avoids the race — keying on the variable's
+/// name instead of on the mutation would flag those and train authors to
+/// hatch the safe shape.
+///
+/// Kept honest from the other side by
+/// [`every_env_mutating_test_helper_is_named_in_the_mutator_roster`], which
+/// derives the helpers that reach a mutation from the test-helper sources
+/// themselves: a helper added there and not named here fails that walk
+/// instead of quietly uncounting every test that calls it.
 const ENV_MUTATORS: &[&str] = &[
     "EnvVarGuard::set",
     "EnvVarGuard::unset",
+    "EditorGuard::set",
+    "ProbePath::containing",
+    "install_named_path_shim",
     "with_test_env_var",
     "ToolShim::install",
     "CosignTestShim::install",
     "CosignTestShim::builder",
+    "CosignTestShimBuilder::install",
     "env::set_var",
     "env::remove_var",
 ];
@@ -1538,22 +1551,46 @@ const SERIAL_HATCH: &str = "serial-ok:";
 /// `fn` line: a helper declared INSIDE a test body would otherwise cut the
 /// test's slice short and hide everything the test does after it. Braces are
 /// counted on [`code_half`], so one inside a literal or a trailing comment
-/// does not move the depth, and the scan is capped so an unbalanced brace in a
-/// multi-line raw literal cannot swallow the rest of the file.
+/// does not move the depth.
+///
+/// The scan runs to the real close with no line ceiling. A ceiling returns a
+/// slice that merely LOOKS like a function, and every tell below the cut is
+/// then invisible to a walk that believes it read the whole body — the silent
+/// direction. A scan that instead runs off the end of the file has desynced
+/// (a brace inside a multi-line raw literal is the shape that does it), so it
+/// panics naming the declaration it could not close.
 fn function_source(lines: &[&str], open: usize) -> String {
-    const MAX_LINES: usize = 400;
+    let mut mask = LineMask::default();
     let mut depth = 0i32;
     let mut opened = false;
-    let end = (open + MAX_LINES).min(lines.len());
-    for (offset, line) in lines[open..end].iter().enumerate() {
+    for (offset, line) in lines[open..].iter().enumerate() {
+        // The declaration's own line is never inside a literal or comment —
+        // `source_functions` masks before it opens a slice — so a mask started
+        // here reads the rest of the body correctly, and a brace inside a
+        // multi-line raw literal moves no depth.
+        let masked = mask.masked();
+        mask.advance(line);
+        if masked {
+            continue;
+        }
         let code = code_half(line);
+        if !opened && !code.contains('{') && code.contains(';') {
+            // A declaration with no body at all (a trait method's signature)
+            // ends at its semicolon.
+            return lines[open..=open + offset].join("\n");
+        }
         depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
         opened |= code.contains('{');
         if opened && depth <= 0 {
             return lines[open..=open + offset].join("\n");
         }
     }
-    lines[open..end].join("\n")
+    panic!(
+        "the brace scan reached the end of the file without closing the \
+         declaration opened at line {}: {}",
+        open + 1,
+        lines[open].trim()
+    );
 }
 
 /// The name a `fn` line declares.
@@ -1795,4 +1832,243 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
              the walk has gone blind in that file"
         );
     }
+}
+
+/// The primitive writes a helper's own body can carry, from which reaching is
+/// derived. `EnvVarGuard`'s two constructors are primitives rather than
+/// derived helpers: they are the guard every other one is built on, and
+/// deriving them from their own `unsafe` block would make the seed set a
+/// restatement of `std::env`.
+const ENV_MUTATION_SEEDS: &[&str] = &[
+    "env::set_var",
+    "env::remove_var",
+    "EnvVarGuard::set",
+    "EnvVarGuard::unset",
+];
+
+/// Helpers the derivation must still find, so a walk that has stopped
+/// resolving calls fails instead of demanding nothing.
+const DERIVED_CALIBRATION: &[&str] = &[
+    "install_named_path_shim",
+    "install_named_path_shim_logged",
+    "EditorGuard::set",
+    "ProbePath::containing",
+];
+
+const MUTATOR_HATCH: &str = "env-mutator-ok:";
+
+/// The type name an `impl` line opens a block for, as a call site spells it:
+/// the implementing type, not the trait, and without its path or generics.
+fn impl_type_name(code: &str) -> Option<String> {
+    let rest = code.strip_prefix("impl")?.trim_start();
+    let rest = match rest.strip_prefix('<') {
+        Some(generics) => generics.split_once('>')?.1.trim_start(),
+        None => rest,
+    };
+    let rest = match rest.split_once(" for ") {
+        Some((_, implementing)) => implementing.trim_start(),
+        None => rest,
+    };
+    let path: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
+        .collect();
+    let name = path.rsplit("::").next()?.to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+/// The type each line sits inside the `impl` block of, or `None` outside one.
+///
+/// Only a block opened in column zero counts: a nested `impl` belongs to a
+/// function body, and the qualified name a call site spells is the top-level
+/// one. The owner is dropped when a block that was open closes, so a
+/// multi-line `impl` header keeps it.
+fn impl_owners(lines: &[&str]) -> Vec<Option<String>> {
+    let mut out = Vec::with_capacity(lines.len());
+    let mut owner: Option<String> = None;
+    let mut depth = 0i32;
+    for line in lines {
+        let code = code_half(line);
+        if depth == 0 && code.starts_with("impl") {
+            owner = impl_type_name(&code);
+        }
+        out.push(owner.clone());
+        let before = depth;
+        depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
+        if depth <= 0 {
+            depth = 0;
+            if before > 0 {
+                owner = None;
+            }
+        }
+    }
+    out
+}
+
+/// Whether `body` calls `name` — as a bare call, a method call or an
+/// associated one, the three spellings being indistinguishable without type
+/// resolution. Widening that way is safe only because the caller follows a
+/// name ONLY when every declaration of it reaches a mutation.
+fn calls_named(body: &str, name: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    body.match_indices(name).any(|(at, _)| {
+        !body[..at].chars().next_back().is_some_and(is_word)
+            && body[at + name.len()..].trim_start().starts_with('(')
+    })
+}
+
+/// Every test helper that writes the process environment is named in
+/// [`ENV_MUTATORS`].
+///
+/// The serial walk above reaches ACROSS files only through that list, so a
+/// helper missing from it uncounts every test in the workspace whose only
+/// mutation is the one it installs — silently, and the more useful the helper
+/// the more tests go unwatched. A hand-maintained list is exactly the shape
+/// that drifts, so the roster is checked against a derivation from the
+/// test-helper sources themselves.
+///
+/// A helper REACHES a mutation through one of [`ENV_MUTATION_SEEDS`] in its
+/// own body, or through a same-file declaration it calls whose EVERY
+/// declaration of that name reaches. That last condition is what makes
+/// following method calls safe: `set`, `install` and `drop` name env-mutating
+/// associated items and ordinary ones alike, and a name any sibling of which
+/// does not mutate is never followed. It also bounds the derivation — a chain
+/// whose middle link is such a name (`Self::builder().install()`) is followed
+/// only as far as the entry point it names, which is why both spellings of
+/// the cosign shim's install are on the roster.
+///
+/// Scoped to `test_helpers.rs`, the workspace's only `test-helpers`-gated
+/// module. Run over every source instead, the same derivation adds exactly
+/// one public reacher — CLI startup code that writes `XDG_CONFIG_HOME` before
+/// any thread exists — which is a production concern with its own safety
+/// argument, not a helper a test calls.
+///
+/// `// env-mutator-ok: <why>` exempts a helper whose write is not
+/// process-global.
+#[test]
+fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
+    let root = workspace_root();
+    let mut derived: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut files_read = 0usize;
+    let mut offenders = Vec::new();
+
+    for path in workspace_rust_files() {
+        if path.file_name() != Some(std::ffi::OsStr::new("test_helpers.rs")) {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        files_read += 1;
+        // The trailing test module exercises the helpers, so its own tests
+        // reach every seed and would be derived as helpers themselves.
+        let body = crate::test_helpers::production_slice(&raw);
+        let lines: Vec<&str> = body.lines().collect();
+        let owners = impl_owners(&lines);
+
+        let mut names: Vec<String> = Vec::new();
+        let mut qualified: Vec<String> = Vec::new();
+        let mut opens: Vec<usize> = Vec::new();
+        let mut sources: Vec<String> = Vec::new();
+        let mut exported: Vec<bool> = Vec::new();
+        for (open, slice) in source_functions(&body) {
+            let Some(name) = declared_fn_name(&slice) else {
+                continue;
+            };
+            let owner = owners[open - 1].clone();
+            qualified.push(match &owner {
+                Some(ty) => format!("{ty}::{name}"),
+                None => name.to_string(),
+            });
+            names.push(name.to_string());
+            exported.push(lines[open - 1].trim_start().starts_with("pub"));
+            sources.push(function_source(&lines, open - 1));
+            opens.push(open);
+        }
+
+        let mut reaches: Vec<bool> = sources
+            .iter()
+            .map(|src| {
+                crate::test_helpers::logical_source_lines(src)
+                    .iter()
+                    .any(|(_, line)| {
+                        let code = code_half(line);
+                        ENV_MUTATION_SEEDS.iter().any(|seed| code.contains(seed))
+                    })
+            })
+            .collect();
+        loop {
+            let followable: Vec<&str> = names
+                .iter()
+                .enumerate()
+                .filter(|(_, name)| {
+                    names
+                        .iter()
+                        .enumerate()
+                        .all(|(other, sibling)| sibling != *name || reaches[other])
+                })
+                .map(|(_, name)| name.as_str())
+                .collect();
+            let mut grew = false;
+            for at in 0..sources.len() {
+                if reaches[at] {
+                    continue;
+                }
+                if followable
+                    .iter()
+                    .any(|name| *name != names[at] && calls_named(&sources[at], name))
+                {
+                    reaches[at] = true;
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+
+        let relative = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        for at in 0..sources.len() {
+            if !reaches[at] || !exported[at] {
+                continue;
+            }
+            derived.insert(qualified[at].clone());
+            let named = ENV_MUTATORS
+                .iter()
+                .any(|entry| qualified[at].contains(entry) || names[at].contains(entry));
+            if named || hatched(&lines, opens[at] - 1, MUTATOR_HATCH) {
+                continue;
+            }
+            offenders.push(format!("{relative}:{}: {}", opens[at], qualified[at]));
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a public test helper that writes the process environment must be \
+         named in `ENV_MUTATORS`, or every test whose only mutation it is \
+         goes uncounted by the serial walk — add the name, or \
+         `// env-mutator-ok: <why>` if the write is not process-global:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        files_read >= 2,
+        "the walk read {files_read} test-helper sources; it has stopped finding them"
+    );
+    for name in DERIVED_CALIBRATION {
+        assert!(
+            derived.contains(*name),
+            "the derivation no longer finds {name}; it has stopped resolving calls \
+             (found: {derived:?})"
+        );
+    }
+    assert!(
+        derived.len() >= 10,
+        "the derivation found {} env-mutating helpers: {derived:?}",
+        derived.len()
+    );
 }
