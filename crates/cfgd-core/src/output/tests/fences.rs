@@ -1219,15 +1219,25 @@ fn source_functions(body: &str) -> Vec<(usize, String)> {
         let rest = mask.source_remainder(line);
         // On the line that CLOSES a literal, what precedes the declaration is
         // the tail of the statement the literal belonged to (`"#;`), so the
-        // declaration does not start the span. It is the FIRST terminator that
-        // ends that tail: a later one belongs to the declaration's own body,
-        // and looking past it would hide the declaration it introduces. Only a
-        // closing line looks past anything at all.
-        let decl = match rest.find(';') {
-            Some(at) if began_masked => rest.get(at + 1..).unwrap_or(""),
-            _ => rest,
+        // declaration does not start the span. Only a closing line looks past
+        // anything at all.
+        //
+        // Which terminator ends that tail cannot be counted off: the line may
+        // carry further statements of its own before the declaration, so it is
+        // the EARLIEST terminator a declaration follows. Taking the first
+        // outright stops at `"#; let s = 1; fn f() {}`'s first `;`; taking the
+        // last lets a declaration's own body (`fn f() { let x = 1; }`) swallow
+        // it. Candidates are read off the literal-blanked remainder, which is
+        // byte-length preserving, so a `;` inside a literal of the tail's own
+        // (`let s = "a;b";`) is never one.
+        let code = code_half(rest);
+        let opened = if began_masked && code.contains(';') {
+            code.match_indices(';')
+                .any(|(at, _)| opens_function(rest.get(at + 1..).unwrap_or("")))
+        } else {
+            opens_function(rest)
         };
-        if opens_function(decl) {
+        if opened {
             opens.push(i);
         }
     }
@@ -1908,6 +1918,11 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
         // `test_helpers.rs` is where the helpers live, so its mentions prove
         // nothing.
         //
+        // Cutting to declarations is what makes an import not a call, and it is
+        // also this count's ceiling: a needle reached from file scope — a macro
+        // body, a `const` initializer — sits outside every declaration and is
+        // not seen.
+        //
         // The fold does not depend on the entry, so it happens once for the
         // file's declarations rather than once per entry per declaration.
         if !path.ends_with(Path::new("test_helpers.rs")) {
@@ -2418,10 +2433,19 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
         vec![1, 3, 4],
         "the declaration on the literal's closing line opened no slice: {opens:?}"
     );
-    assert!(
-        cut[1].1.contains("fn sibling"),
-        "the slice opened past the declaration's own terminator: {:?}",
-        cut[1].1
+
+    let quoted = concat!(
+        "fn holder() {\n",
+        "    let banner = r#\"\n",
+        "\"#; let s = \"a;b\"; fn sibling() {}\n",
+        "fn after() {}\n"
+    );
+    let cut = source_functions(quoted);
+    let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
+    assert_eq!(
+        opens,
+        vec![1, 3, 4],
+        "a `;` inside the tail's own literal ended it: {opens:?}"
     );
 }
 
