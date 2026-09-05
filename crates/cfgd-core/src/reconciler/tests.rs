@@ -7690,6 +7690,110 @@ fn the_post_apply_env_regeneration_heals_the_key_its_action_stands_for() {
     }
 }
 
+/// A session publish no manager can perform leaves NO `env-session` row behind,
+/// while its attempted siblings in the same apply record theirs.
+///
+/// The absence is the design, not an oversight: `cfgd status` then lists no
+/// `cfgd:session` owner and no `session env` Managed Resources row on a host
+/// with no session manager, because nothing on that host manages one. The
+/// sibling half is what keeps the rule from being satisfied by an apply that
+/// simply recorded nothing.
+#[test]
+fn a_withheld_session_publish_leaves_no_env_session_row_while_its_siblings_record() {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let withheld = Action::Env(EnvAction::RefreshLiveSession {
+        vars: vec![("EDITOR".to_string(), "nvim".to_string())],
+    });
+    let attempted = Action::File(FileAction::Delete {
+        target: PathBuf::from("/home/u/.gone"),
+        origin: "profile".to_string(),
+    });
+    let keys = |action: &Action| -> Vec<(String, String)> {
+        crate::reconciler::action_drift_rows(action, &registry)
+            .into_iter()
+            .map(|row| row.key())
+            .collect()
+    };
+    let withheld_rows = keys(&withheld);
+    let attempted_rows = keys(&attempted);
+    assert_eq!(
+        withheld_rows,
+        vec![(
+            "env-session".to_string(),
+            crate::state::ENV_SESSION_RESOURCE_ID.to_string()
+        )],
+        "the row grammar the live session is recorded under"
+    );
+    for (rtype, rid) in withheld_rows.iter().chain(attempted_rows.iter()) {
+        state
+            .record_drift(rtype, rid, None, None, "daemon")
+            .unwrap();
+    }
+
+    let apply_id = state
+        .record_apply("test", "hash", ApplyStatus::Success, None)
+        .unwrap();
+    let result = |action: &Action,
+                  phase: PhaseName,
+                  rows: Vec<(String, String)>,
+                  not_attempted: Option<String>| ActionResult {
+        phase: phase.as_str().to_string(),
+        description: crate::reconciler::format_action_description(action),
+        success: true,
+        error: None,
+        changed: not_attempted.is_none(),
+        skipped: false,
+        not_attempted,
+        installed: None,
+        versions: Default::default(),
+        drift_rows: rows,
+    };
+    Reconciler::new(&registry, &state)
+        .record_managed_resources(
+            apply_id,
+            &[
+                result(
+                    &withheld,
+                    PhaseName::Prerequisites,
+                    withheld_rows.clone(),
+                    Some(crate::NO_SESSION_MANAGER.to_string()),
+                ),
+                result(&attempted, PhaseName::Files, attempted_rows.clone(), None),
+            ],
+            &make_empty_resolved(),
+            &[],
+        )
+        .unwrap();
+
+    let managed: Vec<(String, String)> = state
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    assert!(
+        !managed.iter().any(|(rtype, rid)| rtype == "env-session"
+            || (rtype == crate::reconciler::ENV_RESOURCE_TYPE
+                && rid == crate::state::ENV_SESSION_RESOURCE_ID)),
+        "a host with no session manager manages no live session: {managed:?}"
+    );
+    assert!(
+        !managed.is_empty(),
+        "the attempted sibling still records its own row: {managed:?}"
+    );
+    let standing: Vec<(String, String)> = state
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    assert_eq!(
+        standing, withheld_rows,
+        "the withheld publish heals nothing while its sibling heals its own"
+    );
+}
+
 /// An action this host never attempted writes nothing and heals nothing.
 ///
 /// A withheld result carries `success: true` — the run did not fail, it
