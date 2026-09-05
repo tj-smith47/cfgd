@@ -166,9 +166,9 @@ File entries also accept `strategy` (`Symlink`/`Copy`/`Template`/`Hardlink`/`Pat
 `mode: Always` under a `Symlink` or `Hardlink` strategy, or its source is not
 encrypted with the declared backend, cfgd refuses that module's file work and
 says so on its own row — `cannot deploy files — <reason>`, counted in the plan
-and warned about in the apply. The module's packages, scripts and env still
-apply; only the deploy is withheld. See [Reconciliation](reconciliation.md) for
-how the row is counted and reported.
+and drawn as a warning (⚠) by both the plan and the apply. The module's
+packages, scripts and env still apply; only the deploy is withheld. See
+[Reconciliation](reconciliation.md) for how the row is counted and reported.
 
 ### Env Vars
 

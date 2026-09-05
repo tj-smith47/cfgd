@@ -1365,6 +1365,16 @@ pub(super) fn narrow_to_module(plan: &mut crate::reconciler::Plan, module: &str)
 /// module's own actions: a `Skip` module action records no change, so it does
 /// not count as drift.
 ///
+/// A [`crate::reconciler::ModuleActionKind::FilesRefused`] is NOT excluded, so a
+/// module whose only planned action is the refusal counts as drifted and fires
+/// its `onDrift` hook every interval for as long as the refusal stands. That is
+/// the intended reading of both halves: the module's declared files are not on
+/// the machine and no tick will put them there until the source is encrypted (or
+/// its strategy stops demanding it), which is exactly the standing divergence
+/// the hook exists to announce — where a host-declined module is settled, not
+/// diverged. Every other surface prices the refusal the same way: the header
+/// counts it, both trees draw it, and the tick's closing sentence names it.
+///
 /// The caller passes the plan the tick will act on, which the reconcile loop
 /// has already pruned of every resource awaiting a source decision. A module
 /// whose only drifting resource is excluded therefore reports no drift and
@@ -1415,9 +1425,11 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
 ///   are the tick's own grammar, so identity governs — a row the plan still
 ///   covers is in the current set before this predicate is consulted, and one
 ///   it does not cover is a file or a surface the plan found converged. The
-///   exception is a module the plan carries only as a
-///   `ModuleActionKind::Skip`: it was never probed at all, so its rows are
-///   kept the way the CLI keeps an unevaluated configurator's.
+///   exception is a module whose files the plan never probed
+///   ([`crate::reconciler::module_files_unprobed`]): the host declined it whole,
+///   or it refused the deploy before reading a target. Its rows are kept the way
+///   the CLI keeps an unevaluated configurator's — a run that declined to look
+///   proves nothing about what it did not read.
 /// * `system` `<configurator>.<key>` — [`crate::reconciler::system_resource_key`]'s
 ///   spelling, which the tick's own `SetValue` mints too, so a row is re-found
 ///   by comparing the whole composed id rather than splitting it. A planned
@@ -1443,7 +1455,7 @@ pub(super) fn tick_cannot_refind(
     planned: &[&crate::reconciler::Action],
     scoped: bool,
 ) -> bool {
-    use crate::reconciler::{Action, EnvAction, ModuleActionKind, SystemAction};
+    use crate::reconciler::{Action, EnvAction, SystemAction};
     match resource_type {
         "env-var" | "alias" => {
             scoped
@@ -1468,13 +1480,13 @@ pub(super) fn tick_cannot_refind(
             // governs, and a row the plan still covers never reaches here.
             false
         }
-        // A module the plan carries only as a Skip probed nothing under it.
+        // A module whose files this tick never probed — the host declined it
+        // whole, or it refused the deploy outright.
         "module" => {
             let owner = crate::reconciler::module_row_owner(resource_id);
             planned.iter().any(|a| {
-                matches!(a, Action::Module(ma)
-                    if ma.module_name == owner
-                        && matches!(ma.kind, ModuleActionKind::Skip { .. }))
+                matches!(a, Action::Module(ma) if ma.module_name == owner)
+                    && crate::reconciler::module_files_unprobed(a)
             })
         }
         // Judged whole against the composer's output rather than parsed: a KEY

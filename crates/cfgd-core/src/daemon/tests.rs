@@ -9188,6 +9188,156 @@ async fn a_tick_over_a_platform_gated_module_records_no_drift_and_no_tracking_ro
     );
 }
 
+/// A module whose FILE work the tick refused keeps the per-file rows recorded
+/// for it: cfgd declined to read those targets, so nothing this tick did says
+/// they converged.
+///
+/// The bug this ends: the complement-resolve kept a module's rows only for a
+/// host decline, so once the refusal became its own kind a tick that emitted no
+/// `DeployFiles` at all healed every standing row under the module — reporting
+/// files converged that cfgd explicitly refused to write. The refusal itself is
+/// counted, unlike the decline: it is work the reader must act on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(daemon_log)]
+async fn a_tick_over_a_module_whose_files_it_refused_keeps_their_rows() {
+    use crate::PathDisplayExt;
+
+    reset_daemon_log();
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - enc\n",
+    )
+    .unwrap();
+
+    // A declared file whose source demands encryption and carries none: the
+    // plan refuses this module's deploy and emits no `DeployFiles` at all.
+    let module_dir = tmp.path().join("modules").join("enc");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(module_dir.join("id_rsa"), "plaintext key\n").unwrap();
+    let target = tmp.path().join("deployed").join("id_rsa");
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: enc\nspec:\n  files:\n    - source: id_rsa\n      target: {}\n      strategy: Copy\n      encryption:\n        backend: sops\n        mode: Always\n",
+            target.display_posix()
+        ),
+    )
+    .unwrap();
+
+    // The row a previous tick recorded, back when the file was deployable.
+    let row_id = crate::reconciler::module_file_resource_id("enc", &target.display_posix());
+    {
+        let store = StateStore::open_in_dir(&state_dir).unwrap();
+        store
+            .record_drift(
+                "module",
+                &row_id,
+                Some("deployed"),
+                Some("missing"),
+                "daemon",
+            )
+            .unwrap();
+    }
+
+    struct RefusedHooks;
+    impl DaemonHooks for RefusedHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &RefusedHooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let logs = daemon_log();
+    assert!(
+        logs.contains("drift detected in"),
+        "the refusal is work the reader must act on, so the tick's sentence \
+         names it: {logs}"
+    );
+
+    let store = StateStore::open_in_dir(&state_dir).unwrap();
+    let standing: Vec<(String, String)> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    assert!(
+        standing.contains(&("module".to_string(), row_id.clone())),
+        "a per-file row under a module whose files were never probed stands: \
+         {standing:?}"
+    );
+    let tracked: Vec<(String, String)> = store
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    assert!(
+        !tracked.iter().any(|(_, rid)| rid.starts_with("enc")),
+        "the refusal put nothing on the machine to track: {tracked:?}"
+    );
+    assert!(
+        !target.exists(),
+        "and wrote no file: the deploy is what it refused"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_reconcile_with_profile_override() {
     // Test that profile_override is used instead of config's profile field.

@@ -228,9 +228,31 @@ fn every_styled_span_reaches_bytes_through_the_one_gate() {
     // the `StyledText` whose `Display` holds the colour decision, so a line
     // spelling it is the sanctioned mechanism rather than a bypass. Counted,
     // not hatched — a walk that demanded a hatch on every painter would put
-    // sixty of them in `output/` and stop meaning anything.
+    // sixty of them in `output/` and stop meaning anything. It is asked SECOND:
+    // a line that paints through the gate and also writes an escape of its own
+    // is a writer, and classifying it as gated would let the raw half ride in
+    // beside a sanctioned call.
     const GATED: &str = ".apply_to(";
     const HATCH: &str = "// style-gate-ok:";
+
+    // A needle spelled as an identifier matches as one. `ESC` is a name, not a
+    // substring: a future `SCRIPT_DESC` or `ESCAPE_RE` in production code is
+    // not an escape writer, and matching it would send the next author hunting
+    // for a leak that is not there. Needles carrying punctuation
+    // (`\x1b`, `.template(`) are matched as written.
+    fn writes(line: &str, needle: &str) -> bool {
+        let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        if !needle.chars().all(is_word) {
+            return line.contains(needle);
+        }
+        line.match_indices(needle).any(|(at, _)| {
+            !line[..at].chars().next_back().is_some_and(is_word)
+                && !line[at + needle.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(is_word)
+        })
+    }
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/output");
     let mut files = Vec::new();
@@ -260,11 +282,10 @@ fn every_styled_span_reaches_bytes_through_the_one_gate() {
             if code.starts_with("//") {
                 continue;
             }
-            if line.contains(GATED) {
-                gated += 1;
-                continue;
-            }
-            if !WRITES.iter().any(|needle| line.contains(needle)) {
+            if !WRITES.iter().any(|needle| writes(line, needle)) {
+                if line.contains(GATED) {
+                    gated += 1;
+                }
                 continue;
             }
             // The hatch is read off the contiguous comment block above the

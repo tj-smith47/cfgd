@@ -7694,8 +7694,20 @@ fn the_post_apply_env_regeneration_heals_the_key_its_action_stands_for() {
 /// with no session manager, because nothing on that host manages one. The
 /// sibling half is what keeps the rule from being satisfied by an apply that
 /// simply recorded nothing.
+///
+/// The half that is real is the ROW GRAMMAR, which only a host whose session
+/// manager the planner can reach mints at all — so the availability seam is
+/// pinned at a stand-in rather than read off whatever machine runs the suite,
+/// and the test joins the serial group that owns that seam: its siblings point
+/// the same variable at a missing file, and a concurrent reader of a global
+/// env var is a race whichever value it wants.
 #[test]
+#[serial_test::serial]
 fn a_withheld_session_publish_leaves_no_env_session_row_while_its_siblings_record() {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _session_manager =
+        crate::test_helpers::ToolShim::install(crate::SYSTEMCTL_BIN_ENV, 0, "", "");
+
     let state = test_state();
     let registry = ProviderRegistry::new();
     let withheld = Action::Env(EnvAction::RefreshLiveSession {
@@ -7871,9 +7883,10 @@ fn a_result_the_run_never_attempted_writes_no_row_and_heals_none() {
 /// runs a real apply against a real store, and requires the store to come
 /// back holding only the four PROVIDER `Skip` variants' rows — a withheld
 /// block is not converged by the run that withheld it, so its row waits for
-/// the tick's own complement instead. The fifth Skip, a module skipped whole,
-/// mints no row in the first place: nothing under it was probed, so five
-/// withheld actions leave four standing rows.
+/// the tick's own complement instead. The two module shapes mint no row in the
+/// first place: a module skipped whole probed nothing under it and a refused
+/// file deploy read no target, so six withheld actions leave four standing
+/// rows.
 ///
 /// The env and secret variants are absent from the executable half: the first
 /// writes the user's real shell surfaces and the second needs a live backend,
@@ -7887,19 +7900,14 @@ fn every_row_the_tick_records_is_healed_by_the_apply_that_converges_it() {
     let empty = ProviderRegistry::new();
     for action in every_action_variant() {
         let rows = crate::reconciler::action_drift_rows(&action, &empty);
-        // A module skipped whole probed nothing under it, so it stands for no
-        // finding even though it runs here — the one action that is neither
-        // pre-skipped nor a row producer.
-        let module_skip = matches!(
-            &action,
-            Action::Module(ModuleAction {
-                kind: ModuleActionKind::Skip { .. },
-                ..
-            })
-        );
+        // A module whose files were never probed stands for no finding even
+        // though it runs here — the host declined it whole, or it refused the
+        // deploy before reading a target. The two shapes that are neither
+        // pre-skipped nor row producers.
+        let unprobed = crate::reconciler::module_files_unprobed(&action);
         assert_eq!(
             rows.is_empty(),
-            action.pre_skip_reason().is_some() || module_skip,
+            action.pre_skip_reason().is_some() || unprobed,
             "an action stands for rows exactly when it can run here and probed \
              something: {action:?}"
         );
@@ -8040,6 +8048,17 @@ fn every_row_the_tick_records_is_healed_by_the_apply_that_converges_it() {
                 reason: "platforms: [macos]".to_string(),
             },
         )),
+        // The sixth withheld shape, and the second that mints no row: cfgd
+        // refused this module's file work, so it read no target and the apply
+        // that draws the refusal again heals nothing.
+        Action::Module(ModuleAction::local(
+            "ssh",
+            ModuleActionKind::FilesRefused {
+                reason: "file secrets/id_rsa requires encryption (backend: sops) \
+                         but is not encrypted"
+                    .to_string(),
+            },
+        )),
     ];
 
     // What a tick would record for this plan, through the one producer.
@@ -8079,8 +8098,9 @@ fn every_row_the_tick_records_is_healed_by_the_apply_that_converges_it() {
     assert_eq!(
         expected_standing.len(),
         4,
-        "one standing row per withheld block, and NONE for the module Skip — \
-         five withheld actions, four rows: {expected_standing:?}"
+        "one standing row per withheld block, and NONE for either module shape \
+         whose files went unprobed — six withheld actions, four rows: \
+         {expected_standing:?}"
     );
     assert!(
         !recorded
@@ -8163,7 +8183,24 @@ fn every_action_variant() -> Vec<Action> {
         ModuleActionKind::Skip {
             reason: "gated".to_string(),
         },
+        ModuleActionKind::FilesRefused {
+            reason: "file secrets/id_rsa requires encryption (backend: sops) \
+                     but is not encrypted"
+                .to_string(),
+        },
     ];
+    // The compiler is the walk: a `ModuleActionKind` variant added without a
+    // member above cannot be matched here, so the build stops in the fixture
+    // rather than in a caller that silently covers one variant fewer.
+    for kind in &module_kinds {
+        match kind {
+            ModuleActionKind::InstallPackages { resolved } => assert!(!resolved.is_empty()),
+            ModuleActionKind::DeployFiles { files, .. } => assert!(!files.is_empty()),
+            ModuleActionKind::RunScript { .. }
+            | ModuleActionKind::Skip { .. }
+            | ModuleActionKind::FilesRefused { .. } => {}
+        }
+    }
     let mut actions: Vec<Action> = module_kinds
         .into_iter()
         .map(|kind| Action::Module(ModuleAction::local("nvim", kind)))
@@ -11263,6 +11300,16 @@ fn apply_system_skip_logs_warning() {
         result.action_results[0].description.contains("skipped"),
         "desc: {}",
         result.action_results[0].description
+    );
+    // The tally reads the same role the row wears. `settled_success_role`
+    // answers `Ok` only for an action that changed something; an unknown key
+    // settles `Warn`, so the rollup counts it skipped and the run reports no
+    // success for a configurator it never even found.
+    assert_eq!(result.skipped(), 1, "a warned skip is counted as skipped");
+    assert_eq!(
+        result.succeeded(),
+        0,
+        "and never as work this run performed"
     );
 }
 
@@ -26067,6 +26114,17 @@ fn a_refused_file_deploy_is_a_row_on_every_surface() {
     );
     assert_eq!(plan.listed_action_count(), 2, "and drawn like one");
 
+    let theme = crate::output::Theme::default();
+    let (warn, _) = crate::output::renderer::role_glyph(&theme, crate::output::Role::Warn);
+    let warn = warn.expect("the Warn role carries a glyph");
+    let warned_row = |transcript: &str| -> String {
+        transcript
+            .lines()
+            .find(|l| l.contains("cannot deploy files"))
+            .unwrap_or_else(|| panic!("no refusal row in:\n{transcript}"))
+            .to_string()
+    };
+
     let (printer, cap) = crate::output::Printer::for_test_doc();
     crate::reconciler::render_plan_tree(&plan, None, &printer);
     drop(printer);
@@ -26074,6 +26132,13 @@ fn a_refused_file_deploy_is_a_row_on_every_surface() {
     assert!(
         tree.contains("cannot deploy files") && tree.contains(reason),
         "the plan tree draws the refusal with its reason: {tree}"
+    );
+    // Both trees read one role source, so the preview cannot promise ordinary
+    // work the apply then warns about one beat later.
+    assert!(
+        warned_row(&tree).trim_start().starts_with(warn),
+        "the PLAN row wears the Warn glyph {warn:?}: {:?}",
+        warned_row(&tree)
     );
 
     let (result, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
@@ -26095,13 +26160,7 @@ fn a_refused_file_deploy_is_a_row_on_every_surface() {
 
     // A row the reader must act on: the apply paints it at `Warn`, not at the
     // neutral `Skipped` a module the host declined would have taken.
-    let theme = crate::output::Theme::default();
-    let (warn, _) = crate::output::renderer::role_glyph(&theme, crate::output::Role::Warn);
-    let warn = warn.expect("the Warn role carries a glyph");
-    let painted = out
-        .lines()
-        .find(|l| l.contains("cannot deploy files"))
-        .unwrap_or_else(|| panic!("no refusal row in:\n{out}"));
+    let painted = warned_row(&out);
     assert!(
         painted.trim_start().starts_with(warn),
         "the refusal row wears the Warn glyph {warn:?}: {painted:?}"
