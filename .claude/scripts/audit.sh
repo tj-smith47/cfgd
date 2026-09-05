@@ -685,6 +685,12 @@ log_section "Comment Voice — No Session-Narrative or Self-Citation"
 # label (`Phase 9`, `Step 3`) immediately followed by a number, so an
 # ordinary lowercase word ("phase" as in "gated-off phase") is untouched.
 #
+# A review-finding TAG (`B1`, `W4`, `S24`) is the same narration wearing a
+# different label: it names a row of a review nobody reading the code can open.
+# The tag alone is ambiguous with real identifiers (`F5`, `W3C`), so it flags
+# only beside a word that makes it a citation — "finding", "review", "proved"
+# or "the audit".
+#
 # Escape hatch: `// cite-ok: <why>` on the flagged line itself, for a comment
 # that must quote user-facing text containing one of these words verbatim.
 comment_voice_violations=""
@@ -697,6 +703,8 @@ while IFS= read -r -d '' rsfile; do
          (comment ~ /(^|[^A-Za-z])Claude([^A-Za-z]|$)/ && comment !~ /Claude Code/) ||
          comment ~ /(^|[^A-Za-z])(Plan|Phase|Task|Step|Wave|Cycle|Session|Round)[[:space:]]+[0-9]/ ||
          comment ~ /(^|[^A-Za-z])Fix round([^A-Za-z]|$)/ ||
+         (comment ~ /(^|[^A-Za-z])[BWSF]-?[0-9][0-9]?([^0-9A-Za-z]|$)/ &&
+          comment ~ /(finding|review|proved|the audit)/) ||
          comment ~ /§/) &&
         !carries_marker(comment, "cite-ok:") { print filepath ":" NR ":" $0 }
     ' "$rsfile")
@@ -706,7 +714,7 @@ while IFS= read -r -d '' rsfile; do
 done < <(find crates -name '*.rs' -print0 2>/dev/null)
 comment_voice_violations=$(echo "$comment_voice_violations" | sed '/^$/d')
 if [[ -n "$comment_voice_violations" ]]; then
-    log_error "a comment narrates the assistant's own turn instead of documenting the code (\"we\"/\"Claude\"/\"this task|session|round\"/a numbered Plan|Phase|Task|Step|Wave|Cycle|Session|Round marker/\"Fix round\"/\"§\" — reword to passive/imperative, or mark // cite-ok: <why> for a quoted user-facing sentence):"
+    log_error "a comment narrates the assistant's own turn instead of documenting the code (\"we\"/\"Claude\"/\"this task|session|round\"/a numbered Plan|Phase|Task|Step|Wave|Cycle|Session|Round marker/\"Fix round\"/a review-finding tag like B1 beside \"finding\"|\"review\"|\"proved\"/\"§\" — reword to passive/imperative, or mark // cite-ok: <why> for a quoted user-facing sentence):"
     echo "$comment_voice_violations" | head -20
 else
     log_ok "No session-narrative or self-citation comments"

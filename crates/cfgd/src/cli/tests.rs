@@ -34186,10 +34186,11 @@ fn identifier_tokens(text: &str) -> Vec<String> {
 /// A `-o json` field is the same bytes under every theme, so nothing a
 /// serialized payload carries is built from `Printer::arrow()` / `Theme::arrow()`
 /// / `SystemContext::arrow()`. `ICON_ARROW` is the wire glyph; a themed reader
-/// never reaches a serialized field. The exact half B1 proved as the bug
-/// shape: no function in `cli/` that RETURNS a serialized payload — by its
-/// `build_*_output` name or by returning a `…Output` / `…Payload` /
-/// `serde_json::Value` — declares a parameter named `arrow` at all.
+/// never reaches a serialized field. The exact half closes the seam at the
+/// signature, before any body can spend the glyph: no function in `cli/` that
+/// RETURNS a serialized payload — by its `build_*_output` name or by returning
+/// a `…Output` / `…Payload` / `serde_json::Value`, a `Result` wrapper peeled
+/// first — declares a parameter named `arrow` at all.
 #[test]
 fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
     const HATCH: &str = "themed-arrow-ok:";
@@ -34370,10 +34371,13 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
     );
 
     // The exact half: no function that RETURNS a serialized payload takes an
-    // `arrow` parameter — the seam B1 proved is the bug shape. Judged on what
-    // the signature returns (`…Output`, `…Payload`, `serde_json::Value`) as
-    // well as on the `build_*_output` NAME, because a builder named otherwise
-    // is the same bug with a different spelling.
+    // `arrow` parameter. A themed reader answers what the terminal should
+    // show; a payload field is a wire value, so a builder handed the glyph
+    // serializes whatever preset happened to be in force. Judged on what the
+    // signature returns (`…Output`, `…Payload`, `serde_json::Value`, each
+    // possibly inside a `Result`) as well as on the `build_*_output` NAME,
+    // because a builder named otherwise is the same bug with a different
+    // spelling.
     let cli_dir = manifest.join("src/cli");
     let mut cli_files = walk_rust_files(&cli_dir);
     cli_files.sort();
@@ -34412,9 +34416,19 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
                 .split_once(") ->")
                 .map(|(_, r)| r.split('{').next().unwrap_or(r).trim().to_string())
                 .unwrap_or_default();
-            let returns_payload = returns.ends_with("Output")
-                || returns.ends_with("Payload")
-                || returns.contains("serde_json::Value");
+            // A payload is routinely returned inside a `Result`, so the
+            // wrapper is peeled before the type is judged — `-> anyhow::Result
+            // <SyncOutput>` ends with `>` and read as no payload at all.
+            let mut inner = returns.as_str();
+            while let Some(open) = inner.find('<') {
+                if !inner[..open].ends_with("Result") || !inner.ends_with('>') {
+                    break;
+                }
+                inner = inner[open + 1..inner.len() - 1].trim();
+            }
+            let returns_payload = inner.ends_with("Output")
+                || inner.ends_with("Payload")
+                || inner.contains("serde_json::Value");
             if !named_builder && !returns_payload {
                 continue;
             }
@@ -35556,6 +35570,35 @@ fn every_exit_code_surface_reports_an_erroring_check() {
              its erroring-check and standing-row matrix rows"
         );
     }
+
+    // The weld runs BOTH ways. `contains` catches a surface the clap tree
+    // grew and the matrix never learned; only set-equality catches the
+    // reverse — a cell naming a surface that no longer exists, or never did,
+    // which passes every run while testing nothing.
+    let mut declared: Vec<String> = matrix
+        .split_once("const SURFACES:")
+        .and_then(|(_, rest)| rest.split_once("= ["))
+        .and_then(|(_, rest)| rest.split_once("];"))
+        .map(|(block, _)| block)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("&["))
+        .map(|l| l.trim_end_matches(',').to_string())
+        .collect();
+    declared.sort();
+    let mut scoped: Vec<String> = spellings
+        .iter()
+        .filter(|s| s.contains("--module"))
+        .cloned()
+        .collect();
+    scoped.sort();
+    assert_eq!(
+        declared, scoped,
+        "tests/drift_exit_code.rs's scoped SURFACES list is exactly the \
+         flag-scoped population the clap walk found — an entry naming no \
+         surface runs no check"
+    );
 }
 
 /// The device gateway is fed by ONE producer — `cfgd checkin`, whose payload is

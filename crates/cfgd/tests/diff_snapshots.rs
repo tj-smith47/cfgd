@@ -176,14 +176,36 @@ fn diff_no_drift_human() {
 /// survive the walk and reach the section. The golden is what keeps the
 /// operand-less one honest: it has no two sides to name, so it words itself as
 /// the bare cause — never `want: missing, have: ...`, which the absence fold
-/// invents out of a silence the store never recorded.
+/// invents out of a silence the store never recorded. A declared alias the
+/// machine does not deliver renders in the same report, so the golden holds
+/// both wordings at once: a row with two sides states them, a row with none
+/// does not.
 #[test]
 fn diff_standing_rows_human() {
     let (config_dir, state_dir, target) = no_drift_setup();
+    // A declared alias no env file delivers: a SHELL row, and the one kind
+    // whose cause states both operands. It renders beside the standing rows so
+    // the golden holds both wordings at once, and the first standing row is
+    // seeded WITH two operands to hold the chooser to its other half: a row
+    // that could state a divergence still reads as the terse cause, because
+    // its kind is not a shell one.
+    let profile_path = config_dir.path().join("profiles/tiny.yaml");
+    let profile = std::fs::read_to_string(&profile_path).unwrap();
+    std::fs::write(
+        &profile_path,
+        format!("{profile}  aliases:\n    - name: gs\n      command: git status\n"),
+    )
+    .unwrap();
     {
         let store = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
         store
-            .record_drift("script", "echo hook", None, Some("drift detected"), "local")
+            .record_drift(
+                "script",
+                "echo hook",
+                Some("exit 0"),
+                Some("exit 1"),
+                "local",
+            )
             .unwrap();
         store
             .record_drift("script", "echo silent", None, None, "local")
