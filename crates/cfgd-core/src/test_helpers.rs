@@ -1030,6 +1030,7 @@ impl BareGitRepo {
     /// handle is dropped first; if the removal is still refused, the
     /// repository is broken in place (HEAD, config, refs) until it stops
     /// answering. Query methods (`has_tag`, `tags`, …) panic after this.
+    // env-mutator-ok: deletes a fixture repo; its `drop(…)` is `std::mem::drop`, not a guard's.
     pub fn remove_upstream(&mut self) {
         drop(self.bare_repo.take());
         if std::fs::remove_dir_all(&self.bare_path).is_ok() {
@@ -2193,6 +2194,7 @@ thread_local! {
 /// that already holds the exclusive side must not queue behind itself. A nested
 /// acquisition, and any acquisition on a thread already holding the exclusive
 /// guard, is therefore a no-op. See `PATH_ENV_LOCK`.
+// env-mutator-ok: takes cfgd's PATH lock and sets a thread-local Cell; writes no env var.
 pub fn path_env_read_guard() -> SpawnEnvGuard {
     if SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get)
         || SPAWN_GUARD_DEPTH.with(std::cell::Cell::get) > 0
@@ -2252,6 +2254,7 @@ impl Drop for SpawnEnvGuard {
 /// avoids — it would let a `PATH`/cwd mutation run while the in-flight spawn
 /// this lock exists to protect is still resolving its program. Take the
 /// exclusive guard first, or not inside a spawn.
+// env-mutator-ok: takes cfgd's PATH lock; it guards a caller's write, never performs one.
 pub fn path_env_mutation_guard() -> ExclusiveEnvGuard {
     debug_assert!(
         SPAWN_GUARD_DEPTH.with(std::cell::Cell::get) == 0,
@@ -2848,6 +2851,7 @@ pub struct CwdGuard {
 impl CwdGuard {
     /// Capture the current working directory, then change to `new`.
     /// Returns an error if either step fails.
+    // env-mutator-ok: sets the process working directory, which is not an environment variable.
     pub fn set(new: impl AsRef<Path>) -> std::io::Result<Self> {
         let spawn_excl = path_env_mutation_guard();
         let orig = std::env::current_dir()?;
@@ -3071,6 +3075,7 @@ impl CosignTestShimBuilder {
     /// per-invocation behavior env vars (`CFGD_FAKE_COSIGN_{LOG,KEYGEN,STDERR,
     /// EXIT}`). Prior values of every mutated var are captured for restoration
     /// on drop. A tempdir holds the argv log; it is removed with the guard.
+    // env-mutator-ok: reached only through `CosignTestShim::builder`, which the roster counts.
     pub fn install(self) -> CosignTestShim {
         let bin_path = fake_cosign_bin_path();
         let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -3832,6 +3837,7 @@ fn parse_profile_yaml_to_resolved(yaml: &str) -> crate::config::ResolvedProfile 
 /// `cfgd-version` to `0.0.1` so `list` flags it stale (stamp != running). The
 /// whole-file claude provider carries the stamp on a `cfgd-version:` frontmatter
 /// line, so a line rewrite faithfully reproduces an old install.
+// env-mutator-ok: writes a skill file; its `install(…)` is `SkillProvider`'s, not a shim's.
 pub fn seed_stale_skill(
     kind: crate::generate::SkillKind,
     scope: crate::providers::skill::SkillScope,

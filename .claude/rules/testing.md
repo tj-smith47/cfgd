@@ -64,9 +64,10 @@ them. Never hand-roll a second save/restore struct; pair the guard with
 `serial_test::serial`.
 
 The same pairing is the rule for the environment itself: a test that mutates a
-process-global env var — through `EnvVarGuard`, `with_test_env_var`, either tool
-shim, or a raw `env::set_var` / `remove_var`, in its own body or in a same-file
-helper it calls — carries `#[serial_test::serial…]`, because edition 2024 makes
+process-global env var — through `EnvVarGuard`, `EditorGuard::set`,
+`with_test_env_var`, `ProbePath::containing`, any `install_named_path_shim*`,
+either tool shim, or a raw `env::set_var` / `remove_var`, in its own body or in a
+same-file helper it calls — carries `#[serial_test::serial…]`, because edition 2024 makes
 an unserialized write in a live-threaded harness undefined behaviour rather than
 a flake; `every_test_mutating_the_process_environment_serializes_itself` walks
 for one, and `// serial-ok: <why>` hatches a mutation that cannot race (a

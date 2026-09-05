@@ -1072,9 +1072,32 @@ struct LineMask {
     raw_hashes: Option<usize>,
     in_plain: bool,
     comment_depth: usize,
+    /// Byte offset at which the line just advanced across stopped being
+    /// masked, when it began masked and ended one of its states.
+    resumed_at: Option<usize>,
 }
 
 impl LineMask {
+    /// The source half of one line, advancing across it: everything from the
+    /// point the line stopped being masked, less its own literal bodies and
+    /// trailing comment.
+    ///
+    /// A line that CLOSES a multi-line literal or block comment is source
+    /// AFTER the closing delimiter. Skipping such a line whole loses a brace
+    /// that really does move the depth — a `"#;` followed by the block's own
+    /// `}` is the shape — and a lost close is a slice that ends somewhere
+    /// other than where the code does, in the direction nothing reports.
+    fn source_code(&mut self, line: &str) -> String {
+        let began_masked = self.masked();
+        self.advance(line);
+        let from = if began_masked {
+            self.resumed_at.unwrap_or(line.len())
+        } else {
+            0
+        };
+        code_half(line.get(from..).unwrap_or(""))
+    }
+
     /// Whether the NEXT line begins inside a literal or comment.
     fn masked(&self) -> bool {
         self.raw_hashes.is_some() || self.in_plain || self.comment_depth > 0
@@ -1089,11 +1112,13 @@ impl LineMask {
     fn advance(&mut self, line: &str) {
         let bytes = line.as_bytes();
         let mut i = 0;
+        self.resumed_at = None;
         while i < bytes.len() {
             if let Some(open) = self.raw_hashes {
                 if crate::test_helpers::raw_string_closes(bytes, i, open) {
                     self.raw_hashes = None;
                     i += 1 + open;
+                    self.resumed_at.get_or_insert(i);
                 } else {
                     i += 1;
                 }
@@ -1105,6 +1130,7 @@ impl LineMask {
                     b'"' => {
                         self.in_plain = false;
                         i += 1;
+                        self.resumed_at.get_or_insert(i);
                     }
                     _ => i += 1,
                 }
@@ -1114,6 +1140,9 @@ impl LineMask {
                 if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
                     self.comment_depth -= 1;
                     i += 2;
+                    if self.comment_depth == 0 {
+                        self.resumed_at.get_or_insert(i);
+                    }
                 } else if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
                     self.comment_depth += 1;
                     i += 2;
@@ -1538,12 +1567,14 @@ const ENV_MUTATORS: &[&str] = &[
     "ToolShim::install",
     "CosignTestShim::install",
     "CosignTestShim::builder",
-    "CosignTestShimBuilder::install",
     "env::set_var",
     "env::remove_var",
 ];
 
 const SERIAL_HATCH: &str = "serial-ok:";
+
+/// Exempts an [`ENV_MUTATORS`] entry that matches no call site of its own.
+const UNCALLED_HATCH: &str = "env-mutator-uncalled-ok:";
 
 /// One function's source, from its `fn` line to its own closing brace.
 ///
@@ -1568,12 +1599,7 @@ fn function_source(lines: &[&str], open: usize) -> String {
         // `source_functions` masks before it opens a slice — so a mask started
         // here reads the rest of the body correctly, and a brace inside a
         // multi-line raw literal moves no depth.
-        let masked = mask.masked();
-        mask.advance(line);
-        if masked {
-            continue;
-        }
-        let code = code_half(line);
+        let code = mask.source_code(line);
         if !opened && !code.contains('{') && code.contains(';') {
             // A declaration with no body at all (a trait method's signature)
             // ends at its semicolon.
@@ -1666,15 +1692,137 @@ fn attribute_block_start(lines: &[&str], open: usize) -> usize {
     at
 }
 
-/// Serialized reachers each calibration file must still yield, so a walk
-/// blinded in one file fails instead of passing on the rest of the workspace.
+/// Serialized reachers each file must still yield: one row per file the walk
+/// finds non-zero, floor = the count it finds there today.
+///
+/// A floor sits AT the count rather than under it, so a file losing one
+/// reacher fails here instead of drifting silently — the failure mode a
+/// blinded needle takes. A re-calibration REPLACES a row with what the walk
+/// now finds; it never lowers one to make a red walk green, because a count
+/// that fell is the finding.
 const SERIAL_FLOORS: &[(&str, usize)] = &[
-    ("crates/cfgd/src/cli/tests.rs", 60),
-    ("crates/cfgd-core/src/sources/tests.rs", 30),
-    ("crates/cfgd-core/src/upgrade/tests.rs", 30),
-    ("crates/cfgd/src/packages/brew/tests.rs", 30),
-    ("crates/cfgd-core/src/daemon/tests.rs", 30),
-    ("crates/cfgd-core/src/util/paths/tests.rs", 25),
+    ("crates/cfgd-core/src/daemon/health_ipc.rs", 5),
+    ("crates/cfgd-core/src/daemon/service/systemd.rs", 4),
+    ("crates/cfgd-core/src/daemon/tests.rs", 40),
+    ("crates/cfgd-core/src/modules/git.rs", 15),
+    ("crates/cfgd-core/src/modules/tests.rs", 1),
+    ("crates/cfgd-core/src/oci/auth/tests.rs", 12),
+    ("crates/cfgd-core/src/oci/build.rs", 6),
+    ("crates/cfgd-core/src/oci/pull.rs", 2),
+    ("crates/cfgd-core/src/oci/sign/tests.rs", 25),
+    ("crates/cfgd-core/src/oci/tests.rs", 2),
+    ("crates/cfgd-core/src/output/printer.rs", 5),
+    ("crates/cfgd-core/src/output/render_doc.rs", 3),
+    ("crates/cfgd-core/src/output/tests/color_gate.rs", 1),
+    ("crates/cfgd-core/src/output/tests/hyperlinks.rs", 5),
+    ("crates/cfgd-core/src/output/tests/themes_raw.rs", 4),
+    ("crates/cfgd-core/src/output/theme.rs", 11),
+    ("crates/cfgd-core/src/providers/skill/gemini.rs", 1),
+    ("crates/cfgd-core/src/reconciler/managers.rs", 4),
+    ("crates/cfgd-core/src/reconciler/scripts/tests.rs", 7),
+    ("crates/cfgd-core/src/reconciler/tests.rs", 5),
+    ("crates/cfgd-core/src/server_client/tests.rs", 2),
+    ("crates/cfgd-core/src/sources/tests.rs", 43),
+    ("crates/cfgd-core/src/test_helpers.rs", 17),
+    ("crates/cfgd-core/src/tests.rs", 3),
+    ("crates/cfgd-core/src/upgrade/check.rs", 24),
+    ("crates/cfgd-core/src/upgrade/dedup.rs", 3),
+    ("crates/cfgd-core/src/upgrade/tests.rs", 43),
+    ("crates/cfgd-core/src/util/env_session.rs", 4),
+    ("crates/cfgd-core/src/util/git.rs", 2),
+    ("crates/cfgd-core/src/util/paths/tests.rs", 33),
+    ("crates/cfgd-core/src/util/process.rs", 16),
+    ("crates/cfgd-core/tests/skill_provider_io.rs", 2),
+    ("crates/cfgd-core/tests/update_dedup.rs", 13),
+    ("crates/cfgd-csi/src/app.rs", 2),
+    ("crates/cfgd-csi/src/node/tests.rs", 12),
+    ("crates/cfgd-operator/src/app.rs", 9),
+    ("crates/cfgd-operator/src/controllers/tests.rs", 1),
+    ("crates/cfgd-operator/src/env.rs", 14),
+    ("crates/cfgd-operator/src/gateway/api/tests.rs", 3),
+    ("crates/cfgd-operator/src/gateway/api/tests_router.rs", 18),
+    ("crates/cfgd-operator/src/gateway/db/tests.rs", 4),
+    ("crates/cfgd-operator/src/gateway/mod.rs", 11),
+    ("crates/cfgd-operator/src/gateway/web/tests.rs", 11),
+    ("crates/cfgd-operator/src/leader.rs", 12),
+    ("crates/cfgd-operator/src/runtime.rs", 14),
+    ("crates/cfgd-operator/src/test_helpers.rs", 3),
+    ("crates/cfgd/src/ai/client.rs", 2),
+    ("crates/cfgd/src/cli/checkin.rs", 9),
+    ("crates/cfgd/src/cli/config_migration.rs", 5),
+    ("crates/cfgd/src/cli/generate/tests.rs", 15),
+    ("crates/cfgd/src/cli/helpers/tests.rs", 11),
+    ("crates/cfgd/src/cli/image/pack.rs", 2),
+    ("crates/cfgd/src/cli/init/tests.rs", 34),
+    ("crates/cfgd/src/cli/kubectl.rs", 1),
+    ("crates/cfgd/src/cli/module/build.rs", 1),
+    ("crates/cfgd/src/cli/module/keys.rs", 9),
+    ("crates/cfgd/src/cli/module/push_pull.rs", 5),
+    ("crates/cfgd/src/cli/module/tests.rs", 10),
+    ("crates/cfgd/src/cli/paths.rs", 11),
+    ("crates/cfgd/src/cli/plan_ops/tests.rs", 3),
+    ("crates/cfgd/src/cli/plugin/tests.rs", 7),
+    ("crates/cfgd/src/cli/profile/tests.rs", 3),
+    ("crates/cfgd/src/cli/registry.rs", 1),
+    ("crates/cfgd/src/cli/status.rs", 5),
+    ("crates/cfgd/src/cli/tests.rs", 85),
+    ("crates/cfgd/src/cli/upgrade.rs", 14),
+    ("crates/cfgd/src/cli/verify.rs", 1),
+    ("crates/cfgd/src/files/tests.rs", 1),
+    ("crates/cfgd/src/main.rs", 7),
+    ("crates/cfgd/src/mcp/server/tests.rs", 1),
+    ("crates/cfgd/src/packages/brew/tests.rs", 46),
+    ("crates/cfgd/src/packages/cargo.rs", 11),
+    ("crates/cfgd/src/packages/choco.rs", 14),
+    ("crates/cfgd/src/packages/flatpak.rs", 9),
+    ("crates/cfgd/src/packages/go.rs", 17),
+    ("crates/cfgd/src/packages/nix.rs", 14),
+    ("crates/cfgd/src/packages/npm.rs", 37),
+    ("crates/cfgd/src/packages/pipx.rs", 10),
+    ("crates/cfgd/src/packages/scoop.rs", 15),
+    ("crates/cfgd/src/packages/shared/tests.rs", 31),
+    ("crates/cfgd/src/packages/simple/tests.rs", 19),
+    ("crates/cfgd/src/packages/snap.rs", 11),
+    ("crates/cfgd/src/packages/tests.rs", 5),
+    ("crates/cfgd/src/packages/versions/tests.rs", 32),
+    ("crates/cfgd/src/packages/winget.rs", 8),
+    ("crates/cfgd/src/secrets/age.rs", 8),
+    ("crates/cfgd/src/secrets/tests.rs", 31),
+    ("crates/cfgd/src/system/environment/tests.rs", 4),
+    ("crates/cfgd/src/system/git_config.rs", 14),
+    ("crates/cfgd/src/system/gpg_keys/tests.rs", 12),
+    ("crates/cfgd/src/system/gsettings.rs", 6),
+    ("crates/cfgd/src/system/kde_config.rs", 5),
+    ("crates/cfgd/src/system/launch_agent.rs", 4),
+    ("crates/cfgd/src/system/macos_defaults.rs", 3),
+    ("crates/cfgd/src/system/node/tests.rs", 9),
+    ("crates/cfgd/src/system/shell.rs", 14),
+    ("crates/cfgd/src/system/systemd_unit.rs", 7),
+    ("crates/cfgd/src/system/windows_registry.rs", 3),
+    ("crates/cfgd/src/system/xfconf.rs", 4),
+    ("crates/cfgd/tests/apply_snapshots.rs", 1),
+    ("crates/cfgd/tests/backup_snapshots.rs", 2),
+    ("crates/cfgd/tests/config_edit_snapshots.rs", 3),
+    ("crates/cfgd/tests/image_pack_snapshots.rs", 1),
+    ("crates/cfgd/tests/init_snapshots.rs", 3),
+    ("crates/cfgd/tests/module_crud_snapshots.rs", 1),
+    ("crates/cfgd/tests/module_keys_snapshots.rs", 7),
+    ("crates/cfgd/tests/module_registry_snapshots.rs", 5),
+    ("crates/cfgd/tests/module_search_snapshots.rs", 3),
+    ("crates/cfgd/tests/module_upgrade_snapshots.rs", 4),
+    ("crates/cfgd/tests/patch_strategy.rs", 4),
+    ("crates/cfgd/tests/plan_snapshots.rs", 1),
+    ("crates/cfgd/tests/plugin_deploy_snapshots.rs", 2),
+    ("crates/cfgd/tests/plugin_snapshots.rs", 1),
+    ("crates/cfgd/tests/profile_edit_snapshots.rs", 4),
+    ("crates/cfgd/tests/profile_update_snapshots.rs", 1),
+    ("crates/cfgd/tests/secret_snapshots.rs", 1),
+    ("crates/cfgd/tests/source_add_snapshots.rs", 5),
+    ("crates/cfgd/tests/source_edit_snapshots.rs", 3),
+    ("crates/cfgd/tests/source_replace_snapshots.rs", 2),
+    ("crates/cfgd/tests/source_update_snapshots.rs", 9),
+    ("crates/cfgd/tests/sync_snapshots.rs", 6),
+    ("crates/cfgd/tests/upgrade_snapshots.rs", 2),
 ];
 
 /// A test that mutates the process-global environment runs under the serial
@@ -1703,6 +1851,8 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
     let mut reaching = 0usize;
     let mut serialized = 0usize;
     let mut per_file: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut entry_hits: std::collections::BTreeMap<&str, usize> =
+        ENV_MUTATORS.iter().map(|entry| (*entry, 0usize)).collect();
     let mut offenders = Vec::new();
 
     for path in workspace_rust_files() {
@@ -1735,6 +1885,23 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
                 .and_modify(|f| *f &= !takes_a_receiver(&slice))
                 .or_insert(!takes_a_receiver(&slice));
             sources.entry(name).or_default().push((open, source));
+        }
+        // A roster entry earns its place by COUNTING: a call site in the suite,
+        // not the declaration it names. `test_helpers.rs` is where the helpers
+        // live, so its own mentions prove nothing.
+        if !path.ends_with(Path::new("test_helpers.rs")) {
+            for decls in sources.values() {
+                for (_, src) in decls {
+                    for (entry, hits) in &mut entry_hits {
+                        if crate::test_helpers::logical_source_lines(src)
+                            .iter()
+                            .any(|(_, line)| code_half(line).contains(*entry))
+                        {
+                            *hits += 1;
+                        }
+                    }
+                }
+            }
         }
         let mut reaches: std::collections::BTreeMap<String, bool> = sources
             .iter()
@@ -1824,6 +1991,30 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
         "the walk found {reaching} tests reaching a mutation, {serialized} of them serialized; \
          it has stopped seeing the mutations"
     );
+    // An entry matching nothing is the silent uncounting this walk exists to
+    // prevent, worn as a green roster: it satisfies the derived walk while
+    // watching no test at all.
+    let own_path = root.join("crates/cfgd-core/src/output/tests/fences.rs");
+    let own = std::fs::read_to_string(&own_path).unwrap_or_else(|e| panic!("{own_path:?}: {e}"));
+    let own_lines: Vec<&str> = own.lines().collect();
+    let uncounted: Vec<&str> = entry_hits
+        .iter()
+        .filter(|(entry, hits)| {
+            **hits == 0 && {
+                let quoted = format!("\"{entry}\",");
+                !own_lines.iter().enumerate().any(|(at, line)| {
+                    line.contains(&quoted) && hatched(&own_lines, at, UNCALLED_HATCH)
+                })
+            }
+        })
+        .map(|(entry, _)| *entry)
+        .collect();
+    assert!(
+        uncounted.is_empty(),
+        "every `ENV_MUTATORS` entry must match a call site outside \
+         `test_helpers.rs`, or carry `// env-mutator-uncalled-ok: <why>` — \
+         an entry counting nothing watches nothing: {uncounted:?}"
+    );
     for (file, floor) in SERIAL_FLOORS {
         let found = per_file.get(*file).copied().unwrap_or(0);
         assert!(
@@ -1887,8 +2078,11 @@ fn impl_owners(lines: &[&str]) -> Vec<Option<String>> {
     let mut out = Vec::with_capacity(lines.len());
     let mut owner: Option<String> = None;
     let mut depth = 0i32;
+    // Braces inside a multi-line literal are not source, and an owner column
+    // that has desynced names every declaration below it after the wrong type.
+    let mut mask = LineMask::default();
     for line in lines {
-        let code = code_half(line);
+        let code = mask.source_code(line);
         if depth == 0 && code.starts_with("impl") {
             owner = impl_type_name(&code);
         }
@@ -1928,14 +2122,16 @@ fn calls_named(body: &str, name: &str) -> bool {
 /// test-helper sources themselves.
 ///
 /// A helper REACHES a mutation through one of [`ENV_MUTATION_SEEDS`] in its
-/// own body, or through a same-file declaration it calls whose EVERY
-/// declaration of that name reaches. That last condition is what makes
-/// following method calls safe: `set`, `install` and `drop` name env-mutating
-/// associated items and ordinary ones alike, and a name any sibling of which
-/// does not mutate is never followed. It also bounds the derivation — a chain
-/// whose middle link is such a name (`Self::builder().install()`) is followed
-/// only as far as the entry point it names, which is why both spellings of
-/// the cosign shim's install are on the roster.
+/// own body, or through a same-file declaration it calls whose name ANY
+/// declaration of reaches — a call is followed by name alone, the bare, method
+/// and associated spellings being indistinguishable without type resolution.
+/// Names are shared (`set`, `install` and `drop` name env-mutating associated
+/// items and ordinary ones alike), so the widening derives helpers that write
+/// no environment variable, and each of those carries a hatch saying so at its
+/// own declaration. The narrower rule — follow only a name EVERY declaration
+/// of which reaches — needed no hatches and left no trace: a helper whose only
+/// route is a shared name went underived, so nothing demanded it and nothing
+/// said why.
 ///
 /// Scoped to `test_helpers.rs`, the workspace's only `test-helpers`-gated
 /// module. Run over every source instead, the same derivation adds exactly
@@ -1943,8 +2139,9 @@ fn calls_named(body: &str, name: &str) -> bool {
 /// any thread exists — which is a production concern with its own safety
 /// argument, not a helper a test calls.
 ///
-/// `// env-mutator-ok: <why>` exempts a helper whose write is not
-/// process-global.
+/// `// env-mutator-ok: <why>` exempts a helper that writes no environment
+/// variable of its own, or whose every call site another roster entry already
+/// counts.
 #[test]
 fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
     let root = workspace_root();
@@ -2005,7 +2202,7 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
                     names
                         .iter()
                         .enumerate()
-                        .all(|(other, sibling)| sibling != *name || reaches[other])
+                        .any(|(other, sibling)| sibling == *name && reaches[other])
                 })
                 .map(|(_, name)| name.as_str())
                 .collect();
@@ -2070,5 +2267,64 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
         derived.len() >= 10,
         "the derivation found {} env-mutating helpers: {derived:?}",
         derived.len()
+    );
+}
+
+/// The line that CLOSES a multi-line literal is source after the closing
+/// delimiter.
+///
+/// Read as masked whole, a `"#; }` line loses the brace that ends the
+/// function, and the scan runs on into the next declaration — a slice that
+/// ends somewhere other than where the code does, reported by nothing.
+#[test]
+fn a_brace_after_a_literals_close_still_ends_the_function() {
+    let body = concat!(
+        "fn holder() {\n",
+        "    let banner = r#\"\n",
+        "{ { {\n",
+        "\"#; }\n",
+        "fn sibling() {}\n"
+    );
+    let lines: Vec<&str> = body.lines().collect();
+    let source = function_source(&lines, 0);
+    assert!(
+        source.ends_with("\"#; }"),
+        "the slice ends at the brace after the literal's close: {source:?}"
+    );
+    assert!(
+        !source.contains("sibling"),
+        "the slice must not run into the next declaration: {source:?}"
+    );
+}
+
+/// Braces inside a multi-line raw literal move no `impl` depth.
+///
+/// Counted as source, the two closes inside the literal below end the block
+/// early and every declaration after them is named after the wrong type — or
+/// after none, which reads as a free function and is followed by bare name.
+#[test]
+fn an_unbalanced_literal_inside_an_impl_does_not_close_its_owner() {
+    let body = concat!(
+        "impl Holder {\n",
+        "    fn f() {\n",
+        "        let s = r#\"\n",
+        "}\n",
+        "}\n",
+        "\"#;\n",
+        "    }\n",
+        "}\n",
+        "fn after() {}\n"
+    );
+    let lines: Vec<&str> = body.lines().collect();
+    let owners = impl_owners(&lines);
+    assert_eq!(owners[1].as_deref(), Some("Holder"), "{owners:?}");
+    assert_eq!(
+        owners[6].as_deref(),
+        Some("Holder"),
+        "the literal's braces closed the block early: {owners:?}"
+    );
+    assert_eq!(
+        owners[8], None,
+        "the block's real close drops it: {owners:?}"
     );
 }
